@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docs · Brevitas Systems</title>
+<meta name="description" content="Developer documentation for the Brevitas SDK.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="animations.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const TOC = [
+  { group: 'GETTING STARTED', items: [
+    { id: 'intro', label: 'Introduction' },
+    { id: 'install', label: 'Installation' },
+    { id: 'quickstart', label: 'Quickstart' },
+  ]},
+  { group: 'CORE CONCEPTS', items: [
+    { id: 'pipelines', label: 'Pipelines' },
+    { id: 'techniques', label: 'The six techniques' },
+    { id: 'report', label: 'The report object' },
+  ]},
+  { group: 'REFERENCE', items: [
+    { id: 'api-optimize', label: 'optimize()' },
+    { id: 'api-config', label: 'Config' },
+    { id: 'integrations', label: 'Integrations' },
+    { id: 'limits', label: 'Caveats & known limits' },
+  ]},
+];
+
+function DocsPage() {
+  const [active, setActive] = useState('intro');
+
+  useEffect(() => {
+    const obs = new IntersectionObserver((entries) => {
+      const visible = entries.filter(e => e.isIntersecting).sort((a,b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      if (visible[0]) setActive(visible[0].target.id);
+    }, { rootMargin: '-20% 0px -60% 0px' });
+    document.querySelectorAll('[data-doc-section]').forEach(el => obs.observe(el));
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <>
+      <Nav current="docs" />
+
+      <div style={{ paddingTop: 80 }}>
+        <div className="container docs-shell">
+          {/* Sidebar */}
+          <aside className="docs-side">
+            <div className="docs-side-inner">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28 }}>
+                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>DOCS</span>
+                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>v0.2.0-alpha</span>
+              </div>
+              {TOC.map(group => (
+                <div key={group.group} style={{ marginBottom: 28 }}>
+                  <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 10, marginBottom: 10 }}>{group.group}</div>
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {group.items.map(item => (
+                      <li key={item.id}>
+                        <a
+                          href={`#${item.id}`}
+                          className={`docs-toc-link ${active === item.id ? 'active' : ''}`}
+                        >
+                          {item.label}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+
+              <div style={{ marginTop: 40, padding: 16, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
+                <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 8 }}>NOTE</div>
+                <div className="t-body" style={{ fontSize: 13, margin: 0 }}>
+                  SDK is in private beta. Full reference docs ship with GA. Design partners get complete docs now.
+                </div>
+                <a href="/waitlist" className="btn-inline" style={{ marginTop: 12, display: 'inline-block', fontSize: 13, color: 'var(--bronze)' }}>Request access →</a>
+              </div>
+            </div>
+          </aside>
+
+          {/* Main */}
+          <main className="docs-main">
+            <Section id="intro" kicker="GETTING STARTED · 01" title={<>Introduction.</>}>
+              <p className="t-body-lg">
+                Brevitas is a drop-in Python SDK that reduces token consumption in multi-agent pipelines by compressing, de-duplicating, and referencing inter-agent communication. It wraps your existing orchestration; your agents, prompts, and model choices stay unchanged.
+              </p>
+              <p className="t-body">
+                The library operates at the <em style={{ fontStyle: 'italic' }}>pipeline</em> level — between agent calls — which lets it capture redundancy that per-call compressors and native prompt caches cannot see.
+              </p>
+              <DocsCallout type="hint">
+                If you're new to this, read the <a href="/how-it-works" className="underline">How it works</a> page first. It's a six-minute read that covers the mechanism.
+              </DocsCallout>
+            </Section>
+
+            <Section id="install" kicker="GETTING STARTED · 02" title={<>Installation.</>}>
+              <p className="t-body">Brevitas requires Python 3.10 or higher. Install from PyPI:</p>
+              <CodeBlockPy source={`$ pip install brevitas`} />
+              <p className="t-body" style={{ marginTop: 20 }}>No sidecar, no daemon. The library is pure Python with optional C extensions for the delta engine.</p>
+            </Section>
+
+            <Section id="quickstart" kicker="GETTING STARTED · 03" title={<>Quickstart.</>}>
+              <p className="t-body">Wrap your existing pipeline — a list of callables — with <span className="mono bronze">optimize()</span> and run it as you normally would:</p>
+              <CodeBlockPy filename="quickstart.py" copyable source={`from brevitas import optimize
+from my_pipeline import architect, builder, reviewer
+
+pipeline = optimize([architect, builder, reviewer])
+result = pipeline.run(task)
+
+report = pipeline.report()
+print(report.summary())
+# Baseline:  6,140 tokens · $0.001616
+# Optimized: 2,490 tokens · $0.000857
+# Savings:   59.4% tokens · 47.0% cost
+# Quality:   99.2% vs. baseline (n=60 runs)`} />
+              <DocsCallout type="hint">
+                On the first run, Brevitas instruments the pipeline and produces a baseline trace. The second run onward uses the full optimization stack.
+              </DocsCallout>
+            </Section>
+
+            <Section id="pipelines" kicker="CORE CONCEPTS · 01" title={<>Pipelines.</>}>
+              <p className="t-body-lg">A pipeline is a sequence of agent callables that share state. Brevitas doesn't care how you wire them — a list, a <span className="mono bronze">LangGraph</span>, a <span className="mono bronze">CrewAI</span> crew — as long as the objects are callable.</p>
+              <p className="t-body">The <span className="mono bronze">optimize()</span> wrapper accepts:</p>
+              <table className="docs-table">
+                <thead><tr><th>Input</th><th>Handling</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">list[Callable]</span></td><td>Treated as linear pipeline.</td></tr>
+                  <tr><td><span className="mono">langgraph.Graph</span></td><td>Graph is traversed; optimization applied at every edge.</td></tr>
+                  <tr><td><span className="mono">crewai.Crew</span></td><td>Crew is wrapped; inter-task messages are optimized.</td></tr>
+                  <tr><td><span className="mono">Callable</span></td><td>Single-agent no-op. Returned unchanged.</td></tr>
+                </tbody>
+              </table>
+            </Section>
+
+            <Section id="techniques" kicker="CORE CONCEPTS · 02" title={<>The six techniques.</>}>
+              <p className="t-body">Each inter-agent call is routed through some subset of the six techniques. The router decides; you can override.</p>
+              <ol style={{ paddingLeft: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {[
+                  ['Inter-agent message compression', 'Relevance-model compression of prose, preserving meaning-bearing tokens.'],
+                  ['Shared memory with references', 'Materialize outputs once; pass mem:// references.'],
+                  ['Delta mode', 'After first pass, send only state changes.'],
+                  ['Smart context pruning', 'Drop sections the next agent won\'t use.'],
+                  ['Compact message protocol', 'Schema-based wire format; rendered text on both ends.'],
+                  ['Task-aware routing', 'Per-call decision on which techniques to apply.'],
+                ].map(([h, b], i) => (
+                  <li key={i}>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
+                      <span className="serif" style={{ fontSize: 18, color: 'var(--fg)' }}>{h}.</span>
+                      <span className="t-body" style={{ fontSize: 14, color: 'var(--stone-2)' }}>{b}</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </Section>
+
+            <Section id="report" kicker="CORE CONCEPTS · 03" title={<>The report object.</>}>
+              <p className="t-body">Every pipeline run emits a typed report. It's inspectable, serializable, and diffable across runs.</p>
+              <CodeBlockPy filename="report.py" copyable source={`report = pipeline.report()
+
+report.tokens_saved          # int
+report.cost_delta            # float (USD)
+report.quality_parity        # float (0.0–1.0)
+report.savings_by_technique  # dict[str, float]
+report.per_call              # list[CallTrace]
+
+# serialize
+report.to_json("run_2026_04_23.json")
+report.to_pandas()  # DataFrame, one row per call`} />
+            </Section>
+
+            <Section id="api-optimize" kicker="REFERENCE · 01" title={<>optimize().</>}>
+              <CodeBlockPy source={`brevitas.optimize(
+    pipeline: Pipeline,
+    *,
+    compression_ratio: float = 0.5,
+    techniques: list[str] | "auto" = "auto",
+    shared_memory: MemoryBackend = InMemory(),
+    trace: bool = True,
+) -> OptimizedPipeline`} />
+              <table className="docs-table">
+                <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">pipeline</span></td><td><span className="mono stone">required</span></td><td>The pipeline to optimize.</td></tr>
+                  <tr><td><span className="mono">compression_ratio</span></td><td><span className="mono">0.5</span></td><td>Target output/input ratio for prose compression. Lower = more aggressive.</td></tr>
+                  <tr><td><span className="mono">techniques</span></td><td><span className="mono">"auto"</span></td><td>Subset of techniques to enable, or "auto" for router.</td></tr>
+                  <tr><td><span className="mono">shared_memory</span></td><td><span className="mono">InMemory()</span></td><td>Backend for mem:// references. Swap for Redis, DuckDB, etc.</td></tr>
+                  <tr><td><span className="mono">trace</span></td><td><span className="mono">True</span></td><td>Emit per-call traces. Required for report(). Disable in prod for µs latency win.</td></tr>
+                </tbody>
+              </table>
+            </Section>
+
+            <Section id="api-config" kicker="REFERENCE · 02" title={<>Config.</>}>
+              <p className="t-body">Granular config for per-agent or per-task-class overrides:</p>
+              <CodeBlockPy filename="config.py" copyable source={`from brevitas import optimize, Config
+
+cfg = Config(
+    compression_ratio=0.5,
+    per_agent={
+        "reviewer": {"techniques": ["compress", "prune"]},
+        "builder":  {"compression_ratio": 0.3},  # more aggressive
+    },
+    per_task_class={
+        "code_generation": {"preserve_tokens": ["def", "class", "import"]},
+    },
+)
+
+pipeline = optimize(agents, config=cfg)`} />
+            </Section>
+
+            <Section id="integrations" kicker="REFERENCE · 03" title={<>Integrations.</>}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
+                {[
+                  ['LangGraph', 'first-class'],
+                  ['CrewAI', 'first-class'],
+                  ['AutoGen', 'first-class'],
+                  ['OpenAI Swarm', 'first-class'],
+                  ['DSPy', 'preview'],
+                  ['Semantic Kernel', 'preview'],
+                  ['Custom', 'callable interface'],
+                ].map(([name, status]) => (
+                  <div key={name} style={{ padding: 16, border: '1px solid var(--line)', borderRadius: 2, background: 'var(--ink-2)' }}>
+                    <div className="serif" style={{ fontSize: 18, marginBottom: 6 }}>{name}</div>
+                    <div className="t-mono" style={{ fontSize: 10, color: status === 'preview' ? 'var(--bronze)' : 'var(--signal)' }}>{status.toUpperCase()}</div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            <Section id="limits" kicker="REFERENCE · 04" title={<>Caveats & known limits.</>}>
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {[
+                  'Single-agent workflows get no benefit — the router degrades to a no-op.',
+                  'Pipelines with <2 inter-agent calls save <10% in most cases. Brevitas is calibrated for longer chains.',
+                  'Streaming responses are supported; optimization is applied at chunk boundaries.',
+                  'Function-calling arguments are preserved verbatim by default; compression is opt-in per tool.',
+                  'Quality parity is measured against a harness. Your pipeline may score differently; we recommend a 60-run baseline before committing.',
+                ].map((t, i) => (
+                  <li key={i} style={{ display: 'flex', gap: 14 }}>
+                    <span className="t-mono" style={{ color: 'var(--stone)', flexShrink: 0 }}>−</span>
+                    <span className="t-body" style={{ fontSize: 14 }}>{t}</span>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+
+            <div style={{ borderTop: '1px solid var(--line)', marginTop: 80, paddingTop: 40, paddingBottom: 80 }}>
+              <div className="t-mono" style={{ color: 'var(--stone)', marginBottom: 16, fontSize: 11 }}>WHAT'S NEXT</div>
+              <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                <a href="/benchmarks" className="btn btn-ghost underline">See the benchmarks →</a>
+                <a href="/how-it-works" className="btn btn-ghost underline">Read how it works →</a>
+                <a href="/waitlist" className="btn btn-primary">Request early access</a>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+
+      <Footer />
+
+      <style>{`
+        .docs-shell {
+          display: grid;
+          grid-template-columns: 260px 1fr;
+          gap: 80px;
+          max-width: 1280px;
+          padding-top: 32px;
+        }
+        .docs-side {
+          position: relative;
+        }
+        .docs-side-inner {
+          position: sticky;
+          top: 96px;
+          padding-right: 16px;
+        }
+        .docs-toc-link {
+          display: block;
+          padding: 6px 10px;
+          color: var(--stone-2);
+          font-size: 14px;
+          border-left: 1px solid transparent;
+          text-decoration: none;
+          transition: color 180ms, border-color 180ms;
+        }
+        .docs-toc-link:hover { color: var(--fg); }
+        .docs-toc-link.active {
+          color: var(--fg);
+          border-left-color: var(--bronze);
+        }
+        .docs-main { max-width: 780px; padding-bottom: 80px; }
+        .docs-table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 20px 0;
+          font-size: 14px;
+        }
+        .docs-table th, .docs-table td {
+          text-align: left;
+          padding: 12px 14px;
+          border-bottom: 1px solid var(--line);
+          vertical-align: top;
+        }
+        .docs-table th {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          color: var(--stone);
+          font-weight: 400;
+          border-bottom-color: var(--stone-2);
+        }
+        .docs-table td { color: var(--bone-dim); }
+        @media (max-width: 900px) {
+          .docs-shell { grid-template-columns: 1fr; gap: 32px; }
+          .docs-side-inner { position: static; }
+        }
+      `}</style>
+    </>
+  );
+}
+
+function Section({ id, kicker, title, children }) {
+  return (
+    <section id={id} data-doc-section style={{ marginBottom: 80, scrollMarginTop: 100 }}>
+      <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 14 }}>{kicker}</div>
+      <h2 className="serif" style={{ fontSize: 'clamp(32px, 4vw, 44px)', fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 24px 0', lineHeight: 1.1 }}>
+        {title}
+      </h2>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function DocsCallout({ type, children }) {
+  const colors = {
+    hint: { border: 'var(--bronze)', label: 'HINT' },
+    warn: { border: 'var(--signal)', label: 'NOTE' },
+  };
+  const c = colors[type] || colors.hint;
+  return (
+    <div style={{
+      borderLeft: `2px solid ${c.border}`,
+      padding: '16px 20px',
+      background: 'var(--ink-2)',
+      marginTop: 8,
+      marginBottom: 8,
+    }}>
+      <div className="t-mono" style={{ color: c.border, fontSize: 11, marginBottom: 6 }}>{c.label}</div>
+      <div className="t-body" style={{ fontSize: 14, margin: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<DocsPage />);
+</script>
+</body>
+</html>

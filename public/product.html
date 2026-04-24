@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Product · Brevitas Systems</title>
+<meta name="description" content="A drop-in Python SDK that optimizes inter-agent communication. Wraps your existing orchestration.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="animations.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function MatrixRow({ label, items, caption }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '200px 1fr',
+      gap: 32,
+      padding: '28px 0',
+      borderBottom: '1px solid var(--line)',
+      alignItems: 'start',
+    }} className="matrix-row">
+      <div>
+        <div className="t-overline" style={{ color: 'var(--stone)' }}>{label}</div>
+      </div>
+      <div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 22px', marginBottom: caption ? 12 : 0 }}>
+          {items.map((it, i) => (
+            <span key={i} className="mono" style={{
+              color: 'var(--fg)',
+              fontSize: 15,
+              padding: '4px 10px',
+              border: '1px solid var(--line)',
+              borderRadius: 2,
+            }}>{it}</span>
+          ))}
+        </div>
+        {caption && <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 10 }}>{caption}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ProductPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="product" />
+
+      {/* Hero */}
+      <SectionShell overline="THE SDK" overlineDot>
+        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
+          A drop-in Python SDK that optimizes inter-agent communication.
+        </h1>
+        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
+          Wraps your existing orchestration. Agents, prompts, and model choices stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> agents and compresses, de-duplicates, and references instead of re-serializing.
+        </p>
+        <div style={{ maxWidth: 780 }}>
+          <CodeBlockPy
+            filename="pipeline.py"
+            copyable
+            source={`from brevitas import optimize
+
+# Before
+pipeline = [architect, builder, reviewer]
+result = run_pipeline(pipeline, task)
+
+# After
+pipeline = optimize([architect, builder, reviewer])
+result = run_pipeline(pipeline, task)
+# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
+          />
+        </div>
+      </SectionShell>
+
+      {/* What it is */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <Overline>WHAT IT IS</Overline>
+          <h2 className="t-h2" style={{ margin: '24px 0 28px' }}>
+            <em style={{ fontStyle: 'italic' }}>A pipeline-level layer, not a per-call transform.</em>
+          </h2>
+          <p className="t-body-lg" style={{ marginBottom: 24 }}>
+            Brevitas sits between agents, not inside them. Your agents keep their prompts, their roles, and their model choices. The layer operates on whatever flows along the arrows.
+          </p>
+          <p className="t-body" style={{ marginBottom: 24 }}>
+            That distinction matters. A per-call compressor — or a provider's native prompt cache — can only see one message at a time. The single largest source of redundancy in a multi-agent pipeline is <em style={{ fontStyle: 'italic' }}>across</em> calls: the same context re-serialized at every hop. You can't compress what you can't see.
+          </p>
+          <p className="t-body">
+            Brevitas sees the pipeline. It's composable with any orchestrator, agnostic to prompts and models, and optimizes exactly what single-call compressors and native caches can't reach.
+          </p>
+        </div>
+      </section>
+
+      {/* Composition matrix */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <Overline>WHAT IT COMPOSES WITH</Overline>
+          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 48, maxWidth: 900 }}>
+            Your stack, unchanged.
+          </h2>
+          <div style={{ borderTop: '1px solid var(--line)' }}>
+            <MatrixRow
+              label="ORCHESTRATORS"
+              items={['LangGraph', 'CrewAI', 'AutoGen', 'OpenAI Swarm', 'Custom']}
+              caption="We don't require a specific orchestrator. Pass in callables; get callables back."
+            />
+            <MatrixRow
+              label="PROVIDERS"
+              items={['OpenAI', 'Anthropic', 'Google', 'DeepSeek', 'Groq', 'Together', 'any /chat/completions']}
+              caption="We don't require a specific provider. Three providers running simultaneously in one pipeline is the common case we validate against."
+            />
+            <MatrixRow
+              label="RUNTIMES"
+              items={['Python 3.10+', 'any env that can pip install']}
+              caption="No sidecar. No daemon. No separate infrastructure."
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* What it does, in five moves */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <Overline>WHAT IT DOES</Overline>
+          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 56, maxWidth: 900 }}>
+            Five moves, stacked, routed per call.
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {[
+              {
+                n: '01',
+                h: 'Compress.',
+                b: 'Each inter-agent message is compressed against a relevance model. Connective tissue drops; meaning-bearing tokens stay. Compression ratio is tunable globally, per-agent, or per-task-class.',
+                code: `msg = compress(agent1.output, task_class="code")`,
+              },
+              {
+                n: '02',
+                h: 'Reference.',
+                b: 'Agent outputs are stored once in session-scoped shared memory. Downstream agents receive content-addressed IDs, not re-serialized payloads. Equivalent to deduplication at the communication layer.',
+                code: `memory.put("a1_output") -> "mem://a1:7f3b"`,
+              },
+              {
+                n: '03',
+                h: 'Delta.',
+                b: 'After the first full context pass, subsequent agent calls receive only the changes to shared state. Analogous to how version control stopped sending full file copies.',
+                code: `delta = diff(state_t, state_t_minus_1)`,
+              },
+              {
+                n: '04',
+                h: 'Prune.',
+                b: 'A relevance pass drops sections of inter-agent context unlikely to be used by the next agent, based on task class and agent role. Keeps what matters, drops what doesn\'t.',
+                code: `ctx = prune(ctx, role="reviewer")`,
+              },
+              {
+                n: '05',
+                h: 'Route.',
+                b: 'Task-aware routing decides which of the above to apply per call based on task class and pipeline shape. Not every call needs every optimization.',
+                code: `router.decide(call) -> [compress, delta]`,
+              },
+            ].map((x, i) => (
+              <div key={i} className="fade-up" style={{
+                display: 'grid',
+                gridTemplateColumns: '80px 1fr 1.1fr',
+                gap: 40,
+                padding: '40px 0',
+                borderTop: '1px solid var(--line)',
+                alignItems: 'start',
+              }}>
+                <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 14 }}>{x.n}</div>
+                <div>
+                  <h3 className="serif" style={{ fontSize: 32, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 16px 0' }}>{x.h}</h3>
+                  <p className="t-body" style={{ margin: 0, maxWidth: 520 }}>{x.b}</p>
+                </div>
+                <div>
+                  <div style={{
+                    fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                    fontSize: 13,
+                    color: 'var(--signal)',
+                    background: 'var(--ink-2)',
+                    border: '1px solid var(--line)',
+                    borderRadius: 2,
+                    padding: '14px 18px',
+                    lineHeight: 1.6,
+                  }}>
+                    <span style={{ color: 'var(--stone)' }}># </span>
+                    {x.code}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <style>{`
+            @media (max-width: 900px) {
+              .section .grid-12 { grid-template-columns: 1fr; }
+            }
+          `}</style>
+        </div>
+      </section>
+
+      {/* Integration walkthrough */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <Overline>INTEGRATION WALKTHROUGH</Overline>
+          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 48, maxWidth: 820 }}>Four steps. Five minutes.</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 40, maxWidth: 820 }}>
+            <div>
+              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 01 — INSTALL</div>
+              <CodeBlockPy source={`$ pip install brevitas`} />
+            </div>
+            <div>
+              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 02 — WRAP YOUR PIPELINE</div>
+              <CodeBlockPy filename="pipeline.py" copyable source={`from brevitas import optimize
+from my_pipeline import architect, builder, reviewer
+
+pipeline = optimize([architect, builder, reviewer])`} />
+            </div>
+            <div>
+              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 03 — RUN AS NORMAL</div>
+              <CodeBlockPy filename="pipeline.py" copyable source={`result = pipeline.run(task)`} />
+            </div>
+            <div>
+              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 04 — INSPECT THE REPORT</div>
+              <CodeBlockPy filename="pipeline.py" copyable source={`report = pipeline.report()
+# {
+#   "tokens_in": 2924, "tokens_out": 1188,
+#   "cost_baseline": 0.001616, "cost_optimized": 0.000857,
+#   "savings_by_technique": {
+#     "compress": 0.41, "reference": 0.22, "delta": 0.11,
+#     "prune": 0.08, "protocol": 0.04
+#   }
+# }`} />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* What it doesn't do */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container" style={{ maxWidth: 820 }}>
+          <Overline>WHAT IT IS NOT</Overline>
+          <h2 className="t-h2" style={{ margin: '24px 0 32px' }}>
+            <em style={{ fontStyle: 'italic' }}>What Brevitas is not.</em>
+          </h2>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {[
+              ['Not an orchestrator.', 'Use yours.'],
+              ['Not a prompt compressor for single calls.', 'See The Token Company or LLMLingua for that.'],
+              ['Not a model router.', 'See Martian or OpenRouter.'],
+              ['Not an observability tool.', 'See Helicone, Langfuse, Portkey.'],
+              ['Not opinionated about your agents\' prompts.', 'They\'re yours.'],
+            ].map(([h, b], i) => (
+              <li key={i} style={{ display: 'flex', gap: 20, paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
+                <span className="t-mono" style={{ color: 'var(--stone)', flexShrink: 0, width: 24 }}>−</span>
+                <div>
+                  <div className="serif" style={{ fontSize: 22, fontWeight: 400, color: 'var(--fg)', marginBottom: 4 }}>{h}</div>
+                  <div className="t-body" style={{ color: 'var(--stone-2)', fontSize: 15 }}>{b}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      {/* Final CTA */}
+      <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 820 }}>
+            <Overline dot>JOIN THE LIST</Overline>
+            <h2 className="t-h1" style={{ marginTop: 24, marginBottom: 20 }}>Get on the list.</h2>
+            <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
+              Early-access SDK and design-partner benchmark reports. Tell us what you're building.
+            </p>
+            <WaitlistInput variant="inline" source="product-final" />
+          </div>
+        </div>
+      </section>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<ProductPage />);
+</script>
+</body>
+</html>

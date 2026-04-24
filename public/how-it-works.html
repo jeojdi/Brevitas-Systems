@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How it works · Brevitas Systems</title>
+<meta name="description" content="Six techniques. One layer. Task-aware routing decides which to apply per call.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="pipeline-data.js"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="animations.jsx"></script>
+<script type="text/babel" src="pipeline-explorer.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// Architecture diagram — editorial SVG
+function ArchDiagram() {
+  return (
+    <div style={{
+      border: '1px solid var(--line)',
+      background: 'var(--ink-2)',
+      padding: 'clamp(32px, 5vw, 56px) clamp(20px, 4vw, 48px)',
+      borderRadius: 4,
+      overflowX: 'auto',
+    }}>
+      <svg viewBox="0 0 1100 320" style={{ width: '100%', minWidth: 800, height: 'auto' }} aria-label="Architecture diagram">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--stone-2)"/>
+          </marker>
+          <marker id="arr-s" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--signal)"/>
+          </marker>
+        </defs>
+
+        {/* Agent 1 */}
+        <g>
+          <rect x="20" y="100" width="140" height="64" fill="var(--ink-3)" stroke="var(--stone-2)" strokeWidth="1.5" rx="2"/>
+          <text x="90" y="128" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" textAnchor="middle">AGENT 1</text>
+          <text x="90" y="150" fontFamily="Newsreader" fontSize="18" fill="var(--bone)" textAnchor="middle">Architect</text>
+        </g>
+
+        {/* Brevitas 1 */}
+        <g>
+          <rect x="210" y="80" width="180" height="104" fill="var(--ink-2)" stroke="var(--signal)" strokeWidth="1.5" rx="2"/>
+          <rect x="213" y="83" width="174" height="98" fill="none" stroke="var(--signal)" strokeWidth="0.5" rx="2"/>
+          <text x="300" y="104" fontFamily="JetBrains Mono" fontSize="9" letterSpacing="2" fill="var(--signal)" textAnchor="middle">BREVITAS LAYER</text>
+          <text x="300" y="128" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">compression</text>
+          <text x="300" y="144" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">shared memory</text>
+          <text x="300" y="160" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">pruning</text>
+        </g>
+
+        {/* Agent 2 */}
+        <g>
+          <rect x="440" y="100" width="140" height="64" fill="var(--ink-3)" stroke="var(--stone-2)" strokeWidth="1.5" rx="2"/>
+          <text x="510" y="128" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" textAnchor="middle">AGENT 2</text>
+          <text x="510" y="150" fontFamily="Newsreader" fontSize="18" fill="var(--bone)" textAnchor="middle">Builder</text>
+        </g>
+
+        {/* Brevitas 2 */}
+        <g>
+          <rect x="630" y="80" width="180" height="104" fill="var(--ink-2)" stroke="var(--signal)" strokeWidth="1.5" rx="2"/>
+          <rect x="633" y="83" width="174" height="98" fill="none" stroke="var(--signal)" strokeWidth="0.5" rx="2"/>
+          <text x="720" y="104" fontFamily="JetBrains Mono" fontSize="9" letterSpacing="2" fill="var(--signal)" textAnchor="middle">BREVITAS LAYER</text>
+          <text x="720" y="128" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">delta engine</text>
+          <text x="720" y="144" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">protocol encoder</text>
+          <text x="720" y="160" fontFamily="JetBrains Mono" fontSize="11" fill="var(--bone-dim)" textAnchor="middle">task router</text>
+        </g>
+
+        {/* Agent 3 */}
+        <g>
+          <rect x="860" y="100" width="140" height="64" fill="var(--ink-3)" stroke="var(--stone-2)" strokeWidth="1.5" rx="2"/>
+          <text x="930" y="128" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" textAnchor="middle">AGENT 3</text>
+          <text x="930" y="150" fontFamily="Newsreader" fontSize="18" fill="var(--bone)" textAnchor="middle">Reviewer</text>
+        </g>
+
+        {/* Arrows */}
+        <line x1="160" y1="132" x2="205" y2="132" stroke="var(--signal)" strokeWidth="1.5" markerEnd="url(#arr-s)"/>
+        <line x1="390" y1="132" x2="435" y2="132" stroke="var(--signal)" strokeWidth="1.5" markerEnd="url(#arr-s)"/>
+        <line x1="580" y1="132" x2="625" y2="132" stroke="var(--signal)" strokeWidth="1.5" markerEnd="url(#arr-s)"/>
+        <line x1="810" y1="132" x2="855" y2="132" stroke="var(--signal)" strokeWidth="1.5" markerEnd="url(#arr-s)"/>
+
+        {/* Bottom labels */}
+        <text x="90" y="200" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" textAnchor="middle">DeepSeek</text>
+        <text x="510" y="200" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" textAnchor="middle">Groq · Llama 3.3</text>
+        <text x="930" y="200" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" textAnchor="middle">OpenAI · GPT-4o</text>
+
+        {/* Top labels */}
+        <text x="90" y="60" fontFamily="JetBrains Mono" fontSize="9" fill="var(--stone-2)" textAnchor="middle" letterSpacing="2">YOUR CODE</text>
+        <text x="300" y="60" fontFamily="JetBrains Mono" fontSize="9" fill="var(--signal)" textAnchor="middle" letterSpacing="2">OUR LAYER</text>
+        <text x="510" y="60" fontFamily="JetBrains Mono" fontSize="9" fill="var(--stone-2)" textAnchor="middle" letterSpacing="2">YOUR CODE</text>
+        <text x="720" y="60" fontFamily="JetBrains Mono" fontSize="9" fill="var(--signal)" textAnchor="middle" letterSpacing="2">OUR LAYER</text>
+        <text x="930" y="60" fontFamily="JetBrains Mono" fontSize="9" fill="var(--stone-2)" textAnchor="middle" letterSpacing="2">YOUR CODE</text>
+
+        {/* Dividing rule */}
+        <line x1="20" y1="260" x2="1000" y2="260" stroke="var(--line)" strokeWidth="1" strokeDasharray="2,4"/>
+        <text x="510" y="285" fontFamily="JetBrains Mono" fontSize="11" fill="var(--stone)" textAnchor="middle">
+          your agents keep their prompts, their models, their roles · only what flows between them changes
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function TechniqueSection({ index, title, body, extra, anchor, visual }) {
+  return (
+    <section id={anchor} className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)' }}>
+      <div className="container">
+        <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 40, marginBottom: visual ? 48 : 0, maxWidth: 960 }} className="tech-grid">
+          <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 14 }}>{String(index).padStart(2, '0')}</div>
+          <div>
+            <h2 className="serif" style={{ fontSize: 'clamp(32px, 3.6vw, 44px)', fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 24px 0', lineHeight: 1.1 }}>
+              {title}
+            </h2>
+            <div className="t-body-lg" style={{ maxWidth: 640, marginBottom: 20 }}>{body}</div>
+            {extra}
+          </div>
+        </div>
+        {visual}
+      </div>
+      <style>{`
+        @media (max-width: 720px) {
+          .tech-grid { grid-template-columns: 1fr !important; gap: 12px !important; }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+function HowItWorksPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="how" />
+
+      {/* Hero */}
+      <SectionShell overline="THE MECHANISM" overlineDot>
+        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
+          Six techniques. One layer. Task-aware routing decides which to apply per call.
+        </h1>
+        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 64 }}>
+          None of them are novel. The combination is. And no one has productized it for multi-agent pipelines.
+        </p>
+        <PipelineExplorer />
+      </SectionShell>
+
+      {/* Architecture */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <Overline>THE ARCHITECTURE</Overline>
+          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 40, maxWidth: 900 }}>
+            One diagram. The layer sits between each pair of agents.
+          </h2>
+          <ArchDiagram />
+        </div>
+      </section>
+
+      <TechniqueSection
+        index={1}
+        anchor="compression"
+        title="Inter-agent message compression."
+        body={<>Each agent's output is compressed before being passed downstream. A relevance model scores every token and removes connective tissue — articles, filler, restated context — while preserving meaning-bearing structure: nouns, verbs, key technical terms, schemas.</>}
+        extra={<p className="t-body">Compression ratio is a first-class knob. Set it globally, per-agent, or per-task-class. The default is conservative; aggressive modes unlock another 10–20% on long pipelines where quality floor has been characterized.</p>}
+        visual={<CompressionSequence />}
+      />
+
+      <TechniqueSection
+        index={2}
+        anchor="reference"
+        title="Shared memory with content-addressed references."
+        body={<>Agent outputs are stored once in a session-scoped memory layer. Downstream agents don't receive re-serialized content — they receive stable <span className="mono bronze">mem://</span> references. The resolver fetches and injects on demand, at the call boundary.</>}
+        extra={
+          <div style={{ marginTop: 20 }}>
+            <CodeBlockPy source={`# Agent 1 output materialized once
+mem_ref = memory.put(agent1.output)  # -> "mem://a1:7f3b"
+
+# Agent 2 prompt carries the reference, not the payload
+agent2.prompt = f"Previous analysis: {mem_ref}"`} />
+          </div>
+        }
+      />
+
+      <TechniqueSection
+        index={3}
+        anchor="delta"
+        title="Delta mode."
+        body={<>After the first full context pass, subsequent agent calls receive only the <em style={{ fontStyle: 'italic' }}>changes</em> to shared state, not the entire history. Analogous to how version control stopped sending full file copies in 2005.</>}
+        extra={
+          <div style={{ marginTop: 20, padding: 20, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
+            <div className="t-mono" style={{ color: 'var(--stone-2)', marginBottom: 12, fontSize: 11 }}>ANALOGY</div>
+            <p className="t-body" style={{ margin: 0, fontSize: 16 }}>
+              Git doesn't re-send the whole file when you edit one line. Why does your agent pipeline?
+            </p>
+          </div>
+        }
+      />
+
+      <TechniqueSection
+        index={4}
+        anchor="pruning"
+        title="Smart context pruning."
+        body={<>A relevance pass drops sections of inter-agent context that the next agent — given its role and task class — is statistically unlikely to use. The <span className="mono bronze">Reviewer</span> rarely needs the <span className="mono bronze">Architect</span>'s deliberation trace; it needs the decisions.</>}
+        extra={<p className="t-body">Pruning is role-aware and task-aware. The rules are data-driven, trained on logged pipeline traces where we measure which context slices actually influenced the downstream model's output distribution.</p>}
+      />
+
+      <TechniqueSection
+        index={5}
+        anchor="protocol"
+        title="Compact message protocol."
+        body={<>A structured schema replaces free-form prose for inter-agent messages, reducing syntactic overhead by 20–40% in current tests. Agents still receive rendered text; the wire format is denser.</>}
+        extra={
+          <div style={{ marginTop: 20 }}>
+            <CodeBlockPy source={`# Before (prose, 142 tokens)
+"The architect determined that a three-layer pattern is appropriate.
+The presentation layer should handle UI concerns. The business layer
+should encapsulate domain operations. The persistence layer mediates..."
+
+# After (schema, 48 tokens)
+{"pattern":"3-layer","layers":[
+  {"n":"presentation","role":"ui"},
+  {"n":"business","role":"domain"},
+  {"n":"persistence","role":"db"}
+]}`} />
+          </div>
+        }
+      />
+
+      <TechniqueSection
+        index={6}
+        anchor="routing"
+        title="Task-aware routing."
+        body={<>Not every call needs every optimization. The router decides which subset of the five techniques above to apply on each hop, based on the task class, the agent's role, and the current pipeline shape.</>}
+        extra={<p className="t-body">Router decisions are logged and inspectable. The report object surfaces which technique contributed which percentage of the savings, per call and across the run.</p>}
+      />
+
+      {/* Stacking */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <Overline>STACKING</Overline>
+          <h2 className="t-h2" style={{ margin: '24px 0 24px' }}>Why they stack.</h2>
+          <p className="t-body-lg" style={{ marginBottom: 20 }}>
+            The techniques are designed to compose. Compression gets you the first 40% of savings on most pipelines. Reference and delta peel off another 15–20% where the pipeline has shared state. Pruning and protocol earn the last 5–15%.
+          </p>
+          <p className="t-body" style={{ marginBottom: 40 }}>
+            Applying all six is rarely optimal — a short pipeline with no shared state gets no benefit from delta mode, and enabling it costs latency. The router picks. Measured reductions range from 20% to 70% depending on pipeline shape; the 59.4% number comes from the three-agent coding harness specifically.
+          </p>
+          <a href="/benchmarks" className="btn btn-ghost underline">See the measured results →</a>
+        </div>
+      </section>
+
+      {/* Final CTA */}
+      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 720 }}>
+            <Overline dot>JOIN THE LIST</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 32 }}>Want to run the harness yourself?</h2>
+            <WaitlistInput source="how-final" />
+          </div>
+        </div>
+      </section>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<HowItWorksPage />);
+</script>
+</body>
+</html>

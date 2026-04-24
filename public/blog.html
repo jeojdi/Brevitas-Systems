@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notes · Brevitas Systems</title>
+<meta name="description" content="Engineering notes from the Brevitas team on multi-agent inference economics.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+
+<script type="text/babel">
+const POSTS = [
+  {
+    slug: '60-percent-waste',
+    kicker: 'RESEARCH · APRIL 2026',
+    title: 'The 60% waste nobody talks about.',
+    dek: 'Why multi-agent pipelines burn most of their tokens on redundant context — and what that costs at scale.',
+    date: 'Apr 18, 2026',
+    read: '9 min',
+    tag: 'Research',
+    featured: true,
+  },
+  {
+    slug: 'why-caches-dont-help',
+    kicker: 'ENGINEERING · APRIL 2026',
+    title: 'Why prompt caches don\'t help multi-agent pipelines (much).',
+    dek: 'Native prompt caching from OpenAI and Anthropic is great for single-call latency. It doesn\'t touch the biggest problem.',
+    date: 'Apr 09, 2026',
+    read: '6 min',
+    tag: 'Engineering',
+  },
+  {
+    slug: 'compression-without-losing-quality',
+    kicker: 'METHOD · MARCH 2026',
+    title: 'Compressing agent messages without losing quality.',
+    dek: 'A look at the relevance model, what it preserves, and how we measure parity against a 60-run baseline.',
+    date: 'Mar 28, 2026',
+    read: '11 min',
+    tag: 'Method',
+  },
+  {
+    slug: 'git-for-agent-context',
+    kicker: 'ESSAY · MARCH 2026',
+    title: 'Git solved this in 2005. Why haven\'t agents?',
+    dek: 'Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop.',
+    date: 'Mar 14, 2026',
+    read: '5 min',
+    tag: 'Essay',
+  },
+  {
+    slug: 'harness',
+    kicker: 'BENCHMARKS · MARCH 2026',
+    title: 'How we built the coding harness.',
+    dek: 'Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here\'s what we learned while building it.',
+    date: 'Mar 02, 2026',
+    read: '8 min',
+    tag: 'Benchmarks',
+  },
+  {
+    slug: 'design-partner-program',
+    kicker: 'PROGRAM · FEBRUARY 2026',
+    title: 'Design partners wanted.',
+    dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for in return.',
+    date: 'Feb 22, 2026',
+    read: '3 min',
+    tag: 'Program',
+  },
+];
+
+function TagPill({ children }) {
+  return (
+    <span className="t-mono" style={{
+      fontSize: 10,
+      color: 'var(--bronze)',
+      padding: '3px 8px',
+      border: '1px solid var(--bronze)',
+      borderRadius: 2,
+      letterSpacing: '0.1em',
+    }}>{children.toUpperCase()}</span>
+  );
+}
+
+function FeaturedCard({ post }) {
+  return (
+    <a href="#" className="blog-featured" style={{
+      display: 'grid',
+      gridTemplateColumns: '1.2fr 1fr',
+      gap: 0,
+      border: '1px solid var(--line)',
+      background: 'var(--ink-2)',
+      borderRadius: 4,
+      overflow: 'hidden',
+      color: 'inherit',
+    }}>
+      <div style={{ padding: 'clamp(28px, 4vw, 56px)' }}>
+        <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 20 }}>
+          {post.kicker}
+        </div>
+        <h2 className="serif" style={{
+          fontSize: 'clamp(32px, 4.2vw, 52px)',
+          fontWeight: 400,
+          letterSpacing: '-0.02em',
+          lineHeight: 1.08,
+          margin: '0 0 20px 0',
+        }}>
+          {post.title}
+        </h2>
+        <p className="t-body-lg" style={{ marginBottom: 28, color: 'var(--bone-dim)' }}>
+          {post.dek}
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 32 }}>
+          <TagPill>{post.tag}</TagPill>
+          <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
+            {post.date} · {post.read}
+          </span>
+        </div>
+        <span className="btn btn-ghost underline" style={{ fontSize: 14 }}>Read the piece →</span>
+      </div>
+      {/* Featured visual */}
+      <div style={{
+        position: 'relative',
+        background: 'var(--ink-3)',
+        minHeight: 340,
+        borderLeft: '1px solid var(--line)',
+        overflow: 'hidden',
+      }}>
+        <svg viewBox="0 0 480 400" preserveAspectRatio="xMidYMid slice" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
+          <defs>
+            <pattern id="blog-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+              <path d="M 24 0 L 0 0 0 24" fill="none" stroke="var(--line)" strokeWidth="0.5"/>
+            </pattern>
+          </defs>
+          <rect width="480" height="400" fill="url(#blog-grid)"/>
+          {/* stacked token bars representing waste */}
+          {Array.from({length: 14}).map((_, i) => {
+            const w = 240 - i * 8;
+            const opacity = 1 - i * 0.06;
+            return <rect key={i} x={120} y={60 + i*18} width={w} height={10} fill="var(--bronze)" opacity={opacity*0.3 + 0.08}/>;
+          })}
+          <line x1="120" y1="55" x2="120" y2="340" stroke="var(--stone-2)" strokeWidth="1"/>
+          <text x="120" y="48" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" letterSpacing="2">REDUNDANCY ACROSS HOPS</text>
+          <text x="120" y="360" fontFamily="JetBrains Mono" fontSize="10" fill="var(--bronze)" letterSpacing="2">60.4%</text>
+          <text x="300" y="360" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" letterSpacing="2">HARNESS · N=60</text>
+        </svg>
+      </div>
+    </a>
+  );
+}
+
+function PostCard({ post }) {
+  return (
+    <a href="#" className="blog-card" style={{
+      display: 'block',
+      padding: '32px 28px',
+      border: '1px solid var(--line)',
+      borderRadius: 2,
+      background: 'transparent',
+      transition: 'border-color 220ms, background 220ms',
+      color: 'inherit',
+    }}>
+      <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 10, marginBottom: 16 }}>{post.kicker}</div>
+      <h3 className="serif" style={{
+        fontSize: 26,
+        fontWeight: 400,
+        letterSpacing: '-0.015em',
+        lineHeight: 1.15,
+        margin: '0 0 14px 0',
+      }}>{post.title}</h3>
+      <p className="t-body" style={{ margin: '0 0 24px 0', color: 'var(--stone-2)', fontSize: 15 }}>{post.dek}</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <TagPill>{post.tag}</TagPill>
+        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>
+          {post.date} · {post.read}
+        </span>
+      </div>
+    </a>
+  );
+}
+
+function BlogPage() {
+  useFadeUpReveal();
+  const featured = POSTS.find(p => p.featured);
+  const rest = POSTS.filter(p => !p.featured);
+  return (
+    <>
+      <Nav current="blog" />
+
+      {/* Hero header */}
+      <SectionShell overline="ENGINEERING NOTES" overlineDot>
+        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px' }}>
+          Notes.
+        </h1>
+        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640 }}>
+          Technical writing from the Brevitas team on multi-agent inference economics, compression methods, and the pipeline-level layer we're building. Written by engineers, for engineers.
+        </p>
+      </SectionShell>
+
+      <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 72 }}>
+        <div className="container">
+          <FeaturedCard post={featured} />
+        </div>
+      </section>
+
+      <section className="section" style={{ paddingTop: 72, paddingBottom: 120 }}>
+        <div className="container">
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 40, flexWrap: 'wrap', gap: 16 }}>
+            <Overline>ALL POSTS</Overline>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {['All', 'Research', 'Engineering', 'Method', 'Essay', 'Benchmarks', 'Program'].map((tag, i) => (
+                <button key={tag} className="blog-filter" style={{
+                  padding: '6px 12px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: 11,
+                  letterSpacing: '0.08em',
+                  color: i === 0 ? 'var(--bg)' : 'var(--stone-2)',
+                  background: i === 0 ? 'var(--bone)' : 'transparent',
+                  border: `1px solid ${i === 0 ? 'var(--bone)' : 'var(--line)'}`,
+                  borderRadius: 2,
+                  cursor: 'pointer',
+                }}>{tag.toUpperCase()}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 20 }}>
+            {rest.map(p => <PostCard key={p.slug} post={p} />)}
+          </div>
+        </div>
+      </section>
+
+      {/* Newsletter */}
+      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 60, alignItems: 'center', maxWidth: 1100 }} className="blog-newsletter">
+            <div>
+              <Overline dot>THE DISPATCH</Overline>
+              <h2 className="t-h2" style={{ margin: '20px 0 16px' }}>
+                <em style={{ fontStyle: 'italic' }}>A monthly note from the team.</em>
+              </h2>
+              <p className="t-body" style={{ margin: 0, color: 'var(--stone-2)' }}>
+                One email a month. Benchmark updates, engineering deep-dives, what we shipped. No marketing, no tracking pixels.
+              </p>
+            </div>
+            <div>
+              <WaitlistInput source="blog-newsletter" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <Footer />
+
+      <style>{`
+        .blog-featured:hover { border-color: var(--bronze); }
+        .blog-card:hover { border-color: var(--bronze); background: var(--ink-2); }
+        .blog-filter:hover { color: var(--fg); border-color: var(--stone-2); }
+        @media (max-width: 900px) {
+          .blog-featured { grid-template-columns: 1fr !important; }
+          .blog-featured > div:last-child { border-left: none !important; border-top: 1px solid var(--line); }
+          .blog-newsletter { grid-template-columns: 1fr !important; gap: 32px !important; }
+        }
+      `}</style>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<BlogPage />);
+</script>
+</body>
+</html>

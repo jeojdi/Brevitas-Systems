@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brevitas — Design Canvas</title>
+<meta name="description" content="Hero and section variations for the Brevitas Systems marketing site.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<style>
+  /* Scoped: prevent theme.css from swallowing the canvas surface */
+  body { background: #f0eee9 !important; }
+  .dc-card body, .dc-card { background: var(--bg); color: var(--fg); }
+  .ab { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font-family: 'Inter Tight', sans-serif; }
+  .ab .inner { padding: 64px; }
+  .ab .kicker { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.18em; color: var(--bronze); text-transform: uppercase; display: inline-flex; align-items: center; gap: 10px; margin-bottom: 32px; }
+  .ab .kicker::before { content: ''; width: 6px; height: 6px; background: var(--bronze); border-radius: 50%; }
+  .ab h1 { font-family: 'Newsreader', serif; font-weight: 300; letter-spacing: -0.025em; line-height: 1.02; margin: 0; color: var(--fg); }
+  .ab .sub { font-family: 'Newsreader', serif; font-weight: 300; font-size: 20px; color: var(--bone-dim); line-height: 1.5; max-width: 540px; margin-top: 28px; }
+  .ab .btns { display: flex; gap: 14px; margin-top: 40px; }
+  .ab .btn { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.06em; padding: 12px 20px; border-radius: 2px; display: inline-flex; align-items: center; gap: 8px; text-transform: uppercase; }
+  .ab .btn-p { background: var(--bronze); color: var(--bg); }
+  .ab .btn-g { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .ab em { font-style: italic; color: var(--bronze); }
+  .ab .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--stone-2); }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+
+<script type="text/babel">
+const W = 1440, H = 820;
+
+// Mini nav common across artboards
+function MiniNav() {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', padding: '22px 40px',
+      borderBottom: '1px solid var(--line)',
+      justifyContent: 'space-between',
+      fontFamily: 'Inter Tight, sans-serif',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <svg width="26" height="26" viewBox="0 0 32 32"><path d="M6 5 H22 V9 H10 V15 H19 V19 H10 V27 H6 Z" fill="var(--bone)"/></svg>
+        <span style={{ fontFamily: 'Newsreader', fontSize: 18, letterSpacing: '-0.01em', color: 'var(--bone)' }}>Brevitas</span>
+      </div>
+      <div style={{ display: 'flex', gap: 32, fontSize: 14, color: 'var(--bone-dim)' }}>
+        <span>Product</span><span>How it works</span><span>Benchmarks</span><span>Docs</span><span>Blog</span>
+      </div>
+      <div style={{
+        padding: '8px 16px',
+        background: 'var(--bronze)', color: 'var(--bg)',
+        fontFamily: 'JetBrains Mono, monospace', fontSize: 12, letterSpacing: '0.06em',
+        borderRadius: 2,
+      }}>JOIN WAITLIST →</div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// VARIATION A — Editorial Ledger (current landing)
+// ────────────────────────────────────────────────────────────
+function A_Editorial() {
+  return (
+    <div className="ab">
+      <MiniNav />
+      <div className="inner">
+        <div className="kicker">Infrastructure layer for multi-agent pipelines</div>
+        <h1 style={{ fontSize: 108 }}>
+          The communication layer<br/>
+          <em>between</em> your agents.
+        </h1>
+        <p className="sub">
+          Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in Python SDK, without touching your agents, prompts, or models.
+        </p>
+        <div className="btns">
+          <a href="/waitlist" className="btn btn-p">Join the waitlist →</a>
+          <a href="/benchmarks" className="btn btn-g">See the benchmarks →</a>
+        </div>
+      </div>
+      <div style={{ position: 'absolute', bottom: 28, left: 64, right: 64, display: 'flex', justifyContent: 'space-between' }} className="mono">
+        <span>2026 · PRIVATE BETA</span>
+        <span>59.4% TOKEN REDUCTION · 99.2% PARITY</span>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// VARIATION B — Spec Sheet / Technical Diagram
+// ────────────────────────────────────────────────────────────
+function B_SpecSheet() {
+  return (
+    <div className="ab" style={{ display: 'grid', gridTemplateRows: 'auto 1fr' }}>
+      <MiniNav />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.1fr', borderTop: '1px solid var(--line)', height: '100%' }}>
+        <div style={{ padding: '72px 64px', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <div className="mono" style={{ color: 'var(--bronze)', marginBottom: 32 }}>SPEC · BREVITAS SDK v0.2.0</div>
+          <h1 style={{ fontSize: 76, letterSpacing: '-0.03em' }}>
+            A layer, not a library.
+          </h1>
+          <p className="sub" style={{ fontSize: 18 }}>
+            Sits between agents in your pipeline. Compresses, references, and deltas inter-agent messages — everything else stays yours.
+          </p>
+          <div style={{ marginTop: 40, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>
+            {[['INPUT','6,140 tok'],['OUTPUT','2,490 tok'],['DELTA','−59.4%'],['PARITY','99.2%']].map(([k,v]) => (
+              <div key={k} style={{ borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+                <div style={{ color: 'var(--stone)' }}>{k}</div>
+                <div style={{ color: 'var(--fg)', fontSize: 22, fontFamily: 'Newsreader', marginTop: 6 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div className="btns" style={{ marginTop: 40 }}>
+            <a href="/waitlist" className="btn btn-p">Request access →</a>
+          </div>
+        </div>
+        {/* Schematic */}
+        <div style={{ background: 'var(--ink-2)', padding: 48, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <svg viewBox="0 0 560 460" style={{ width: '100%', maxWidth: 560 }}>
+            <defs>
+              <marker id="A-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                <path d="M0 0 L10 5 L0 10z" fill="var(--bronze)"/>
+              </marker>
+            </defs>
+            {/* 3 agents */}
+            {[0,1,2].map(i => (
+              <g key={i}>
+                <rect x={40 + i*170} y={60} width={140} height={70} fill="var(--ink-3)" stroke="var(--stone-2)" strokeWidth="1"/>
+                <text x={110 + i*170} y={92} fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" textAnchor="middle">AGENT {i+1}</text>
+                <text x={110 + i*170} y={114} fontFamily="Newsreader" fontSize="16" fill="var(--bone)" textAnchor="middle">{['Architect','Builder','Reviewer'][i]}</text>
+              </g>
+            ))}
+            {/* Brevitas bus */}
+            <rect x={40} y={200} width={480} height={90} fill="var(--bg)" stroke="var(--bronze)" strokeWidth="1.2"/>
+            <text x={280} y={230} fontFamily="JetBrains Mono" fontSize="10" fill="var(--bronze)" textAnchor="middle" letterSpacing="2">BREVITAS LAYER</text>
+            <text x={280} y={256} fontFamily="Newsreader" fontSize="18" fontStyle="italic" fill="var(--bone)" textAnchor="middle">compress · reference · delta · prune</text>
+            <text x={280} y={278} fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" textAnchor="middle">session-scoped shared memory</text>
+            {/* connectors */}
+            {[0,1,2].map(i => (
+              <line key={i} x1={110 + i*170} y1={130} x2={110 + i*170} y2={200} stroke="var(--bronze)" strokeWidth="1.2" markerEnd="url(#A-arr)"/>
+            ))}
+            {[0,1,2].map(i => (
+              <line key={i} x1={110 + i*170} y1={290} x2={110 + i*170} y2={360} stroke="var(--stone-2)" strokeWidth="1" strokeDasharray="4 3"/>
+            ))}
+            {/* providers */}
+            {['DeepSeek','Groq · Llama 3.3','OpenAI GPT-4o'].map((p, i) => (
+              <text key={i} x={110 + i*170} y={380} fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" textAnchor="middle">{p}</text>
+            ))}
+            <text x={40} y={420} fontFamily="JetBrains Mono" fontSize="9" fill="var(--stone)" letterSpacing="2">FIG 01 · PIPELINE TOPOLOGY</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// VARIATION C — Token Ledger (big number, spare)
+// ────────────────────────────────────────────────────────────
+function C_TokenLedger() {
+  return (
+    <div className="ab">
+      <MiniNav />
+      <div className="inner" style={{ paddingTop: 60 }}>
+        <div className="kicker">The number that matters</div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 48, marginTop: 24 }}>
+          <div style={{ flexShrink: 0 }}>
+            <div style={{ fontFamily: 'Newsreader', fontSize: 320, fontWeight: 300, letterSpacing: '-0.05em', lineHeight: 0.88, color: 'var(--bronze)' }}>
+              59<span style={{ fontStyle: 'italic', fontSize: 220, verticalAlign: 'top' }}>.4</span>
+            </div>
+            <div className="mono" style={{ color: 'var(--bronze)', fontSize: 14, marginTop: 10 }}>% TOKENS SAVED · N=60 · p95 [56, 64]</div>
+          </div>
+          <div style={{ paddingTop: 24 }}>
+            <h1 style={{ fontSize: 56, maxWidth: 480 }}>
+              We measured what agents waste.<br/>
+              Then we <em>gave it back</em>.
+            </h1>
+            <p className="sub" style={{ marginTop: 28 }}>
+              Your multi-agent pipeline, rewrapped in one line of Python. No orchestrator change. No prompt rewrite. Measurable on day one.
+            </p>
+            <div className="btns">
+              <a href="/waitlist" className="btn btn-p">Join the waitlist →</a>
+              <a href="/benchmarks" className="btn btn-g">The math →</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// VARIATION D — Terminal First (code forward)
+// ────────────────────────────────────────────────────────────
+function D_Terminal() {
+  return (
+    <div className="ab">
+      <MiniNav />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.15fr', gap: 0, height: 'calc(100% - 76px)' }}>
+        <div style={{ padding: '72px 64px', display: 'flex', flexDirection: 'column', justifyContent: 'center', borderRight: '1px solid var(--line)' }}>
+          <div className="kicker">ONE LINE. TOUCH NOTHING ELSE.</div>
+          <h1 style={{ fontSize: 72 }}>
+            One import.<br/>
+            <em>59% fewer</em> tokens.
+          </h1>
+          <p className="sub">
+            Brevitas is the Python SDK that sits between your agents and optimizes what flows along the arrows. Drop it in, run as normal, inspect the report.
+          </p>
+          <div className="btns">
+            <span className="btn btn-p">pip install brevitas</span>
+            <span className="btn btn-g">Read the docs →</span>
+          </div>
+        </div>
+        <div style={{ padding: 40, background: 'var(--ink-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '100%', maxWidth: 640, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', fontFamily: 'JetBrains Mono, monospace' }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', fontSize: 11, color: 'var(--stone)', display: 'flex', justifyContent: 'space-between' }}>
+              <span>pipeline.py</span><span style={{ color: 'var(--bronze)' }}>● READY</span>
+            </div>
+            <div style={{ padding: '24px 22px', fontSize: 14, lineHeight: 1.85 }}>
+              <div style={{ color: 'var(--stone)' }}><span style={{ color: 'var(--bronze)' }}>from</span> brevitas <span style={{ color: 'var(--bronze)' }}>import</span> optimize</div>
+              <div style={{ color: 'var(--stone)' }}><span style={{ color: 'var(--bronze)' }}>from</span> my_pipeline <span style={{ color: 'var(--bronze)' }}>import</span> architect, builder, reviewer</div>
+              <br/>
+              <div style={{ color: 'var(--stone-2)' }}># Before</div>
+              <div>pipeline = [architect, builder, reviewer]</div>
+              <br/>
+              <div style={{ color: 'var(--stone-2)' }}># After</div>
+              <div>pipeline = <span style={{ color: 'var(--signal)' }}>optimize</span>([architect, builder, reviewer])</div>
+              <br/>
+              <div>result = run_pipeline(pipeline, task)</div>
+              <div style={{ color: 'var(--bronze)' }}># ↳ 59.4% fewer tokens · 47.0% lower cost · 99.2% quality parity</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// VARIATION E — Split Frame / Gallery metaphor
+// ────────────────────────────────────────────────────────────
+function E_SplitFrame() {
+  return (
+    <div className="ab">
+      <MiniNav />
+      <div style={{ padding: 48, height: 'calc(100% - 76px)', boxSizing: 'border-box' }}>
+        <div style={{ border: '1px solid var(--line)', height: '100%', display: 'grid', gridTemplateColumns: '40% 1px 60%', position: 'relative', background: 'var(--ink-2)' }}>
+          <div style={{ padding: 48, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+            <div>
+              <div className="mono" style={{ color: 'var(--bronze)' }}>PLATE 01 · BEFORE</div>
+              <div style={{ marginTop: 24, fontFamily: 'JetBrains Mono, monospace', fontSize: 11, lineHeight: 1.7, color: 'var(--stone-2)', columnCount: 2, columnGap: 16 }}>
+                {Array.from({length: 14}).map((_, i) => (
+                  <div key={i} style={{ marginBottom: 4 }}>{['The architect','should follow','a three-layer','pattern comprising','a presentation','layer that handles','user-facing concerns','and renders the UI','based on props','passed down from','the business logic','layer. The business','logic layer should','be written in pure'][i]}</div>
+                ))}
+              </div>
+            </div>
+            <div className="mono" style={{ color: 'var(--stone)' }}>6,140 tokens</div>
+          </div>
+          <div style={{ background: 'var(--line)' }}/>
+          <div style={{ padding: 48, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', background: 'var(--bg)' }}>
+            <div>
+              <div className="mono" style={{ color: 'var(--bronze)' }}>PLATE 02 · AFTER BREVITAS</div>
+              <h1 style={{ fontSize: 56, marginTop: 28, maxWidth: 560 }}>
+                Keep the meaning.<br/>
+                Drop the <em>connective tissue</em>.
+              </h1>
+              <p className="sub" style={{ fontSize: 18, marginTop: 20 }}>
+                A drop-in Python layer that compresses, references, and deltas inter-agent messages. Same agents. Same answers. Two-thirds the tokens.
+              </p>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+              <div className="btns">
+                <a href="/waitlist" className="btn btn-p">Get early access →</a>
+                <a href="/how-it-works" className="btn btn-g">Read the harness →</a>
+              </div>
+              <div className="mono" style={{ color: 'var(--bronze)' }}>2,490 tokens · −59.4%</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Nav variations
+// ────────────────────────────────────────────────────────────
+function F_NavDefault() {
+  return <div className="ab" style={{ padding: 40 }}><MiniNav /><div style={{ padding: 48, textAlign: 'center', color: 'var(--stone)' }} className="mono">DEFAULT · TRANSPARENT · WORDMARK + LINKS + PRIMARY CTA</div></div>;
+}
+
+function G_NavCompact() {
+  return (
+    <div className="ab" style={{ padding: 40 }}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '16px 28px', border: '1px solid var(--line)', borderRadius: 40, background: 'rgba(18,17,15,0.7)', backdropFilter: 'blur(12px)', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <svg width="22" height="22" viewBox="0 0 32 32"><path d="M6 5 H22 V9 H10 V15 H19 V19 H10 V27 H6 Z" fill="var(--bone)"/></svg>
+        </div>
+        <div style={{ display: 'flex', gap: 28, fontSize: 13, color: 'var(--bone-dim)' }}>
+          <span>Product</span><span>Benchmarks</span><span>Docs</span><span>Blog</span>
+        </div>
+        <div style={{ padding: '6px 14px', background: 'var(--bronze)', color: 'var(--bg)', fontFamily: 'JetBrains Mono, monospace', fontSize: 11, borderRadius: 20 }}>Waitlist →</div>
+      </div>
+      <div style={{ padding: 48, textAlign: 'center', color: 'var(--stone)' }} className="mono">PILL · BLUR · COMPACT FOR SCROLLED STATE</div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────
+// Mount
+// ────────────────────────────────────────────────────────────
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="heros" title="Hero Variations" subtitle="Five takes on the landing hero. Same message, different voice.">
+        <DCArtboard id="a-editorial" label="A · Editorial Ledger (current)" width={W} height={H}><A_Editorial /></DCArtboard>
+        <DCArtboard id="b-spec" label="B · Spec Sheet + Diagram" width={W} height={H}><B_SpecSheet /></DCArtboard>
+        <DCArtboard id="c-ledger" label="C · Big Number / Token Ledger" width={W} height={H}><C_TokenLedger /></DCArtboard>
+        <DCArtboard id="d-terminal" label="D · Terminal First" width={W} height={H}><D_Terminal /></DCArtboard>
+        <DCArtboard id="e-split" label="E · Split Frame / Gallery" width={W} height={H}><E_SplitFrame /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="navs" title="Nav Variations" subtitle="Two states for the top nav.">
+        <DCArtboard id="f-default" label="F · Default / Transparent" width={W} height={220}><F_NavDefault /></DCArtboard>
+        <DCArtboard id="g-compact" label="G · Pill · Scrolled State" width={W} height={220}><G_NavCompact /></DCArtboard>
+      </DCSection>
+
+      <DCPostIt x={40} y={40}>
+        Five hero treatments for the Brevitas Systems landing page. A is the shipped direction — editorial, confident, quiet. B leads with the mechanism via a schematic diagram. C lets the headline number carry the weight. D is code-forward — for a technical-buyer read. E uses a before/after gallery metaphor to show the value physically.
+      </DCPostIt>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+</script>
+</body>
+</html>

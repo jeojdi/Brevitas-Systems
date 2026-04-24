@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brevitas Systems — The communication layer between your agents.</title>
+<meta name="description" content="Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in Python SDK.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="pipeline-data.js"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="animations.jsx"></script>
+<script type="text/babel" src="pipeline-explorer.jsx"></script>
+<script type="text/babel" src="six-techniques-hub.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function ParticlesBackground() {
+  const particles = Array.from({ length: 15 }, (_, i) => ({
+    id: i,
+    left: Math.random() * 100 + '%',
+    delay: Math.random() * 20 + 's',
+    duration: 15 + Math.random() * 10 + 's',
+  }));
+
+  return (
+    <div className="particles">
+      {particles.map(p => (
+        <div
+          key={p.id}
+          className="particle"
+          style={{
+            left: p.left,
+            animationDelay: p.delay,
+            animationDuration: p.duration,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Define Field component outside to prevent re-creation on every render
+function FormField({ label, hint, required, children }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <span className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
+        {label.toUpperCase()} {required && <span style={{ color: 'var(--bronze)' }}>*</span>}
+      </span>
+      {children}
+      {hint && <span className="t-body" style={{ fontSize: 13, color: 'var(--stone)' }}>{hint}</span>}
+    </label>
+  );
+}
+
+function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
+  const [form, setForm] = useState({
+    email: '', name: '', company: '', role: '',
+    pipeline_shape: '', monthly_spend: '', orchestrator: '',
+    notes: '', design_partner: false,
+  });
+  const [state, setState] = useState('idle'); // idle | submitting | success | rate-limited
+  const [errorMsg, setErrorMsg] = useState('');
+  const [retryAfter, setRetryAfter] = useState(0);
+  const [lastSubmitTime, setLastSubmitTime] = useState(0);
+  const submitTimeoutRef = useRef(null);
+
+  const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Client-side throttling: prevent submissions within 2 seconds
+  const CLIENT_THROTTLE_MS = 2000;
+
+  // Countdown timer for rate limit retry
+  useEffect(() => {
+    if (retryAfter > 0) {
+      const timer = setTimeout(() => {
+        setRetryAfter(prev => {
+          if (prev <= 1) {
+            setState('idle');
+            setErrorMsg('');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [retryAfter]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+
+    // Client-side throttling
+    const now = Date.now();
+    if (now - lastSubmitTime < CLIENT_THROTTLE_MS) {
+      setErrorMsg('Please wait a moment before submitting again.');
+      setTimeout(() => setErrorMsg(''), 3000);
+      return;
+    }
+
+    // Clear any existing timeout
+    if (submitTimeoutRef.current) {
+      clearTimeout(submitTimeoutRef.current);
+    }
+
+    setLastSubmitTime(now);
+    setState('submitting');
+    setErrorMsg('');
+
+    try {
+      // Submit to Supabase API
+      const response = await fetch('/api/waitlist', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: form.email,
+          name: form.name,
+          company: form.company,
+          role: form.role,
+          use_case: form.pipeline_shape, // Map pipeline_shape to use_case
+          source: source
+        }),
+      });
+
+      const data = await response.json();
+
+      // Handle rate limiting
+      if (response.status === 429) {
+        setState('rate-limited');
+        const retrySeconds = data.retryAfter || 60;
+        setRetryAfter(retrySeconds);
+        setErrorMsg(data.message || `Too many requests. Please wait ${retrySeconds} seconds.`);
+
+        // Log rate limit event
+        console.warn('[Rate Limit] Form submission blocked:', {
+          retryAfter: retrySeconds,
+          message: data.message
+        });
+        return;
+      }
+
+      if (response.ok) {
+        setState('success');
+        // Also save to localStorage as backup
+        try {
+          const existing = JSON.parse(localStorage.getItem('brevitas_waitlist') || '[]');
+          existing.push({ ...form, t: Date.now(), source, submitted_to_db: true });
+          localStorage.setItem('brevitas_waitlist', JSON.stringify(existing));
+        } catch(e) {}
+      } else {
+        // Handle other errors
+        setState('idle');
+        setErrorMsg(data.error || 'Failed to join waitlist. Please try again.');
+
+        // Auto-clear error after 5 seconds
+        submitTimeoutRef.current = setTimeout(() => {
+          setErrorMsg('');
+        }, 5000);
+      }
+    } catch (error) {
+      console.error('Error submitting form:', error);
+      setState('idle');
+      setErrorMsg('Network error. Please check your connection and try again.');
+
+      // Auto-clear error after 5 seconds
+      submitTimeoutRef.current = setTimeout(() => {
+        setErrorMsg('');
+      }, 5000);
+    }
+  };
+
+  if (state === 'success') {
+    return (
+      <div className="success-container" style={{
+        maxWidth: 640,
+        padding: '56px 48px',
+        background: 'linear-gradient(135deg, rgba(168, 201, 139, 0.08) 0%, rgba(22, 27, 23, 0.95) 100%)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        border: '1px solid rgba(168, 201, 139, 0.3)',
+        borderRadius: '16px',
+        boxShadow: '0 24px 48px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(168, 201, 139, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+        animation: 'successFadeIn 600ms cubic-bezier(0.16, 1, 0.3, 1)'
+      }}>
+        <div className="t-mono" style={{ color: 'var(--signal)', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 20 }}>✓</span>
+          <span>REQUEST RECEIVED</span>
+        </div>
+        <h2 className="serif" style={{ fontSize: 36, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 20px 0' }}>
+          <em style={{ fontStyle: 'italic' }}>Thank you.</em>
+        </h2>
+        <p className="t-body" style={{ marginBottom: 20 }}>
+          You're on the list. We'll reach out in waves, prioritizing teams whose pipeline shape matches what we're benchmarking.
+        </p>
+        <p className="t-body" style={{ marginBottom: 28, color: 'var(--stone-2)' }}>
+          If you checked the design-partner box, expect a note within two weeks with a short technical intake call to understand your pipeline.
+        </p>
+        <div style={{ display: 'flex', gap: 16 }}>
+          <a href="/how-it-works" className="btn btn-ghost underline">Read how it works →</a>
+          <a href="/benchmarks" className="btn btn-ghost underline" style={{ marginLeft: 8 }}>See benchmarks →</a>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="form-container" style={{
+      maxWidth: 640,
+      position: 'relative',
+      padding: '48px',
+      background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%)',
+      backdropFilter: 'blur(20px)',
+      WebkitBackdropFilter: 'blur(20px)',
+      border: '1px solid rgba(212, 169, 109, 0.15)',
+      borderRadius: '16px',
+      boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(212, 169, 109, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+      overflow: 'hidden'
+    }}>
+      <ParticlesBackground />
+      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 32, position: 'relative', zIndex: 1 }}>
+      <FormField label="Email" required>
+        <input
+          type="email"
+          required
+          placeholder="you@company.com"
+          value={form.email}
+          onChange={e => update('email', e.target.value)}
+          style={{
+            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
+            border: '1px solid rgba(42, 47, 42, 0.8)',
+            borderRadius: '8px',
+            padding: '16px 18px',
+            fontFamily: "'Inter Tight', sans-serif",
+            fontSize: '15px',
+            color: '#f5f1e8',
+            width: '100%',
+            boxSizing: 'border-box',
+            outline: 'none',
+            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
+          }}
+          onFocus={(e) => {
+            e.target.style.borderColor = '#d4a96d';
+            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
+          }}
+          onBlur={(e) => {
+            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
+            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+            e.target.style.boxShadow = 'none';
+          }}
+        />
+      </FormField>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        <FormField label="Your name">
+          <input
+            type="text"
+            placeholder="Ada Lovelace"
+            value={form.name}
+            onChange={e => update('name', e.target.value)}
+            style={{
+              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
+              border: '1px solid rgba(42, 47, 42, 0.8)',
+              borderRadius: '8px',
+              padding: '16px 18px',
+              fontFamily: "'Inter Tight', sans-serif",
+              fontSize: '15px',
+              color: '#f5f1e8',
+              width: '100%',
+              boxSizing: 'border-box',
+              outline: 'none',
+              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+            onFocus={(e) => {
+              e.target.style.borderColor = '#d4a96d';
+              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
+            }}
+            onBlur={(e) => {
+              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
+              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+              e.target.style.boxShadow = 'none';
+            }}
+          />
+        </FormField>
+        <FormField label="Company">
+          <input
+            type="text"
+            placeholder="Acme"
+            value={form.company}
+            onChange={e => update('company', e.target.value)}
+            style={{
+              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
+              border: '1px solid rgba(42, 47, 42, 0.8)',
+              borderRadius: '8px',
+              padding: '16px 18px',
+              fontFamily: "'Inter Tight', sans-serif",
+              fontSize: '15px',
+              color: '#f5f1e8',
+              width: '100%',
+              boxSizing: 'border-box',
+              outline: 'none',
+              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+            onFocus={(e) => {
+              e.target.style.borderColor = '#d4a96d';
+              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
+            }}
+            onBlur={(e) => {
+              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
+              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+              e.target.style.boxShadow = 'none';
+            }}
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Role" hint="Helps us prioritize design-partner slots.">
+        <select
+          value={form.role}
+          onChange={e => update('role', e.target.value)}
+          style={{
+            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
+            border: '1px solid rgba(42, 47, 42, 0.8)',
+            borderRadius: '8px',
+            padding: '16px 48px 16px 18px',
+            fontFamily: "'Inter Tight', sans-serif",
+            fontSize: '15px',
+            color: '#f5f1e8',
+            width: '100%',
+            boxSizing: 'border-box',
+            outline: 'none',
+            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
+            appearance: 'none',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 18px center',
+            cursor: 'pointer'
+          }}
+          onFocus={(e) => {
+            e.target.style.borderColor = '#d4a96d';
+            e.target.style.background = `linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)`;
+            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
+            e.target.style.backgroundRepeat = 'no-repeat';
+            e.target.style.backgroundPosition = 'right 18px center';
+            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
+          }}
+          onBlur={(e) => {
+            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
+            e.target.style.background = `linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)`;
+            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
+            e.target.style.backgroundRepeat = 'no-repeat';
+            e.target.style.backgroundPosition = 'right 18px center';
+            e.target.style.boxShadow = 'none';
+          }}
+        >
+          <option value="">Select one</option>
+          <option>Engineer — building agents</option>
+          <option>Engineer — platform / infra</option>
+          <option>ML / AI Lead</option>
+          <option>Founder / CTO</option>
+          <option>Researcher</option>
+          <option>Other</option>
+        </select>
+      </FormField>
+
+      <FormField label="Pipeline shape" hint="Rough outline is fine. e.g. '3 agents in series: planner → coder → reviewer'.">
+        <textarea
+          placeholder="How many agents? Linear, branching, loops? What's the shared state look like?"
+          value={form.pipeline_shape}
+          onChange={e => update('pipeline_shape', e.target.value)}
+          rows={4}
+          style={{
+            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
+            border: '1px solid rgba(42, 47, 42, 0.8)',
+            borderRadius: '8px',
+            padding: '16px 18px',
+            fontFamily: "'Inter Tight', sans-serif",
+            fontSize: '15px',
+            color: '#f5f1e8',
+            width: '100%',
+            boxSizing: 'border-box',
+            outline: 'none',
+            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
+            resize: 'vertical',
+            minHeight: '100px'
+          }}
+          onFocus={(e) => {
+            e.target.style.borderColor = '#d4a96d';
+            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
+          }}
+          onBlur={(e) => {
+            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
+            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+            e.target.style.boxShadow = 'none';
+          }}
+        />
+      </FormField>
+
+      {/* Error message display */}
+      {errorMsg && (
+        <div style={{
+          padding: '12px 16px',
+          background: 'rgba(185, 28, 28, 0.1)',
+          border: '1px solid rgba(185, 28, 28, 0.3)',
+          borderRadius: '8px',
+          color: '#fca5a5',
+          fontSize: '14px',
+          marginBottom: '16px'
+        }}>
+          {errorMsg}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+        <button
+          type="submit"
+          disabled={state === 'submitting' || state === 'rate-limited'}
+          style={{
+            minWidth: 200,
+            padding: '16px 32px',
+            background: state === 'submitting' ?
+              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)' :
+              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)',
+            border: '1px solid rgba(212, 169, 109, 0.3)',
+            borderRadius: '8px',
+            color: '#0a0d0a',
+            fontFamily: "'Inter Tight', sans-serif",
+            fontWeight: 600,
+            fontSize: '15px',
+            letterSpacing: '0.02em',
+            cursor: state === 'submitting' ? 'not-allowed' : 'pointer',
+            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
+            boxShadow: '0 4px 12px rgba(212, 169, 109, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            opacity: state === 'submitting' ? 0.7 : 1
+          }}
+          onMouseEnter={(e) => {
+            if (state !== 'submitting') {
+              e.target.style.background = 'linear-gradient(135deg, #e4b85b 0%, #d4a96d 100%)';
+              e.target.style.transform = 'translateY(-2px)';
+              e.target.style.boxShadow = '0 8px 24px rgba(212, 169, 109, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (state !== 'submitting') {
+              e.target.style.background = 'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)';
+              e.target.style.transform = 'translateY(0)';
+              e.target.style.boxShadow = '0 4px 12px rgba(212, 169, 109, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)';
+            }
+          }}
+        >
+          {state === 'submitting' ? (
+            <>
+              <span className="spinner"></span>
+              <span>Sending...</span>
+            </>
+          ) : state === 'rate-limited' && retryAfter > 0 ? (
+            <>
+              <span style={{ color: '#0a0d0a' }}>Wait {retryAfter}s</span>
+            </>
+          ) : (
+            <>Join the waitlist <span style={{ marginLeft: 4 }}>→</span></>
+          )}
+        </button>
+        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
+          No spam. We respond to every submission.
+        </span>
+      </div>
+    </form>
+    </div>
+  );
+}
+
+function LandingPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav />
+
+      {/* S1 — Hero */}
+      <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)' }}>
+        <div className="container">
+          <Overline dot>INFRASTRUCTURE LAYER FOR MULTI-AGENT PIPELINES</Overline>
+          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 32, maxWidth: 1100 }}>
+            The communication layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40 }}>
+            Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in Python SDK, without touching your agents, prompts, or models.
+          </p>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center' }}>
+            <Button variant="primary" href="/waitlist">Join the waitlist</Button>
+            <Button variant="ghost" href="/benchmarks">See the benchmarks</Button>
+          </div>
+          <div className="fade-up delay-3 in" style={{
+            display: 'flex', gap: 'clamp(32px, 6vw, 80px)', flexWrap: 'wrap',
+            paddingTop: 32, borderTop: '1px solid var(--line)',
+          }}>
+            <StatCard variant="inline" value="–59.4%" label="tokens saved" />
+            <StatCard variant="inline" value="–46.9%" label="cost saved" />
+            <StatCard variant="inline" value="99%" label="quality parity" />
+          </div>
+          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12 }}>
+            First-run benchmark · AgentBench task · real API calls
+          </div>
+        </div>
+      </section>
+
+      {/* S2 — Thesis sequence */}
+      <section className="section" style={{ background: 'var(--ink)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 860, margin: '0 auto', textAlign: 'center' }}>
+            <ThesisSequence />
+          </div>
+        </div>
+      </section>
+
+      {/* S3 — Interactive Pipeline Explorer */}
+      <section className="section">
+        <div className="container">
+          <div className="fade-up" style={{ marginBottom: 48 }}>
+            <Overline>THE PROBLEM, AND WHAT WE DO ABOUT IT</Overline>
+            <h2 className="t-h1" style={{ marginTop: 20, maxWidth: 940 }}>
+              Pick a task. Toggle the layer. <em style={{ fontStyle: 'italic', color: 'var(--signal)' }}>Watch the tokens drop.</em>
+            </h2>
+            <p className="t-body-lg" style={{ marginTop: 20, maxWidth: 680, color: 'var(--bone-dim)' }}>
+              A three-agent coding pipeline, four real tasks, actual token counts per hop. Hover any word to see why it stayed or went.
+            </p>
+          </div>
+          <PipelineExplorer />
+        </div>
+      </section>
+
+      {/* S4 — Compression explainer */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div className="fade-up" style={{ marginBottom: 56 }}>
+            <Overline>HOW THE LAYER WORKS, IN ONE VIEW</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 1000 }}>
+              Every message between agents is compressed, referenced, or sent as a delta. Your agents don't change. The tokens between them drop by half.
+            </h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'start' }} className="compression-grid">
+            <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <p className="t-body-lg">
+                Agent outputs are full of connective tissue — articles, filler, restated context. None of it carries meaning a downstream agent can't recover from structure.
+              </p>
+              <p className="t-body">
+                Brevitas runs a relevance pass on every message between agents. Nouns, verbs, and key technical terms survive. Connectives fall away. The agents on either side don't notice.
+              </p>
+              <p className="t-body">
+                Compression is one of six techniques. The one you'd see first.
+              </p>
+              <div style={{ marginTop: 12 }}>
+                <a href="how-it-works.html" className="btn btn-ghost underline">See the full mechanism →</a>
+              </div>
+            </div>
+            <div><CompressionSequence /></div>
+          </div>
+        </div>
+        <style>{`
+          @media (max-width: 900px) {
+            .compression-grid { grid-template-columns: 1fr !important; }
+          }
+
+          /* Particles Animation for Glassmorphic Form */
+          .particles {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            pointer-events: none;
+          }
+
+          .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: linear-gradient(135deg, #d4a96d 0%, #b89755 100%);
+            border-radius: 50%;
+            opacity: 0;
+            animation: particleFloat var(--dur) ease-in-out infinite;
+            animation-delay: var(--delay);
+            box-shadow: 0 0 6px rgba(212, 169, 109, 0.5);
+          }
+
+          @keyframes particleFloat {
+            0%, 100% {
+              opacity: 0;
+              transform: translate(0, 100px);
+            }
+            10% {
+              opacity: 0.4;
+            }
+            50% {
+              opacity: 0.6;
+              transform: translate(var(--x-drift), -200px);
+            }
+            90% {
+              opacity: 0.4;
+            }
+          }
+
+          /* Spinner for loading state */
+          .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(10, 13, 10, 0.3);
+            border-top-color: #0a0d0a;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+          }
+
+          @keyframes spin {
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
+      </section>
+
+      {/* S5 — Six techniques */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div className="fade-up" style={{ marginBottom: 40 }}>
+            <Overline>SIX STACKABLE TECHNIQUES</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
+              One layer, six techniques. Task-aware routing decides which to apply per call.
+            </h2>
+          </div>
+          <div className="fade-up delay-1">
+            <SixTechniquesHub />
+          </div>
+          <div style={{ marginTop: 48 }}>
+            <Button variant="secondary" href="how-it-works.html">Deep dive into each technique</Button>
+          </div>
+        </div>
+      </section>
+
+      {/* S6 — Integration proof */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'center' }} className="compression-grid">
+            <div>
+              <Overline>INTEGRATION SURFACE</Overline>
+              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Import. Wrap. Ship.</h2>
+              <p className="t-body-lg" style={{ marginBottom: 16 }}>
+                Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
+              </p>
+              <p className="t-body">
+                Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <CodeBlockPy
+                filename="terminal"
+                copyable={false}
+                source={`# pip install brevitas`}
+              />
+              <CodeBlockPy
+                filename="pipeline.py"
+                copyable
+                source={`from brevitas import optimize
+from my_pipeline import architect, builder, reviewer
+
+pipeline = optimize([architect, builder, reviewer])
+result = pipeline.run(task)
+
+# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* S7 — Benchmarks trust row */}
+      <section className="section section--tight" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <Overline>VALIDATED ON</Overline>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 32, marginBottom: 20 }}>
+            <BenchmarkBadge letter="A" name="AgentBench" venue="ICLR 2024" />
+            <BenchmarkBadge letter="M" name="MARBLE" venue="ACL 2025" />
+            <BenchmarkBadge letter="B" name="BattleAgentBench" venue="2024" />
+          </div>
+          <div className="t-body" style={{ marginTop: 16, marginBottom: 24, maxWidth: 680 }}>
+            Three peer-reviewed multi-agent benchmarks integrated into our test harness.
+          </div>
+          <a href="benchmarks.html" className="btn btn-ghost underline">See full results →</a>
+        </div>
+      </section>
+
+      {/* S8 — Why now */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div className="fade-up" style={{ marginBottom: 56 }}>
+            <Overline>WHY NOW</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
+              Three inflection points make the first half of 2026 the right moment.
+            </h2>
+          </div>
+          <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {[
+              { n: 'I', h: 'Multi-agent crossed from demo to default.', b: 'Production pipelines now run 5–50 inter-agent calls per user task. The redundancy scales with the number of agents.' },
+              { n: 'II', h: 'Cost accountability arrived.', b: 'AI spend is a real line item in 2026 P&Ls. Engineers have OKRs tied to inference cost. CFOs ask for breakdowns.' },
+              { n: 'III', h: 'The tooling gap is visible — and closing.', b: 'Observability has winners. Routing has winners. Inter-agent optimization has no one. The category window is open but won\'t stay open.' },
+            ].map((x, i) => (
+              <li key={i} className="fade-up" style={{
+                display: 'grid', gridTemplateColumns: '80px 1fr', gap: 32,
+                padding: '40px 0',
+                borderBottom: '1px solid var(--line)',
+                borderTop: i === 0 ? '1px solid var(--line)' : undefined,
+              }}>
+                <div className="serif" style={{ fontSize: 40, fontWeight: 300, color: 'var(--stone-2)', letterSpacing: '0.05em' }}>{x.n}</div>
+                <div>
+                  <h3 className="serif" style={{ fontSize: 26, fontWeight: 400, letterSpacing: '-0.01em', margin: '0 0 12px 0', color: 'var(--fg)' }}>{x.h}</h3>
+                  <p className="t-body" style={{ margin: 0, maxWidth: 640 }}>{x.b}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
+
+      {/* S9 — Final CTA */}
+      <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 820 }}>
+            <Overline dot>JOIN THE LIST</Overline>
+            <h2 className="t-h1" style={{ marginTop: 24, marginBottom: 20 }}>Get on the list.</h2>
+            <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
+              We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the SDK and benchmark reports.
+            </p>
+            <GlassmorphicWaitlistForm source="landing-final" />
+          </div>
+        </div>
+      </section>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<LandingPage />);
+</script>
+</body>
+</html>

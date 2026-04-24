@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Test - Brevitas Systems Integration</title>
+<link rel="stylesheet" href="theme.css">
+<style>
+  .test-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 20px;
+  }
+  .test-section {
+    margin: 40px 0;
+    padding: 20px;
+    background: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .test-title {
+    color: var(--bronze);
+    font-size: 24px;
+    margin-bottom: 20px;
+  }
+  .test-result {
+    padding: 10px;
+    margin: 10px 0;
+    background: var(--ink-3);
+    border-radius: 4px;
+    font-family: monospace;
+  }
+  .success {
+    color: var(--signal);
+  }
+  .error {
+    color: #ff6b6b;
+  }
+  .info {
+    color: var(--bone-dim);
+  }
+</style>
+</head>
+<body>
+<div class="test-container">
+  <h1 style="color: var(--bone); margin-bottom: 40px;">Brevitas Systems - Integration Test</h1>
+
+  <div class="test-section">
+    <h2 class="test-title">API Endpoint Test</h2>
+    <button onclick="testAPI()" style="padding: 10px 20px; background: var(--bronze); color: var(--ink); border: none; border-radius: 4px; cursor: pointer;">Test Waitlist API</button>
+    <div id="api-result" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2 class="test-title">Page Routes Test</h2>
+    <div id="routes-result" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2 class="test-title">Console Errors Check</h2>
+    <div id="console-result" class="test-result"></div>
+  </div>
+
+  <div class="test-section">
+    <h2 class="test-title">Navigation Links</h2>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+      <a href="/" class="btn btn-secondary">Home</a>
+      <a href="/product" class="btn btn-secondary">Product</a>
+      <a href="/how-it-works" class="btn btn-secondary">How it Works</a>
+      <a href="/benchmarks" class="btn btn-secondary">Benchmarks</a>
+      <a href="/docs" class="btn btn-secondary">Docs</a>
+      <a href="/blog" class="btn btn-secondary">Blog</a>
+      <a href="/waitlist" class="btn btn-secondary">Waitlist</a>
+    </div>
+  </div>
+</div>
+
+<script>
+// Test API endpoint
+async function testAPI() {
+  const resultDiv = document.getElementById('api-result');
+  resultDiv.innerHTML = '<span class="info">Testing API...</span>';
+
+  try {
+    const response = await fetch('/api/waitlist', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: `test${Date.now()}@example.com`,
+        company: 'Test Company',
+        role: 'Engineering',
+        use_case: 'Testing the API integration'
+      })
+    });
+
+    const data = await response.json();
+
+    if (response.ok && data.success) {
+      resultDiv.innerHTML = `<span class="success">✓ API Test Successful</span><br>Response: ${JSON.stringify(data)}`;
+    } else {
+      resultDiv.innerHTML = `<span class="error">✗ API Test Failed</span><br>Response: ${JSON.stringify(data)}`;
+    }
+  } catch (error) {
+    resultDiv.innerHTML = `<span class="error">✗ API Test Error</span><br>Error: ${error.message}`;
+  }
+}
+
+// Test routes
+async function testRoutes() {
+  const routes = ['/', '/product', '/how-it-works', '/benchmarks', '/docs', '/blog', '/waitlist'];
+  const resultDiv = document.getElementById('routes-result');
+  let html = '';
+
+  for (const route of routes) {
+    try {
+      const response = await fetch(route, { method: 'HEAD' });
+      if (response.ok) {
+        html += `<span class="success">✓ ${route} - OK</span><br>`;
+      } else {
+        html += `<span class="error">✗ ${route} - ${response.status}</span><br>`;
+      }
+    } catch (error) {
+      html += `<span class="error">✗ ${route} - Error</span><br>`;
+    }
+  }
+
+  resultDiv.innerHTML = html;
+}
+
+// Check for console errors
+function checkConsole() {
+  const resultDiv = document.getElementById('console-result');
+  const errors = [];
+
+  // Override console.error to catch errors
+  const originalError = console.error;
+  console.error = function() {
+    errors.push(Array.from(arguments).join(' '));
+    originalError.apply(console, arguments);
+  };
+
+  // Check after a delay
+  setTimeout(() => {
+    if (errors.length === 0) {
+      resultDiv.innerHTML = '<span class="success">✓ No console errors detected</span>';
+    } else {
+      resultDiv.innerHTML = `<span class="error">✗ Console errors found:</span><br>${errors.join('<br>')}`;
+    }
+  }, 2000);
+
+  resultDiv.innerHTML = '<span class="info">Monitoring console for errors...</span>';
+}
+
+// Run tests on load
+window.addEventListener('load', () => {
+  testRoutes();
+  checkConsole();
+});
+</script>
+</body>
+</html>
