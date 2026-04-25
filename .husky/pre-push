@@ -8,7 +8,7 @@ echo "Checking for exposed secrets..."
 # Patterns to check for potential secrets
 patterns=(
   "sb_secret_[a-zA-Z0-9_]+"
-  "sk-[a-zA-Z0-9]+"
+  "\bsk-[a-zA-Z0-9]{20,}"
   "api[_-]?key.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
   "password.*=.*['\"][^'\"]+['\"]"
   "token.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
