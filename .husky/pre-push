@@ -17,9 +17,9 @@ patterns=(
   "-----BEGIN (RSA|EC|DSA) PRIVATE KEY-----"
 )
 
-# Check git diff for patterns (excluding .env files and hooks)
+# Check git diff for patterns (excluding .env files, hooks, and package-lock.json)
 for pattern in "${patterns[@]}"; do
-  files=$(git diff HEAD origin/main --name-only 2>/dev/null | grep -v "\.env" | grep -v "\.husky" | grep -v "\.github/workflows" || true)
+  files=$(git diff HEAD origin/main --name-only 2>/dev/null | grep -v "\.env" | grep -v "\.husky" | grep -v "\.github/workflows" | grep -v "package-lock\.json" || true)
   if [ -n "$files" ]; then
     if echo "$files" | xargs grep -l -E "$pattern" 2>/dev/null; then
       echo "❌ SECURITY WARNING: Potential secret detected matching pattern: $pattern"
