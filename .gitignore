@@ -44,3 +44,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Test and setup files - NEVER commit these
+test-*.js
+setup-*.js
+*-test.js
+*-setup.js
+*.test.js
+*.setup.js
