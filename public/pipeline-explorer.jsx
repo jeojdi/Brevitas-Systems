@@ -144,7 +144,7 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
       minWidth: 0,
       border: active ? '1px solid var(--bronze)' : '1px solid var(--line)',
       boxShadow: active ? '0 0 0 3px rgba(138,98,66,0.12)' : 'none',
-      background: pending ? 'rgba(16,15,13,0.4)' : 'var(--graphite)',
+      background: pending ? 'var(--component-bg-dark-light)' : 'var(--graphite)',
       borderRadius: 4,
       padding: '22px 24px 20px',
       transition: 'border-color 400ms, box-shadow 400ms, background 400ms, opacity 400ms',
@@ -671,7 +671,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
       {/* User prompt bar */}
       <div style={{
-        border: '1px solid var(--line)', background: 'rgba(16,15,13,0.5)',
+        border: '1px solid var(--line)', background: 'var(--component-bg-dark-light)',
         padding: '16px 20px', borderRadius: 4, marginBottom: 18,
         display: 'flex', alignItems: 'center', gap: 16,
       }}>
@@ -763,7 +763,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       {/* Hover tooltip */}
       {hover && hover.tok && dropReason[hover.tok.k] && (
         <div style={{
-          marginTop: 16, padding: '10px 14px', background: 'rgba(16,15,13,0.7)',
+          marginTop: 16, padding: '10px 14px', background: 'var(--component-bg-dark)',
           border: '1px solid var(--line)', borderRadius: 3,
           fontFamily: 'Newsreader, serif', fontSize: 13.5, color: 'var(--stone-2)', fontStyle: 'italic',
         }}>

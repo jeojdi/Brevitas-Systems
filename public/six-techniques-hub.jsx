@@ -119,7 +119,7 @@ function HubNodeCard({ tech, pos, isActive, isDim, onEnter, onLeave, onClick }) 
         width: 'min(220px, 26vw)',
         minWidth: 180,
         padding: '14px 16px',
-        background: isActive ? 'var(--graphite)' : 'rgba(16,15,13,0.82)',
+        background: isActive ? 'var(--graphite)' : 'var(--component-bg-dark)',
         border: '1px solid ' + (isActive ? 'var(--bronze)' : 'var(--line)'),
         boxShadow: isActive
           ? '0 0 0 3px rgba(138,98,66,0.18), 0 10px 30px rgba(0,0,0,0.4)'
@@ -447,7 +447,7 @@ function SixTechniquesHub() {
       <div style={{
         marginTop: 22,
         border: '1px solid var(--line)',
-        background: 'rgba(16,15,13,0.55)',
+        background: 'var(--component-bg-dark-light)',
         padding: '26px 28px',
         borderRadius: 4,
         display: 'grid',

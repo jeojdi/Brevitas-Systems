@@ -3,7 +3,7 @@
    Single source of truth for color, type, motion. */
 
 :root {
-  /* Color */
+  /* Dark mode colors (default) */
   --ink: #0f1410;
   --ink-2: #161b17;
   --ink-3: #1e231f;
@@ -22,6 +22,80 @@
   --fg-dim: var(--bone-dim);
   --bg: var(--ink);
 
+  /* Theme toggle icon colors */
+  --toggle-bg: rgba(232, 226, 213, 0.1);
+  --toggle-hover: rgba(232, 226, 213, 0.15);
+  --toggle-icon: var(--bone-dim);
+
+  /* Glassmorphic effects for dark mode */
+  --glass-bg: linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%);
+  --glass-border: rgba(212, 169, 109, 0.15);
+  --glass-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+  --input-bg: linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%);
+  --input-border: rgba(42, 47, 42, 0.8);
+  --input-focus-bg: linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%);
+  --input-focus-border: #d4a96d;
+
+  /* Navigation backgrounds */
+  --nav-bg: rgba(15, 20, 16, 0.78);
+  --nav-bg-scrolled: rgba(15, 20, 16, 0.92);
+
+  /* Component backgrounds */
+  --graphite: #100f0d;
+  --component-bg-dark: rgba(16, 15, 13, 0.82);
+  --component-bg-dark-light: rgba(16, 15, 13, 0.4);
+
+  /* Success state gradient */
+  --success-gradient: linear-gradient(135deg, rgba(168, 201, 139, 0.08) 0%, rgba(22, 27, 23, 0.95) 100%);
+}
+
+/* Light mode */
+[data-theme="light"] {
+  --ink: #fbfaf8;
+  --ink-2: #f4f2ed;
+  --ink-3: #ebe7e0;
+  --line: #d4cfc4;
+  --stone: #8b8578;
+  --stone-2: #6b655a;
+  --bone: #1a1815;
+  --bone-dim: #3a3530;
+  --bronze: #b88a20;
+  --bronze-deep: #9a7319;
+  --oxblood: #a03838;
+  --signal: #5a7c3f;
+  --signal-glow: rgba(90, 124, 63, 0.08);
+
+  --fg: var(--bone);
+  --fg-dim: var(--bone-dim);
+  --bg: var(--ink);
+
+  --toggle-bg: rgba(26, 24, 21, 0.08);
+  --toggle-hover: rgba(26, 24, 21, 0.12);
+  --toggle-icon: var(--bone-dim);
+
+  /* Glassmorphic effects for light mode */
+  --glass-bg: linear-gradient(135deg, rgba(251, 250, 248, 0.92) 0%, rgba(244, 242, 237, 0.95) 100%);
+  --glass-border: rgba(184, 138, 32, 0.2);
+  --glass-shadow: 0 16px 32px rgba(0, 0, 0, 0.08);
+  --input-bg: linear-gradient(135deg, rgba(251, 250, 248, 0.8) 0%, rgba(244, 242, 237, 0.9) 100%);
+  --input-border: rgba(212, 207, 196, 0.6);
+  --input-focus-bg: linear-gradient(135deg, rgba(184, 138, 32, 0.05) 0%, rgba(251, 250, 248, 0.95) 100%);
+  --input-focus-border: #b88a20;
+
+  /* Navigation backgrounds for light mode */
+  --nav-bg: rgba(251, 250, 248, 0.78);
+  --nav-bg-scrolled: rgba(251, 250, 248, 0.92);
+
+  /* Component backgrounds for light mode */
+  --graphite: #f4f2ed;
+  --component-bg-dark: rgba(244, 242, 237, 0.82);
+  --component-bg-dark-light: rgba(244, 242, 237, 0.4);
+
+  /* Success state gradient for light mode */
+  --success-gradient: linear-gradient(135deg, rgba(90, 124, 63, 0.08) 0%, rgba(251, 250, 248, 0.95) 100%);
+}
+
+:root {
   /* Motion */
   --dur-xs: 120ms;
   --dur-sm: 240ms;
@@ -56,6 +130,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  transition: background-color 300ms ease, color 300ms ease;
 }
 
 body { overflow-x: hidden; }
@@ -415,13 +490,13 @@ a { color: inherit; text-decoration: none; }
   z-index: 50;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  background: rgba(15, 20, 16, 0.78);
+  background: var(--nav-bg);
   border-bottom: 1px solid transparent;
   transition: border-color var(--dur-sm), background var(--dur-sm);
 }
 .nav.scrolled {
   border-bottom-color: var(--line);
-  background: rgba(15, 20, 16, 0.92);
+  background: var(--nav-bg-scrolled);
 }
 .nav-inner {
   max-width: var(--max-w);

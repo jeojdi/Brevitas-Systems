@@ -25,7 +25,7 @@
 <script type="text/babel" src="six-techniques-hub.jsx"></script>
 
 <script type="text/babel">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 function ParticlesBackground() {
   const particles = Array.from({ length: 15 }, (_, i) => ({
@@ -188,7 +188,7 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
       <div className="success-container" style={{
         maxWidth: 640,
         padding: '56px 48px',
-        background: 'linear-gradient(135deg, rgba(168, 201, 139, 0.08) 0%, rgba(22, 27, 23, 0.95) 100%)',
+        background: 'var(--success-gradient)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         border: '1px solid rgba(168, 201, 139, 0.3)',
@@ -222,12 +222,12 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
       maxWidth: 640,
       position: 'relative',
       padding: '48px',
-      background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%)',
+      background: 'var(--glass-bg)',
       backdropFilter: 'blur(20px)',
       WebkitBackdropFilter: 'blur(20px)',
-      border: '1px solid rgba(212, 169, 109, 0.15)',
+      border: '1px solid var(--glass-border)',
       borderRadius: '16px',
-      boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(212, 169, 109, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+      boxShadow: 'var(--glass-shadow), 0 12px 24px rgba(212, 169, 109, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
       overflow: 'hidden'
     }}>
       <ParticlesBackground />
@@ -240,26 +240,26 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
           value={form.email}
           onChange={e => update('email', e.target.value)}
           style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
+            background: 'var(--input-bg)',
+            border: '1px solid var(--input-border)',
             borderRadius: '8px',
             padding: '16px 18px',
             fontFamily: "'Inter Tight', sans-serif",
             fontSize: '15px',
-            color: '#f5f1e8',
+            color: 'var(--fg)',
             width: '100%',
             boxSizing: 'border-box',
             outline: 'none',
             transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
           }}
           onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+            e.target.style.borderColor = 'var(--input-focus-border)';
+            e.target.style.background = 'var(--input-focus-bg)';
             e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
           }}
           onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+            e.target.style.borderColor = 'var(--input-border)';
+            e.target.style.background = 'var(--input-bg)';
             e.target.style.boxShadow = 'none';
           }}
         />
@@ -273,26 +273,26 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
             value={form.name}
             onChange={e => update('name', e.target.value)}
             style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
+              background: 'var(--input-bg)',
+              border: '1px solid var(--input-border)',
               borderRadius: '8px',
               padding: '16px 18px',
               fontFamily: "'Inter Tight', sans-serif",
               fontSize: '15px',
-              color: '#f5f1e8',
+              color: 'var(--fg)',
               width: '100%',
               boxSizing: 'border-box',
               outline: 'none',
               transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
             }}
             onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+              e.target.style.borderColor = 'var(--input-focus-border)';
+              e.target.style.background = 'var(--input-focus-bg)';
               e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
             }}
             onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+              e.target.style.borderColor = 'var(--input-border)';
+              e.target.style.background = 'var(--input-bg)';
               e.target.style.boxShadow = 'none';
             }}
           />
@@ -304,26 +304,26 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
             value={form.company}
             onChange={e => update('company', e.target.value)}
             style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
+              background: 'var(--input-bg)',
+              border: '1px solid var(--input-border)',
               borderRadius: '8px',
               padding: '16px 18px',
               fontFamily: "'Inter Tight', sans-serif",
               fontSize: '15px',
-              color: '#f5f1e8',
+              color: 'var(--fg)',
               width: '100%',
               boxSizing: 'border-box',
               outline: 'none',
               transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
             }}
             onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+              e.target.style.borderColor = 'var(--input-focus-border)';
+              e.target.style.background = 'var(--input-focus-bg)';
               e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
             }}
             onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+              e.target.style.borderColor = 'var(--input-border)';
+              e.target.style.background = 'var(--input-bg)';
               e.target.style.boxShadow = 'none';
             }}
           />
@@ -335,13 +335,13 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
           value={form.role}
           onChange={e => update('role', e.target.value)}
           style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
+            background: 'var(--input-bg)',
+            border: '1px solid var(--input-border)',
             borderRadius: '8px',
             padding: '16px 48px 16px 18px',
             fontFamily: "'Inter Tight', sans-serif",
             fontSize: '15px',
-            color: '#f5f1e8',
+            color: 'var(--fg)',
             width: '100%',
             boxSizing: 'border-box',
             outline: 'none',
@@ -353,16 +353,16 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
             cursor: 'pointer'
           }}
           onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = `linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)`;
+            e.target.style.borderColor = 'var(--input-focus-border)';
+            e.target.style.background = 'var(--input-focus-bg)';
             e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
             e.target.style.backgroundRepeat = 'no-repeat';
             e.target.style.backgroundPosition = 'right 18px center';
             e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
           }}
           onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = `linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)`;
+            e.target.style.borderColor = 'var(--input-border)';
+            e.target.style.background = 'var(--input-bg)';
             e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
             e.target.style.backgroundRepeat = 'no-repeat';
             e.target.style.backgroundPosition = 'right 18px center';
@@ -386,13 +386,13 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
           onChange={e => update('pipeline_shape', e.target.value)}
           rows={4}
           style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
+            background: 'var(--input-bg)',
+            border: '1px solid var(--input-border)',
             borderRadius: '8px',
             padding: '16px 18px',
             fontFamily: "'Inter Tight', sans-serif",
             fontSize: '15px',
-            color: '#f5f1e8',
+            color: 'var(--fg)',
             width: '100%',
             boxSizing: 'border-box',
             outline: 'none',
@@ -401,13 +401,13 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
             minHeight: '100px'
           }}
           onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
+            e.target.style.borderColor = 'var(--input-focus-border)';
+            e.target.style.background = 'var(--input-focus-bg)';
             e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
           }}
           onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
+            e.target.style.borderColor = 'var(--input-border)';
+            e.target.style.background = 'var(--input-bg)';
             e.target.style.boxShadow = 'none';
           }}
         />
