@@ -1,0 +1,81 @@
+# Brevitas Systems Robots.txt
+# https://brevitassystems.com
+
+# Default - Allow all crawlers
+User-agent: *
+Allow: /
+Crawl-delay: 1
+
+# Important directories to index
+Allow: /features
+Allow: /how-it-works
+Allow: /pricing
+Allow: /docs
+Allow: /blog
+Allow: /about
+Allow: /contact
+Allow: /waitlist
+
+# Disallow admin and API routes
+Disallow: /api/
+Disallow: /admin/
+Disallow: /_next/
+Disallow: /private/
+
+# Google
+User-agent: Googlebot
+Allow: /
+Crawl-delay: 0
+
+# Google Images
+User-agent: Googlebot-Image
+Allow: /
+Allow: /images/
+Allow: /*.jpg$
+Allow: /*.jpeg$
+Allow: /*.png$
+Allow: /*.gif$
+Allow: /*.webp$
+Allow: /*.svg$
+
+# Bing
+User-agent: Bingbot
+Allow: /
+Crawl-delay: 1
+
+# DuckDuckGo
+User-agent: DuckDuckBot
+Allow: /
+Crawl-delay: 1
+
+# OpenAI GPT Bot
+User-agent: GPTBot
+Allow: /
+Crawl-delay: 2
+
+# Anthropic Claude Bot
+User-agent: Claude-Web
+Allow: /
+Crawl-delay: 2
+
+# Block bad bots
+User-agent: SemrushBot
+Disallow: /
+
+User-agent: DotBot
+Disallow: /
+
+User-agent: AhrefsBot
+Disallow: /
+
+User-agent: MJ12bot
+Disallow: /
+
+# Sitemap location
+Sitemap: https://brevitassystems.com/sitemap.xml
+Sitemap: https://www.brevitassystems.com/sitemap.xml
+
+# Cache Control
+# Tells crawlers to check for updates every 7 days
+# This helps with crawl budget optimization
+Cache-Control: public, max-age=604800
