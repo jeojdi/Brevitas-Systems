@@ -1,0 +1,88 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scan daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run npm audit
+      run: npm audit --production
+      continue-on-error: true
+
+    - name: Check for secrets with TruffleHog
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: ${{ github.event.repository.default_branch }}
+        head: HEAD
+
+    - name: Run Semgrep security scan
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/owasp-top-ten
+          p/javascript
+          p/react
+          p/nodejs
+
+    - name: Check for SQL injection patterns
+      run: |
+        echo "Checking for SQL injection vulnerabilities..."
+        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+           -E "(query|execute|exec)\(.*\+.*\)" .; then
+          echo "Warning: Potential SQL injection patterns found"
+        fi
+
+    - name: Check for XSS vulnerabilities
+      run: |
+        echo "Checking for XSS vulnerabilities..."
+        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+           -E "dangerouslySetInnerHTML|innerHTML" .; then
+          echo "Warning: Potential XSS vulnerabilities found"
+        fi
+
+    - name: Check for exposed environment variables
+      run: |
+        echo "Checking for exposed environment variables..."
+        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+           -E "process\.env\.[A-Z_]+.*['\"]" . | grep -v "NEXT_PUBLIC_"; then
+          echo "Warning: Non-public environment variables may be exposed"
+        fi
+
+    - name: Dependency vulnerability scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'table'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+
+    - name: Upload security results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-scan-results
+        path: |
+          npm-audit.json
+          trivy-results.sarif

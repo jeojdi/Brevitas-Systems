@@ -1,12 +1,17 @@
--- Create waitlist table
+-- Create waitlist table with enhanced security
 CREATE TABLE IF NOT EXISTS waitlist (
   id BIGSERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
-  company VARCHAR(255),
+  name VARCHAR(100),
+  company VARCHAR(100),
   role VARCHAR(100),
-  use_case TEXT,
-  name VARCHAR(255),
-  source VARCHAR(100),
+  pipeline_shape TEXT,
+  monthly_spend VARCHAR(50),
+  orchestrator VARCHAR(100),
+  notes TEXT,
+  design_partner BOOLEAN DEFAULT FALSE,
+  ip_address VARCHAR(45),
+  request_id VARCHAR(32),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );

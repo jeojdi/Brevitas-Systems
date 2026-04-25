@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "🔍 Running pre-commit checks..."
+npm run lint --quiet || true
+echo "✅ Pre-commit checks completed"

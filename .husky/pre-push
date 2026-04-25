@@ -1,0 +1,69 @@
+#!/bin/sh
+
+echo "🔒 Running security checks before push..."
+
+# Check for sensitive data patterns
+echo "Checking for exposed secrets..."
+
+# Patterns to check for potential secrets
+patterns=(
+  "sb_secret_[a-zA-Z0-9_]+"
+  "sk-[a-zA-Z0-9]+"
+  "api[_-]?key.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
+  "password.*=.*['\"][^'\"]+['\"]"
+  "token.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
+  "Bearer [a-zA-Z0-9\-\._~\+\/]+"
+  "AWS[A-Z0-9]{16,}"
+  "-----BEGIN (RSA|EC|DSA) PRIVATE KEY-----"
+)
+
+# Check git diff for patterns (excluding .env files and hooks)
+for pattern in "${patterns[@]}"; do
+  files=$(git diff HEAD origin/main --name-only 2>/dev/null | grep -v "\.env" | grep -v "\.husky" | grep -v "\.github/workflows" || true)
+  if [ -n "$files" ]; then
+    if echo "$files" | xargs grep -l -E "$pattern" 2>/dev/null; then
+      echo "❌ SECURITY WARNING: Potential secret detected matching pattern: $pattern"
+      echo "Please review your changes and ensure no secrets are being committed."
+      echo "Use environment variables for sensitive data."
+      exit 1
+    fi
+  fi
+done
+
+# Check for console.log statements in production code
+echo "Checking for console.log statements..."
+if git diff --cached --name-only | grep -E '\.(js|jsx|ts|tsx)$' | xargs grep -l 'console\.log' 2>/dev/null; then
+  echo "⚠️  Warning: console.log statements found. Consider removing them for production."
+fi
+
+# Check for SQL injection patterns in new code
+echo "Checking for potential SQL injection vulnerabilities..."
+sql_patterns=(
+  "query\(.*\+.*\)"
+  "execute\(.*\+.*\)"
+  "exec\(.*\+.*\)"
+  "raw\(.*\$\{.*\}.*\)"
+)
+
+for pattern in "${sql_patterns[@]}"; do
+  if git diff --cached --name-only | grep -E '\.(js|jsx|ts|tsx)$' | xargs grep -E "$pattern" 2>/dev/null; then
+    echo "⚠️  Warning: Potential SQL injection pattern detected: $pattern"
+    echo "Please use parameterized queries instead of string concatenation."
+  fi
+done
+
+# Check for XSS vulnerabilities
+echo "Checking for potential XSS vulnerabilities..."
+if git diff --cached --name-only | grep -E '\.(js|jsx|ts|tsx)$' | xargs grep -E 'dangerouslySetInnerHTML|innerHTML' 2>/dev/null; then
+  echo "⚠️  Warning: Potentially dangerous HTML injection detected."
+  echo "Make sure to properly sanitize user input before rendering HTML."
+fi
+
+# Check for hardcoded localhost URLs
+echo "Checking for hardcoded localhost URLs..."
+if git diff --cached --name-only | xargs grep -E 'http://localhost|http://127\.0\.0\.1' 2>/dev/null; then
+  echo "⚠️  Warning: Hardcoded localhost URLs detected."
+  echo "Consider using environment variables for API endpoints."
+fi
+
+echo "✅ Security checks completed successfully!"

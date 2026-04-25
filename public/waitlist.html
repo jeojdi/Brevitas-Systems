@@ -59,17 +59,59 @@ function WaitlistForm() {
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     setState('submitting');
-    setTimeout(() => {
-      setState('success');
-      try {
-        const existing = JSON.parse(localStorage.getItem('brevitas_waitlist') || '[]');
-        existing.push({ ...form, t: Date.now() });
-        localStorage.setItem('brevitas_waitlist', JSON.stringify(existing));
-      } catch(e) {}
-    }, 900);
+
+    try {
+      // Client-side validation
+      if (!form.email) {
+        alert('Email is required');
+        setState('idle');
+        return;
+      }
+
+      // Email format validation
+      const emailPattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      if (!emailPattern.test(form.email)) {
+        alert('Please enter a valid email address');
+        setState('idle');
+        return;
+      }
+
+      // Send to secure API endpoint
+      const response = await fetch('/api/waitlist', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(form)
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setState('success');
+        // Clear form data from memory
+        setForm({
+          email: '', name: '', company: '', role: '',
+          pipeline_shape: '', monthly_spend: '', orchestrator: '',
+          notes: '', design_partner: false,
+        });
+      } else {
+        // Handle errors
+        if (response.status === 429) {
+          alert('Too many requests. Please try again later.');
+        } else {
+          alert(data.error || 'Failed to submit form. Please try again.');
+        }
+        setState('idle');
+      }
+    } catch (error) {
+      console.error('Submission error:', error);
+      alert('Network error. Please check your connection and try again.');
+      setState('idle');
+    }
   };
 
   if (state === 'success') {
