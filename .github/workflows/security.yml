@@ -26,15 +26,18 @@ jobs:
       run: npm ci
 
     - name: Run npm audit
-      run: npm audit --production
+      run: |
+        npm audit --production --json > npm-audit.json || true
+        echo "NPM Audit Results:"
+        cat npm-audit.json | jq '.' || cat npm-audit.json
       continue-on-error: true
 
     - name: Check for secrets with TruffleHog
       uses: trufflesecurity/trufflehog@main
       with:
         path: ./
-        base: ${{ github.event.repository.default_branch }}
-        head: HEAD
+        base: ${{ github.event.pull_request.base.sha || github.event.before || github.event.repository.default_branch }}
+        head: ${{ github.event.pull_request.head.sha || github.sha }}
 
     - name: Run Semgrep security scan
       uses: returntocorp/semgrep-action@v1
@@ -75,8 +78,15 @@ jobs:
       with:
         scan-type: 'fs'
         scan-ref: '.'
-        format: 'table'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
         severity: 'CRITICAL,HIGH,MEDIUM'
+
+    - name: Display Trivy results
+      run: |
+        echo "Running Trivy scan for display..."
+        docker run --rm -v "$PWD":/src aquasec/trivy fs /src --severity CRITICAL,HIGH,MEDIUM || true
+      continue-on-error: true
 
     - name: Upload security results
       if: always()
@@ -86,3 +96,4 @@ jobs:
         path: |
           npm-audit.json
           trivy-results.sarif
+        if-no-files-found: warn
