@@ -538,7 +538,6 @@ function Nav({ current }) {
     { href: 'product.html', label: 'Product', k: 'product' },
     { href: 'how-it-works.html', label: 'How it works', k: 'how' },
     { href: 'benchmarks.html', label: 'Benchmarks', k: 'benchmarks' },
-    { href: 'docs.html', label: 'Docs', k: 'docs' },
     { href: 'blog.html', label: 'Blog', k: 'blog' },
   ];
   return (
