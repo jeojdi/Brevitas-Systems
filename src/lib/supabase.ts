@@ -13,10 +13,13 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export interface WaitlistEntry {
   id?: number;
   email: string;
-  company?: string;
-  role?: string;
-  use_case?: string;
-  name?: string;
-  source?: string;
+  name?: string | null;
+  company?: string | null;
+  role?: string | null;
+  pipeline_shape?: string | null;
+  monthly_spend?: string | null;
+  orchestrator?: string | null;
+  notes?: string | null;
+  design_partner?: boolean;
   created_at?: string;
 }

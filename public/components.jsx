@@ -305,8 +305,7 @@ function WaitlistInput({ variant = 'inline', source = 'unknown' }) {
           name: form.name.trim(),
           company: form.company.trim(),
           role: form.role,
-          use_case: form.building.trim(),
-          source: source || 'website',
+          notes: form.building.trim(),
         }),
       });
 
