@@ -538,7 +538,6 @@ function Nav({ current }) {
     { href: 'product.html', label: 'Product', k: 'product' },
     { href: 'how-it-works.html', label: 'How it works', k: 'how' },
     { href: 'benchmarks.html', label: 'Benchmarks', k: 'benchmarks' },
-    { href: 'blog.html', label: 'Blog', k: 'blog' },
   ];
   return (
     <>
@@ -600,7 +599,6 @@ function Footer() {
           <div>
             <h4>Company</h4>
             <ul>
-              <li><a href="blog.html">Blog</a></li>
               <li><a href="mailto:james@brevitas.systems">Contact</a></li>
               <li><a href="waitlist.html">Waitlist</a></li>
             </ul>

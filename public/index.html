@@ -7,7 +7,7 @@
 <!-- Primary Meta Tags -->
 <title>Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%</title>
 <meta name="title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
-<meta name="description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
+<meta name="description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with LangGraph, CrewAI, AutoGen.">
 <meta name="keywords" content="AI orchestration, multi-agent systems, LLM optimization, token reduction, AI cost optimization, agent pipeline, LangGraph, CrewAI, AutoGen, AI infrastructure, enterprise AI, agent communication, token compression">
 <meta name="author" content="Brevitas Systems">
 <meta name="robots" content="index, follow">
@@ -20,7 +20,7 @@
 <meta property="og:url" content="https://brevitassystems.com/">
 <meta property="og:site_name" content="Brevitas Systems">
 <meta property="og:title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
-<meta property="og:description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK.">
+<meta property="og:description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with your stack.">
 <meta property="og:image" content="https://brevitassystems.com/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -31,7 +31,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://brevitassystems.com/">
 <meta name="twitter:title" content="Brevitas Systems — Reduce Multi-Agent Token Costs by 60%">
-<meta name="twitter:description" content="Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
+<meta name="twitter:description" content="Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with LangGraph, CrewAI, AutoGen.">
 <meta name="twitter:image" content="https://brevitassystems.com/og-image.png">
 <meta name="twitter:image:alt" content="Brevitas Systems - AI Agent Orchestration Platform">
 <meta name="twitter:creator" content="@BrevitasSystems">
@@ -88,7 +88,7 @@
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Brevitas SDK",
+  "name": "Brevitas Platform",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Python 3.8+",
   "offers": {
@@ -96,7 +96,7 @@
     "price": "Contact for pricing",
     "priceCurrency": "USD"
   },
-  "description": "Drop-in Python SDK for optimizing multi-agent AI pipelines. Compatible with LangGraph, CrewAI, AutoGen.",
+  "description": "Drop-in optimization layer for multi-agent AI pipelines. Compatible with LangGraph, CrewAI, AutoGen.",
   "softwareRequirements": "Python 3.8 or higher",
   "softwareVersion": "1.0",
   "author": {
@@ -617,7 +617,7 @@ function LandingPage() {
             The communication layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
           </h1>
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40 }}>
-            Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in Python SDK, without touching your agents, prompts, or models.
+            Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in optimization layer, without touching your agents, prompts, or models.
           </p>
           <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center' }}>
             <Button variant="primary" href="/waitlist">Join the waitlist</Button>
@@ -825,35 +825,15 @@ function LandingPage() {
       {/* S6 — Integration proof */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'center' }} className="compression-grid">
-            <div>
-              <Overline>INTEGRATION SURFACE</Overline>
-              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Import. Wrap. Ship.</h2>
-              <p className="t-body-lg" style={{ marginBottom: 16 }}>
-                Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
-              </p>
-              <p className="t-body">
-                Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <CodeBlockPy
-                filename="terminal"
-                copyable={false}
-                source={`# pip install brevitas`}
-              />
-              <CodeBlockPy
-                filename="pipeline.py"
-                copyable
-                source={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
-
-pipeline = optimize([architect, builder, reviewer])
-result = pipeline.run(task)
-
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
-              />
-            </div>
+          <div className="fade-up" style={{ maxWidth: 820 }}>
+            <Overline>INTEGRATION SURFACE</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Wraps your stack. Untouched.</h2>
+            <p className="t-body-lg" style={{ marginBottom: 16 }}>
+              Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
+            </p>
+            <p className="t-body">
+              Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
+            </p>
           </div>
         </div>
       </section>
@@ -913,7 +893,7 @@ result = pipeline.run(task)
             <Overline dot>JOIN THE LIST</Overline>
             <h2 className="t-h1" style={{ marginTop: 24, marginBottom: 20 }}>Get on the list.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the SDK and benchmark reports.
+              We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the platform and benchmark reports.
             </p>
             <GlassmorphicWaitlistForm source="landing-final" />
           </div>

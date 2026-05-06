@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Product · Brevitas Systems</title>
-<meta name="description" content="A drop-in Python SDK that optimizes inter-agent communication. Wraps your existing orchestration.">
+<meta name="description" content="A drop-in optimization layer that sits between agents. Wraps your existing orchestration.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -62,28 +62,27 @@ function ProductPage() {
       <Nav current="product" />
 
       {/* Hero */}
-      <SectionShell overline="THE SDK" overlineDot>
+      <SectionShell overline="THE PLATFORM" overlineDot>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          A drop-in Python SDK that optimizes inter-agent communication.
+          A drop-in optimization layer for inter-agent communication.
         </h1>
         <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
           Wraps your existing orchestration. Agents, prompts, and model choices stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> agents and compresses, de-duplicates, and references instead of re-serializing.
         </p>
-        <div style={{ maxWidth: 780 }}>
-          <CodeBlockPy
-            filename="pipeline.py"
-            copyable
-            source={`from brevitas import optimize
-
-# Before
-pipeline = [architect, builder, reviewer]
-result = run_pipeline(pipeline, task)
-
-# After
-pipeline = optimize([architect, builder, reviewer])
-result = run_pipeline(pipeline, task)
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
-          />
+        <div className="fade-up delay-2 in" style={{
+          maxWidth: 780,
+          padding: '28px 32px',
+          border: '1px solid var(--line)',
+          borderLeft: '2px solid var(--bronze)',
+          background: 'var(--ink-2)',
+        }}>
+          <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 12, letterSpacing: '0.12em' }}>FIRST-RUN BENCHMARK</div>
+          <div className="serif" style={{ fontSize: 28, fontWeight: 400, letterSpacing: '-0.01em', lineHeight: 1.3 }}>
+            59% fewer tokens. 47% lower cost. 99% quality parity.
+          </div>
+          <div className="t-body" style={{ marginTop: 12, color: 'var(--stone-2)', fontSize: 14 }}>
+            Three-agent coding pipeline · AgentBench task · real API calls.
+          </div>
         </div>
       </SectionShell>
 
@@ -126,7 +125,7 @@ result = run_pipeline(pipeline, task)
             />
             <MatrixRow
               label="RUNTIMES"
-              items={['Python 3.10+', 'any env that can pip install']}
+              items={['Python 3.10+', 'any modern Python environment']}
               caption="No sidecar. No daemon. No separate infrastructure."
             />
           </div>
@@ -212,43 +211,6 @@ result = run_pipeline(pipeline, task)
         </div>
       </section>
 
-      {/* Integration walkthrough */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <Overline>INTEGRATION WALKTHROUGH</Overline>
-          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 48, maxWidth: 820 }}>Four steps. Five minutes.</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 40, maxWidth: 820 }}>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 01 — INSTALL</div>
-              <CodeBlockPy source={`$ pip install brevitas`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 02 — WRAP YOUR PIPELINE</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
-
-pipeline = optimize([architect, builder, reviewer])`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 03 — RUN AS NORMAL</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`result = pipeline.run(task)`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 04 — INSPECT THE REPORT</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`report = pipeline.report()
-# {
-#   "tokens_in": 2924, "tokens_out": 1188,
-#   "cost_baseline": 0.001616, "cost_optimized": 0.000857,
-#   "savings_by_technique": {
-#     "compress": 0.41, "reference": 0.22, "delta": 0.11,
-#     "prune": 0.08, "protocol": 0.04
-#   }
-# }`} />
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* What it doesn't do */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
@@ -283,7 +245,7 @@ pipeline = optimize([architect, builder, reviewer])`} />
             <Overline dot>JOIN THE LIST</Overline>
             <h2 className="t-h1" style={{ marginTop: 24, marginBottom: 20 }}>Get on the list.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              Early-access SDK and design-partner benchmark reports. Tell us what you're building.
+              Early-access platform and design-partner benchmark reports. Tell us what you're building.
             </p>
             <WaitlistInput variant="inline" source="product-final" />
           </div>

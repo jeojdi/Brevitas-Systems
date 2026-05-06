@@ -43,14 +43,6 @@
     <priority>0.8</priority>
   </url>
 
-  <!-- Blog -->
-  <url>
-    <loc>https://brevitassystems.com/blog</loc>
-    <lastmod>2026-04-25T00:00:00+00:00</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-
   <!-- About Us -->
   <url>
     <loc>https://brevitassystems.com/about</loc>
