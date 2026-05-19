@@ -631,10 +631,11 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         .bv-field-glow {
           position: absolute; left: 50%; top: 50%;
           width: 900px; height: 560px; transform: translate(-50%, -50%);
-          background: radial-gradient(ellipse at 20% 50%, rgba(138,98,66,0.08), transparent 60%),
-                      radial-gradient(ellipse at 80% 50%, rgba(122,180,106,0.06), transparent 60%);
-          filter: blur(20px);
-          animation: bvPulse 8s ease-in-out infinite;
+          background: radial-gradient(ellipse at 20% 50%, rgba(138,98,66,0.06), transparent 60%),
+                      radial-gradient(ellipse at 80% 50%, rgba(122,180,106,0.04), transparent 60%);
+          filter: blur(12px);
+          animation: bvPulse 10s ease-in-out infinite;
+          opacity: 0.8;
         }
         .bv-field-line {
           position: absolute; left: 0; right: 0; height: 1px;
