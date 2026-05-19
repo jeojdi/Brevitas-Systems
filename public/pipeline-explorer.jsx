@@ -631,21 +631,27 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         .bv-field-glow {
           position: absolute; left: 50%; top: 50%;
           width: 900px; height: 560px; transform: translate(-50%, -50%);
-          background: radial-gradient(ellipse at 20% 50%, rgba(138,98,66,0.08), transparent 60%),
-                      radial-gradient(ellipse at 80% 50%, rgba(122,180,106,0.06), transparent 60%);
-          filter: blur(20px);
-          animation: bvPulse 8s ease-in-out infinite;
+          background: radial-gradient(ellipse at 20% 50%, rgba(138,98,66,0.06), transparent 60%),
+                      radial-gradient(ellipse at 80% 50%, rgba(122,180,106,0.04), transparent 60%);
+          filter: blur(12px);
+          animation: bvPulse 10s ease-in-out infinite;
+          opacity: 0.8;
         }
         .bv-field-line {
           position: absolute; left: 0; right: 0; height: 1px;
           background: linear-gradient(90deg, transparent, rgba(166,159,147,0.18) 20%, rgba(166,159,147,0.18) 80%, transparent);
         }
+        /* Hide moving green packets to reduce visual noise */
         .bv-field-packet {
-          position: absolute; width: 6px; height: 6px; border-radius: 50%;
-          background: var(--signal);
-          box-shadow: 0 0 8px var(--signal), 0 0 16px rgba(122,180,106,0.4);
-          animation: bvPacket 9s linear infinite;
+          display: none !important;
+          /* fallback: keep size but invisible if needed */
+          width: 6px; height: 6px; border-radius: 50%;
+          background: transparent;
+          box-shadow: none;
+          animation: none !important;
         }
+        /* Soften the ambient glow */
+        .bv-field-glow { filter: blur(8px); opacity: 0.65 !important; }
       `}</style>
 
       {/* Task pills */}

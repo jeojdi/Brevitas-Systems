@@ -9,8 +9,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="theme.css">
+<script src="theme-init.js" defer></script>
 </head>
 <body>
+<a href="#main" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to content</a>
 <div class="noise"></div>
 <div id="app"></div>
 
@@ -56,17 +58,19 @@ function WaitlistForm() {
     notes: '', design_partner: false,
   });
   const [state, setState] = useState('idle'); // idle | submitting | success
+  const [errorMsg, setErrorMsg] = useState('');
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const submit = async (e) => {
     e.preventDefault();
+    setErrorMsg('');
     setState('submitting');
 
     try {
       // Client-side validation
       if (!form.email) {
-        alert('Email is required');
+        setErrorMsg('Email is required');
         setState('idle');
         return;
       }
@@ -74,7 +78,7 @@ function WaitlistForm() {
       // Email format validation
       const emailPattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
       if (!emailPattern.test(form.email)) {
-        alert('Please enter a valid email address');
+        setErrorMsg('Please enter a valid email address');
         setState('idle');
         return;
       }
@@ -101,15 +105,15 @@ function WaitlistForm() {
       } else {
         // Handle errors
         if (response.status === 429) {
-          alert('Too many requests. Please try again later.');
+          setErrorMsg('Too many requests. Please try again later.');
         } else {
-          alert(data.error || 'Failed to submit form. Please try again.');
+          setErrorMsg(data.error || 'Failed to submit form. Please try again.');
         }
         setState('idle');
       }
     } catch (error) {
       console.error('Submission error:', error);
-      alert('Network error. Please check your connection and try again.');
+      setErrorMsg('Network error. Please check your connection and try again.');
       setState('idle');
     }
   };
@@ -153,6 +157,9 @@ function WaitlistForm() {
     }}>
       <ParticlesBackground />
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 32, position: 'relative', zIndex: 1 }}>
+      {errorMsg && (
+        <div role="status" aria-live="polite" style={{ padding: '12px 16px', background: 'rgba(185, 28, 28, 0.06)', border: '1px solid rgba(185, 28, 28, 0.18)', borderRadius: '8px', color: '#fca5a5', fontSize: '14px', marginBottom: '16px' }}>{errorMsg}</div>
+      )}
       <Field label="Email" required>
         <input
           type="email"
