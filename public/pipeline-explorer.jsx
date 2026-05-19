@@ -640,12 +640,17 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
           position: absolute; left: 0; right: 0; height: 1px;
           background: linear-gradient(90deg, transparent, rgba(166,159,147,0.18) 20%, rgba(166,159,147,0.18) 80%, transparent);
         }
+        /* Hide moving green packets to reduce visual noise */
         .bv-field-packet {
-          position: absolute; width: 6px; height: 6px; border-radius: 50%;
-          background: var(--signal);
-          box-shadow: 0 0 8px var(--signal), 0 0 16px rgba(122,180,106,0.4);
-          animation: bvPacket 9s linear infinite;
+          display: none !important;
+          /* fallback: keep size but invisible if needed */
+          width: 6px; height: 6px; border-radius: 50%;
+          background: transparent;
+          box-shadow: none;
+          animation: none !important;
         }
+        /* Soften the ambient glow */
+        .bv-field-glow { filter: blur(8px); opacity: 0.65 !important; }
       `}</style>
 
       {/* Task pills */}
