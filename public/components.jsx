@@ -545,9 +545,8 @@ function Nav({ current }) {
     <>
       <nav className={`nav ${scrolled ? 'scrolled' : ''}`} aria-label="Primary">
         <div className="nav-inner">
-          <a href="index.html" style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: 'var(--fg)' }}>
-            <LogoMark />
-            <span className="serif" style={{ fontSize: 18, letterSpacing: '-0.01em', display: 'none' }}>Brevitas</span>
+          <a href="index.html" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--fg)' }}>
+            <span className="serif" style={{ fontSize: 18, letterSpacing: '-0.01em' }}>Brevitas</span>
           </a>
           <div className="nav-links desktop">
             {links.map(l => (
@@ -580,8 +579,7 @@ function Footer() {
       <div className="container">
         <div className="footer-grid">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <LogoMark />
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
               <span className="serif" style={{ fontSize: 22, fontWeight: 400, letterSpacing: '-0.01em' }}>Brevitas Systems</span>
             </div>
             <div className="t-body" style={{ maxWidth: 320, fontSize: 14, color: 'var(--stone-2)' }}>

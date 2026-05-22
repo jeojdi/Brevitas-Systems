@@ -3,7 +3,53 @@
    Single source of truth for color, type, motion. */
 
 :root {
-  /* Dark mode colors (default) */
+  /* Light mode colors (default) */
+  --ink: #fbf7ef;
+  --ink-2: #f5efe5;
+  --ink-3: #ede5d8;
+  --line: #d8cebf;
+  --stone: #8a7f70;
+  --stone-2: #665c4f;
+  --bone: #191613;
+  --bone-dim: #40382f;
+  --bronze: #9f7424;
+  --bronze-deep: #7f5b1c;
+  --oxblood: #8a3f32;
+  --signal: #5f6f49;
+  --signal-glow: rgba(95, 111, 73, 0.08);
+
+  --fg: var(--bone);
+  --fg-dim: var(--bone-dim);
+  --bg: var(--ink);
+
+  /* Theme toggle icon colors */
+  --toggle-bg: rgba(25, 22, 19, 0.06);
+  --toggle-hover: rgba(25, 22, 19, 0.09);
+  --toggle-icon: var(--stone-2);
+
+  /* Glassmorphic effects for light mode */
+  --glass-bg: linear-gradient(135deg, rgba(255, 251, 244, 0.88) 0%, rgba(245, 239, 229, 0.96) 100%);
+  --glass-border: rgba(159, 116, 36, 0.18);
+  --glass-shadow: 0 16px 32px rgba(25, 22, 19, 0.08);
+  --input-bg: linear-gradient(135deg, rgba(255, 251, 244, 0.84) 0%, rgba(245, 239, 229, 0.96) 100%);
+  --input-border: rgba(216, 206, 191, 0.9);
+  --input-focus-bg: linear-gradient(135deg, rgba(159, 116, 36, 0.06) 0%, rgba(255, 251, 244, 0.98) 100%);
+  --input-focus-border: #9f7424;
+
+  /* Navigation backgrounds */
+  --nav-bg: rgba(251, 247, 239, 0.78);
+  --nav-bg-scrolled: rgba(251, 247, 239, 0.94);
+
+  /* Component backgrounds */
+  --graphite: #eae2d4;
+  --component-bg-dark: rgba(245, 239, 229, 0.88);
+  --component-bg-dark-light: rgba(245, 239, 229, 0.5);
+
+  /* Success state gradient */
+  --success-gradient: linear-gradient(135deg, rgba(95, 111, 73, 0.08) 0%, rgba(255, 251, 244, 0.96) 100%);
+}
+
+[data-theme="dark"] {
   --ink: #0f1410;
   --ink-2: #161b17;
   --ink-3: #1e231f;
@@ -22,12 +68,10 @@
   --fg-dim: var(--bone-dim);
   --bg: var(--ink);
 
-  /* Theme toggle icon colors */
   --toggle-bg: rgba(232, 226, 213, 0.1);
   --toggle-hover: rgba(232, 226, 213, 0.15);
   --toggle-icon: var(--bone-dim);
 
-  /* Glassmorphic effects for dark mode */
   --glass-bg: linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%);
   --glass-border: rgba(212, 169, 109, 0.15);
   --glass-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
@@ -36,63 +80,14 @@
   --input-focus-bg: linear-gradient(135deg, rgba(212, 169, 109, 0.04) 0%, rgba(22, 27, 23, 0.85) 100%);
   --input-focus-border: #d4a96d;
 
-  /* Navigation backgrounds */
   --nav-bg: rgba(15, 20, 16, 0.78);
   --nav-bg-scrolled: rgba(15, 20, 16, 0.92);
 
-  /* Component backgrounds */
   --graphite: #100f0d;
   --component-bg-dark: rgba(16, 15, 13, 0.86);
   --component-bg-dark-light: rgba(16, 15, 13, 0.28);
 
-  /* Success state gradient */
   --success-gradient: linear-gradient(135deg, rgba(168, 201, 139, 0.08) 0%, rgba(22, 27, 23, 0.95) 100%);
-}
-
-/* Light mode */
-[data-theme="light"] {
-  --ink: #fbfaf8;
-  --ink-2: #f4f2ed;
-  --ink-3: #ebe7e0;
-  --line: #d4cfc4;
-  --stone: #8b8578;
-  --stone-2: #6b655a;
-  --bone: #1a1815;
-  --bone-dim: #3a3530;
-  --bronze: #b88a20;
-  --bronze-deep: #9a7319;
-  --oxblood: #a03838;
-  --signal: #5a7c3f;
-  --signal-glow: rgba(90, 124, 63, 0.08);
-
-  --fg: var(--bone);
-  --fg-dim: var(--bone-dim);
-  --bg: var(--ink);
-
-  --toggle-bg: rgba(26, 24, 21, 0.08);
-  --toggle-hover: rgba(26, 24, 21, 0.12);
-  --toggle-icon: var(--bone-dim);
-
-  /* Glassmorphic effects for light mode */
-  --glass-bg: linear-gradient(135deg, rgba(251, 250, 248, 0.92) 0%, rgba(244, 242, 237, 0.95) 100%);
-  --glass-border: rgba(184, 138, 32, 0.2);
-  --glass-shadow: 0 16px 32px rgba(0, 0, 0, 0.08);
-  --input-bg: linear-gradient(135deg, rgba(251, 250, 248, 0.8) 0%, rgba(244, 242, 237, 0.9) 100%);
-  --input-border: rgba(212, 207, 196, 0.6);
-  --input-focus-bg: linear-gradient(135deg, rgba(184, 138, 32, 0.05) 0%, rgba(251, 250, 248, 0.95) 100%);
-  --input-focus-border: #b88a20;
-
-  /* Navigation backgrounds for light mode */
-  --nav-bg: rgba(251, 250, 248, 0.78);
-  --nav-bg-scrolled: rgba(251, 250, 248, 0.92);
-
-  /* Component backgrounds for light mode */
-  --graphite: #f4f2ed;
-  --component-bg-dark: rgba(244, 242, 237, 0.82);
-  --component-bg-dark-light: rgba(244, 242, 237, 0.4);
-
-  /* Success state gradient for light mode */
-  --success-gradient: linear-gradient(135deg, rgba(90, 124, 63, 0.08) 0%, rgba(251, 250, 248, 0.95) 100%);
 }
 
 :root {
@@ -122,6 +117,9 @@ html, body {
   margin: 0;
   padding: 0;
   background: var(--ink);
+  background-image:
+    radial-gradient(circle at top center, rgba(159, 116, 36, 0.08), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 18%);
   color: var(--fg);
   font-family: 'Inter Tight', system-ui, sans-serif;
   font-feature-settings: "ss01", "cv11";
@@ -319,8 +317,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   font-family: 'Inter Tight', system-ui, sans-serif;
   font-weight: 500;
   font-size: 15px;
-  letter-spacing: -0.005em;
-  border-radius: 2px;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
   border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--dur-sm) var(--ease-out-standard), color var(--dur-sm) var(--ease-out-standard), border-color var(--dur-sm) var(--ease-out-standard);
@@ -333,13 +331,13 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .btn:hover .arrow { transform: translateX(4px); }
 
 .btn-primary {
-  background: var(--bronze);
+  background: var(--bone);
   color: var(--ink);
-  border-color: var(--bronze);
+  border-color: var(--line);
 }
 .btn-primary:hover {
-  background: var(--bronze-deep);
-  border-color: var(--bronze-deep);
+  background: var(--ink-3);
+  border-color: var(--stone-2);
   color: var(--ink);
 }
 
@@ -399,7 +397,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .card {
   background: var(--ink-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 28px;
   transition: border-color var(--dur-sm) var(--ease-out-standard);
 }
@@ -498,8 +496,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   position: sticky;
   top: 0;
   z-index: 50;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   background: var(--nav-bg);
   border-bottom: 1px solid transparent;
   transition: border-color var(--dur-sm), background var(--dur-sm);
@@ -528,6 +526,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   color: var(--stone-2);
   transition: color var(--dur-xs);
   position: relative;
+  letter-spacing: 0.04em;
 }
 .nav-link:hover, .nav-link.active { color: var(--fg); }
 .nav-link.active::after {

@@ -615,31 +615,32 @@ function LandingPage() {
       {/* S1 — Hero */}
       <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)' }}>
         <div className="container">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20 }}>
-            <Overline dot>INFRASTRUCTURE LAYER FOR MULTI-AGENT PIPELINES</Overline>
+          <div style={{ maxWidth: 920, margin: '0 auto', textAlign: 'center' }}>
+            <Overline dot>infrastructure layer for multi-agent pipelines</Overline>
+            <div style={{ width: 92, height: 1, margin: '22px auto 0', background: 'var(--line)' }} />
           </div>
 
-          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 32, maxWidth: 1100 }}>
-            The communication layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
+          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center' }}>
+            the layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
           </h1>
-          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40 }}>
-            Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in Python SDK, without touching your agents, prompts, or models.
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, margin: '0 auto 40px', textAlign: 'center' }}>
+            multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. brevitas gives it back as a drop-in python sdk, without touching your agents, prompts, or models.
           </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center' }}>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/waitlist">Join the waitlist</Button>
             <Button variant="ghost" href="/benchmarks">See the benchmarks</Button>
           </div>
           <div className="fade-up delay-3 in" style={{
-            display: 'flex', gap: 'clamp(32px, 6vw, 80px)', flexWrap: 'wrap',
-            paddingTop: 32, borderTop: '1px solid var(--line)',
+            display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
+            paddingTop: 32, borderTop: '1px solid var(--line)', justifyContent: 'center'
           }}>
             <StatCard variant="inline" value="–59.4%" label="tokens saved" />
             <StatCard variant="inline" value="–46.9%" label="cost saved" />
             <StatCard variant="inline" value="99.6%" label="context retained" />
             <StatCard variant="inline" value="99%" label="quality parity" />
           </div>
-          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12 }}>
-            First-run benchmark · AgentBench task · real API calls
+          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
+            first-run benchmark · agentbench task · real api calls
           </div>
         </div>
       </section>
@@ -655,7 +656,7 @@ function LandingPage() {
 
       {/* Context Retention Highlight */}
       <section className="section" style={{
-        background: 'linear-gradient(135deg, var(--signal-glow) 0%, transparent 100%)',
+        background: 'linear-gradient(135deg, rgba(159, 116, 36, 0.06) 0%, transparent 100%)',
         borderTop: '1px solid var(--line)',
         borderBottom: '1px solid var(--line)',
         padding: 'clamp(48px, 8vh, 96px) 0'
