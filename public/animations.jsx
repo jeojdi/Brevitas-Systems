@@ -480,17 +480,20 @@ function ThesisSequence() {
 
       <div style={{ marginBottom: 'clamp(40px, 6vh, 72px)' }}>
         <div
-          className="t-mono"
           style={{
-            color: 'var(--stone-2)',
-            letterSpacing: '0.05em',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 20,
             opacity: s >= 3 ? 1 : 0,
             transition: 'opacity 400ms',
-            marginBottom: 22,
-            fontSize: 13,
+            marginBottom: 28,
           }}
         >
-          ────────── and no one optimized ──────────
+          <div style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+          <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.10em' }}>
+            and no one optimized
+          </span>
+          <div style={{ flex: 1, height: 1, background: 'var(--line)' }} />
         </div>
         <div
           className="t-h2"
@@ -522,8 +525,8 @@ function ThesisSequence() {
         transition: 'opacity 500ms',
         marginTop: 24,
       }}>
-        <a href="/how-it-works" className="btn btn-secondary">
-          See how <span className="arrow">→</span>
+        <a href="/how-it-works" className="btn btn-ghost underline">
+          See how →
         </a>
       </div>
     </div>

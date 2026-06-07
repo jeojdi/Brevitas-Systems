@@ -717,3 +717,9 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 [data-theme="light"] .logo-for-dark  { display: none; }
 [data-theme="light"] .logo-for-light { display: block; }
 
+/* Theme-aware hero background */
+.hero-bg-dark  { display: block; }
+.hero-bg-light { display: none; }
+[data-theme="light"] .hero-bg-dark  { display: none; }
+[data-theme="light"] .hero-bg-light { display: block; }
+

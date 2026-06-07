@@ -616,25 +616,27 @@ function LandingPage() {
     const CHAR_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&*<>{}[]|/\\^~±§ΘΛΞΣΩαβγδ';
     const randChar  = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
 
+    const BASE_OP = 0.06; // ambient glow — every cell always lit
+
     /* ── Layer A — background wave (constant, diffuse) ────────────────── */
     const WAVE_THICKNESS = 48;
-    const WAVE_AMP_MIN   = 0.50;  const WAVE_AMP_MAX   = 0.75;
+    const WAVE_AMP_MIN   = 0.45;  const WAVE_AMP_MAX   = 0.68;
     const WAVE_SPEED_MIN = 1.2;   const WAVE_SPEED_MAX = 2.8;
     const WAVE_R_MIN     = 120;   const WAVE_R_MAX     = 280;
-    const WAVE_DECAY     = 0.007; // very slow → always-on field
+    const WAVE_DECAY     = 0.008;
     const WAVE_MUTATE    = 0.40;
     const WAVE_SPAWN     = 0.10;  // ≈ 6 / sec
 
     /* ── Layer B — point ripples (slow, thin, bright ASCII rings) ──────── */
-    const POINT_THICKNESS    = 12;
-    const POINT_AMP          = 0.95;
-    const POINT_SPEED_MIN    = 0.30; // px/frame — very slow
-    const POINT_SPEED_MAX    = 0.60;
-    const POINT_R_MIN        = 180;
-    const POINT_R_MAX        = 340;
-    const POINT_DECAY        = 0.045;
-    const POINT_SPAWN_MS_MIN = 2000;
-    const POINT_SPAWN_MS_MAX = 4000;
+    const POINT_THICKNESS    = 32;
+    const POINT_AMP          = 0.82;
+    const POINT_SPEED_MIN    = 0.25; // px/frame — very slow
+    const POINT_SPEED_MAX    = 0.50;
+    const POINT_R_MIN        = 200;
+    const POINT_R_MAX        = 380;
+    const POINT_DECAY        = 0.022;
+    const POINT_SPAWN_MS_MIN = 1200;
+    const POINT_SPAWN_MS_MAX = 2800;
 
     /* ── Classes ──────────────────────────────────────────────────────── */
     class WaveRipple {
@@ -666,8 +668,7 @@ function LandingPage() {
       intensityAt(px, py) {
         const edge = Math.abs(Math.sqrt((px-this.x)**2 + (py-this.y)**2) - this.radius);
         if (edge >= POINT_THICKNESS) return 0;
-        return 0.5 * (1 + Math.cos(Math.PI * edge / POINT_THICKNESS))
-             * (1 - this.radius / this.maxRadius) * POINT_AMP;
+        return 0.5 * (1 + Math.cos(Math.PI * edge / POINT_THICKNESS)) * POINT_AMP;
       }
       get dead() { return this.radius >= this.maxRadius; }
     }
@@ -738,10 +739,15 @@ function LandingPage() {
             cell.pointOp = Math.max(0, cell.pointOp - POINT_DECAY);
           }
 
-          const finalOp = Math.min(1, cell.waveOp + cell.pointOp);
-          if (finalOp < 0.01) continue;
+          const finalOp = Math.min(1, BASE_OP + cell.waveOp + cell.pointOp);
+          if (finalOp < 0.02) continue;
           ctx.fillStyle = `rgba(255,255,255,${finalOp.toFixed(3)})`;
+          if (cell.pointOp > 0.12) {
+            ctx.shadowColor = 'rgba(255,255,255,0.85)';
+            ctx.shadowBlur = 8;
+          }
           ctx.fillText(cell.char, col * CELL, py);
+          if (cell.pointOp > 0.12) ctx.shadowBlur = 0;
         }
       }
 
@@ -773,10 +779,11 @@ function LandingPage() {
 
       {/* S1 — Hero */}
       <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)', position: 'relative', overflow: 'hidden' }}>
-        {/* Layer 0: background photo */}
-        <img src="/assets/brevitas.png" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
+        {/* Layer 0: background photo — swaps by theme */}
+        <img className="hero-bg-dark"  src="/assets/brevitas.png"               alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
+        <img className="hero-bg-light" src="/assets/light%20mode%20hero.png"    alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
         {/* Layer 1: dual-layer ASCII animation canvas */}
-        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'overlay', opacity: 0.70, pointerEvents: 'none' }} />
+        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'screen', opacity: 0.75, pointerEvents: 'none' }} />
         {/* Layer 2: gradient scrim — transparent at top, dark at bottom so stats are legible */}
         <div aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.60) 100%)' }} />
         {/* Layer 3: content — text-shadow lifts every element off the image */}
