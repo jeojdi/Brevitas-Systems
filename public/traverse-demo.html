@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traverse — Subjective AI Alignment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* ─── Reset ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #04060a;
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ─── Hero ───────────────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Layer 0 — background photo */
+.hero__bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  z-index: 0;
+}
+
+/* Layer 1 — character grid canvas
+   mix-blend-mode: overlay → white chars absorb the image hue beneath them.
+   At ambient opacity (0.02-0.05) this reads as subtle film grain.
+   Near the cursor (up to 0.75 opacity) it becomes a vivid, colour-bled
+   field of glitching ASCII lit from the photo below.
+   pointer-events: none keeps every click passing through to the UI.        */
+#grid-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+/* Layer 2+ — nav and content */
+.hero__nav,
+.hero__content { position: absolute; z-index: 20; }
+
+/* ─── Nav ────────────────────────────────────────────────────────────────── */
+.hero__nav {
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 48px;
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.92);
+  text-decoration: none;
+}
+
+.nav-logo .tri {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  list-style: none;
+}
+
+.nav-links a {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: rgba(255,255,255,0.55);
+  text-decoration: none;
+  transition: color 200ms;
+}
+.nav-links a:hover { color: rgba(255,255,255,0.9); }
+
+.nav-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.9);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  text-decoration: none;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 200ms, border-color 200ms, transform 180ms;
+}
+.nav-cta:hover {
+  background: rgba(255,255,255,0.15);
+  border-color: rgba(255,255,255,0.42);
+  transform: translateY(-1px);
+}
+
+/* ─── Hero content ───────────────────────────────────────────────────────── */
+.hero__content {
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 24px;
+  gap: 20px;
+}
+
+.hero__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.4);
+}
+
+.hero__title {
+  font-family: 'Inter', sans-serif;
+  font-weight: 300;
+  font-size: clamp(40px, 6vw, 80px);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  color: #fff;
+  max-width: 820px;
+  text-wrap: balance;
+}
+
+.hero__title strong {
+  font-weight: 600;
+}
+
+.hero__desc {
+  font-size: clamp(14px, 1.2vw, 16px);
+  line-height: 1.7;
+  color: rgba(255,255,255,0.45);
+  max-width: 480px;
+}
+
+.hero__actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.btn-primary {
+  padding: 12px 28px;
+  background: rgba(255,255,255,0.92);
+  color: #04060a;
+  border: none;
+  border-radius: 999px;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 200ms, transform 180ms;
+}
+.btn-primary:hover { background: #fff; transform: translateY(-1px); }
+
+.btn-ghost {
+  padding: 12px 28px;
+  background: transparent;
+  color: rgba(255,255,255,0.65);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 999px;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 200ms, border-color 200ms;
+}
+.btn-ghost:hover { color: rgba(255,255,255,0.9); border-color: rgba(255,255,255,0.45); }
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .hero__nav { padding: 18px 22px; }
+  .nav-links { display: none; }
+}
+</style>
+</head>
+<body>
+
+<section class="hero">
+
+  <!-- Layer 0: background image — place image_8552ab.jpg in the same folder -->
+  <img class="hero__bg" src="image_8552ab.jpg" alt="Night landscape" onerror="this.style.display='none'">
+
+  <!-- Layer 1: interactive ASCII canvas -->
+  <canvas id="grid-canvas"></canvas>
+
+  <!-- Layer 2: navigation -->
+  <nav class="hero__nav">
+    <a href="#" class="nav-logo">
+      <span class="tri">▲</span> Traverse
+    </a>
+    <ul class="nav-links">
+      <li><a href="#">Research</a></li>
+      <li><a href="#">Platform</a></li>
+      <li><a href="#">Docs</a></li>
+    </ul>
+    <a href="#" class="nav-cta">Acquire Data →</a>
+  </nav>
+
+  <!-- Layer 3: hero copy -->
+  <div class="hero__content">
+    <p class="hero__label">Next-Generation AI Research Platform</p>
+    <h1 class="hero__title">
+      <strong>Subjective</strong> AI Alignment
+    </h1>
+    <p class="hero__desc">
+      We build the infrastructure for understanding what AI systems actually want — mapping the latent space between model intent and human preference at scale.
+    </p>
+    <div class="hero__actions">
+      <a href="#" class="btn-primary">Start exploring</a>
+      <a href="#" class="btn-ghost">Read the research</a>
+    </div>
+  </div>
+
+</section>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   TRAVERSE-STYLE INTERACTIVE ASCII GRID
+
+   Four layered mechanics:
+
+   1. AMBIENT GRAIN
+      Every cell has a randomised base opacity (0.02–0.05). At rest, the
+      entire canvas is a faint, irregular film grain of monospace chars.
+
+   2. HORIZONTAL WAVE DISPLACEMENT (shimmer)
+      Each row's x-positions shift by a per-row sine wave.
+        xOffset = A₁·sin(t·ω₁ + row·φ₁) + A₂·sin(t·ω₂ + row·φ₂)
+      Two components at different speeds/phases produce organic shimmer,
+      not a mechanical sweep.
+
+   3. MOUSE LERP (fluid cursor tracking)
+      The interaction centre doesn't snap to the mouse — it eases:
+        lerpX += (mouseX − lerpX) × LERP   (same for Y)
+      This makes the illuminated zone feel soft and responsive.
+
+   4. VELOCITY-DRIVEN RADIUS + INTERACTIVE TRAILS
+      Mouse speed → target radius (120 px still → 320 px fast).
+      Inside radius: opacity spikes to 0.8, chars mutate rapidly.
+      Outside radius: chars freeze on their last state, opacity bleeds
+      back to the ambient level at a slow lerp (0.032 / frame).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const canvas = document.getElementById('grid-canvas');
+const ctx    = canvas.getContext('2d');
+
+/* ── Config ──────────────────────────────────────────────────────────────── */
+const FONT_SIZE    = 11;     // px — grid pitch and font size
+const CHAR_POOL    = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_+-=<>?/|~`';
+const BASE_OP_MIN  = 0.02;   // ambient grain lower bound
+const BASE_OP_MAX  = 0.05;   // ambient grain upper bound
+const MAX_OP       = 0.82;   // peak opacity at cursor centre
+const LERP         = 0.072;  // mouse easing factor (lower = smoother/slower)
+const RADIUS_MIN   = 120;    // px — interaction radius when mouse is still
+const RADIUS_MAX   = 320;    // px — interaction radius at peak velocity
+const VEL_SCALE    = 2.8;    // velocity → extra radius px
+const FADE_BACK    = 0.032;  // lerp rate back to ambient (slow = long wake)
+const MUTATE_RATE  = 0.28;   // P(char mutates per frame) when active
+
+/* Wave shimmer: two sine components per row (organic, non-mechanical) */
+const WAVE_A1 = 2.4;   const WAVE_W1 = 0.65;  const WAVE_P1 = 0.12;
+const WAVE_A2 = 0.9;   const WAVE_W2 = 1.85;  const WAVE_P2 = 0.27;
+
+const randChar = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
+
+/* ── State ───────────────────────────────────────────────────────────────── */
+let cols, rows, cells;
+
+// Mouse / lerp state — initialise to centre so there's no cold-start jump
+let mouseX = window.innerWidth  / 2;
+let mouseY = window.innerHeight / 2;
+let prevMX = mouseX, prevMY = mouseY;
+let lerpX  = mouseX, lerpY  = mouseY;
+let velocity     = 0;
+let radius       = RADIUS_MIN;
+let raf, resizeTimer;
+
+/* ── Grid init ───────────────────────────────────────────────────────────── */
+function init() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  cols = Math.ceil(canvas.width  / FONT_SIZE);
+  rows = Math.ceil(canvas.height / FONT_SIZE);
+
+  /* Each cell is an independent particle:
+     baseOp  — its at-rest ambient opacity (varies per cell for grain)
+     opacity — current rendered opacity (driven toward baseOp or MAX_OP)
+     char    — displayed glyph (mutates while inside radius, freezes outside) */
+  cells = Array.from({ length: rows }, (_, r) =>
+    Array.from({ length: cols }, () => ({
+      char:    randChar(),
+      baseOp:  BASE_OP_MIN + Math.random() * (BASE_OP_MAX - BASE_OP_MIN),
+      opacity: BASE_OP_MIN + Math.random() * (BASE_OP_MAX - BASE_OP_MIN),
+    }))
+  );
+}
+
+/* ── Draw loop ───────────────────────────────────────────────────────────── */
+function draw(ts) {
+  const t = ts * 0.001; // convert ms timestamp → seconds
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = `${FONT_SIZE}px "JetBrains Mono","Courier New",monospace`;
+
+  /* Step 1 — LERP mouse position
+     lerpX/Y chase the real cursor at rate LERP each frame.
+     At 60 fps, LERP=0.072 gives ~95 % convergence in ~40 frames (~660 ms). */
+  lerpX += (mouseX - lerpX) * LERP;
+  lerpY += (mouseY - lerpY) * LERP;
+
+  /* Step 2 — Ease the interaction radius toward its velocity-driven target.
+     targetRadius = base + velocity × scale, clamped to [RADIUS_MIN, RADIUS_MAX].
+     velocity decays 8 % per frame so the radius contracts smoothly after
+     the mouse slows down.                                                   */
+  velocity    *= 0.92;
+  const targetR = Math.min(RADIUS_MAX, RADIUS_MIN + velocity * VEL_SCALE);
+  radius       += (targetR - radius) * 0.10;
+
+  for (let r = 0; r < rows; r++) {
+    /* Step 3 — HORIZONTAL WAVE DISPLACEMENT (shimmer)
+       xOffset is the per-row horizontal shift applied to every char in the row.
+       Two sine waves at different speeds and row-phase offsets overlap to
+       create a non-periodic, organic shimmer across the grid.
+
+         xOff = A₁·sin(t·ω₁ + r·φ₁) + A₂·sin(t·ω₂ + r·φ₂)               */
+    const xOff = WAVE_A1 * Math.sin(t * WAVE_W1 + r * WAVE_P1)
+               + WAVE_A2 * Math.sin(t * WAVE_W2 + r * WAVE_P2);
+
+    const baseline = (r + 1) * FONT_SIZE; // text baseline Y for this row
+
+    for (let c = 0; c < cols; c++) {
+      const cell = cells[r][c];
+
+      /* Pixel position of this cell after wave displacement */
+      const px = c * FONT_SIZE + xOff;
+      const py = baseline;
+
+      /* Step 4 — DISTANCE TO LERP'D CURSOR
+         We measure to the cell's visual centre, not its top-left corner.   */
+      const dx   = px - lerpX;
+      const dy   = (py - FONT_SIZE * 0.5) - lerpY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < radius) {
+        /* ── Inside interaction zone ────────────────────────────────────
+           influence: 1.0 at cursor centre, 0.0 at radius edge (linear).
+           The cell's target opacity is linearly interpolated between its
+           ambient base and MAX_OP using `influence` as the weight.
+           We set opacity directly (no lerp) so the response is instant —
+           the cursor feels like a hard light source, not a soft glow.     */
+        const influence   = 1 - dist / radius;
+        cell.opacity = cell.baseOp + influence * (MAX_OP - cell.baseOp);
+
+        /* Mutate character while the cursor is actively touching this cell.
+           Higher influence = faster mutation (more central = more glitchy). */
+        if (Math.random() < MUTATE_RATE * (0.5 + influence * 0.5)) {
+          cell.char = randChar();
+        }
+      } else {
+        /* ── Outside zone — bleed opacity back to ambient (the "wake") ──
+           The cell freezes on whatever char it last had and slowly fades.
+           FADE_BACK = 0.032 → ~95% convergence in ~90 frames (~1.5 sec). */
+        cell.opacity += (cell.baseOp - cell.opacity) * FADE_BACK;
+      }
+
+      /* Skip fully-transparent cells (saves fillText calls) */
+      if (cell.opacity < 0.008) continue;
+
+      /* Encode alpha in fillStyle — avoids globalAlpha save/restore overhead */
+      ctx.fillStyle = `rgba(255,255,255,${cell.opacity.toFixed(4)})`;
+      ctx.fillText(cell.char, px, py);
+    }
+  }
+
+  raf = requestAnimationFrame(draw);
+}
+
+/* ── Input handlers ──────────────────────────────────────────────────────── */
+window.addEventListener('mousemove', e => {
+  /* Velocity = distance moved since last frame.
+     This raw pixel delta feeds the radius expansion formula.               */
+  const dx = e.clientX - prevMX;
+  const dy = e.clientY - prevMY;
+  velocity = Math.sqrt(dx * dx + dy * dy);
+  prevMX = mouseX;   prevMY = mouseY;
+  mouseX = e.clientX; mouseY = e.clientY;
+});
+
+window.addEventListener('touchmove', e => {
+  const t  = e.touches[0];
+  const dx = t.clientX - prevMX;
+  const dy = t.clientY - prevMY;
+  velocity = Math.sqrt(dx * dx + dy * dy);
+  prevMX = mouseX;    prevMY = mouseY;
+  mouseX = t.clientX; mouseY = t.clientY;
+}, { passive: true });
+
+/* ── Resize ──────────────────────────────────────────────────────────────── */
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    cancelAnimationFrame(raf);
+    mouseX = lerpX = window.innerWidth  / 2;
+    mouseY = lerpY = window.innerHeight / 2;
+    init();
+    raf = requestAnimationFrame(draw);
+  }, 150);
+});
+
+/* ── Boot ────────────────────────────────────────────────────────────────── */
+init();
+raf = requestAnimationFrame(draw);
+</script>
+
+</body>
+</html>

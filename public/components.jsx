@@ -458,8 +458,7 @@ function ThemeToggle() {
   useEffect(() => {
     // Check localStorage and system preference on mount
     const savedTheme = localStorage.getItem('theme');
-    const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const initialTheme = savedTheme || (systemPrefersDark ? 'dark' : 'light');
+    const initialTheme = savedTheme || 'dark';
 
     setTheme(initialTheme);
     document.documentElement.setAttribute('data-theme', initialTheme);
@@ -545,8 +544,9 @@ function Nav({ current }) {
     <>
       <nav className={`nav ${scrolled ? 'scrolled' : ''}`} aria-label="Primary">
         <div className="nav-inner">
-          <a href="/" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--fg)' }}>
-            <span className="serif" style={{ fontSize: 18, letterSpacing: '-0.01em' }}>Brevitas</span>
+          <a href="/" style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10, color: 'var(--fg)' }}>
+            <span className="serif" style={{ fontSize: 22, letterSpacing: '-0.015em', lineHeight: 1 }}>Brevitas</span>
+            <span className="t-mono" style={{ fontSize: 9, letterSpacing: '0.18em', color: 'var(--stone)' }}>SYSTEMS</span>
           </a>
           <div className="nav-links desktop">
             {links.map(l => (
