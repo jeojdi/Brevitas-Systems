@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
       { source: '/product', destination: '/product.html' },
       { source: '/how-it-works', destination: '/how-it-works.html' },
       { source: '/benchmarks', destination: '/benchmarks.html' },
-      { source: '/docs', destination: '/docs.html' },
+      { source: '/docs', destination: '/404.html' },
       { source: '/blog', destination: '/blog.html' },
       { source: '/waitlist', destination: '/waitlist.html' },
       { source: '/design-canvas', destination: '/design-canvas.html' },
