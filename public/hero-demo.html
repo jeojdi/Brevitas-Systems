@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brevitas — Hero</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter Tight', system-ui, sans-serif; background: #06070b; -webkit-font-smoothing: antialiased; }
+
+.hero { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+
+.hero__bg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover; object-position: center;
+  z-index: 0;
+}
+
+/* Both animation layers share this one canvas.
+   mix-blend-mode: overlay → white characters adopt the photo's hue.
+   opacity: 0.70 makes the effect clearly visible.                    */
+#wave-canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  z-index: 1;
+  mix-blend-mode: overlay;
+  opacity: 0.70;
+  pointer-events: none;
+}
+
+.hero__nav, .hero__content { position: absolute; z-index: 10; }
+
+.hero__nav { top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 22px 44px; }
+.nav-logo { font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #fff; }
+.nav-links { display: flex; gap: 28px; list-style: none; }
+.nav-links a { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.55); text-decoration: none; transition: color 180ms; }
+.nav-links a:hover { color: #fff; }
+.nav-cta { display: inline-flex; align-items: center; gap: 8px; padding: 9px 20px; border: 1px solid rgba(255,255,255,0.28); border-radius: 999px; color: #fff; font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-decoration: none; backdrop-filter: blur(8px); transition: background 180ms, border-color 180ms; }
+.nav-cta:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.5); }
+
+.hero__content { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 24px; }
+.hero__kicker { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(255,255,255,0.45); margin-bottom: 24px; }
+.hero__title { font-family: 'Newsreader', Georgia, serif; font-weight: 300; font-size: clamp(56px, 9vw, 116px); line-height: 0.96; letter-spacing: -0.025em; color: #fff; margin-bottom: 28px; text-wrap: balance; }
+.hero__title em { font-style: italic; color: rgba(255,255,255,0.65); }
+.hero__sub { font-size: clamp(15px, 1.4vw, 18px); line-height: 1.6; color: rgba(255,255,255,0.45); max-width: 500px; margin-bottom: 40px; }
+.hero__btn { display: inline-flex; align-items: center; gap: 10px; padding: 15px 32px; background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.28); border-radius: 999px; color: #fff; font-family: 'Inter Tight', sans-serif; font-size: 15px; font-weight: 500; text-decoration: none; backdrop-filter: blur(10px); transition: background 200ms, border-color 200ms, transform 200ms; }
+.hero__btn:hover { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.5); transform: translateY(-2px); }
+@media (max-width: 680px) { .hero__nav { padding: 18px 22px; } .nav-links, .nav-cta { display: none; } }
+</style>
+</head>
+<body>
+
+<section class="hero">
+  <img class="hero__bg" src="assets/brevitas.png" alt="Brevitas">
+  <canvas id="wave-canvas"></canvas>
+
+  <nav class="hero__nav">
+    <span class="nav-logo">Brevitas</span>
+    <ul class="nav-links">
+      <li><a href="#">How it works</a></li>
+      <li><a href="#">Benchmarks</a></li>
+      <li><a href="#">Docs</a></li>
+    </ul>
+    <a href="#" class="nav-cta">Join waitlist →</a>
+  </nav>
+
+  <div class="hero__content">
+    <p class="hero__kicker">Infrastructure layer · multi-agent pipelines</p>
+    <h1 class="hero__title">the layer <em>between</em><br>your agents.</h1>
+    <p class="hero__sub">Drop-in Python SDK that cuts inter-agent token usage by 60% — without touching your agents, prompts, or models.</p>
+    <a href="#" class="hero__btn">Join the waitlist &nbsp;→</a>
+  </div>
+</section>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   DUAL-LAYER ASCII ANIMATION
+
+   LAYER A — Background field (constant, diffuse)
+     A dense grid of monospace characters stays continuously alive.
+     Many fast-expanding WaveRipples sweep through at any moment, each
+     illuminating a wide band of cells with a cosine-bell falloff.
+     High spawn rate + very slow per-cell decay = always-on texture.
+
+   LAYER B — Point ripples (slow, bright, clearly circular ASCII rings)
+     Every 2–4 seconds a drop lands at a random point. It spawns a
+     PointRipple that expands very slowly (0.35–0.65 px/frame).
+     Cells within the thin ring (≈12 px) are lit to near full brightness
+     and mutate every frame — you see a crisp circle of glitching ASCII
+     characters crawling outward like a real ripple.
+
+   Each cell tracks waveOp and pointOp independently so the two decay
+   rates don't interfere. Rendered alpha = min(1, waveOp + pointOp).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const canvas = document.getElementById('wave-canvas');
+const ctx    = canvas.getContext('2d');
+
+/* ─── Shared ─────────────────────────────────────────────────────────────── */
+const CELL      = 12;   // grid pitch in px — both layers share the same grid
+const CHAR_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&*<>{}[]|/\\^~±§ΘΛΞΣΩαβγδ';
+const randChar  = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
+
+/* ─── Layer A — background wave constants ────────────────────────────────── */
+const WAVE_THICKNESS = 48;   // px — wide so many cells are always lit
+const WAVE_AMP_MIN   = 0.50;
+const WAVE_AMP_MAX   = 0.75;
+const WAVE_SPEED_MIN = 1.2;
+const WAVE_SPEED_MAX = 2.8;
+const WAVE_R_MIN     = 120;
+const WAVE_R_MAX     = 280;
+const WAVE_DECAY     = 0.007; // very slow fade → screen stays continuously lit
+const WAVE_MUTATE    = 0.40;  // peak threshold for char mutation
+const WAVE_SPAWN     = 0.10;  // P(new WaveRipple) per frame ≈ 6 / sec at 60fps
+
+/* ─── Layer B — point ripple constants ───────────────────────────────────── */
+const POINT_THICKNESS = 12;   // px — thin ring so you can read the circle shape
+const POINT_AMP       = 0.95; // very bright — these stand out above the field
+const POINT_SPEED_MIN = 0.30; // px/frame — deliberately very slow
+const POINT_SPEED_MAX = 0.60;
+const POINT_R_MIN     = 180;  // px — large so the circle is clearly legible
+const POINT_R_MAX     = 340;
+const POINT_DECAY     = 0.045; // faster fade when ring passes (stays crisp)
+const POINT_SPAWN_MS_MIN = 2000; // ms between drop events
+const POINT_SPAWN_MS_MAX = 4000;
+
+/* ─── WaveRipple (Layer A) ───────────────────────────────────────────────── */
+class WaveRipple {
+  constructor(w, h) {
+    this.x         = Math.random() * w;
+    this.y         = Math.random() * h;
+    this.radius    = 0;
+    this.maxRadius = WAVE_R_MIN + Math.random() * (WAVE_R_MAX - WAVE_R_MIN);
+    this.speed     = WAVE_SPEED_MIN + Math.random() * (WAVE_SPEED_MAX - WAVE_SPEED_MIN);
+    this.amplitude = WAVE_AMP_MIN  + Math.random() * (WAVE_AMP_MAX  - WAVE_AMP_MIN);
+  }
+
+  /* Cosine-bell intensity at pixel (px, py):
+   *   dist = √(dx²+dy²)                — Euclidean distance to ring centre
+   *   edge = |dist − radius|           — distance from ring's current edge
+   *   wave = ½(1+cos(π·edge/T))        — bell: 1.0 at crest → 0.0 at ±T
+   *   life = (1 − r/max) · amplitude   — ring dims as it expands            */
+  intensityAt(px, py) {
+    const dx   = px - this.x;
+    const dy   = py - this.y;
+    const edge = Math.abs(Math.sqrt(dx * dx + dy * dy) - this.radius);
+    if (edge >= WAVE_THICKNESS) return 0;
+    const wave = 0.5 * (1 + Math.cos(Math.PI * edge / WAVE_THICKNESS));
+    const life = (1 - this.radius / this.maxRadius) * this.amplitude;
+    return wave * life;
+  }
+
+  get dead() { return this.radius >= this.maxRadius; }
+}
+
+/* ─── PointRipple (Layer B) ──────────────────────────────────────────────── */
+class PointRipple {
+  constructor(w, h) {
+    this.x         = Math.random() * w;
+    this.y         = Math.random() * h;
+    this.radius    = 0;
+    this.maxRadius = POINT_R_MIN + Math.random() * (POINT_R_MAX - POINT_R_MIN);
+    this.speed     = POINT_SPEED_MIN + Math.random() * (POINT_SPEED_MAX - POINT_SPEED_MIN);
+  }
+
+  /* Same formula as WaveRipple but POINT_THICKNESS is much thinner,
+     so only cells almost exactly on the ring edge are lit.
+     This makes the ASCII circle clearly readable as a circle.        */
+  intensityAt(px, py) {
+    const dx   = px - this.x;
+    const dy   = py - this.y;
+    const edge = Math.abs(Math.sqrt(dx * dx + dy * dy) - this.radius);
+    if (edge >= POINT_THICKNESS) return 0;
+    const wave = 0.5 * (1 + Math.cos(Math.PI * edge / POINT_THICKNESS));
+    const life = (1 - this.radius / this.maxRadius) * POINT_AMP;
+    return wave * life;
+  }
+
+  get dead() { return this.radius >= this.maxRadius; }
+}
+
+/* ─── State ──────────────────────────────────────────────────────────────── */
+let cols, rows, cells;       // grid dimensions and cell array
+let waveRipples  = [];
+let pointRipples = [];
+let raf, resizeTimer, spawnTimer;
+
+/* ─── Init ───────────────────────────────────────────────────────────────── */
+function init() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  cols = Math.ceil(canvas.width  / CELL);
+  rows = Math.ceil(canvas.height / CELL);
+
+  waveRipples  = [];
+  pointRipples = [];
+
+  /* Each cell tracks two independent opacity channels:
+     waveOp  — driven by Layer A, decays at WAVE_DECAY
+     pointOp — driven by Layer B, decays at POINT_DECAY
+     char    — shared; point ripples always override it when active     */
+  cells = Array.from({ length: cols * rows }, () => ({
+    char:    randChar(),
+    waveOp:  0,
+    pointOp: 0,
+  }));
+
+  /* Pre-seed many wave ripples spread across the canvas at various
+     expansion stages so the background is alive from frame 1.         */
+  for (let i = 0; i < 14; i++) {
+    const r = new WaveRipple(canvas.width, canvas.height);
+    r.radius = Math.random() * r.maxRadius * 0.7;
+    waveRipples.push(r);
+  }
+}
+
+/* ─── Point ripple scheduler (timer-based for consistent pacing) ─────────── */
+function schedulePointRipple() {
+  const delay = POINT_SPAWN_MS_MIN + Math.random() * (POINT_SPAWN_MS_MAX - POINT_SPAWN_MS_MIN);
+  spawnTimer = setTimeout(() => {
+    pointRipples.push(new PointRipple(canvas.width, canvas.height));
+    schedulePointRipple();
+  }, delay);
+}
+
+/* ─── Draw loop ──────────────────────────────────────────────────────────── */
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  /* Spawn background wave ripples probabilistically each frame */
+  if (Math.random() < WAVE_SPAWN) waveRipples.push(new WaveRipple(canvas.width, canvas.height));
+
+  /* Advance + prune both ripple arrays */
+  for (let i = waveRipples.length  - 1; i >= 0; i--) { waveRipples[i].radius  += waveRipples[i].speed;  if (waveRipples[i].dead)  waveRipples.splice(i, 1); }
+  for (let i = pointRipples.length - 1; i >= 0; i--) { pointRipples[i].radius += pointRipples[i].speed; if (pointRipples[i].dead) pointRipples.splice(i, 1); }
+
+  ctx.font = `${CELL - 2}px "JetBrains Mono","Courier New",monospace`;
+
+  for (let row = 0; row < rows; row++) {
+    const py = row * CELL + CELL; // text baseline
+
+    for (let col = 0; col < cols; col++) {
+      const px   = col * CELL + CELL * 0.5;
+      const cell = cells[row * cols + col];
+
+      /* ── Layer A: sum wave intensities ──────────────────────────────
+         total capped at 1; peak used to gate character mutation.      */
+      let wTotal = 0, wPeak = 0;
+      for (const r of waveRipples) {
+        const i = r.intensityAt(px, py);
+        if (i === 0) continue;
+        wTotal = Math.min(1, wTotal + i);
+        if (i > wPeak) wPeak = i;
+      }
+
+      if (wTotal > 0.03) {
+        cell.waveOp = Math.max(cell.waveOp, wTotal);
+        if (wPeak > WAVE_MUTATE && Math.random() < 0.35) cell.char = randChar();
+      } else {
+        cell.waveOp = Math.max(0, cell.waveOp - WAVE_DECAY);
+      }
+
+      /* ── Layer B: sum point ripple intensities ───────────────────────
+         Point ripples have a THIN ring so the circle shape is legible.
+         Cells in the ring always mutate rapidly (glitch-as-it-passes). */
+      let pTotal = 0, pPeak = 0;
+      for (const r of pointRipples) {
+        const i = r.intensityAt(px, py);
+        if (i === 0) continue;
+        pTotal = Math.min(1, pTotal + i);
+        if (i > pPeak) pPeak = i;
+      }
+
+      if (pTotal > 0.02) {
+        cell.pointOp = Math.max(cell.pointOp, pTotal);
+        /* Always mutate while the point ring passes — rapid flicker
+           makes the ring "sparkle" and distinguishes it from the
+           calmer background field.                                     */
+        if (Math.random() < 0.55) cell.char = randChar();
+      } else {
+        cell.pointOp = Math.max(0, cell.pointOp - POINT_DECAY);
+      }
+
+      /* ── Render ──────────────────────────────────────────────────────
+         Combine both channels. Point ripple takes priority for opacity
+         so the ring always pops above the background wave field.       */
+      const finalOp = Math.min(1, cell.waveOp + cell.pointOp);
+      if (finalOp < 0.01) continue;
+
+      ctx.fillStyle = `rgba(255,255,255,${finalOp.toFixed(3)})`;
+      ctx.fillText(cell.char, col * CELL, py);
+    }
+  }
+
+  raf = requestAnimationFrame(draw);
+}
+
+/* ─── Resize ─────────────────────────────────────────────────────────────── */
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { cancelAnimationFrame(raf); init(); draw(); }, 150);
+});
+
+/* ─── Boot ───────────────────────────────────────────────────────────────── */
+init();
+
+/* Spawn the first point ripple immediately so there's one in-progress at load */
+pointRipples.push(new PointRipple(canvas.width, canvas.height));
+schedulePointRipple();
+
+draw();
+</script>
+</body>
+</html>

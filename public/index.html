@@ -7,7 +7,7 @@
 <!-- Primary Meta Tags -->
 <title>Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%</title>
 <meta name="title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
-<meta name="description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with LangGraph, CrewAI, AutoGen.">
+<meta name="description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
 <meta name="keywords" content="AI orchestration, multi-agent systems, LLM optimization, token reduction, AI cost optimization, agent pipeline, LangGraph, CrewAI, AutoGen, AI infrastructure, enterprise AI, agent communication, token compression">
 <meta name="author" content="Brevitas Systems">
 <meta name="robots" content="index, follow">
@@ -20,7 +20,7 @@
 <meta property="og:url" content="https://brevitassystems.com/">
 <meta property="og:site_name" content="Brevitas Systems">
 <meta property="og:title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
-<meta property="og:description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with your stack.">
+<meta property="og:description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK.">
 <meta property="og:image" content="https://brevitassystems.com/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -31,7 +31,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://brevitassystems.com/">
 <meta name="twitter:title" content="Brevitas Systems — Reduce Multi-Agent Token Costs by 60%">
-<meta name="twitter:description" content="Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in compatible with LangGraph, CrewAI, AutoGen.">
+<meta name="twitter:description" content="Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
 <meta name="twitter:image" content="https://brevitassystems.com/og-image.png">
 <meta name="twitter:image:alt" content="Brevitas Systems - AI Agent Orchestration Platform">
 <meta name="twitter:creator" content="@BrevitasSystems">
@@ -89,7 +89,7 @@
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Brevitas Platform",
+  "name": "Brevitas SDK",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Python 3.8+",
   "offers": {
@@ -97,7 +97,7 @@
     "price": "Contact for pricing",
     "priceCurrency": "USD"
   },
-  "description": "Drop-in optimization layer for multi-agent AI pipelines. Compatible with LangGraph, CrewAI, AutoGen.",
+  "description": "Drop-in Python SDK for optimizing multi-agent AI pipelines. Compatible with LangGraph, CrewAI, AutoGen.",
   "softwareRequirements": "Python 3.8 or higher",
   "softwareVersion": "1.0",
   "author": {
@@ -549,9 +549,7 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
           style={{
             minWidth: 200,
             padding: '16px 32px',
-            background: state === 'submitting' ?
-              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)' :
-              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)',
+            background: '#d4a96d',
             border: '1px solid rgba(212, 169, 109, 0.3)',
             borderRadius: '8px',
             color: '#0a0d0a',
@@ -570,14 +568,14 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
           }}
           onMouseEnter={(e) => {
             if (state !== 'submitting') {
-              e.target.style.background = 'linear-gradient(135deg, #e4b85b 0%, #d4a96d 100%)';
+              e.target.style.background = '#c99a58';
               e.target.style.transform = 'translateY(-2px)';
               e.target.style.boxShadow = '0 8px 24px rgba(212, 169, 109, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3)';
             }
           }}
           onMouseLeave={(e) => {
             if (state !== 'submitting') {
-              e.target.style.background = 'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)';
+              e.target.style.background = '#d4a96d';
               e.target.style.transform = 'translateY(0)';
               e.target.style.boxShadow = '0 4px 12px rgba(212, 169, 109, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)';
             }
@@ -608,38 +606,253 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
 function LandingPage() {
   useFadeUpReveal();
 
+  useEffect(() => {
+    const canvas = document.getElementById('hero-matrix');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    /* ── Shared ───────────────────────────────────────────────────────── */
+    const CELL      = 12;
+    const CHAR_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&*<>{}[]|/\\^~±§ΘΛΞΣΩαβγδ';
+    const randChar  = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
+
+    const BASE_OP = 0.06; // ambient glow — every cell always lit
+
+    /* ── Layer A — background wave (constant, diffuse) ────────────────── */
+    const WAVE_THICKNESS = 48;
+    const WAVE_AMP_MIN   = 0.45;  const WAVE_AMP_MAX   = 0.68;
+    const WAVE_SPEED_MIN = 1.2;   const WAVE_SPEED_MAX = 2.8;
+    const WAVE_R_MIN     = 120;   const WAVE_R_MAX     = 280;
+    const WAVE_DECAY     = 0.008;
+    const WAVE_MUTATE    = 0.40;
+    const WAVE_SPAWN     = 0.10;  // ≈ 6 / sec
+
+    /* ── Layer B — point ripples (slow, thin, bright ASCII rings) ──────── */
+    const POINT_THICKNESS    = 32;
+    const POINT_AMP          = 0.82;
+    const POINT_SPEED_MIN    = 0.25; // px/frame — very slow
+    const POINT_SPEED_MAX    = 0.50;
+    const POINT_R_MIN        = 200;
+    const POINT_R_MAX        = 380;
+    const POINT_DECAY        = 0.022;
+    const POINT_SPAWN_MS_MIN = 1200;
+    const POINT_SPAWN_MS_MAX = 2800;
+
+    /* ── Classes ──────────────────────────────────────────────────────── */
+    class WaveRipple {
+      constructor() {
+        this.x         = Math.random() * canvas.width;
+        this.y         = Math.random() * canvas.height;
+        this.radius    = 0;
+        this.maxRadius = WAVE_R_MIN + Math.random() * (WAVE_R_MAX - WAVE_R_MIN);
+        this.speed     = WAVE_SPEED_MIN + Math.random() * (WAVE_SPEED_MAX - WAVE_SPEED_MIN);
+        this.amplitude = WAVE_AMP_MIN  + Math.random() * (WAVE_AMP_MAX  - WAVE_AMP_MIN);
+      }
+      intensityAt(px, py) {
+        const edge = Math.abs(Math.sqrt((px-this.x)**2 + (py-this.y)**2) - this.radius);
+        if (edge >= WAVE_THICKNESS) return 0;
+        return 0.5 * (1 + Math.cos(Math.PI * edge / WAVE_THICKNESS))
+             * (1 - this.radius / this.maxRadius) * this.amplitude;
+      }
+      get dead() { return this.radius >= this.maxRadius; }
+    }
+
+    class PointRipple {
+      constructor() {
+        this.x         = Math.random() * canvas.width;
+        this.y         = Math.random() * canvas.height;
+        this.radius    = 0;
+        this.maxRadius = POINT_R_MIN + Math.random() * (POINT_R_MAX - POINT_R_MIN);
+        this.speed     = POINT_SPEED_MIN + Math.random() * (POINT_SPEED_MAX - POINT_SPEED_MIN);
+      }
+      intensityAt(px, py) {
+        const edge = Math.abs(Math.sqrt((px-this.x)**2 + (py-this.y)**2) - this.radius);
+        if (edge >= POINT_THICKNESS) return 0;
+        return 0.5 * (1 + Math.cos(Math.PI * edge / POINT_THICKNESS)) * POINT_AMP;
+      }
+      get dead() { return this.radius >= this.maxRadius; }
+    }
+
+    /* ── State ────────────────────────────────────────────────────────── */
+    let cols, rows, cells, waveRipples, pointRipples, raf, resizeTimer, spawnTimer;
+
+    function init() {
+      canvas.width  = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      cols = Math.ceil(canvas.width  / CELL);
+      rows = Math.ceil(canvas.height / CELL);
+      waveRipples  = [];
+      pointRipples = [];
+      cells = Array.from({ length: cols * rows }, () => ({ char: randChar(), waveOp: 0, pointOp: 0 }));
+      for (let i = 0; i < 14; i++) {
+        const r = new WaveRipple();
+        r.radius = Math.random() * r.maxRadius * 0.7;
+        waveRipples.push(r);
+      }
+    }
+
+    function schedulePointRipple() {
+      const delay = POINT_SPAWN_MS_MIN + Math.random() * (POINT_SPAWN_MS_MAX - POINT_SPAWN_MS_MIN);
+      spawnTimer = setTimeout(() => { pointRipples.push(new PointRipple()); schedulePointRipple(); }, delay);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (Math.random() < WAVE_SPAWN) waveRipples.push(new WaveRipple());
+      for (let i = waveRipples.length  - 1; i >= 0; i--) { waveRipples[i].radius  += waveRipples[i].speed;  if (waveRipples[i].dead)  waveRipples.splice(i, 1); }
+      for (let i = pointRipples.length - 1; i >= 0; i--) { pointRipples[i].radius += pointRipples[i].speed; if (pointRipples[i].dead) pointRipples.splice(i, 1); }
+
+      ctx.font = `${CELL - 2}px "JetBrains Mono","Courier New",monospace`;
+
+      for (let row = 0; row < rows; row++) {
+        const py = row * CELL + CELL;
+        for (let col = 0; col < cols; col++) {
+          const px   = col * CELL + CELL * 0.5;
+          const cell = cells[row * cols + col];
+
+          /* Layer A */
+          let wTotal = 0, wPeak = 0;
+          for (const r of waveRipples) {
+            const i = r.intensityAt(px, py);
+            if (i === 0) continue;
+            wTotal = Math.min(1, wTotal + i);
+            if (i > wPeak) wPeak = i;
+          }
+          if (wTotal > 0.03) {
+            cell.waveOp = Math.max(cell.waveOp, wTotal);
+            if (wPeak > WAVE_MUTATE && Math.random() < 0.35) cell.char = randChar();
+          } else {
+            cell.waveOp = Math.max(0, cell.waveOp - WAVE_DECAY);
+          }
+
+          /* Layer B — thin ring, always flickering while active */
+          let pTotal = 0;
+          for (const r of pointRipples) {
+            const i = r.intensityAt(px, py);
+            if (i > 0) pTotal = Math.min(1, pTotal + i);
+          }
+          if (pTotal > 0.02) {
+            cell.pointOp = Math.max(cell.pointOp, pTotal);
+            if (Math.random() < 0.55) cell.char = randChar();
+          } else {
+            cell.pointOp = Math.max(0, cell.pointOp - POINT_DECAY);
+          }
+
+          const finalOp = Math.min(1, BASE_OP + cell.waveOp + cell.pointOp);
+          if (finalOp < 0.02) continue;
+          ctx.fillStyle = `rgba(255,255,255,${finalOp.toFixed(3)})`;
+          if (cell.pointOp > 0.12) {
+            ctx.shadowColor = 'rgba(255,255,255,0.85)';
+            ctx.shadowBlur = 8;
+          }
+          ctx.fillText(cell.char, col * CELL, py);
+          if (cell.pointOp > 0.12) ctx.shadowBlur = 0;
+        }
+      }
+
+      raf = requestAnimationFrame(draw);
+    }
+
+    const onResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { cancelAnimationFrame(raf); init(); draw(); }, 150);
+    };
+
+    window.addEventListener('resize', onResize);
+    init();
+    pointRipples.push(new PointRipple()); // one in-progress at load
+    schedulePointRipple();
+    draw();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(spawnTimer);
+      clearTimeout(resizeTimer);
+      window.removeEventListener('resize', onResize);
+    };
+  }, []);
+
   return (
     <>
       <Nav />
 
       {/* S1 — Hero */}
-      <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)' }}>
-        <div className="container">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20 }}>
-            <Overline dot>INFRASTRUCTURE LAYER FOR MULTI-AGENT PIPELINES</Overline>
+      <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)', position: 'relative', overflow: 'hidden' }}>
+        {/* Layer 0: background photo — swaps by theme */}
+        <img className="hero-bg-dark"  src="/assets/brevitas.png"               alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
+        <img className="hero-bg-light" src="/assets/light%20mode%20hero.png"    alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
+        {/* Layer 1: dual-layer ASCII animation canvas */}
+        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'screen', opacity: 0.75, pointerEvents: 'none' }} />
+        {/* Layer 2: gradient scrim — transparent at top, dark at bottom so stats are legible */}
+        <div aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.60) 100%)' }} />
+        {/* Layer 3: content — text-shadow lifts every element off the image */}
+        <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#8ea6ff' }}>
+          <div style={{ maxWidth: 920, margin: '0 auto', textAlign: 'center' }}>
+            <Overline dot>infrastructure layer for multi-agent pipelines</Overline>
+            <div style={{ width: 92, height: 1, margin: '22px auto 0', background: 'var(--line)' }} />
           </div>
 
-          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 32, maxWidth: 1100 }}>
-            The communication layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
+          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff' }}>
+            the layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
           </h1>
-          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40 }}>
-            Multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. Brevitas gives it back — as a drop-in optimization layer, without touching your agents, prompts, or models.
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, margin: '0 auto 40px', textAlign: 'center' }}>
+            multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. brevitas gives it back as a drop-in python sdk, without touching your agents, prompts, or models.
           </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center' }}>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/waitlist">Join the waitlist</Button>
             <Button variant="ghost" href="/benchmarks">See the benchmarks</Button>
           </div>
           <div className="fade-up delay-3 in" style={{
-            display: 'flex', gap: 'clamp(32px, 6vw, 80px)', flexWrap: 'wrap',
-            paddingTop: 32, borderTop: '1px solid var(--line)',
+            display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
+            paddingTop: 32, borderTop: '1px solid var(--line)', justifyContent: 'center'
           }}>
             <StatCard variant="inline" value="–59.4%" label="tokens saved" />
             <StatCard variant="inline" value="–46.9%" label="cost saved" />
             <StatCard variant="inline" value="99.6%" label="context retained" />
             <StatCard variant="inline" value="99%" label="quality parity" />
           </div>
-          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12 }}>
-            First-run benchmark · AgentBench task · real API calls
+          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
+            first-run benchmark · agentbench task · real api calls
+          </div>
+        </div>
+      </section>
+
+      {/* Support / Logos bar */}
+      <section style={{ borderTop: '1px solid var(--line)', padding: 'clamp(32px, 5vh, 56px) 0' }}>
+        <div className="container">
+          <div style={{ textAlign: 'center' }}>
+            <p className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 28 }}>
+              With support and validation from:
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(32px, 6vw, 72px)', flexWrap: 'wrap' }}>
+              {[
+                { src: '/assets/ycombinator-logo.png', alt: 'Y Combinator' },
+                { src: '/assets/deepmind-logo.svg',    alt: 'Google DeepMind' },
+                { src: '/assets/nvidia-logo.svg',      darkSrc: '/assets/NVIDIA%20Logo%20White.svg',     alt: 'NVIDIA' },
+                { src: '/assets/anthropic-logo.svg',   darkSrc: '/assets/Anthropic%20Logo%20white.svg',  alt: 'Anthropic' },
+              ].map(({ src, darkSrc, alt }) => (
+                <div key={alt} style={{ width: 120, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {darkSrc ? (
+                    <React.Fragment>
+                      <img src={darkSrc} alt={alt} className="logo-for-dark"
+                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
+                        onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                        onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
+                      <img src={src} alt="" aria-hidden="true" className="logo-for-light"
+                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
+                        onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                        onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
+                    </React.Fragment>
+                  ) : (
+                    <img src={src} alt={alt}
+                      style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = 1}
+                      onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -655,28 +868,12 @@ function LandingPage() {
 
       {/* Context Retention Highlight */}
       <section className="section" style={{
-        background: 'linear-gradient(135deg, var(--signal-glow) 0%, transparent 100%)',
         borderTop: '1px solid var(--line)',
         borderBottom: '1px solid var(--line)',
         padding: 'clamp(48px, 8vh, 96px) 0'
       }}>
         <div className="container">
           <div style={{ textAlign: 'center', maxWidth: 900, margin: '0 auto' }}>
-            <div className="fade-up" style={{
-              display: 'inline-block',
-              padding: '8px 16px',
-              background: 'var(--signal-glow)',
-              border: '1px solid var(--signal)',
-              borderRadius: '24px',
-              marginBottom: 24
-            }}>
-              <span className="t-mono" style={{
-                color: 'var(--signal)',
-                fontSize: 11,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase'
-              }}>Key Performance Metric</span>
-            </div>
             <div className="fade-up delay-1" style={{
               fontSize: 'clamp(48px, 8vw, 96px)',
               fontWeight: 200,
@@ -744,7 +941,7 @@ function LandingPage() {
                 Compression is one of six techniques. The one you'd see first.
               </p>
               <div style={{ marginTop: 12 }}>
-                <a href="how-it-works.html" className="btn btn-ghost underline">See the full mechanism →</a>
+                <a href="/how-it-works" className="btn btn-ghost underline">See the full mechanism →</a>
               </div>
             </div>
             <div><CompressionSequence /></div>
@@ -823,7 +1020,7 @@ function LandingPage() {
             <SixTechniquesHub />
           </div>
           <div style={{ marginTop: 48 }}>
-            <Button variant="secondary" href="how-it-works.html">Deep dive into each technique</Button>
+            <Button variant="secondary" href="/how-it-works">Deep dive into each technique</Button>
           </div>
         </div>
       </section>
@@ -831,15 +1028,35 @@ function LandingPage() {
       {/* S6 — Integration proof */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
-          <div className="fade-up" style={{ maxWidth: 820 }}>
-            <Overline>INTEGRATION SURFACE</Overline>
-            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Wraps your stack. Untouched.</h2>
-            <p className="t-body-lg" style={{ marginBottom: 16 }}>
-              Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
-            </p>
-            <p className="t-body">
-              Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
-            </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'center' }} className="compression-grid">
+            <div>
+              <Overline>INTEGRATION SURFACE</Overline>
+              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Import. Wrap. Ship.</h2>
+              <p className="t-body-lg" style={{ marginBottom: 16 }}>
+                Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
+              </p>
+              <p className="t-body">
+                Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <CodeBlockPy
+                filename="terminal"
+                copyable={false}
+                source={`# pip install brevitas`}
+              />
+              <CodeBlockPy
+                filename="pipeline.py"
+                copyable
+                source={`from brevitas import optimize
+from my_pipeline import architect, builder, reviewer
+
+pipeline = optimize([architect, builder, reviewer])
+result = pipeline.run(task)
+
+# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
+              />
+            </div>
           </div>
         </div>
       </section>
@@ -856,7 +1073,7 @@ function LandingPage() {
           <div className="t-body" style={{ marginTop: 16, marginBottom: 24, maxWidth: 680 }}>
             Three peer-reviewed multi-agent benchmarks integrated into our test harness.
           </div>
-          <a href="benchmarks.html" className="btn btn-ghost underline">See full results →</a>
+          <a href="/benchmarks" className="btn btn-ghost underline">See full results →</a>
         </div>
       </section>
 
@@ -899,7 +1116,7 @@ function LandingPage() {
             <Overline dot>JOIN THE LIST</Overline>
             <h2 className="t-h1" style={{ marginTop: 24, marginBottom: 20 }}>Get on the list.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the platform and benchmark reports.
+              We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the SDK and benchmark reports.
             </p>
             <GlassmorphicWaitlistForm source="landing-final" />
           </div>
