@@ -2,16 +2,20 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    return [
-      { source: '/', destination: '/index.html' },
-      { source: '/product', destination: '/product.html' },
-      { source: '/how-it-works', destination: '/how-it-works.html' },
-      { source: '/benchmarks', destination: '/benchmarks.html' },
-      { source: '/docs', destination: '/docs.html' },
-      { source: '/blog', destination: '/blog.html' },
-      { source: '/waitlist', destination: '/waitlist.html' },
-      { source: '/design-canvas', destination: '/design-canvas.html' },
-    ];
+    return {
+      // beforeFiles runs before Next.js checks the filesystem or App Router —
+      // required for rewrites that serve .html files from /public to actually fire.
+      beforeFiles: [
+        { source: '/', destination: '/index.html' },
+        { source: '/product', destination: '/product.html' },
+        { source: '/how-it-works', destination: '/how-it-works.html' },
+        { source: '/benchmarks', destination: '/benchmarks.html' },
+        { source: '/docs', destination: '/docs.html' },
+        { source: '/blog', destination: '/blog.html' },
+        { source: '/waitlist', destination: '/waitlist.html' },
+        { source: '/design-canvas', destination: '/design-canvas.html' },
+      ],
+    };
   },
   async redirects() {
     return [
