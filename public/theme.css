@@ -367,6 +367,16 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   border-color: rgba(142, 166, 255, 0.54);
   transform: translateY(-1px);
 }
+[data-theme="light"] .btn-secondary {
+  background: #ffffff;
+  color: var(--fg);
+  border-color: rgba(55, 72, 110, 0.22);
+}
+[data-theme="light"] .btn-secondary:hover {
+  background: rgba(77, 102, 206, 0.08);
+  border-color: rgba(77, 102, 206, 0.40);
+  transform: translateY(-1px);
+}
 
 .btn-ghost {
   background: transparent;
