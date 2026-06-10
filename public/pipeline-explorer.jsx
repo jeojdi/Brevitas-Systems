@@ -131,12 +131,12 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
   const done = phase === 'done';
   const pending = phase === 'pending';
 
-  let statusText = '○ PENDING';
+  let statusText = 'waiting';
   let statusColor = 'var(--stone)';
-  if (phase === 'typing')      { statusText = '● GENERATING';  statusColor = 'var(--signal)'; }
-  else if (phase === 'highlighting') { statusText = '◐ MARKING DROPS'; statusColor = 'var(--oxblood)'; }
-  else if (phase === 'deleting')     { statusText = '◑ COMPRESSING';  statusColor = 'var(--bronze)'; }
-  else if (phase === 'done')         { statusText = '✓ DONE';  statusColor = 'var(--bone-dim)'; }
+  if (phase === 'typing')      { statusText = '● writing';  statusColor = 'var(--signal)'; }
+  else if (phase === 'highlighting') { statusText = '◐ reviewing'; statusColor = 'var(--oxblood)'; }
+  else if (phase === 'deleting')     { statusText = '◑ compressing';  statusColor = 'var(--bronze)'; }
+  else if (phase === 'done')         { statusText = '✓ done';  statusColor = 'var(--bone-dim)'; }
 
   return (
     <div style={{
@@ -240,13 +240,13 @@ function CostReadout({ task, mode, progress }) {
         textTransform: 'uppercase',
         color: 'var(--bronze)',
       }}>
-        Input tokens<br/>burned
+        tokens in
       </div>
 
       {/* Hop progress bars — aligned under the hop cards above */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace', fontSize: 9, color: 'var(--stone)', letterSpacing: '0.12em' }}>
-          <span>HOP 1</span><span>HOP 2</span><span>HOP 3</span>
+          <span>hop 1</span><span>hop 2</span><span>hop 3</span>
         </div>
         <div style={{ display: 'flex', gap: 10, height: 10 }}>
           {[1, 2, 3].map(n => {
@@ -269,8 +269,8 @@ function CostReadout({ task, mode, progress }) {
         </div>
       </div>
 
-      <Cell label="Baseline" value={baselineCum.toLocaleString()} color={showingOptimized ? 'var(--stone-2)' : 'var(--bone)'} />
-      <Cell label="Brevitas" value={optimizedCum.toLocaleString()} color={showingOptimized ? 'var(--bone)' : 'var(--stone-2)'} />
+      <Cell label="without" value={baselineCum.toLocaleString()} color={showingOptimized ? 'var(--stone-2)' : 'var(--bone)'} />
+      <Cell label="with brevitas" value={optimizedCum.toLocaleString()} color={showingOptimized ? 'var(--bone)' : 'var(--stone-2)'} />
       <Cell label="Saved" value={saved > 0 ? `−${saved.toLocaleString()}` : '—'} color="var(--signal)" />
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
@@ -659,8 +659,8 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 18 }}>
         <div style={{
           fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.16em',
-          textTransform: 'uppercase', color: 'var(--stone-2)', marginRight: 4,
-        }}>Try a task →</div>
+          color: 'var(--stone-2)', marginRight: 4,
+        }}>pick a task →</div>
         {TASKS.map(t => {
           const active = t.id === activeId;
           return (
@@ -685,7 +685,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         <div style={{
           fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.14em',
           color: 'var(--bronze)', flex: '0 0 auto', textTransform: 'uppercase',
-        }}>USER →</div>
+        }}>you →</div>
         <div style={{ fontFamily: 'Newsreader, serif', fontSize: 17, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
           {task.user}
         </div>
@@ -740,8 +740,8 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       }}>
         <div style={{ display: 'flex', gap: 0, border: '1px solid var(--line)', borderRadius: 2 }}>
           {[
-            { k: 'baseline', label: 'Raw (no layer)' },
-            { k: 'optimized', label: 'With Brevitas' },
+            { k: 'baseline', label: 'without brevitas' },
+            { k: 'optimized', label: 'with brevitas' },
           ].map(({ k, label }) => {
             const active = mode === k;
             return (
@@ -757,7 +757,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         </div>
         <div style={{
           display: 'flex', gap: 18, fontFamily: 'JetBrains Mono, monospace', fontSize: 10,
-          color: 'var(--stone-2)', letterSpacing: '0.08em', textTransform: 'uppercase',
+          color: 'var(--stone-2)', letterSpacing: '0.06em',
           flexWrap: 'wrap',
         }}>
           <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'var(--bone)', marginRight: 7, verticalAlign: 'middle' }} />Kept</span>

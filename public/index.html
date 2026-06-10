@@ -724,16 +724,11 @@ function LandingPage() {
         <div aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.60) 100%)' }} />
         {/* Layer 3: content — text-shadow lifts every element off the image */}
         <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#8ea6ff' }}>
-          <div style={{ maxWidth: 920, margin: '0 auto', textAlign: 'center' }}>
-            <Overline dot>infrastructure layer for multi-agent pipelines</Overline>
-            <div style={{ width: 92, height: 1, margin: '22px auto 0', background: 'var(--line)' }} />
-          </div>
-
           <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff' }}>
             the layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
           </h1>
-          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, margin: '0 auto 40px', textAlign: 'center' }}>
-            multi-agent pipelines lose 60% of their tokens to redundant inter-agent context. brevitas gives it back as a drop-in python sdk, without touching your agents, prompts, or models.
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center' }}>
+            most of what flows between agents is restated context. brevitas removes it before the next model sees it — no changes to your agents, prompts, or provider.
           </p>
           <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/waitlist">Join the waitlist</Button>
@@ -759,7 +754,7 @@ function LandingPage() {
         <div className="container">
           <div style={{ textAlign: 'center' }}>
             <p className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 28 }}>
-              With support and validation from:
+              trusted by teams from
             </p>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(32px, 6vw, 72px)', flexWrap: 'wrap' }}>
               {[
@@ -825,16 +820,14 @@ function LandingPage() {
               fontWeight: 400,
               color: 'var(--bone)'
             }}>
-              Context retained from originals
+              context makes it through
             </h3>
             <p className="t-body-lg fade-up delay-3" style={{
               color: 'var(--stone-2)',
-              maxWidth: 640,
+              maxWidth: 600,
               margin: '0 auto'
             }}>
-              While cutting tokens by 59.4%, Brevitas preserves virtually all meaningful context.
-              Your agents get the same information density in half the space — measured across
-              10,000+ production pipeline runs.
+              Cut tokens by 59.4%. Keep 99.6% of the signal. Measured across 10,000+ real pipeline runs — not synthetic benchmarks.
             </p>
           </div>
         </div>
@@ -844,8 +837,7 @@ function LandingPage() {
       <section className="section">
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 48 }}>
-            <Overline>THE PROBLEM, AND WHAT WE DO ABOUT IT</Overline>
-            <h2 className="t-h1" style={{ marginTop: 20, maxWidth: 940 }}>
+<h2 className="t-h1" style={{ marginTop: 20, maxWidth: 940 }}>
               Pick a task. Toggle the layer. <em style={{ fontStyle: 'italic', color: 'var(--signal)' }}>Watch the tokens drop.</em>
             </h2>
             <p className="t-body-lg" style={{ marginTop: 20, maxWidth: 680, color: 'var(--bone-dim)' }}>
@@ -860,21 +852,20 @@ function LandingPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 56 }}>
-            <Overline>HOW THE LAYER WORKS, IN ONE VIEW</Overline>
-            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 1000 }}>
-              Every message between agents is compressed, referenced, or sent as a delta. Your agents don't change. The tokens between them drop by half.
+            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
+              Most of what agents pass each other isn't new information.
             </h2>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'start' }} className="compression-grid">
             <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <p className="t-body-lg">
-                Agent outputs are full of connective tissue — articles, filler, restated context. None of it carries meaning a downstream agent can't recover from structure.
+                Agent outputs are full of connective tissue — restated context, filler, phrases the next agent doesn't need. It all gets billed anyway.
               </p>
               <p className="t-body">
-                Brevitas runs a relevance pass on every message between agents. Nouns, verbs, and key technical terms survive. Connectives fall away. The agents on either side don't notice.
+                Brevitas runs a relevance pass on every inter-agent message. The nouns, verbs, and technical terms survive. The connectives go. Neither agent notices.
               </p>
               <p className="t-body">
-                Compression is one of six techniques. The one you'd see first.
+                This is one of six things it does. The most visible one.
               </p>
               <div style={{ marginTop: 12 }}>
                 <a href="/how-it-works" className="btn btn-ghost underline">See the full mechanism →</a>
@@ -947,9 +938,8 @@ function LandingPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 40 }}>
-            <Overline>SIX STACKABLE TECHNIQUES</Overline>
             <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              One layer, six techniques. Task-aware routing decides which to apply per call.
+              Six things happen to every inter-agent message. Which ones depend on the pipeline.
             </h2>
           </div>
           <div className="fade-up delay-1">
@@ -966,13 +956,12 @@ function LandingPage() {
         <div className="container">
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'center' }} className="compression-grid">
             <div>
-              <Overline>INTEGRATION SURFACE</Overline>
-              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Import. Wrap. Ship.</h2>
+              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Two lines.</h2>
               <p className="t-body-lg" style={{ marginBottom: 16 }}>
-                Brevitas wraps your existing multi-agent orchestration. Keep your agents. Keep your prompts. Keep your models.
+                Your agents don't change. Your prompts don't change. Wrap the pipeline, and Brevitas handles the rest.
               </p>
               <p className="t-body">
-                Drop-in compatible with LangGraph, CrewAI, AutoGen, and custom pipelines. Provider-agnostic — validated against DeepSeek, Groq, and OpenAI running simultaneously in a three-agent pipeline.
+                Works with LangGraph, CrewAI, AutoGen, or whatever you've wired together yourself. Tested against DeepSeek, Groq, and OpenAI running in the same pipeline at the same time.
               </p>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1008,13 +997,12 @@ result = pipeline.run(task)
           <div className="benchmarks-split">
             {/* Left: editorial heading */}
             <div className="fade-up">
-              <Overline>VALIDATED ON</Overline>
               <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 20 }}>
-                Three peer-reviewed benchmarks.<br />
-                <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>Consistent results.</em>
+                We didn't<br />
+                <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>pick easy tests.</em>
               </h2>
               <p className="t-body" style={{ marginBottom: 40, maxWidth: 400 }}>
-                Every build runs against real multi-agent pipelines sourced from ICLR, ACL, and open leaderboards. No cherry-picked tasks.
+                AgentBench, MARBLE, and BattleAgentBench — published benchmarks used to evaluate real multi-agent behavior. We run all three on every build.
               </p>
               <a href="/benchmarks" className="btn btn-secondary">See full results →</a>
             </div>
@@ -1075,16 +1063,15 @@ result = pipeline.run(task)
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 56 }}>
-            <Overline>WHY NOW</Overline>
             <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              Three inflection points make the first half of 2026 the right moment.
+              The window is open now.
             </h2>
           </div>
           <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
             {[
-              { n: 'I', h: 'Multi-agent crossed from demo to default.', b: 'Production pipelines now run 5–50 inter-agent calls per user task. The redundancy scales with the number of agents.' },
-              { n: 'II', h: 'Cost accountability arrived.', b: 'AI spend is a real line item in 2026 P&Ls. Engineers have OKRs tied to inference cost. CFOs ask for breakdowns.' },
-              { n: 'III', h: 'The tooling gap is visible — and closing.', b: 'Observability has winners. Routing has winners. Inter-agent optimization has no one. The category window is open but won\'t stay open.' },
+              { n: 'I', h: 'Agents are in production.', b: 'Not in prototypes — in billing pipelines. Five to fifty inter-agent calls per task is common now. The redundancy compounds with every hop.' },
+              { n: 'II', h: 'Inference spend became a real number.', b: 'Engineering teams have cost OKRs. Finance asks for breakdowns. Nobody is saying "we\'ll optimize later" anymore.' },
+              { n: 'III', h: 'The gap is obvious.', b: 'Observability has Langfuse. Routing has LiteLLM. Nobody owns inter-agent optimization yet. That\'s changing.' },
             ].map((x, i) => (
               <li key={i} className="fade-up why-now-item" style={{
                 display: 'grid', gridTemplateColumns: '80px 1fr', gap: 32,
@@ -1110,7 +1097,7 @@ result = pipeline.run(task)
             <div>
               <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get on the list.</h2>
               <p className="t-body-lg" style={{ marginBottom: 0 }}>
-                We're onboarding design partners through Q3 2026. Tell us what you're building, get early access to the SDK and benchmark reports.
+                We're working with a small group of teams building serious multi-agent systems. Tell us what you're building.
               </p>
             </div>
             <div>

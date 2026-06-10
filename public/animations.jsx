@@ -419,11 +419,11 @@ function ThesisSequence() {
     if (!inView) return;
     if (reduced) { setS(5); return; }
     const ts = [
-      setTimeout(() => setS(1), 500),
-      setTimeout(() => setS(2), 1400),
-      setTimeout(() => setS(3), 2500),
-      setTimeout(() => setS(4), 3600),
-      setTimeout(() => setS(5), 4200),
+      setTimeout(() => setS(1), 300),
+      setTimeout(() => setS(2), 900),
+      setTimeout(() => setS(3), 1600),
+      setTimeout(() => setS(4), 2400),
+      setTimeout(() => setS(5), 2900),
     ];
     return () => ts.forEach(clearTimeout);
   }, [inView, reduced]);
@@ -435,7 +435,7 @@ function ThesisSequence() {
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? 'translateY(0)' : 'translateY(16px)',
-          transition: 'opacity 700ms var(--ease-out-soft), transform 700ms var(--ease-out-soft)',
+          transition: 'opacity 450ms var(--ease-out-soft), transform 450ms var(--ease-out-soft)',
           color: emphasis ? 'var(--fg)' : 'var(--bone-dim)',
           textWrap: 'balance',
         }}
@@ -466,7 +466,7 @@ function ThesisSequence() {
         marginBottom: 'clamp(48px, 7vh, 80px)',
         display: 'flex', flexDirection: 'column', alignItems: 'center',
       }}>
-        <div className="t-overline">THE STATE OF THE STACK — 2026</div>
+        <div className="t-overline">the state of the stack — 2026</div>
         <hr className="rule" style={{ width: 64, marginTop: 18, borderColor: 'var(--line)' }}/>
       </div>
 
