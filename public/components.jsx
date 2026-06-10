@@ -574,9 +574,21 @@ function Nav({ current }) {
 }
 
 function Footer() {
+  useEffect(() => {
+    if (typeof initMatrixCanvas === 'function') return initMatrixCanvas('footer-matrix');
+  }, []);
+
   return (
-    <footer className="footer">
-      <div className="container">
+    <footer className="footer" style={{ position: 'relative', overflow: 'hidden' }}>
+      {/* Layer 0: flowers — swaps by theme */}
+      <img className="hero-bg-dark"  src="/assets/flowers%20dark.png" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      <img className="hero-bg-light" src="/assets/flowers.png"        alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      {/* Layer 1: ASCII canvas — subtle opacity so it doesn't overwhelm */}
+      <canvas id="footer-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'screen', opacity: 0.45, pointerEvents: 'none' }} />
+      {/* Layer 2: heavy scrim so footer text stays legible */}
+      <div aria-hidden="true" className="footer-scrim" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }} />
+      {/* Layer 3: content */}
+      <div className="container" style={{ position: 'relative', zIndex: 3 }}>
         <div className="footer-grid">
           <div>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
@@ -617,7 +629,6 @@ function Footer() {
           <div className="legal">
             <a href="#">Privacy</a>
             <a href="#">Terms</a>
-            <span className="status-dot">status: operational</span>
           </div>
         </div>
       </div>

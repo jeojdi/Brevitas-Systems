@@ -613,7 +613,8 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         .bv-strip::-webkit-scrollbar-track { background: transparent }
         .bv-strip::-webkit-scrollbar-thumb { background: var(--stone); border-radius: 4px }
         @media (max-width: 900px) {
-          .bv-pipe-grid { grid-template-columns: 1fr !important; }
+          .bv-pipe-grid { grid-template-columns: 1fr !important; overflow-x: auto; }
+          .bv-strip { min-width: 540px; }
         }
         @keyframes bvFieldDrift { 0% { transform: translate(0,0) } 100% { transform: translate(-24px, -24px) } }
         @keyframes bvPulse { 0%, 100% { opacity: 0.25 } 50% { opacity: 0.75 } }
