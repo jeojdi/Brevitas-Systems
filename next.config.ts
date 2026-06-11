@@ -14,6 +14,14 @@ const nextConfig: NextConfig = {
         { source: '/blog', destination: '/blog.html' },
         { source: '/waitlist', destination: '/waitlist.html' },
         { source: '/design-canvas', destination: '/design-canvas.html' },
+        { source: '/blog/fable-5', destination: '/fable-5.html' },
+        { source: '/dashboard', destination: '/dashboard/index.html' },
+      ],
+      afterFiles: [
+        {
+          source: '/v1/:path*',
+          destination: `${process.env.API_URL || 'http://localhost:8000'}/v1/:path*`,
+        },
       ],
     };
   },
@@ -27,6 +35,7 @@ const nextConfig: NextConfig = {
       { source: '/blog.html', destination: '/blog', permanent: true },
       { source: '/waitlist.html', destination: '/waitlist', permanent: true },
       { source: '/design-canvas.html', destination: '/design-canvas', permanent: true },
+      { source: '/fable-5.html', destination: '/blog/fable-5', permanent: true },
     ];
   },
 };

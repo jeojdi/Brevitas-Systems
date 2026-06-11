@@ -25,6 +25,17 @@
 <script type="text/babel">
 const POSTS = [
   {
+    slug: 'fable-5',
+    url: '/blog/fable-5',
+    kicker: 'ENGINEERING · JUNE 2026',
+    title: 'Fable 5 is built for agents. The token bill will show it.',
+    dek: 'Anthropic\'s Mythos-class model is finally public. It\'s the best thing that\'s happened to multi-agent pipelines in a year. The pricing changes the math.',
+    date: 'Jun 10, 2026',
+    read: '8 min',
+    tag: 'Engineering',
+    featured: true,
+  },
+  {
     slug: '60-percent-waste',
     kicker: 'RESEARCH · APRIL 2026',
     title: 'The 60% waste nobody talks about.',
@@ -32,7 +43,6 @@ const POSTS = [
     date: 'Apr 18, 2026',
     read: '9 min',
     tag: 'Research',
-    featured: true,
   },
   {
     slug: 'why-caches-dont-help',
@@ -96,7 +106,7 @@ function TagPill({ children }) {
 
 function FeaturedCard({ post }) {
   return (
-    <a href="#" className="blog-featured" style={{
+    <a href={post.url || '#'} className="blog-featured" style={{
       display: 'grid',
       gridTemplateColumns: '1.2fr 1fr',
       gap: 0,
@@ -163,7 +173,7 @@ function FeaturedCard({ post }) {
 
 function PostCard({ post }) {
   return (
-    <a href="#" className="blog-card" style={{
+    <a href={post.url || '#'} className="blog-card" style={{
       display: 'block',
       padding: '32px 28px',
       border: '1px solid var(--line)',
@@ -200,7 +210,7 @@ function BlogPage() {
       <Nav current="blog" />
 
       {/* Hero header */}
-      <SectionShell overline="ENGINEERING NOTES" overlineDot>
+      <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px' }}>
           Notes.
         </h1>
@@ -218,7 +228,6 @@ function BlogPage() {
       <section className="section" style={{ paddingTop: 72, paddingBottom: 120 }}>
         <div className="container">
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 40, flexWrap: 'wrap', gap: 16 }}>
-            <Overline>ALL POSTS</Overline>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {['All', 'Research', 'Engineering', 'Method', 'Essay', 'Benchmarks', 'Program'].map((tag, i) => (
                 <button key={tag} className="blog-filter" style={{
@@ -247,8 +256,7 @@ function BlogPage() {
         <div className="container">
           <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 60, alignItems: 'center', maxWidth: 1100 }} className="blog-newsletter">
             <div>
-              <Overline dot>THE DISPATCH</Overline>
-              <h2 className="t-h2" style={{ margin: '20px 0 16px' }}>
+              <h2 className="t-h2" style={{ margin: '0 0 16px' }}>
                 <em style={{ fontStyle: 'italic' }}>A monthly note from the team.</em>
               </h2>
               <p className="t-body" style={{ margin: 0, color: 'var(--stone-2)' }}>

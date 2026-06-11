@@ -232,7 +232,7 @@ function BenchmarksPage() {
     <>
       <Nav current="benchmarks" />
 
-      <SectionShell overline="MEASURED RESULTS" overlineDot>
+      <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
           60 tasks. Three agents. Full provenance.
         </h1>
@@ -270,8 +270,7 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 48 }}>
-            <Overline>DISTRIBUTION</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Savings held across the entire task set.</h2>
+            <h2 className="t-h2" style={{ margin: '0 0 20px' }}>Savings held across the entire task set.</h2>
             <p className="t-body">
               Per-task savings, grouped into 2-percentage-point bins. The mean sits at 59.4%; the 95% confidence interval covers 56% to 64%. No task saved less than 50%. Tail is tighter than a normal distribution.
             </p>
@@ -284,8 +283,7 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 48 }}>
-            <Overline>TECHNIQUE CONTRIBUTION</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Where the savings came from.</h2>
+            <h2 className="t-h2" style={{ margin: '0 0 20px' }}>Where the savings came from.</h2>
             <p className="t-body">
               Attribution is per-call, traced by the report object. Compression is the largest line item; reference-based shared memory is second; the routing layer's ability to skip unneeded techniques accounts for its own savings in avoided overhead.
             </p>
@@ -298,8 +296,7 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>PER-CALL BREAKDOWN</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>One task, three hops, input tokens per call.</h2>
+            <h2 className="t-h2" style={{ margin: '0 0 20px' }}>One task, three hops, input tokens per call.</h2>
             <p className="t-body">
               Bronze bars show optimized; outlined bars show baseline. The Reviewer hop benefits most, because by then the shared state is large and most of it doesn't need re-sending.
             </p>
@@ -315,8 +312,7 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 780, marginBottom: 40 }}>
-            <Overline>SETUP</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Full experimental setup.</h2>
+            <h2 className="t-h2" style={{ margin: '0 0 20px' }}>Full experimental setup.</h2>
             <p className="t-body">
               Everything you'd want if you were reviewing the numbers critically.
             </p>
@@ -330,8 +326,7 @@ function BenchmarksPage() {
       {/* Honest caveats */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
-          <Overline>CAVEATS</Overline>
-          <h2 className="t-h2" style={{ margin: '24px 0 28px' }}>
+          <h2 className="t-h2" style={{ margin: '0 0 28px' }}>
             <em style={{ fontStyle: 'italic' }}>What this doesn't say.</em>
           </h2>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -358,8 +353,7 @@ function BenchmarksPage() {
       <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 720 }}>
-            <Overline dot>RUN IT YOURSELF</Overline>
-            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 16 }}>Want the harness?</h2>
+            <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 16 }}>Want the harness?</h2>
             <p className="t-body-lg" style={{ marginBottom: 32 }}>
               Design partners get the harness code, the task set, and a custom report on their own pipeline.
             </p>

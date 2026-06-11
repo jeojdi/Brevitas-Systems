@@ -149,7 +149,7 @@ function HowItWorksPage() {
       <Nav current="how" />
 
       {/* Hero */}
-      <SectionShell overline="THE MECHANISM" overlineDot>
+      <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
           Six techniques. One layer. Task-aware routing decides which to apply per call.
         </h1>
@@ -162,8 +162,7 @@ function HowItWorksPage() {
       {/* Architecture */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
-          <Overline>THE ARCHITECTURE</Overline>
-          <h2 className="t-h2" style={{ marginTop: 24, marginBottom: 40, maxWidth: 900 }}>
+          <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 40, maxWidth: 900 }}>
             One diagram. The layer sits between each pair of agents.
           </h2>
           <ArchDiagram />
@@ -251,8 +250,7 @@ should encapsulate domain operations. The persistence layer mediates..."
       {/* Stacking */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 760 }}>
-          <Overline>STACKING</Overline>
-          <h2 className="t-h2" style={{ margin: '24px 0 24px' }}>Why they stack.</h2>
+          <h2 className="t-h2" style={{ margin: '0 0 24px' }}>Why they stack.</h2>
           <p className="t-body-lg" style={{ marginBottom: 20 }}>
             The techniques are designed to compose. Compression gets you the first 40% of savings on most pipelines. Reference and delta peel off another 15–20% where the pipeline has shared state. Pruning and protocol earn the last 5–15%.
           </p>
@@ -267,8 +265,7 @@ should encapsulate domain operations. The persistence layer mediates..."
       <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 720 }}>
-            <Overline dot>JOIN THE LIST</Overline>
-            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 32 }}>Want to run the harness yourself?</h2>
+            <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 32 }}>Want to run the harness yourself?</h2>
             <WaitlistInput source="how-final" />
           </div>
         </div>
