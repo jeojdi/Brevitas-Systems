@@ -64,3 +64,11 @@ __pycache__/
 # secrets & local databases - NEVER commit these
 .secret_key
 *.db
+
+# api runtime artifacts / secrets (added during PR #5 merge cleanup)
+api/.secret_key
+api/brevitas.db
+api/__pycache__/
+**/__pycache__/
+*.pyc
+dashboard/node_modules/
