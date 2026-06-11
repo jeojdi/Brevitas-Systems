@@ -5,7 +5,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Docs · Brevitas Systems</title>
-<meta name="description" content="Developer documentation for the Brevitas SDK.">
+<meta name="description" content="API reference for the Brevitas token efficiency API.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -26,27 +26,27 @@
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
+const BASE_URL = 'https://your-api-host';
+
 const TOC = [
   { group: 'GETTING STARTED', items: [
-    { id: 'intro', label: 'Introduction' },
-    { id: 'install', label: 'Installation' },
-    { id: 'quickstart', label: 'Quickstart' },
+    { id: 'overview',    label: 'Overview' },
+    { id: 'auth',        label: 'Authentication' },
   ]},
-  { group: 'CORE CONCEPTS', items: [
-    { id: 'pipelines', label: 'Pipelines' },
-    { id: 'techniques', label: 'The six techniques' },
-    { id: 'report', label: 'The report object' },
+  { group: 'ENDPOINTS', items: [
+    { id: 'compress',   label: 'POST /v1/compress' },
+    { id: 'stats',      label: 'GET /v1/stats' },
+    { id: 'provider',   label: 'Provider config' },
+    { id: 'keys',       label: 'Key management' },
   ]},
-  { group: 'REFERENCE', items: [
-    { id: 'api-optimize', label: 'optimize()' },
-    { id: 'api-config', label: 'Config' },
-    { id: 'integrations', label: 'Integrations' },
-    { id: 'limits', label: 'Caveats & known limits' },
+  { group: 'GUIDES', items: [
+    { id: 'examples',   label: 'Code examples' },
+    { id: 'deployment', label: 'Deployment' },
   ]},
 ];
 
 function DocsPage() {
-  const [active, setActive] = useState('intro');
+  const [active, setActive] = useState('overview');
 
   useEffect(() => {
     const obs = new IntersectionObserver((entries) => {
@@ -67,8 +67,8 @@ function DocsPage() {
           <aside className="docs-side">
             <div className="docs-side-inner">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28 }}>
-                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>DOCS</span>
-                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>v0.2.0-alpha</span>
+                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>API REFERENCE</span>
+                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>v1</span>
               </div>
               {TOC.map(group => (
                 <div key={group.group} style={{ marginBottom: 28 }}>
@@ -89,177 +89,298 @@ function DocsPage() {
               ))}
 
               <div style={{ marginTop: 40, padding: 16, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
-                <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 8 }}>NOTE</div>
+                <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 8 }}>DASHBOARD</div>
                 <div className="t-body" style={{ fontSize: 13, margin: 0 }}>
-                  SDK is in private beta. Full reference docs ship with GA. Design partners get complete docs now.
+                  Manage keys, run live requests, and view token savings in the dashboard.
                 </div>
-                <a href="/waitlist" className="btn-inline" style={{ marginTop: 12, display: 'inline-block', fontSize: 13, color: 'var(--bronze)' }}>Request access →</a>
+                <a href="/dashboard" className="btn-inline" style={{ marginTop: 12, display: 'inline-block', fontSize: 13, color: 'var(--bronze)' }}>Open dashboard →</a>
               </div>
             </div>
           </aside>
 
           {/* Main */}
           <main className="docs-main">
-            <Section id="intro" kicker="GETTING STARTED · 01" title={<>Introduction.</>}>
+
+            <Section id="overview" kicker="GETTING STARTED · 01" title={<>Overview.</>}>
               <p className="t-body-lg">
-                Brevitas is a drop-in Python SDK that reduces token consumption in multi-agent pipelines by compressing, de-duplicating, and referencing inter-agent communication. It wraps your existing orchestration; your agents, prompts, and model choices stay unchanged.
+                Brevitas sits between agent hops. Instead of forwarding raw accumulated context to the next model, POST it to <span className="mono bronze">/v1/compress</span>. The pipeline compresses messages, prunes low-relevance context, and returns only what the next agent needs — with exact token counts before and after.
               </p>
-              <p className="t-body">
-                The library operates at the <em style={{ fontStyle: 'italic' }}>pipeline</em> level — between agent calls — which lets it capture redundancy that per-call compressors and native prompt caches cannot see.
-              </p>
-              <DocsCallout type="hint">
-                If you're new to this, read the <a href="/how-it-works" className="underline">How it works</a> page first. It's a six-minute read that covers the mechanism.
-              </DocsCallout>
-            </Section>
-
-            <Section id="install" kicker="GETTING STARTED · 02" title={<>Installation.</>}>
-              <p className="t-body">Brevitas requires Python 3.10 or higher. Install from PyPI:</p>
-              <CodeBlockPy source={`$ pip install brevitas`} />
-              <p className="t-body" style={{ marginTop: 20 }}>No sidecar, no daemon. The library is pure Python with optional C extensions for the delta engine.</p>
-            </Section>
-
-            <Section id="quickstart" kicker="GETTING STARTED · 03" title={<>Quickstart.</>}>
-              <p className="t-body">Wrap your existing pipeline — a list of callables — with <span className="mono bronze">optimize()</span> and run it as you normally would:</p>
-              <CodeBlockPy filename="quickstart.py" copyable source={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
-
-pipeline = optimize([architect, builder, reviewer])
-result = pipeline.run(task)
-
-report = pipeline.report()
-print(report.summary())
-# Baseline:  6,140 tokens · $0.001616
-# Optimized: 2,490 tokens · $0.000857
-# Savings:   59.4% tokens · 47.0% cost
-# Quality:   99.2% vs. baseline (n=60 runs)`} />
-              <DocsCallout type="hint">
-                On the first run, Brevitas instruments the pipeline and produces a baseline trace. The second run onward uses the full optimization stack.
-              </DocsCallout>
-            </Section>
-
-            <Section id="pipelines" kicker="CORE CONCEPTS · 01" title={<>Pipelines.</>}>
-              <p className="t-body-lg">A pipeline is a sequence of agent callables that share state. Brevitas doesn't care how you wire them — a list, a <span className="mono bronze">LangGraph</span>, a <span className="mono bronze">CrewAI</span> crew — as long as the objects are callable.</p>
-              <p className="t-body">The <span className="mono bronze">optimize()</span> wrapper accepts:</p>
-              <table className="docs-table">
-                <thead><tr><th>Input</th><th>Handling</th></tr></thead>
-                <tbody>
-                  <tr><td><span className="mono">list[Callable]</span></td><td>Treated as linear pipeline.</td></tr>
-                  <tr><td><span className="mono">langgraph.Graph</span></td><td>Graph is traversed; optimization applied at every edge.</td></tr>
-                  <tr><td><span className="mono">crewai.Crew</span></td><td>Crew is wrapped; inter-task messages are optimized.</td></tr>
-                  <tr><td><span className="mono">Callable</span></td><td>Single-agent no-op. Returned unchanged.</td></tr>
-                </tbody>
-              </table>
-            </Section>
-
-            <Section id="techniques" kicker="CORE CONCEPTS · 02" title={<>The six techniques.</>}>
-              <p className="t-body">Each inter-agent call is routed through some subset of the six techniques. The router decides; you can override.</p>
-              <ol style={{ paddingLeft: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 2, padding: '20px 24px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--stone-2)', lineHeight: 1.7 }}>
+                <div style={{ color: 'var(--stone)', marginBottom: 8 }}>{'// typical flow'}</div>
+                <pre style={{ margin: 0, whiteSpace: 'pre', overflowX: 'auto' }}>{`agent_1_output  ─┐
+prior_context   ─┤─▶  POST /v1/compress  ─▶  compressed_messages
+new_task        ─┘                            pruned_context
+                                              savings_pct
+                                                   │
+                                                   ▼
+                                             agent_2 (receives less)`}</pre>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginTop: 8 }}>
                 {[
-                  ['Inter-agent message compression', 'Relevance-model compression of prose, preserving meaning-bearing tokens.'],
-                  ['Shared memory with references', 'Materialize outputs once; pass mem:// references.'],
-                  ['Delta mode', 'After first pass, send only state changes.'],
-                  ['Smart context pruning', 'Drop sections the next agent won\'t use.'],
-                  ['Compact message protocol', 'Schema-based wire format; rendered text on both ends.'],
-                  ['Task-aware routing', 'Per-call decision on which techniques to apply.'],
-                ].map(([h, b], i) => (
-                  <li key={i}>
-                    <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
-                      <span className="serif" style={{ fontSize: 18, color: 'var(--fg)' }}>{h}.</span>
-                      <span className="t-body" style={{ fontSize: 14, color: 'var(--stone-2)' }}>{b}</span>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </Section>
-
-            <Section id="report" kicker="CORE CONCEPTS · 03" title={<>The report object.</>}>
-              <p className="t-body">Every pipeline run emits a typed report. It's inspectable, serializable, and diffable across runs.</p>
-              <CodeBlockPy filename="report.py" copyable source={`report = pipeline.report()
-
-report.tokens_saved          # int
-report.cost_delta            # float (USD)
-report.quality_parity        # float (0.0–1.0)
-report.savings_by_technique  # dict[str, float]
-report.per_call              # list[CallTrace]
-
-# serialize
-report.to_json("run_2026_04_23.json")
-report.to_pandas()  # DataFrame, one row per call`} />
-            </Section>
-
-            <Section id="api-optimize" kicker="REFERENCE · 01" title={<>optimize().</>}>
-              <CodeBlockPy source={`brevitas.optimize(
-    pipeline: Pipeline,
-    *,
-    compression_ratio: float = 0.5,
-    techniques: list[str] | "auto" = "auto",
-    shared_memory: MemoryBackend = InMemory(),
-    trace: bool = True,
-) -> OptimizedPipeline`} />
-              <table className="docs-table">
-                <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
-                <tbody>
-                  <tr><td><span className="mono">pipeline</span></td><td><span className="mono stone">required</span></td><td>The pipeline to optimize.</td></tr>
-                  <tr><td><span className="mono">compression_ratio</span></td><td><span className="mono">0.5</span></td><td>Target output/input ratio for prose compression. Lower = more aggressive.</td></tr>
-                  <tr><td><span className="mono">techniques</span></td><td><span className="mono">"auto"</span></td><td>Subset of techniques to enable, or "auto" for router.</td></tr>
-                  <tr><td><span className="mono">shared_memory</span></td><td><span className="mono">InMemory()</span></td><td>Backend for mem:// references. Swap for Redis, DuckDB, etc.</td></tr>
-                  <tr><td><span className="mono">trace</span></td><td><span className="mono">True</span></td><td>Emit per-call traces. Required for report(). Disable in prod for µs latency win.</td></tr>
-                </tbody>
-              </table>
-            </Section>
-
-            <Section id="api-config" kicker="REFERENCE · 02" title={<>Config.</>}>
-              <p className="t-body">Granular config for per-agent or per-task-class overrides:</p>
-              <CodeBlockPy filename="config.py" copyable source={`from brevitas import optimize, Config
-
-cfg = Config(
-    compression_ratio=0.5,
-    per_agent={
-        "reviewer": {"techniques": ["compress", "prune"]},
-        "builder":  {"compression_ratio": 0.3},  # more aggressive
-    },
-    per_task_class={
-        "code_generation": {"preserve_tokens": ["def", "class", "import"]},
-    },
-)
-
-pipeline = optimize(agents, config=cfg)`} />
-            </Section>
-
-            <Section id="integrations" kicker="REFERENCE · 03" title={<>Integrations.</>}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-                {[
-                  ['LangGraph', 'first-class'],
-                  ['CrewAI', 'first-class'],
-                  ['AutoGen', 'first-class'],
-                  ['OpenAI Swarm', 'first-class'],
-                  ['DSPy', 'preview'],
-                  ['Semantic Kernel', 'preview'],
-                  ['Custom', 'callable interface'],
-                ].map(([name, status]) => (
-                  <div key={name} style={{ padding: 16, border: '1px solid var(--line)', borderRadius: 2, background: 'var(--ink-2)' }}>
-                    <div className="serif" style={{ fontSize: 18, marginBottom: 6 }}>{name}</div>
-                    <div className="t-mono" style={{ fontSize: 10, color: status === 'preview' ? 'var(--bronze)' : 'var(--signal)' }}>{status.toUpperCase()}</div>
+                  ['Compression', 'Rewrites verbose agent messages to be semantically dense.'],
+                  ['Context pruning', 'Scores and keeps only the most task-relevant prior context chunks.'],
+                  ['Token accounting', 'Returns exact before/after token counts on every call.'],
+                ].map(([h, b]) => (
+                  <div key={h} style={{ padding: 16, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
+                    <div className="serif" style={{ fontSize: 16, marginBottom: 6 }}>{h}</div>
+                    <div className="t-body" style={{ fontSize: 13, color: 'var(--stone-2)' }}>{b}</div>
                   </div>
                 ))}
               </div>
+              <p className="t-mono" style={{ fontSize: 12, color: 'var(--stone)' }}>
+                Base URL: <span style={{ color: 'var(--bone-dim)' }}>{BASE_URL}</span>
+              </p>
             </Section>
 
-            <Section id="limits" kicker="REFERENCE · 04" title={<>Caveats & known limits.</>}>
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {[
-                  'Single-agent workflows get no benefit — the router degrades to a no-op.',
-                  'Pipelines with <2 inter-agent calls save <10% in most cases. Brevitas is calibrated for longer chains.',
-                  'Streaming responses are supported; optimization is applied at chunk boundaries.',
-                  'Function-calling arguments are preserved verbatim by default; compression is opt-in per tool.',
-                  'Quality parity is measured against a harness. Your pipeline may score differently; we recommend a 60-run baseline before committing.',
-                ].map((t, i) => (
-                  <li key={i} style={{ display: 'flex', gap: 14 }}>
-                    <span className="t-mono" style={{ color: 'var(--stone)', flexShrink: 0 }}>−</span>
-                    <span className="t-body" style={{ fontSize: 14 }}>{t}</span>
-                  </li>
-                ))}
-              </ul>
+            <Section id="auth" kicker="GETTING STARTED · 02" title={<>Authentication.</>}>
+              <p className="t-body">
+                Every request except <span className="mono bronze">POST /v1/keys</span> and <span className="mono bronze">GET /v1/health</span> requires a Brevitas API key in the <span className="mono bronze">X-API-Key</span> header. Keys are hashed with SHA-256 before storage — the raw key is returned once at creation time only.
+              </p>
+              <CodeBlock lang="http" code={`X-API-Key: bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
+            </Section>
+
+            <Section id="compress" kicker="ENDPOINTS · 01" title={<>POST /v1/compress.</>}>
+              <Endpoint method="POST" path="/v1/compress" label="main endpoint — compress + prune agent context" />
+              <p className="t-body">
+                Runs the full compression pipeline and returns optimised text plus real token savings. The configured model backend receives the compressed prompt; its response is included in the reply. Rate limited to <strong style={{ color: 'var(--fg)' }}>60 requests/minute</strong> per key.
+              </p>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4 }}>{'// request body'}</div>
+              <table className="docs-table">
+                <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">messages</span></td><td><span className="mono stone">string[]</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>Agent outputs to compress. Max 100 elements, 50 k chars each.</td></tr>
+                  <tr><td><span className="mono">prior_context</span></td><td><span className="mono stone">string[]</span></td><td><span className="mono stone">optional</span></td><td>Context chunks to prune. Max 200 elements.</td></tr>
+                  <tr><td><span className="mono">task</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Current task description — used to score context relevance. Max 2,000 chars.</td></tr>
+                  <tr><td><span className="mono">complexity</span></td><td><span className="mono stone">float</span></td><td><span className="mono stone">optional</span></td><td>Task complexity 0–1. Higher = more context kept. Default 0.5.</td></tr>
+                  <tr><td><span className="mono">urgency</span></td><td><span className="mono stone">float</span></td><td><span className="mono stone">optional</span></td><td>Urgency 0–1. Higher = favour recency in pruning. Default 0.5.</td></tr>
+                  <tr><td><span className="mono">compression_level</span></td><td><span className="mono stone">int</span></td><td><span className="mono stone">optional</span></td><td>1 light · 2 medium · 3 aggressive. Default 2.</td></tr>
+                  <tr><td><span className="mono">prune_budget</span></td><td><span className="mono stone">int</span></td><td><span className="mono stone">optional</span></td><td>Max context chunks to keep (1–50). Default 5.</td></tr>
+                  <tr><td><span className="mono">delta_mode</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>"off" | "on". Sends delta patches after turn 1 to further reduce payload size.</td></tr>
+                  <tr><td><span className="mono">wire_mode</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>"json" | "msgpack". Internal protocol wire format.</td></tr>
+                </tbody>
+              </table>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// response'}</div>
+              <CodeBlock lang="json" code={`{
+  "compressed_messages": ["…"],   // rewritten, shorter versions of your messages
+  "pruned_context":      ["…"],   // context chunks that survived pruning
+  "baseline_tokens":     312,     // token count BEFORE compression
+  "optimized_tokens":    118,     // token count AFTER compression
+  "savings_pct":         62.18,   // (baseline - optimized) / baseline × 100
+  "quality_proxy":       0.9731,  // context-retention score 0–1
+  "routed_model_hint":   "llama-large",  // model tier selected by router
+  "model_response":      "…",     // response from your configured model backend
+  "state_id":            "abc123…"       // snapshot id (used by delta mode)
+}`} />
+            </Section>
+
+            <Section id="stats" kicker="ENDPOINTS · 02" title={<>GET /v1/stats.</>}>
+              <Endpoint method="GET" path="/v1/stats" label="aggregated token savings for your key" />
+              <CodeBlock lang="json" code={`{
+  "total_calls":            42,
+  "total_tokens_saved":     18420,
+  "avg_savings_pct":        61.4,
+  "avg_quality_proxy":      0.971,
+  "total_baseline_tokens":  30000,
+  "total_optimized_tokens": 11580,
+  "history": [
+    {
+      "timestamp":        "2026-06-11T14:22:01+00:00",
+      "baseline_tokens":  312,
+      "optimized_tokens": 118,
+      "savings_pct":      62.18,
+      "quality_proxy":    0.9731
+    }
+  ]
+}`} />
+            </Section>
+
+            <Section id="provider" kicker="ENDPOINTS · 03" title={<>Provider config.</>}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                <div>
+                  <Endpoint method="GET" path="/v1/provider" label="get current model backend" />
+                  <CodeBlock lang="json" code={`{
+  "provider":    "anthropic",
+  "model":       "claude-sonnet-4-6",
+  "has_api_key": true,
+  "masked_key":  "********3x9f"
+}`} />
+                </div>
+
+                <div>
+                  <Endpoint method="PUT" path="/v1/provider" label="set model backend" />
+                  <table className="docs-table">
+                    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                      <tr><td><span className="mono">provider</span></td><td><span className="mono stone">string</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>ollama · anthropic · openai · grok · deepseek</td></tr>
+                      <tr><td><span className="mono">model</span></td><td><span className="mono stone">string</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>Model name for the chosen provider.</td></tr>
+                      <tr><td><span className="mono">provider_api_key</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Provider API key. Required for all except ollama. Stored encrypted at rest.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div>
+                  <Endpoint method="GET" path="/v1/providers" label="list all supported providers and models" />
+                </div>
+              </div>
+            </Section>
+
+            <Section id="keys" kicker="ENDPOINTS · 04" title={<>Key management.</>}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                <div>
+                  <Endpoint method="POST" path="/v1/keys" label="create a Brevitas API key — no auth required · 10/min" />
+                  <table className="docs-table">
+                    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                      <tr><td><span className="mono">name</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Human-readable label. Max 100 chars. Default "default".</td></tr>
+                    </tbody>
+                  </table>
+                  <CodeBlock lang="json" code={`// response — the api_key is shown once, store it immediately
+{
+  "api_key": "bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "name":    "my-agent-project"
+}`} />
+                </div>
+                <div>
+                  <Endpoint method="GET" path="/v1/keys" label="list keys (names + dates, no raw values)" />
+                </div>
+              </div>
+            </Section>
+
+            <Section id="examples" kicker="GUIDES · 01" title={<>Code examples.</>}>
+              <CodeBlock lang="python" code={`import requests
+
+BREVITAS_KEY = "bvt_your_key_here"
+BASE         = "${BASE_URL}"
+HEADERS      = {"X-API-Key": BREVITAS_KEY, "Content-Type": "application/json"}
+
+def compress(messages: list[str], prior_context: list[str], task: str = "") -> dict:
+    r = requests.post(
+        f"{BASE}/v1/compress",
+        headers=HEADERS,
+        json={
+            "messages":          messages,
+            "prior_context":     prior_context,
+            "task":              task,
+            "compression_level": 2,
+            "prune_budget":      5,
+        },
+    )
+    r.raise_for_status()
+    return r.json()
+
+# In your agent pipeline:
+result = compress(
+    messages=["Agent 1 produced a long analysis of the user's data pipeline…"],
+    prior_context=["User is on Python 3.11.", "Project uses pandas.", "Tests use pytest."],
+    task="Write a data validation function",
+)
+
+# Pass these to agent 2 — NOT the raw context
+agent2_input = result["compressed_messages"] + result["pruned_context"]
+print(f"Saved {result['savings_pct']}%  |  retained {result['quality_proxy']*100:.1f}% context")`} />
+
+              <CodeBlock lang="javascript" code={`const BREVITAS_KEY = "bvt_your_key_here";
+const BASE = "${BASE_URL}";
+
+async function compress(messages, priorContext, task = "") {
+  const res = await fetch(\`\${BASE}/v1/compress\`, {
+    method: "POST",
+    headers: {
+      "X-API-Key": BREVITAS_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messages,
+      prior_context: priorContext,
+      task,
+      compression_level: 2,
+      prune_budget: 5,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+const result = await compress(
+  ["Agent 1 output…"],
+  ["Context chunk 1", "Context chunk 2"],
+  "Generate a report"
+);
+
+// Feed these to your next agent
+const agent2Input = [...result.compressed_messages, ...result.pruned_context];
+console.log(\`Saved \${result.savings_pct}% · \${result.optimized_tokens} tokens out\`);`} />
+
+              <CodeBlock lang="bash" code={`# Create an API key
+curl -X POST ${BASE_URL}/v1/keys \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "my-project"}'
+
+# Compress context
+curl -X POST ${BASE_URL}/v1/compress \\
+  -H "X-API-Key: bvt_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "task": "Write a data validation function",
+    "messages": ["Agent 1 produced a long analysis..."],
+    "prior_context": ["User is on Python 3.11.", "Project uses pandas."],
+    "compression_level": 2,
+    "prune_budget": 5
+  }'
+
+# Check token savings
+curl ${BASE_URL}/v1/stats \\
+  -H "X-API-Key: bvt_your_key_here"`} />
+            </Section>
+
+            <Section id="deployment" kicker="GUIDES · 02" title={<>Deployment.</>}>
+              <p className="t-body">
+                Brevitas is designed to run as a self-hosted sidecar alongside your agent pipeline. Configure it with environment variables and put it behind a TLS-terminating proxy for external access.
+              </p>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4 }}>{'// environment variables'}</div>
+              <table className="docs-table">
+                <thead><tr><th>Variable</th><th>Required</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">BREVITAS_SECRET_KEY</span></td><td><span className="mono stone">optional</span></td><td>Fernet key for encrypting provider API keys at rest. Auto-generated and saved to .secret_key if not set.</td></tr>
+                  <tr><td><span className="mono">ALLOWED_ORIGINS</span></td><td><span className="mono stone">optional</span></td><td>Comma-separated CORS origins. Default "*". Set to your frontend URL in production.</td></tr>
+                  <tr><td><span className="mono">OLLAMA_HOST</span></td><td><span className="mono stone">optional</span></td><td>Ollama base URL. Default http://localhost:11434.</td></tr>
+                </tbody>
+              </table>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// start the server'}</div>
+              <CodeBlock lang="bash" code={`# Single worker (default)
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+
+# Multiple workers for concurrent load
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 4
+
+# With a custom secret key (recommended for production)
+BREVITAS_SECRET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \\
+ALLOWED_ORIGINS="https://your-dashboard.example.com" \\
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 4`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// TLS via Caddy (recommended)'}</div>
+              <CodeBlock lang="caddyfile" code={`# Caddyfile
+brevitas.yourdomain.com {
+    reverse_proxy localhost:8000
+}`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// or nginx'}</div>
+              <CodeBlock lang="nginx" code={`server {
+    listen 443 ssl;
+    server_name brevitas.yourdomain.com;
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}`} />
             </Section>
 
             <div style={{ borderTop: '1px solid var(--line)', marginTop: 80, paddingTop: 40, paddingBottom: 80 }}>
@@ -327,6 +448,67 @@ pipeline = optimize(agents, config=cfg)`} />
           border-bottom-color: var(--stone-2);
         }
         .docs-table td { color: var(--bone-dim); }
+        .endpoint-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 14px;
+          background: var(--ink-2);
+          border: 1px solid var(--line);
+          border-radius: 2px;
+          margin-bottom: 16px;
+        }
+        .method-badge {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 2px 6px;
+          border-radius: 2px;
+        }
+        .method-POST { background: #3b4fd8; color: #fff; }
+        .method-GET  { background: #1a8a6f; color: #fff; }
+        .method-PUT  { background: #b45309; color: #fff; }
+        .code-block-wrap {
+          border-radius: 2px;
+          overflow: hidden;
+          margin: 12px 0;
+        }
+        .code-block-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: #0c0c0c;
+          border-bottom: 1px solid #222;
+          padding: 8px 16px;
+        }
+        .code-block-lang {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          color: #555;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+        .code-block-copy {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          color: #555;
+          background: none;
+          border: none;
+          cursor: pointer;
+          transition: color 150ms;
+        }
+        .code-block-copy:hover { color: #aaa; }
+        .code-block-pre {
+          background: #0c0c0c;
+          padding: 20px;
+          margin: 0;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 12px;
+          color: #ccc;
+          overflow-x: auto;
+          line-height: 1.7;
+          white-space: pre;
+        }
         @media (max-width: 900px) {
           .docs-shell { grid-template-columns: 1fr; gap: 32px; }
           .docs-side-inner { position: static; }
@@ -350,22 +532,30 @@ function Section({ id, kicker, title, children }) {
   );
 }
 
-function DocsCallout({ type, children }) {
-  const colors = {
-    hint: { border: 'var(--bronze)', label: 'HINT' },
-    warn: { border: 'var(--signal)', label: 'NOTE' },
-  };
-  const c = colors[type] || colors.hint;
+function Endpoint({ method, path, label }) {
   return (
-    <div style={{
-      borderLeft: `2px solid ${c.border}`,
-      padding: '16px 20px',
-      background: 'var(--ink-2)',
-      marginTop: 8,
-      marginBottom: 8,
-    }}>
-      <div className="t-mono" style={{ color: c.border, fontSize: 11, marginBottom: 6 }}>{c.label}</div>
-      <div className="t-body" style={{ fontSize: 14, margin: 0 }}>{children}</div>
+    <div className="endpoint-badge">
+      <span className={`method-badge method-${method}`}>{method}</span>
+      <span className="t-mono" style={{ fontSize: 13, color: 'var(--bone-dim)' }}>{path}</span>
+      {label && <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>— {label}</span>}
+    </div>
+  );
+}
+
+function CodeBlock({ lang, code }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="code-block-wrap">
+      <div className="code-block-header">
+        <span className="code-block-lang">{lang}</span>
+        <button className="code-block-copy" onClick={copy}>{copied ? 'copied!' : 'copy'}</button>
+      </div>
+      <pre className="code-block-pre">{code}</pre>
     </div>
   );
 }
