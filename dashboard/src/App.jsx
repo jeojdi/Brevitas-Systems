@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import KeySetup from './components/KeySetup.jsx'
+import { supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supabase.js'
+import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
@@ -33,12 +34,13 @@ function SunIcon() {
 }
 
 export default function App() {
-  const [apiKey, setApiKey]       = useState(() => localStorage.getItem('bvt_api_key') || '')
+  const [session, setSession]     = useState(null)
+  const [apiKey, setApiKey]       = useState('')
+  const [keyLoading, setKeyLoading] = useState(false)
+  const [keyError, setKeyError]   = useState('')
+  const [authLoading, setAuthLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('Overview')
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
-
-  const saveKey  = (key) => { localStorage.setItem('bvt_api_key', key); setApiKey(key) }
-  const clearKey = () => { localStorage.removeItem('bvt_api_key'); setApiKey('') }
 
   const toggleDark = () => {
     const next = !darkMode
@@ -50,7 +52,83 @@ export default function App() {
     document.documentElement.classList.toggle('dark', darkMode)
   }, [darkMode])
 
-  if (!apiKey) return <KeySetup onSave={saveKey} darkMode={darkMode} onToggleDark={toggleDark} />
+  // Initialise Supabase session
+  useEffect(() => {
+    if (supabaseMisconfigured) { setAuthLoading(false); return }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setAuthLoading(false)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+      if (!session) setApiKey('')
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // When a session exists, fetch or create the user's Brevitas API key
+  useEffect(() => {
+    if (!session) return
+    setKeyLoading(true)
+    setKeyError('')
+    getOrCreateApiKey(session.user.id)
+      .then(key => setApiKey(key))
+      .catch(err => setKeyError(err.message))
+      .finally(() => setKeyLoading(false))
+  }, [session?.user?.id])
+
+  const signOut = () => supabase.auth.signOut()
+
+  if (supabaseMisconfigured) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center flex-col gap-3 px-6 text-center">
+        <span className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">Configuration required</span>
+        <p className="text-sm text-brand-muted dark:text-brand-dark-muted max-w-sm">
+          Add <code className="font-mono text-xs bg-brand-blue-dim px-1 py-0.5 rounded">VITE_SUPABASE_URL</code> and{' '}
+          <code className="font-mono text-xs bg-brand-blue-dim px-1 py-0.5 rounded">VITE_SUPABASE_ANON_KEY</code> to{' '}
+          <code className="font-mono text-xs">dashboard/.env</code>, then rebuild.
+        </p>
+      </div>
+    )
+  }
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
+        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
+          Loading…
+        </span>
+      </div>
+    )
+  }
+
+  if (!session) {
+    return <Auth darkMode={darkMode} onToggleDark={toggleDark} />
+  }
+
+  if (keyLoading) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
+        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
+          Setting up your dashboard…
+        </span>
+      </div>
+    )
+  }
+
+  if (keyError) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center flex-col gap-4">
+        <p className="text-sm text-red-500">{keyError}</p>
+        <button onClick={signOut} className="font-mono text-[11px] tracking-widest uppercase text-brand-muted hover:text-brand-navy transition-colors">
+          Sign out
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
@@ -82,7 +160,7 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Right: dark toggle + change key */}
+          {/* Right: dark toggle + user email + sign out */}
           <div className="flex items-center gap-3 shrink-0">
             <button
               onClick={toggleDark}
@@ -91,11 +169,14 @@ export default function App() {
             >
               {darkMode ? <SunIcon /> : <MoonIcon />}
             </button>
+            <span className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
+              {session.user.email}
+            </span>
             <button
-              onClick={clearKey}
+              onClick={signOut}
               className="text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
             >
-              Change key
+              Sign out
             </button>
           </div>
         </header>
