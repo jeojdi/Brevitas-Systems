@@ -65,6 +65,9 @@ __pycache__/
 .secret_key
 *.db
 
+# token_efficiency_model runtime cache
+token_efficiency_model/experiments/.delta_memory_store.json
+
 # api runtime artifacts / secrets (added during PR #5 merge cleanup)
 api/.secret_key
 api/brevitas.db
