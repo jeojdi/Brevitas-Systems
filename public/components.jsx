@@ -4,6 +4,112 @@
 
 const { useState, useEffect, useRef, useCallback } = React;
 
+// ---------------------------------------------------------------------------
+// Matrix canvas animation — shared by hero and footer across all pages
+// ---------------------------------------------------------------------------
+function initMatrixCanvas(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return () => {};
+  const ctx = canvas.getContext('2d');
+
+  const CELL = 12;
+  const CHAR_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&*<>{}[]|/\\^~±§ΘΛΞΣΩαβγδ';
+  const randChar = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
+  const BASE_OP = 0.06;
+
+  const WAVE_THICKNESS = 48; const WAVE_AMP_MIN = 0.45; const WAVE_AMP_MAX = 0.68;
+  const WAVE_SPEED_MIN = 1.2; const WAVE_SPEED_MAX = 2.8;
+  const WAVE_R_MIN = 120; const WAVE_R_MAX = 280;
+  const WAVE_DECAY = 0.008; const WAVE_MUTATE = 0.40; const WAVE_SPAWN = 0.10;
+
+  const POINT_THICKNESS = 32; const POINT_AMP = 0.82;
+  const POINT_SPEED_MIN = 0.25; const POINT_SPEED_MAX = 0.50;
+  const POINT_R_MIN = 200; const POINT_R_MAX = 380;
+  const POINT_DECAY = 0.022;
+  const POINT_SPAWN_MS_MIN = 1200; const POINT_SPAWN_MS_MAX = 2800;
+
+  function WaveRipple() {
+    this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height;
+    this.radius = 0;
+    this.maxRadius = WAVE_R_MIN + Math.random() * (WAVE_R_MAX - WAVE_R_MIN);
+    this.speed = WAVE_SPEED_MIN + Math.random() * (WAVE_SPEED_MAX - WAVE_SPEED_MIN);
+    this.amplitude = WAVE_AMP_MIN + Math.random() * (WAVE_AMP_MAX - WAVE_AMP_MIN);
+  }
+  WaveRipple.prototype.intensityAt = function(px, py) {
+    const edge = Math.abs(Math.sqrt((px-this.x)**2 + (py-this.y)**2) - this.radius);
+    if (edge >= WAVE_THICKNESS) return 0;
+    return 0.5 * (1 + Math.cos(Math.PI * edge / WAVE_THICKNESS)) * (1 - this.radius / this.maxRadius) * this.amplitude;
+  };
+  Object.defineProperty(WaveRipple.prototype, 'dead', { get() { return this.radius >= this.maxRadius; } });
+
+  function PointRipple() {
+    this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height;
+    this.radius = 0;
+    this.maxRadius = POINT_R_MIN + Math.random() * (POINT_R_MAX - POINT_R_MIN);
+    this.speed = POINT_SPEED_MIN + Math.random() * (POINT_SPEED_MAX - POINT_SPEED_MIN);
+  }
+  PointRipple.prototype.intensityAt = function(px, py) {
+    const edge = Math.abs(Math.sqrt((px-this.x)**2 + (py-this.y)**2) - this.radius);
+    if (edge >= POINT_THICKNESS) return 0;
+    return 0.5 * (1 + Math.cos(Math.PI * edge / POINT_THICKNESS)) * POINT_AMP;
+  };
+  Object.defineProperty(PointRipple.prototype, 'dead', { get() { return this.radius >= this.maxRadius; } });
+
+  let cols, rows, cells, waveRipples, pointRipples, raf, resizeTimer, spawnTimer;
+
+  function init() {
+    canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
+    cols = Math.ceil(canvas.width / CELL); rows = Math.ceil(canvas.height / CELL);
+    waveRipples = []; pointRipples = [];
+    cells = Array.from({ length: cols * rows }, () => ({ char: randChar(), waveOp: 0, pointOp: 0 }));
+    for (let i = 0; i < 14; i++) { const r = new WaveRipple(); r.radius = Math.random() * r.maxRadius * 0.7; waveRipples.push(r); }
+  }
+
+  function schedulePointRipple() {
+    const delay = POINT_SPAWN_MS_MIN + Math.random() * (POINT_SPAWN_MS_MAX - POINT_SPAWN_MS_MIN);
+    spawnTimer = setTimeout(() => { pointRipples.push(new PointRipple()); schedulePointRipple(); }, delay);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (Math.random() < WAVE_SPAWN) waveRipples.push(new WaveRipple());
+    for (let i = waveRipples.length - 1; i >= 0; i--) { waveRipples[i].radius += waveRipples[i].speed; if (waveRipples[i].dead) waveRipples.splice(i, 1); }
+    for (let i = pointRipples.length - 1; i >= 0; i--) { pointRipples[i].radius += pointRipples[i].speed; if (pointRipples[i].dead) pointRipples.splice(i, 1); }
+    ctx.font = `${CELL - 2}px "JetBrains Mono","Courier New",monospace`;
+    for (let row = 0; row < rows; row++) {
+      const py = row * CELL + CELL;
+      for (let col = 0; col < cols; col++) {
+        const px = col * CELL + CELL * 0.5;
+        const cell = cells[row * cols + col];
+        let wTotal = 0, wPeak = 0;
+        for (const r of waveRipples) { const i = r.intensityAt(px, py); if (i === 0) continue; wTotal = Math.min(1, wTotal + i); if (i > wPeak) wPeak = i; }
+        if (wTotal > 0.03) { cell.waveOp = Math.max(cell.waveOp, wTotal); if (wPeak > WAVE_MUTATE && Math.random() < 0.35) cell.char = randChar(); }
+        else { cell.waveOp = Math.max(0, cell.waveOp - WAVE_DECAY); }
+        let pTotal = 0;
+        for (const r of pointRipples) { const i = r.intensityAt(px, py); if (i > 0) pTotal = Math.min(1, pTotal + i); }
+        if (pTotal > 0.02) { cell.pointOp = Math.max(cell.pointOp, pTotal); if (Math.random() < 0.55) cell.char = randChar(); }
+        else { cell.pointOp = Math.max(0, cell.pointOp - POINT_DECAY); }
+        const finalOp = Math.min(1, BASE_OP + cell.waveOp + cell.pointOp);
+        if (finalOp < 0.02) continue;
+        ctx.fillStyle = `rgba(255,255,255,${finalOp.toFixed(3)})`;
+        if (cell.pointOp > 0.12) { ctx.shadowColor = 'rgba(255,255,255,0.85)'; ctx.shadowBlur = 8; }
+        ctx.fillText(cell.char, col * CELL, py);
+        if (cell.pointOp > 0.12) ctx.shadowBlur = 0;
+      }
+    }
+    raf = requestAnimationFrame(draw);
+  }
+
+  const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { cancelAnimationFrame(raf); init(); draw(); }, 150); };
+  window.addEventListener('resize', onResize);
+  init();
+  pointRipples.push(new PointRipple());
+  schedulePointRipple();
+  draw();
+
+  return () => { cancelAnimationFrame(raf); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); };
+}
+
 // --- utility hooks ---
 function useInView(opts = { threshold: 0.2 }) {
   const ref = useRef(null);
@@ -573,9 +679,21 @@ function Nav({ current }) {
 }
 
 function Footer() {
+  useEffect(() => {
+    return initMatrixCanvas('footer-matrix');
+  }, []);
+
   return (
-    <footer className="footer">
-      <div className="container">
+    <footer className="footer" style={{ position: 'relative', overflow: 'hidden' }}>
+      {/* Layer 0: flowers — swaps by theme */}
+      <img className="hero-bg-dark"  src="/assets/flowers%20dark.png" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      <img className="hero-bg-light" src="/assets/flowers.png"        alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      {/* Layer 1: ASCII canvas — subtle opacity so it doesn't overwhelm */}
+      <canvas id="footer-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'screen', opacity: 0.45, pointerEvents: 'none' }} />
+      {/* Layer 2: heavy scrim so footer text stays legible */}
+      <div aria-hidden="true" className="footer-scrim" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }} />
+      {/* Layer 3: content */}
+      <div className="container" style={{ position: 'relative', zIndex: 3 }}>
         <div className="footer-grid">
           <div>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
@@ -616,7 +734,6 @@ function Footer() {
           <div className="legal">
             <a href="#">Privacy</a>
             <a href="#">Terms</a>
-            <span className="status-dot">status: operational</span>
           </div>
         </div>
       </div>

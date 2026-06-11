@@ -310,6 +310,10 @@ function SixTechniquesHub() {
         }
         .sth-hub-strip::-webkit-scrollbar { height: 4px }
         .sth-hub-strip::-webkit-scrollbar-thumb { background: var(--stone); border-radius: 2px }
+        @media (max-width: 720px) {
+          .sth-detail-grid { grid-template-columns: 1fr !important; gap: 16px !important; }
+          .sth-detail-nav { display: none !important; }
+        }
       `}</style>
 
       {/* Stage: SVG lines + absolute-positioned nodes */}
@@ -444,7 +448,7 @@ function SixTechniquesHub() {
       </div>
 
       {/* Detail panel for the active technique */}
-      <div style={{
+      <div className="sth-detail-grid" style={{
         marginTop: 22,
         border: '1px solid var(--line)',
         background: 'var(--component-bg-dark-light)',
@@ -490,7 +494,7 @@ function SixTechniquesHub() {
             maxWidth: 680,
           }}>{active.body}</p>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+        <div className="sth-detail-nav" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{
             fontFamily: 'JetBrains Mono, monospace', fontSize: 9.5, letterSpacing: '0.1em',
             color: isVisible ? 'var(--bronze)' : 'var(--stone)',
