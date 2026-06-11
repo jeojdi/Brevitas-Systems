@@ -10,8 +10,7 @@ const nextConfig: NextConfig = {
         { source: '/product', destination: '/product.html' },
         { source: '/how-it-works', destination: '/how-it-works.html' },
         { source: '/benchmarks', destination: '/benchmarks.html' },
-        // /docs intentionally serves the 404 until docs content is ready.
-        { source: '/docs', destination: '/404.html' },
+        { source: '/docs', destination: '/docs.html' },
         { source: '/blog', destination: '/blog.html' },
         { source: '/waitlist', destination: '/waitlist.html' },
         { source: '/design-canvas', destination: '/design-canvas.html' },
