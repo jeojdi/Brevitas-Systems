@@ -5,11 +5,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import asyncio
+import json
+import queue
+import threading
+
 import requests as _requests
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -256,9 +261,15 @@ def get_provider(request: Request, kh: str = Depends(_authenticated)):
 def set_provider(request: Request, body: ProviderConfigRequest, kh: str = Depends(_authenticated)):
     if body.provider not in _PROVIDER_MODELS:
         raise HTTPException(status_code=400, detail=f"Unknown provider '{body.provider}'")
+    existing = _store.get_provider_config(kh)
     if body.provider != "ollama" and not body.provider_api_key:
-        raise HTTPException(status_code=400, detail="provider_api_key is required for this provider")
-    encrypted_key = _encrypt(body.provider_api_key)
+        # Allow if a key is already saved for this provider — keep it
+        has_existing_key = existing and existing.get("provider_api_key") and existing.get("provider") == body.provider
+        if not has_existing_key:
+            raise HTTPException(status_code=400, detail="provider_api_key is required for this provider")
+        encrypted_key = existing["provider_api_key"]
+    else:
+        encrypted_key = _encrypt(body.provider_api_key)
     _store.set_provider_config(kh, body.provider, encrypted_key, body.model)
     _pipelines.pop(kh, None)
     return {"ok": True, "provider": body.provider, "model": body.model}
@@ -350,6 +361,78 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
         "model_response":      result.model_response,
         "state_id":            result.debug.get("state_id", ""),
     }
+
+
+@app.post("/v1/compress/stream")
+@limiter.limit("60/minute")
+async def compress_stream(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
+    pipeline = _get_pipeline(kh)
+    event_queue: queue.Queue = queue.Queue()
+    SENTINEL = object()
+
+    def _run():
+        def callback(stage: str, data: dict):
+            event_queue.put({"stage": stage, **data})
+
+        try:
+            result = pipeline.process_task(
+                task_text=body.task or (body.messages[0][:120] if body.messages else ""),
+                incoming_messages=body.messages,
+                prior_context=body.prior_context,
+                complexity=body.complexity,
+                urgency=body.urgency,
+                compression_level=body.compression_level,
+                prune_budget=body.prune_budget,
+                delta_mode=body.delta_mode,
+                wire_mode=body.wire_mode,
+                progress_callback=callback,
+            )
+
+            compressed_msgs = result.debug.get("compressed_messages", [])
+            pruned_ctx      = result.debug.get("pruned_context", [])
+            baseline_tokens  = result.baseline_tokens
+            output_tokens    = estimate_tokens_many(compressed_msgs) + estimate_tokens_many(pruned_ctx)
+            actual_savings   = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+
+            _store.record_usage(
+                key_hash=kh,
+                baseline_tokens=baseline_tokens,
+                optimized_tokens=output_tokens,
+                savings_pct=actual_savings,
+                quality_proxy=result.quality_proxy,
+            )
+
+            event_queue.put({"stage": "done", "result": {
+                "compressed_messages": compressed_msgs,
+                "pruned_context":      pruned_ctx,
+                "baseline_tokens":     baseline_tokens,
+                "optimized_tokens":    output_tokens,
+                "savings_pct":         actual_savings,
+                "quality_proxy":       round(result.quality_proxy, 4),
+                "routed_model_hint":   result.routed_model,
+                "model_response":      result.model_response,
+                "state_id":            result.debug.get("state_id", ""),
+            }})
+        except Exception as exc:
+            event_queue.put({"stage": "error", "message": str(exc)})
+        finally:
+            event_queue.put(SENTINEL)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        while True:
+            item = await loop.run_in_executor(None, event_queue.get)
+            if item is SENTINEL:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

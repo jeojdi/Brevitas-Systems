@@ -1,4 +1,4 @@
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 from ..agent_communication_compression import CommunicationCompressor
 from ..adaptive_semantic_sampling import AdaptiveSemanticSampler
@@ -90,6 +90,7 @@ class TokenEfficientPipeline:
         wire_mode: str = "json",
         *,
         must_keep_facts: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> PipelineResult:
         packet = TaskPacket(
             task_id=task_id,
@@ -108,6 +109,7 @@ class TokenEfficientPipeline:
             delta_aggressiveness=delta_aggressiveness,
             wire_mode=wire_mode,
             must_keep_facts=must_keep_facts,
+            progress_callback=progress_callback,
         )
 
     def _build_state_values(
@@ -136,7 +138,11 @@ class TokenEfficientPipeline:
         delta_aggressiveness: int = 1,
         wire_mode: str = "json",
         must_keep_facts: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> PipelineResult:
+        def _emit(stage: str, data: Dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback(stage, data)
         baseline_tokens = estimate_tokens(packet.task_text)
         baseline_tokens += estimate_tokens_many(packet.incoming_messages)
         baseline_tokens += estimate_tokens_many(packet.prior_context)
@@ -243,6 +249,7 @@ class TokenEfficientPipeline:
                 "context_load": init_context_load,
             }
         )
+        _emit("routed", {"model": route.model_name, "route_fit": round(route.route_fit, 3)})
 
         # tuning loop: try to reach savings_target by adjusting compression/prune
         attempts = 0
@@ -281,6 +288,16 @@ class TokenEfficientPipeline:
         # Use best_eval to proceed with actual model call and snapshot save
         final = best_eval or evaluate_config(compression_level, prune_budget)
 
+        _emit("compressed", {
+            "compressed_messages": final["compressed_messages"],
+            "pruned_context": final["pruned_context"],
+            "baseline_tokens": baseline_tokens,
+            "optimized_tokens": final["optimized_tokens"],
+            "savings_pct": round(final["savings"], 2),
+            "quality_proxy": round(final["quality"], 4),
+            "tuning_attempts": attempts,
+        })
+
         protocol_payload = final["protocol_payload"]
         inline_chunks = final["inline_chunks"]
         compression_stats = final.get("compression_stats")
@@ -310,6 +327,8 @@ class TokenEfficientPipeline:
 
         prompt = f"{protocol_payload}\nINLINE_CONTEXT={inline_chunks}"
         model_response = self.model_backend(prompt, route.model_name)
+        if model_response:
+            _emit("model_response", {"text": model_response})
 
         # Persist snapshot only after a successful model call
         new_state_id = self.memory.save_snapshot(packet.task_id, self._build_state_values(packet, packet.task_text[:120], context_refs, route.model_name))
