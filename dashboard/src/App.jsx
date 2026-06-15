@@ -187,7 +187,7 @@ export default function App() {
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
-        {activeTab === 'Docs'       && <Docs         apiKey={apiKey} />}
+        {activeTab === 'Docs'       && <Docs />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
       </main>
     </div>

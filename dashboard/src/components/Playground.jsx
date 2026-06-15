@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
 const DEMO_MESSAGES = `Agent 1 (Planner): The user wants a rate limiter for their API gateway. I have analyzed the requirements. The rate limiter should use a token bucket algorithm with Redis as the backing store. Each user gets 100 requests per minute. I have analyzed the user request and determined we need a token bucket rate limiter backed by Redis.
 Agent 2 (Architect): Based on the planner's analysis, we need a Redis-backed token bucket. The implementation should use Redis to store bucket state per user. Each user gets 100 tokens per minute refill rate. I recommend using GCRA (Generic Cell Rate Algorithm) for atomic operations in Redis. We need Redis for the token bucket state storage.
@@ -37,7 +37,7 @@ function CodeBlock({ label, code }) {
   )
 }
 
-function TokenBar({ baseline, optimized }) {
+function TokenBar({ baseline, optimized, animate }) {
   const pct = baseline > 0 ? Math.max(4, Math.round((optimized / baseline) * 100)) : 50
   return (
     <div className="space-y-2">
@@ -48,12 +48,23 @@ function TokenBar({ baseline, optimized }) {
       <div className="h-1.5 bg-brand-border dark:bg-brand-dark-border rounded-full overflow-hidden">
         <div
           className="h-full bg-brand-blue rounded-full transition-all duration-700"
-          style={{ width: `${pct}%` }}
+          style={{ width: animate ? `${pct}%` : '100%' }}
         />
       </div>
       <div className="flex justify-between annotation">
         <span>before</span><span>after</span>
       </div>
+    </div>
+  )
+}
+
+function StageCard({ children, fade = true }) {
+  return (
+    <div
+      className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5 space-y-3"
+      style={{ animation: fade ? 'fadeSlideIn 0.3s ease both' : undefined }}
+    >
+      {children}
     </div>
   )
 }
@@ -65,33 +76,70 @@ export default function Playground({ apiKey }) {
   const [complexity, setComplexity]        = useState(0.5)
   const [compressionLevel, setCompression] = useState(2)
   const [pruneBudget, setPruneBudget]      = useState(5)
-  const [loading, setLoading]              = useState(false)
-  const [result, setResult]                = useState(null)
+  const [streaming, setStreaming]          = useState(false)
+  const [stages, setStages]               = useState([])   // array of {stage, ...data}
   const [error, setError]                  = useState('')
+  const abortRef                           = useRef(null)
+
+  const addStage = (event) => setStages(prev => [...prev, event])
 
   const run = async () => {
-    setLoading(true); setError(''); setResult(null)
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    setStreaming(true)
+    setError('')
+    setStages([])
+
     try {
-      const res = await fetch('/v1/compress', {
+      const res = await fetch('/v1/compress/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify({
           task,
-          messages:      messages.split('\n').map(s => s.trim()).filter(Boolean),
-          prior_context: context.split('\n').map(s => s.trim()).filter(Boolean),
+          messages:          messages.split('\n').map(s => s.trim()).filter(Boolean),
+          prior_context:     context.split('\n').map(s => s.trim()).filter(Boolean),
           complexity,
           compression_level: compressionLevel,
-          prune_budget: pruneBudget,
+          prune_budget:      pruneBudget,
         }),
+        signal: controller.signal,
       })
+
       if (!res.ok) throw new Error(await res.text())
-      setResult(await res.json())
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.stage === 'error') { setError(event.message); break }
+            addStage(event)
+          } catch { /* malformed chunk, skip */ }
+        }
+      }
     } catch (e) {
-      setError(e.message)
+      if (e.name !== 'AbortError') setError(e.message)
     } finally {
-      setLoading(false)
+      setStreaming(false)
     }
   }
+
+  const routed    = stages.find(s => s.stage === 'routed')
+  const compressed = stages.find(s => s.stage === 'compressed')
+  const modelEvt  = stages.find(s => s.stage === 'model_response')
+  const done      = stages.find(s => s.stage === 'done')
+  const result    = done?.result
 
   const pythonSnippet =
 `import requests
@@ -128,6 +176,13 @@ def compress(messages, prior_context, task=""):
 
   return (
     <div className="space-y-14">
+      <style>{`
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
       {/* ── Hero text ── */}
       <div>
         <p className="annotation tracking-widest uppercase mb-4">Playground</p>
@@ -219,96 +274,142 @@ def compress(messages, prior_context, task=""):
 
           <button
             onClick={run}
-            disabled={loading}
+            disabled={streaming}
             className="w-full bg-brand-blue hover:bg-brand-navy text-white rounded-xl px-4 py-3.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
-            {loading ? 'Running pipeline…' : 'Compress →'}
+            {streaming ? 'Running pipeline…' : 'Compress →'}
           </button>
         </div>
 
-        {/* Output */}
-        <div className="space-y-5">
-          {!result && !error && !loading && (
+        {/* Output — real-time stages */}
+        <div className="space-y-4">
+          {/* Empty state */}
+          {stages.length === 0 && !streaming && !error && (
             <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-20 text-center h-full flex flex-col items-center justify-center">
               <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-2">Results appear here.</p>
               <p className="annotation">// hit compress to run the pipeline</p>
             </div>
           )}
 
-          {loading && (
-            <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-20 text-center h-full flex flex-col items-center justify-center">
-              <p className="annotation">// running pipeline…</p>
+          {/* Streaming spinner (shown until first stage arrives) */}
+          {streaming && stages.length === 0 && (
+            <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-10 text-center flex flex-col items-center justify-center gap-2">
+              <p className="annotation">// routing…</p>
             </div>
           )}
 
+          {/* Error */}
           {error && (
             <div className="bg-white dark:bg-brand-dark-surface border border-red-200 dark:border-red-900/40 rounded-2xl p-5">
               <p className="font-mono text-xs text-red-500">{error}</p>
             </div>
           )}
 
-          {result && (
-            <div className="space-y-4">
-              {/* Big savings numbers */}
-              <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-7">
-                <div className="grid grid-cols-2 gap-6 mb-7">
-                  <div>
-                    <p className="font-mono text-5xl font-medium text-brand-blue tabular-nums">
-                      {result.savings_pct.toFixed(1)}%
-                    </p>
-                    <p className="annotation mt-1">// tokens saved</p>
-                  </div>
-                  <div>
-                    <p className="font-mono text-5xl font-medium text-brand-teal tabular-nums">
-                      {(result.quality_proxy * 100).toFixed(1)}%
-                    </p>
-                    <p className="annotation mt-1">// context retained</p>
-                  </div>
+          {/* Stage 1: Routing */}
+          {routed && (
+            <StageCard>
+              <div className="flex items-center justify-between">
+                <p className="annotation">// routing</p>
+                <span className="w-2 h-2 rounded-full bg-brand-teal shrink-0" />
+              </div>
+              <p className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">
+                model → <span className="text-brand-blue">{routed.model}</span>
+              </p>
+              <div className="h-1 bg-brand-border dark:bg-brand-dark-border rounded-full overflow-hidden">
+                <div className="h-full bg-brand-teal rounded-full" style={{ width: `${Math.round(routed.route_fit * 100)}%` }} />
+              </div>
+              <p className="annotation">route fit {(routed.route_fit * 100).toFixed(0)}%</p>
+            </StageCard>
+          )}
+
+          {/* Stage 2: Compression + Pruning */}
+          {compressed && (
+            <StageCard>
+              <div className="flex items-center justify-between">
+                <p className="annotation">// compression + pruning</p>
+                {streaming && !result && <span className="annotation">running model…</span>}
+              </div>
+
+              {/* Live token bar */}
+              <TokenBar
+                baseline={compressed.baseline_tokens}
+                optimized={compressed.optimized_tokens}
+                animate
+              />
+
+              {/* Savings numbers */}
+              <div className="grid grid-cols-2 gap-4 pt-1">
+                <div>
+                  <p className="font-mono text-3xl font-medium text-brand-blue tabular-nums">
+                    {compressed.savings_pct.toFixed(1)}%
+                  </p>
+                  <p className="annotation mt-0.5">// tokens saved</p>
                 </div>
-                <TokenBar baseline={result.baseline_tokens} optimized={result.optimized_tokens} />
+                <div>
+                  <p className="font-mono text-3xl font-medium text-brand-teal tabular-nums">
+                    {(compressed.quality_proxy * 100).toFixed(1)}%
+                  </p>
+                  <p className="annotation mt-0.5">// context retained</p>
+                </div>
               </div>
 
               {/* Compressed messages */}
-              {result.compressed_messages?.length > 0 && (
-                <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5">
-                  <p className="annotation mb-3">
-                    // compressed messages ({result.compressed_messages.length})
-                  </p>
-                  <div className="space-y-2">
-                    {result.compressed_messages.map((m, i) => (
-                      <p key={i} className="text-xs font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid bg-brand-bg dark:bg-brand-dark-bg rounded-xl p-3 leading-relaxed">
-                        {m}
-                      </p>
-                    ))}
-                  </div>
+              {compressed.compressed_messages?.length > 0 && (
+                <div className="pt-1 space-y-1.5">
+                  <p className="annotation">// compressed messages ({compressed.compressed_messages.length})</p>
+                  {compressed.compressed_messages.map((m, i) => (
+                    <p key={i} className="text-xs font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid bg-brand-bg dark:bg-brand-dark-bg rounded-xl p-3 leading-relaxed">
+                      {m}
+                    </p>
+                  ))}
                 </div>
               )}
 
               {/* Retained context */}
-              {result.pruned_context?.length > 0 && (
-                <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5">
-                  <p className="annotation mb-3">
-                    // retained context ({result.pruned_context.length})
-                  </p>
-                  <div className="space-y-2">
-                    {result.pruned_context.map((c, i) => (
-                      <p key={i} className="text-xs font-mono text-brand-teal bg-brand-teal-dim dark:bg-brand-dark-teal-dim rounded-xl p-3 leading-relaxed">
-                        {c}
-                      </p>
-                    ))}
-                  </div>
+              {compressed.pruned_context?.length > 0 && (
+                <div className="pt-1 space-y-1.5">
+                  <p className="annotation">// retained context ({compressed.pruned_context.length})</p>
+                  {compressed.pruned_context.map((c, i) => (
+                    <p key={i} className="text-xs font-mono text-brand-teal bg-brand-teal-dim dark:bg-brand-dark-teal-dim rounded-xl p-3 leading-relaxed">
+                      {c}
+                    </p>
+                  ))}
                 </div>
               )}
+            </StageCard>
+          )}
 
-              {/* Routing info */}
-              <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-3">
-                <p className="annotation">
-                  routed → <span className="text-brand-blue">{result.routed_model_hint}</span>
-                  {result.state_id && (
-                    <> · state <span className="text-brand-muted dark:text-brand-dark-muted">{result.state_id.slice(0, 14)}…</span></>
-                  )}
-                </p>
+          {/* Stage 3: Model response (if model is configured) */}
+          {modelEvt?.text && (
+            <StageCard>
+              <p className="annotation">// model response</p>
+              <p className="text-xs font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid bg-brand-bg dark:bg-brand-dark-bg rounded-xl p-3 leading-relaxed whitespace-pre-wrap">
+                {modelEvt.text}
+              </p>
+            </StageCard>
+          )}
+
+          {/* Stage 4: Final summary pill */}
+          {result && (
+            <StageCard fade>
+              <div className="flex items-center justify-between">
+                <p className="annotation">// done</p>
+                <span className="font-mono text-xs text-brand-teal">✓ pipeline complete</span>
               </div>
+              <p className="annotation">
+                routed → <span className="text-brand-blue">{result.routed_model_hint}</span>
+                {result.state_id && (
+                  <> · state <span className="text-brand-muted dark:text-brand-dark-muted">{result.state_id.slice(0, 14)}…</span></>
+                )}
+              </p>
+            </StageCard>
+          )}
+
+          {/* Model still running indicator */}
+          {streaming && compressed && !result && (
+            <div className="flex items-center gap-2 px-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-blue animate-pulse" />
+              <p className="annotation">calling model…</p>
             </div>
           )}
         </div>

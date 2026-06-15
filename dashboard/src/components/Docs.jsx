@@ -26,18 +26,27 @@ function Endpoint({ method, path, description }) {
   )
 }
 
-function Field({ name, type, required, children }) {
+function Field({ name, type, defaultVal, children }) {
   return (
     <tr className="border-t border-brand-border dark:border-brand-dark-border">
       <td className="py-2.5 pr-4 font-mono text-xs text-brand-blue whitespace-nowrap">{name}</td>
       <td className="py-2.5 pr-4 font-mono text-xs text-brand-muted dark:text-brand-dark-muted whitespace-nowrap">{type}</td>
-      <td className="py-2.5 pr-4 text-xs whitespace-nowrap">
-        {required
-          ? <span className="text-brand-blue font-medium">required</span>
-          : <span className="text-brand-muted dark:text-brand-dark-muted">optional</span>}
-      </td>
+      <td className="py-2.5 pr-4 font-mono text-xs text-brand-muted dark:text-brand-dark-muted whitespace-nowrap">{defaultVal ?? '—'}</td>
       <td className="py-2.5 text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{children}</td>
     </tr>
+  )
+}
+
+function FieldHead() {
+  return (
+    <thead>
+      <tr className="text-left">
+        <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal pr-4">Parameter</th>
+        <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal pr-4">Type</th>
+        <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal pr-4">Default</th>
+        <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal">Description</th>
+      </tr>
+    </thead>
   )
 }
 
@@ -59,57 +68,191 @@ function CodeBlock({ lang, code }) {
   )
 }
 
-const NAV = [
-  { id: 'overview',    label: 'Overview' },
-  { id: 'auth',        label: 'Authentication' },
-  { id: 'compress',    label: 'POST /v1/compress' },
-  { id: 'stats',       label: 'GET /v1/stats' },
-  { id: 'provider',    label: 'Provider config' },
-  { id: 'keys',        label: 'Key management' },
-  { id: 'examples',    label: 'Code examples' },
-  { id: 'deployment',  label: 'Deployment' },
+const SDK_NAV = [
+  { id: 'sdk-install',     label: 'Install' },
+  { id: 'sdk-auth',        label: 'Authentication' },
+  { id: 'sdk-basic',       label: 'Basic usage' },
+  { id: 'sdk-optimize',    label: 'optimize() params' },
+  { id: 'sdk-run',         label: 'pipeline.run() params' },
+  { id: 'sdk-result',      label: 'PipelineResult' },
+  { id: 'sdk-multiturn',   label: 'Multi-turn' },
+  { id: 'sdk-langchain',   label: 'LangChain / custom' },
 ]
 
-export default function Docs({ apiKey }) {
-  const BASE = 'http://localhost:8000'
+const API_NAV = [
+  { id: 'api-overview',   label: 'Overview' },
+  { id: 'api-auth',       label: 'Authentication' },
+  { id: 'api-compress',   label: 'POST /v1/compress' },
+  { id: 'api-stats',      label: 'GET /v1/stats' },
+  { id: 'api-provider',   label: 'Provider config' },
+  { id: 'api-health',     label: 'Health & errors' },
+  { id: 'api-example',    label: 'End-to-end example' },
+]
 
+function PythonSDKDocs() {
   return (
     <div className="flex gap-12">
-      {/* Sticky sidebar */}
       <aside className="hidden lg:block w-44 shrink-0">
         <div className="sticky top-24 space-y-1">
           <p className="annotation tracking-widest uppercase mb-3">On this page</p>
-          {NAV.map(n => (
-            <a
-              key={n.id}
-              href={`#${n.id}`}
-              className="block text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors py-0.5"
-            >
+          {SDK_NAV.map(n => (
+            <a key={n.id} href={`#${n.id}`}
+              className="block text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors py-0.5">
               {n.label}
             </a>
           ))}
         </div>
       </aside>
 
-      {/* Content */}
       <div className="flex-1 space-y-16 min-w-0">
-
         <div>
-          <p className="annotation tracking-widest uppercase mb-4">API Reference</p>
+          <p className="annotation tracking-widest uppercase mb-4">Python SDK</p>
+          <h2 className="font-serif text-4xl lg:text-5xl text-brand-navy dark:text-brand-dark-navy leading-tight mb-4">
+            brevitas-systems
+          </h2>
+          <p className="text-brand-muted dark:text-brand-dark-muted text-base leading-relaxed max-w-xl">
+            Optimize multi-agent pipelines by reducing token usage across every turn — without changing your agents or prompts.
+            Wrap your pipeline with <code className="font-mono text-brand-blue text-sm">optimize()</code> and Brevitas handles the rest.
+          </p>
+        </div>
+
+        <Section id="sdk-install" title="Install">
+          <CodeBlock lang="bash" code={`pip install brevitas-systems`} />
+        </Section>
+
+        <Section id="sdk-auth" title="Authentication">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Set your API key as an environment variable (recommended), or pass it directly in code.
+            To get an API key, <a href="mailto:contact@brevitas.systems" className="text-brand-blue hover:underline">contact us</a>.
+          </p>
+          <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here`} />
+          <CodeBlock lang="python" code={`# or configure in code
+from brevitas import configure
+configure(api_key="bvt_your_key_here")`} />
+        </Section>
+
+        <Section id="sdk-basic" title="Basic usage">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Pass a list of agent callables to <code className="font-mono text-brand-blue text-xs">optimize()</code>.
+            Each agent receives the previous agent's output as its input. Brevitas compresses, prunes,
+            and routes between turns — your agent code is unchanged.
+          </p>
+          <CodeBlock lang="python" code={`from brevitas import optimize
+from my_pipeline import architect, builder, reviewer
+
+pipeline = optimize([architect, builder, reviewer])
+result = pipeline.run("Build a REST API with auth and rate limiting")
+
+# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.
+print(result.model_response)
+print(f"{result.savings_pct:.0f}% tokens saved")`} />
+        </Section>
+
+        <Section id="sdk-optimize" title="optimize() parameters">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <FieldHead />
+              <tbody>
+                <Field name="agents"            type="list"   defaultVal="required">Agent callables. Each receives the prior agent's output.</Field>
+                <Field name="api_key"           type="str"    defaultVal="env var">Your <code className="font-mono text-brand-blue text-xs">bvt_</code> prefixed Brevitas key.</Field>
+                <Field name="quality_floor"     type="float"  defaultVal="0.98">Minimum quality score (0–1) before compression stops.</Field>
+                <Field name="savings_target"    type="float"  defaultVal="59.0">Token savings % to target per turn.</Field>
+                <Field name="compression_level" type="int"    defaultVal="2">Message compression aggressiveness (1–3).</Field>
+                <Field name="prune_budget"      type="int"    defaultVal="5">Max context chunks retained per turn.</Field>
+                <Field name="protocol_mode"     type="str"    defaultVal='"compact"'>Wire format: <code className="font-mono text-xs">"compact"</code> or <code className="font-mono text-xs">"verbose"</code>.</Field>
+                <Field name="delta_mode"        type="str"    defaultVal='"on"'>Send only changes between turns: <code className="font-mono text-xs">"on"</code> or <code className="font-mono text-xs">"off"</code>.</Field>
+              </tbody>
+            </table>
+          </div>
+        </Section>
+
+        <Section id="sdk-run" title="pipeline.run() parameters">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <FieldHead />
+              <tbody>
+                <Field name="task"               type="str"        defaultVal="required">Task description / prompt.</Field>
+                <Field name="incoming_messages"  type="list[str]"  defaultVal="[]">Additional messages to include in this turn.</Field>
+                <Field name="complexity"         type="float"      defaultVal="0.5">Task complexity hint (0–1). Higher values retain more context.</Field>
+                <Field name="urgency"            type="float"      defaultVal="0.5">Urgency hint (0–1). Higher values favor recency over breadth.</Field>
+                <Field name="task_id"            type="str"        defaultVal='"brevitas-task"'>Stable ID for delta caching across turns.</Field>
+              </tbody>
+            </table>
+          </div>
+        </Section>
+
+        <Section id="sdk-result" title="PipelineResult fields">
+          <CodeBlock lang="python" code={`result.model_response      # str   — concatenated agent outputs
+result.savings_pct         # float — % tokens saved vs. baseline
+result.baseline_tokens     # int   — unoptimized token count
+result.optimized_tokens    # int   — actual token count sent
+result.quality_proxy       # float — estimated quality retention (0–1)
+result.routed_model        # str   — model the router selected
+result.debug               # dict  — compression, sampling, pruning internals`} />
+        </Section>
+
+        <Section id="sdk-multiturn" title="Multi-turn example">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            <code className="font-mono text-brand-blue text-xs">pipeline.run()</code> is stateful — context from each call
+            is automatically retained and pruned for the next.
+          </p>
+          <CodeBlock lang="python" code={`pipeline = optimize([architect, builder, reviewer])
+
+r1 = pipeline.run("Design the database schema")
+r2 = pipeline.run("Now implement the API endpoints")
+r3 = pipeline.run("Write tests for the auth layer")
+# Each turn reuses compressed context from the previous turns.`} />
+        </Section>
+
+        <Section id="sdk-langchain" title="LangChain / custom agent objects">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Any object with a <code className="font-mono text-brand-blue text-xs">run()</code> or{' '}
+            <code className="font-mono text-brand-blue text-xs">invoke()</code> method works as an agent.
+          </p>
+          <CodeBlock lang="python" code={`from langchain.agents import AgentExecutor
+from brevitas import optimize
+
+pipeline = optimize([agent_executor_1, agent_executor_2])
+result = pipeline.run("Summarize Q3 earnings and flag risks")`} />
+        </Section>
+      </div>
+    </div>
+  )
+}
+
+function RestAPIDocs() {
+  const BASE = 'https://api.brevitas.systems'
+
+  return (
+    <div className="flex gap-12">
+      <aside className="hidden lg:block w-44 shrink-0">
+        <div className="sticky top-24 space-y-1">
+          <p className="annotation tracking-widest uppercase mb-3">On this page</p>
+          {API_NAV.map(n => (
+            <a key={n.id} href={`#${n.id}`}
+              className="block text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors py-0.5">
+              {n.label}
+            </a>
+          ))}
+        </div>
+      </aside>
+
+      <div className="flex-1 space-y-16 min-w-0">
+        <div>
+          <p className="annotation tracking-widest uppercase mb-4">REST API</p>
           <h2 className="font-serif text-4xl lg:text-5xl text-brand-navy dark:text-brand-dark-navy leading-tight mb-4">
             Brevitas API
           </h2>
           <p className="text-brand-muted dark:text-brand-dark-muted text-base leading-relaxed max-w-xl">
-            Compress, prune, and reference agent context before passing it between models.
-            One call between agent hops — no changes to your agents or provider.
+            The same optimization engine over HTTP — language-agnostic and ready for server-side use.
+            Authenticate all requests with your API key in the <code className="font-mono text-brand-blue text-sm">X-API-Key</code> header.
           </p>
           <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted mt-4">
             Base URL: <span className="text-brand-navy dark:text-brand-dark-navy">{BASE}</span>
           </p>
         </div>
 
-        {/* Overview */}
-        <Section id="overview" title="Overview">
+        <Section id="api-overview" title="Overview">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             Brevitas sits between agent hops. Instead of forwarding raw accumulated context to the next model,
             POST it to <code className="font-mono text-brand-blue text-xs">/v1/compress</code>.
@@ -126,300 +269,256 @@ new_task        ─┘                            pruned_context
                                                    ▼
                                              agent_2 (receives less)`}</pre>
           </div>
-          <div className="grid sm:grid-cols-3 gap-4">
-            {[
-              ['Compression', 'Rewrites verbose agent messages to be semantically dense.'],
-              ['Context pruning', 'Scores and keeps only the most task-relevant prior context chunks.'],
-              ['Token accounting', 'Returns exact before/after token counts on every call.'],
-            ].map(([title, desc]) => (
-              <div key={title} className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
-                <p className="text-sm font-medium text-brand-navy dark:text-brand-dark-navy mb-1">{title}</p>
-                <p className="text-xs text-brand-muted dark:text-brand-dark-muted leading-relaxed">{desc}</p>
-              </div>
-            ))}
-          </div>
         </Section>
 
-        {/* Auth */}
-        <Section id="auth" title="Authentication">
+        <Section id="api-auth" title="Authentication">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Every request except <code className="font-mono text-brand-blue text-xs">POST /v1/keys</code> and{' '}
-            <code className="font-mono text-brand-blue text-xs">GET /v1/health</code> requires a Brevitas API key
+            All endpoints except <code className="font-mono text-brand-blue text-xs">/v1/health</code> and{' '}
+            <code className="font-mono text-brand-blue text-xs">/v1/providers</code> require a Brevitas API key
             in the <code className="font-mono text-brand-blue text-xs">X-API-Key</code> header.
-            Keys are hashed with SHA-256 before storage — the raw key is returned once at creation time only.
           </p>
-          <CodeBlock lang="http" code={`X-API-Key: bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
-          {apiKey && (
-            <p className="text-xs text-brand-muted dark:text-brand-dark-muted">
-              Your current key: <span className="font-mono text-brand-blue">{apiKey}</span>
-            </p>
-          )}
+          <CodeBlock lang="bash" code={`curl https://api.brevitas.systems/v1/health \\
+  -H "X-API-Key: bvt_your_key_here"`} />
         </Section>
 
-        {/* Compress */}
-        <Section id="compress" title="Compress context">
-          <Endpoint method="POST" path="/v1/compress" description="main endpoint — compress + prune agent context" />
+        <Section id="api-compress" title="POST /v1/compress">
+          <Endpoint method="POST" path="/v1/compress" description="compress + prune agent context" />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             Runs the full compression pipeline and returns optimised text plus real token savings.
-            The configured model backend receives the compressed prompt; its response is included in the reply.
             Rate limited to <strong className="text-brand-navy dark:text-brand-dark-navy">60 requests/minute</strong> per key.
           </p>
 
           <p className="annotation mt-4 mb-2">// request body</p>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
+              <FieldHead />
               <tbody>
-                <Field name="messages"          type="string[]" required>Agent outputs to compress. Max 100 elements, 50 k chars each.</Field>
-                <Field name="prior_context"     type="string[]" required={false}>Context chunks to prune. Max 200 elements.</Field>
-                <Field name="task"              type="string"   required={false}>Current task description — used to score context relevance. Max 2,000 chars.</Field>
-                <Field name="complexity"        type="float"    required={false}>Task complexity 0–1. Higher = more context kept. Default 0.5.</Field>
-                <Field name="urgency"           type="float"    required={false}>Urgency 0–1. Higher = favour recency in pruning. Default 0.5.</Field>
-                <Field name="compression_level" type="int"      required={false}>1 light · 2 medium · 3 aggressive. Default 2.</Field>
-                <Field name="prune_budget"      type="int"      required={false}>Max context chunks to keep (1–50). Default 5.</Field>
-                <Field name="delta_mode"        type="string"   required={false}>"off" | "on". Sends delta patches after turn 1 to further reduce payload size.</Field>
-                <Field name="wire_mode"         type="string"   required={false}>"json" | "msgpack". Internal protocol wire format.</Field>
+                <Field name="messages"          type="string[]" defaultVal="required">Agent outputs to compress. Max 100 items, 50k chars each.</Field>
+                <Field name="prior_context"     type="string[]" defaultVal="[]">Context chunks to prune. Max 200 items, 50k chars each.</Field>
+                <Field name="task"              type="string"   defaultVal='""'>Current task description — used to score context relevance. Max 2,000 chars.</Field>
+                <Field name="complexity"        type="float"    defaultVal="0.5">Task complexity 0–1. Higher = more context kept.</Field>
+                <Field name="urgency"           type="float"    defaultVal="0.5">Urgency 0–1. Higher = favour recency in pruning.</Field>
+                <Field name="compression_level" type="int"      defaultVal="2">1 light · 2 medium · 3 aggressive.</Field>
+                <Field name="prune_budget"      type="int"      defaultVal="5">Max context chunks to keep (1–50).</Field>
+                <Field name="delta_mode"        type="string"   defaultVal='"off"'><code className="font-mono text-xs">"on"</code> or <code className="font-mono text-xs">"off"</code>. Sends delta patches after turn 1.</Field>
+                <Field name="wire_mode"         type="string"   defaultVal='"json"'><code className="font-mono text-xs">"json"</code> or <code className="font-mono text-xs">"msgpack"</code>.</Field>
               </tbody>
             </table>
           </div>
 
           <p className="annotation mt-6 mb-2">// response</p>
           <CodeBlock lang="json" code={`{
-  "compressed_messages": ["…"],   // rewritten, shorter versions of your messages
-  "pruned_context":      ["…"],   // context chunks that survived pruning
-  "baseline_tokens":     312,     // token count BEFORE compression
-  "optimized_tokens":    118,     // token count AFTER compression
-  "savings_pct":         62.18,   // (baseline - optimized) / baseline × 100
-  "quality_proxy":       0.9731,  // context-retention score 0–1
-  "routed_model_hint":   "llama-large",  // model tier selected by router
-  "model_response":      "…",     // response from your configured model backend
-  "state_id":            "abc123…"       // snapshot id (used by delta mode)
+  "compressed_messages": ["..."],
+  "pruned_context":      ["..."],
+  "baseline_tokens":     412,
+  "optimized_tokens":    171,
+  "savings_pct":         58.5,
+  "quality_proxy":       0.9921,
+  "routed_model_hint":   "llama3.2",
+  "model_response":      "...",
+  "state_id":            "abc123"
 }`} />
+
+          <p className="annotation mt-4 mb-2">// example</p>
+          <CodeBlock lang="bash" code={`curl -X POST https://api.brevitas.systems/v1/compress \\
+  -H "X-API-Key: bvt_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "messages": ["Agent A finished the plan. Here are the steps: ..."],
+    "prior_context": ["User wants a FastAPI app", "Auth is JWT-based"],
+    "task": "implement the endpoints",
+    "complexity": 0.7
+  }'`} />
         </Section>
 
-        {/* Stats */}
-        <Section id="stats" title="Usage stats">
-          <Endpoint method="GET" path="/v1/stats" description="aggregated token savings for your key" />
+        <Section id="api-stats" title="GET /v1/stats">
+          <Endpoint method="GET" path="/v1/stats" description="usage statistics for the authenticated key · 120 req/min" />
           <CodeBlock lang="json" code={`{
-  "total_calls":           42,
-  "total_tokens_saved":    18420,
-  "avg_savings_pct":       61.4,
-  "avg_quality_proxy":     0.971,
-  "total_baseline_tokens": 30000,
-  "total_optimized_tokens": 11580,
+  "total_calls":           142,
+  "total_tokens_saved":    58210,
+  "avg_savings_pct":       57.3,
+  "avg_quality_proxy":     0.9918,
+  "total_baseline_tokens": 98400,
+  "total_optimized_tokens": 42190,
   "history": [
     {
-      "timestamp":        "2026-06-11T14:22:01+00:00",
-      "baseline_tokens":  312,
-      "optimized_tokens": 118,
-      "savings_pct":      62.18,
-      "quality_proxy":    0.9731
+      "timestamp":        "2026-06-13T18:42:00Z",
+      "baseline_tokens":  412,
+      "optimized_tokens": 171,
+      "savings_pct":      58.5,
+      "quality_proxy":    0.9921
     }
   ]
 }`} />
         </Section>
 
-        {/* Provider */}
-        <Section id="provider" title="Provider config">
+        <Section id="api-provider" title="Provider config">
           <div className="space-y-6">
             <div className="space-y-2">
-              <Endpoint method="GET" path="/v1/provider" description="get current model backend" />
-              <CodeBlock lang="json" code={`{
-  "provider":    "anthropic",
-  "model":       "claude-sonnet-4-6",
-  "has_api_key": true,
-  "masked_key":  "********3x9f"
-}`} />
-            </div>
-
-            <div className="space-y-2">
-              <Endpoint method="PUT" path="/v1/provider" description="set model backend" />
+              <Endpoint method="PUT" path="/v1/provider" description="set model backend · 30 req/min" />
+              <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+                <code className="font-mono text-brand-blue text-xs">provider_api_key</code> is not required for <code className="font-mono text-brand-blue text-xs">ollama</code>.
+              </p>
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
+                  <FieldHead />
                   <tbody>
-                    <Field name="provider"         type="string" required>ollama · anthropic · openai · grok · deepseek</Field>
-                    <Field name="model"            type="string" required>Model name for the chosen provider.</Field>
-                    <Field name="provider_api_key" type="string" required={false}>Provider API key. Required for all except ollama. Stored encrypted at rest.</Field>
+                    <Field name="provider"         type="string" defaultVal="required">
+                      <code className="font-mono text-xs">ollama</code> · <code className="font-mono text-xs">anthropic</code> · <code className="font-mono text-xs">openai</code> · <code className="font-mono text-xs">grok</code> · <code className="font-mono text-xs">deepseek</code>
+                    </Field>
+                    <Field name="model"            type="string" defaultVal="required">Model name for the chosen provider.</Field>
+                    <Field name="provider_api_key" type="string" defaultVal="—">Provider API key. Required for all except ollama.</Field>
                   </tbody>
                 </table>
               </div>
+
+              <div className="bg-brand-bg dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4 text-xs">
+                <p className="annotation mb-2">// supported providers &amp; models</p>
+                <table className="w-full text-left">
+                  <tbody>
+                    {[
+                      ['ollama',     'llama3.2, llama3.1, mistral, gemma3, phi4, qwen2.5'],
+                      ['anthropic',  'claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001'],
+                      ['openai',     'gpt-4o, gpt-4o-mini, o3-mini'],
+                      ['grok',       'grok-3, grok-3-mini'],
+                      ['deepseek',   'deepseek-chat, deepseek-reasoner'],
+                    ].map(([p, m]) => (
+                      <tr key={p} className="border-t border-brand-border dark:border-brand-dark-border">
+                        <td className="py-2 pr-6 font-mono text-brand-blue">{p}</td>
+                        <td className="py-2 font-mono text-brand-muted dark:text-brand-dark-muted">{m}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <CodeBlock lang="bash" code={`curl -X PUT https://api.brevitas.systems/v1/provider \\
+  -H "X-API-Key: bvt_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{"provider": "openai", "provider_api_key": "sk-...", "model": "gpt-4o-mini"}'`} />
             </div>
 
             <div className="space-y-2">
-              <Endpoint method="GET" path="/v1/providers" description="list all supported providers and models" />
+              <Endpoint method="GET" path="/v1/provider" description="get current model backend — provider API key is masked" />
+            </div>
+
+            <div className="space-y-2">
+              <Endpoint method="GET" path="/v1/providers" description="list all supported providers and models — no auth required" />
             </div>
           </div>
         </Section>
 
-        {/* Keys */}
-        <Section id="keys" title="Key management">
-          <div className="space-y-2">
-            <Endpoint method="POST" path="/v1/keys" description="create a Brevitas API key — no auth required · 10/min" />
+        <Section id="api-health" title="Health &amp; errors">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Endpoint method="GET" path="/v1/health" description="uptime check — no auth required" />
+              <CodeBlock lang="json" code={`{ "status": "ok" }`} />
+            </div>
+
+            <p className="annotation mt-4 mb-2">// error responses</p>
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
+              <table className="w-full text-left text-xs">
                 <tbody>
-                  <Field name="name" type="string" required={false}>Human-readable label. Max 100 chars. Default "default".</Field>
+                  {[
+                    ['401', 'Missing or invalid X-API-Key'],
+                    ['400', 'Validation error (see detail field)'],
+                    ['413', 'Request body exceeds 2 MB'],
+                    ['429', 'Rate limit exceeded'],
+                  ].map(([status, meaning]) => (
+                    <tr key={status} className="border-t border-brand-border dark:border-brand-dark-border">
+                      <td className="py-2.5 pr-6 font-mono text-brand-blue">{status}</td>
+                      <td className="py-2.5 text-brand-navy-mid dark:text-brand-dark-navy-mid">{meaning}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-            <CodeBlock lang="json" code={`// response — the api_key is shown once, store it immediately
-{
-  "api_key": "bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "name":    "my-agent-project"
-}`} />
-          </div>
-          <div className="mt-4">
-            <Endpoint method="GET" path="/v1/keys" description="list keys (names + dates, no raw values)" />
           </div>
         </Section>
 
-        {/* Examples */}
-        <Section id="examples" title="Code examples">
-          <CodeBlock lang="python" code={`import requests
+        <Section id="api-example" title="End-to-end example">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            A full three-agent pipeline using the Python SDK with an Anthropic backend configured via the API.
+          </p>
+          <CodeBlock lang="python" code={`import os
+import requests
+from brevitas import optimize
 
-BREVITAS_KEY = "bvt_your_key_here"
-BASE         = "http://localhost:8000"
-HEADERS      = {"X-API-Key": BREVITAS_KEY, "Content-Type": "application/json"}
+BREVITAS_KEY = os.environ["BREVITAS_API_KEY"]
 
-def compress(messages: list[str], prior_context: list[str], task: str = "") -> dict:
-    r = requests.post(
-        f"{BASE}/v1/compress",
-        headers=HEADERS,
-        json={
-            "messages":          messages,
-            "prior_context":     prior_context,
-            "task":              task,
-            "compression_level": 2,
-            "prune_budget":      5,
-        },
-    )
-    r.raise_for_status()
-    return r.json()
-
-# In your agent pipeline:
-result = compress(
-    messages=["Agent 1 produced a long analysis of the user's data pipeline…"],
-    prior_context=["User is on Python 3.11.", "Project uses pandas.", "Tests use pytest."],
-    task="Write a data validation function",
+# 1. Configure your model provider once (or via dashboard)
+requests.put(
+    "https://api.brevitas.systems/v1/provider",
+    headers={"X-API-Key": BREVITAS_KEY},
+    json={
+        "provider":         "anthropic",
+        "provider_api_key": os.environ["ANTHROPIC_API_KEY"],
+        "model":            "claude-sonnet-4-6",
+    },
 )
 
-# Pass these to agent 2 — NOT the raw context
-agent2_input = result["compressed_messages"] + result["pruned_context"]
-print(f"Saved {result['savings_pct']}%  |  retained {result['quality_proxy']*100:.1f}% context")`} />
+# 2. Define your agents (plain callables)
+def architect(task: str) -> str:
+    return f"Architecture plan for: {task}"
 
-          <CodeBlock lang="javascript" code={`const BREVITAS_KEY = "bvt_your_key_here";
-const BASE = "http://localhost:8000";
+def builder(plan: str) -> str:
+    return f"Implementation of: {plan}"
 
-async function compress(messages, priorContext, task = "") {
-  const res = await fetch(\`\${BASE}/v1/compress\`, {
-    method: "POST",
-    headers: {
-      "X-API-Key": BREVITAS_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messages,
-      prior_context: priorContext,
-      task,
-      compression_level: 2,
-      prune_budget: 5,
-    }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+def reviewer(code: str) -> str:
+    return f"Review complete. Issues found: none. {code[:40]}..."
+
+# 3. Wrap with Brevitas
+pipeline = optimize([architect, builder, reviewer])
+
+# 4. Run
+result = pipeline.run(
+    "Build a rate-limited REST API with JWT auth",
+    complexity=0.8,
+    urgency=0.4,
+)
+
+print(result.model_response)
+print(f"Saved {result.savings_pct:.0f}% of tokens this turn")
+
+# 5. Check cumulative usage
+stats = requests.get(
+    "https://api.brevitas.systems/v1/stats",
+    headers={"X-API-Key": BREVITAS_KEY},
+).json()
+print(f"Total tokens saved: {stats['total_tokens_saved']:,}")`} />
+        </Section>
+      </div>
+    </div>
+  )
 }
 
-const result = await compress(
-  ["Agent 1 output…"],
-  ["Context chunk 1", "Context chunk 2"],
-  "Generate a report"
-);
+const PAGES = [
+  { id: 'sdk', label: 'Python SDK' },
+  { id: 'api', label: 'REST API' },
+]
 
-// Feed these to your next agent
-const agent2Input = [...result.compressed_messages, ...result.pruned_context];
-console.log(\`Saved \${result.savings_pct}% · \${result.optimized_tokens} tokens out\`);`} />
+export default function Docs() {
+  const [page, setPage] = useState('sdk')
 
-          <CodeBlock lang="bash" code={`# Create an API key
-curl -X POST http://localhost:8000/v1/keys \\
-  -H "Content-Type: application/json" \\
-  -d '{"name": "my-project"}'
-
-# Compress context
-curl -X POST http://localhost:8000/v1/compress \\
-  -H "X-API-Key: bvt_your_key_here" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "task": "Write a data validation function",
-    "messages": ["Agent 1 produced a long analysis..."],
-    "prior_context": ["User is on Python 3.11.", "Project uses pandas."],
-    "compression_level": 2,
-    "prune_budget": 5
-  }'
-
-# Check token savings
-curl http://localhost:8000/v1/stats \\
-  -H "X-API-Key: bvt_your_key_here"`} />
-        </Section>
-
-        {/* Deployment */}
-        <Section id="deployment" title="Deployment">
-          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Brevitas is designed to run as a self-hosted sidecar alongside your agent pipeline.
-            Configure it with environment variables and put it behind a TLS-terminating proxy for external access.
-          </p>
-
-          <div className="space-y-3">
-            <p className="annotation">// environment variables</p>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <tbody>
-                  <Field name="BREVITAS_SECRET_KEY" type="string" required={false}>Fernet key for encrypting provider API keys at rest. Auto-generated and saved to .secret_key if not set.</Field>
-                  <Field name="ALLOWED_ORIGINS"     type="string" required={false}>Comma-separated CORS origins. Default "*". Set to your frontend URL in production.</Field>
-                  <Field name="OLLAMA_HOST"         type="string" required={false}>Ollama base URL. Default http://localhost:11434.</Field>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="space-y-3 mt-2">
-            <p className="annotation">// start with multiple workers</p>
-            <CodeBlock lang="bash" code={`# Single worker (default)
-uvicorn api.server:app --host 0.0.0.0 --port 8000
-
-# Multiple workers for concurrent load
-uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 4
-
-# With a custom secret key (recommended for production)
-BREVITAS_SECRET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \\
-ALLOWED_ORIGINS="https://your-dashboard.example.com" \\
-uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 4`} />
-          </div>
-
-          <div className="space-y-3 mt-2">
-            <p className="annotation">// TLS via Caddy (recommended)</p>
-            <CodeBlock lang="caddy" code={`# Caddyfile
-brevitas.yourdomain.com {
-    reverse_proxy localhost:8000
-}`} />
-          </div>
-
-          <div className="space-y-3 mt-2">
-            <p className="annotation">// or nginx</p>
-            <CodeBlock lang="nginx" code={`server {
-    listen 443 ssl;
-    server_name brevitas.yourdomain.com;
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}`} />
-          </div>
-        </Section>
-
+  return (
+    <div className="space-y-8">
+      <div className="flex gap-1 border-b border-brand-border dark:border-brand-dark-border">
+        {PAGES.map(p => (
+          <button
+            key={p.id}
+            onClick={() => setPage(p.id)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              page === p.id
+                ? 'border-brand-blue text-brand-navy dark:text-brand-dark-navy'
+                : 'border-transparent text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
       </div>
+
+      {page === 'sdk' ? <PythonSDKDocs /> : <RestAPIDocs />}
     </div>
   )
 }
