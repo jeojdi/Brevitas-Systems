@@ -322,9 +322,6 @@ def compress(messages, prior_context, task=""):
             </StageCard>
           )}
 
-          {/* Routing in-progress indicator */}
-          {streaming && !routed && stages.length === 0 && null /* handled by spinner above */}
-
           {/* Stage 2: Compression + Pruning */}
           {compressed && (
             <StageCard>

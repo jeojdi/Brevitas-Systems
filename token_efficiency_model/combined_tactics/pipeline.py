@@ -1,4 +1,4 @@
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any
 
 from ..agent_communication_compression import CommunicationCompressor
 from ..adaptive_semantic_sampling import AdaptiveSemanticSampler
@@ -288,12 +288,21 @@ class TokenEfficientPipeline:
         # Use best_eval to proceed with actual model call and snapshot save
         final = best_eval or evaluate_config(compression_level, prune_budget)
 
+        # Report savings the same way the API does — based on what actually
+        # gets passed to the next agent, not the internal wire-protocol payload —
+        # so the live stage and the final "done" event never disagree.
+        display_optimized = (
+            estimate_tokens_many(final["compressed_messages"])
+            + estimate_tokens_many(final["pruned_context"])
+        )
+        display_savings = round(max(0.0, (1 - display_optimized / max(1, baseline_tokens)) * 100), 2)
+
         _emit("compressed", {
             "compressed_messages": final["compressed_messages"],
             "pruned_context": final["pruned_context"],
             "baseline_tokens": baseline_tokens,
-            "optimized_tokens": final["optimized_tokens"],
-            "savings_pct": round(final["savings"], 2),
+            "optimized_tokens": display_optimized,
+            "savings_pct": display_savings,
             "quality_proxy": round(final["quality"], 4),
             "tuning_attempts": attempts,
         })

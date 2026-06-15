@@ -363,15 +363,25 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     }
 
 
+class _ClientGone(Exception):
+    """Raised inside the worker thread to unwind the pipeline when the client disconnects."""
+
+
 @app.post("/v1/compress/stream")
 @limiter.limit("60/minute")
 async def compress_stream(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
     pipeline = _get_pipeline(kh)
     event_queue: queue.Queue = queue.Queue()
     SENTINEL = object()
+    cancel_event = threading.Event()
 
     def _run():
         def callback(stage: str, data: dict):
+            # Abort the pipeline as soon as the client goes away. Raising here
+            # unwinds process_task — before the model call if we haven't reached
+            # it yet — and prevents usage being recorded for an abandoned request.
+            if cancel_event.is_set():
+                raise _ClientGone()
             event_queue.put({"stage": stage, **data})
 
         try:
@@ -387,6 +397,9 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 wire_mode=body.wire_mode,
                 progress_callback=callback,
             )
+
+            if cancel_event.is_set():
+                return
 
             compressed_msgs = result.debug.get("compressed_messages", [])
             pruned_ctx      = result.debug.get("pruned_context", [])
@@ -413,6 +426,8 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 "model_response":      result.model_response,
                 "state_id":            result.debug.get("state_id", ""),
             }})
+        except _ClientGone:
+            pass
         except Exception as exc:
             event_queue.put({"stage": "error", "message": str(exc)})
         finally:
@@ -422,11 +437,21 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
 
     async def event_stream():
         loop = asyncio.get_event_loop()
-        while True:
-            item = await loop.run_in_executor(None, event_queue.get)
-            if item is SENTINEL:
-                break
-            yield f"data: {json.dumps(item)}\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await loop.run_in_executor(None, lambda: event_queue.get(timeout=0.5))
+                except queue.Empty:
+                    continue
+                if item is SENTINEL:
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        finally:
+            # Signal the worker to stop on any exit (normal end, client abort,
+            # or generator close) so it doesn't keep running / record usage.
+            cancel_event.set()
 
     return StreamingResponse(
         event_stream(),
