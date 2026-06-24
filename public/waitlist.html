@@ -4,955 +4,331 @@
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Join the waitlist · Brevitas Systems</title>
-<meta name="description" content="Early access to the Brevitas platform and design-partner benchmark reports.">
+<title>Sign in · Brevitas Systems</title>
+<meta name="description" content="Sign in to Brevitas Systems.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="theme.css">
-<script src="theme-init.js" defer></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  min-height: 100vh;
+  background: var(--ink);
+  color: var(--bone);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Inter Tight', sans-serif;
+}
+
+.bg-video {
+  position: fixed;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0.38;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.auth-wrap {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 820px;
+  padding: 40px 24px;
+}
+
+.auth-logo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 44px;
+  text-decoration: none;
+}
+.auth-logo-name {
+  font-family: 'Newsreader', serif;
+  font-size: 1.8rem;
+  font-weight: 300;
+  color: var(--bone);
+  letter-spacing: -0.01em;
+}
+.auth-logo-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--stone);
+}
+
+.auth-card {
+  background: rgba(6, 7, 11, 0.55);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(196, 206, 229, 0.15);
+  border-radius: 20px;
+  padding: 44px 72px 40px;
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.auth-heading {
+  font-family: 'Newsreader', serif;
+  font-size: 36px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: var(--bone);
+  margin-bottom: 8px;
+}
+.auth-sub {
+  font-size: 14px;
+  color: var(--stone);
+  margin-bottom: 36px;
+  line-height: 1.4;
+}
+
+.auth-notice {
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+.auth-notice.ok  { background: rgba(141,216,198,0.08); border: 1px solid rgba(141,216,198,0.2); color: var(--signal); }
+.auth-notice.err { background: rgba(201,128,120,0.08); border: 1px solid rgba(201,128,120,0.2); color: var(--oxblood); }
+
+.auth-field { margin-bottom: 22px; }
+.auth-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--stone-2);
+  margin-bottom: 8px;
+}
+.auth-input {
+  width: 100%;
+  padding: 13px 16px;
+  background: rgba(196,206,229,0.05);
+  border: 1px solid rgba(196,206,229,0.12);
+  border-radius: 10px;
+  color: var(--bone);
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 100ms;
+}
+.auth-input::placeholder { color: var(--stone); }
+.auth-input:focus { border-color: rgba(142,166,255,0.45); background: rgba(196,206,229,0.07); }
+
+.auth-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 14px;
+  background: var(--bronze);
+  border: none;
+  border-radius: 10px;
+  color: var(--ink);
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 100ms;
+}
+.auth-btn:hover { opacity: 0.88; }
+.auth-btn:disabled { opacity: 0.4; cursor: default; }
+
+.auth-divider {
+  border: none;
+  border-top: 1px solid rgba(196,206,229,0.1);
+  margin: 28px 0 22px;
+}
+
+.auth-links {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.auth-link {
+  font-size: 13px;
+  color: var(--stone);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 80ms;
+}
+.auth-link:hover { color: var(--stone-2); }
+.auth-link.accent { color: var(--bronze); }
+.auth-link.accent:hover { opacity: 0.8; }
+
+.back-link {
+  display: block;
+  text-align: center;
+  margin-top: 28px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--stone);
+  text-decoration: none;
+  transition: color 80ms;
+}
+.back-link:hover { color: var(--stone-2); }
+</style>
 </head>
 <body>
-<a href="#main" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to content</a>
-<div class="noise"></div>
+
+<video class="bg-video" autoplay muted loop playsinline>
+  <source src="/assets/ascii-magic-4.mp4" type="video/mp4">
+</video>
+
 <div id="app"></div>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
-
-<script type="text/babel" src="components.jsx"></script>
-<script type="text/babel" src="animations.jsx"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
 <script type="text/babel">
-const { useState } = React;
+const { useState, useEffect } = React;
 
-function ParticlesBackground() {
-  const particles = Array.from({ length: 15 }, (_, i) => ({
-    id: i,
-    left: Math.random() * 100 + '%',
-    delay: Math.random() * 20 + 's',
-    duration: 15 + Math.random() * 10 + 's',
-  }));
+const SUPABASE_URL = 'https://rdgndwwgsnhdnmrkqqam.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_Ml4eC2PvnkA3tgWWeN6kxQ_zsnQenl0';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  return (
-    <div className="particles">
-      {particles.map(p => (
-        <div
-          key={p.id}
-          className="particle"
-          style={{
-            left: p.left,
-            animationDelay: p.delay,
-            animationDuration: p.duration,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
+function AuthPage() {
+  const [mode, setMode]         = useState('signin');
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [notice, setNotice]     = useState(null);
 
-function WaitlistForm() {
-  const [form, setForm] = useState({
-    email: '', name: '', company: '', role: '',
-    pipeline_shape: '', monthly_spend: '', orchestrator: '',
-    notes: '', design_partner: false,
-  });
-  const [state, setState] = useState('idle'); // idle | submitting | success
-  const [errorMsg, setErrorMsg] = useState('');
+  useEffect(() => {
+    sb.auth.getSession().then(({ data: { session } }) => {
+      if (session) window.location.replace('/dashboard');
+    });
+    const { data: { subscription } } = sb.auth.onAuthStateChange((_e, session) => {
+      if (session) window.location.replace('/dashboard');
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
-  const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  function switchMode(m) { setEmail(''); setPassword(''); setNotice(null); setMode(m); }
 
-  const submit = async (e) => {
+  async function submit(e) {
     e.preventDefault();
-    setErrorMsg('');
-    setState('submitting');
-
+    setLoading(true);
+    setNotice(null);
     try {
-      // Client-side validation
-      if (!form.email) {
-        setErrorMsg('Email is required');
-        setState('idle');
-        return;
-      }
-
-      // Email format validation
-      const emailPattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-      if (!emailPattern.test(form.email)) {
-        setErrorMsg('Please enter a valid email address');
-        setState('idle');
-        return;
-      }
-
-      // Send to secure API endpoint
-      const response = await fetch('/api/waitlist', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(form)
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        setState('success');
-        // Clear form data from memory
-        setForm({
-          email: '', name: '', company: '', role: '',
-          pipeline_shape: '', monthly_spend: '', orchestrator: '',
-          notes: '', design_partner: false,
+      if (mode === 'signin') {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      } else if (mode === 'signup') {
+        const { error } = await sb.auth.signUp({ email, password });
+        if (error) throw error;
+        setNotice({ type: 'ok', msg: 'Account created — check your email to confirm, then sign in.' });
+        switchMode('signin');
+      } else if (mode === 'reset') {
+        const { error } = await sb.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin + '/dashboard',
         });
-      } else {
-        // Handle errors
-        if (response.status === 429) {
-          setErrorMsg('Too many requests. Please try again later.');
-        } else {
-          setErrorMsg(data.error || 'Failed to submit form. Please try again.');
-        }
-        setState('idle');
+        if (error) throw error;
+        setNotice({ type: 'ok', msg: 'Reset link sent — check your email.' });
+        switchMode('signin');
       }
-    } catch (error) {
-      console.error('Submission error:', error);
-      setErrorMsg('Network error. Please check your connection and try again.');
-      setState('idle');
+    } catch (err) {
+      setNotice({ type: 'err', msg: err.message });
+    } finally {
+      setLoading(false);
     }
-  };
-
-  if (state === 'success') {
-    return (
-      <div className="success-container" style={{ maxWidth: 640 }}>
-        <div className="t-mono" style={{ color: 'var(--signal)', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 20 }}>✓</span>
-          <span>REQUEST RECEIVED</span>
-        </div>
-        <h2 className="serif" style={{ fontSize: 36, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 20px 0' }}>
-          <em style={{ fontStyle: 'italic' }}>Thank you.</em>
-        </h2>
-        <p className="t-body" style={{ marginBottom: 20 }}>
-          You're on the list. We'll reach out in waves, prioritizing teams whose pipeline shape matches what we're benchmarking.
-        </p>
-        <p className="t-body" style={{ marginBottom: 28, color: 'var(--stone-2)' }}>
-          If you checked the design-partner box, expect a note within two weeks with a short technical intake call to understand your pipeline.
-        </p>
-        <div style={{ display: 'flex', gap: 16 }}>
-          <a href="/how-it-works" className="btn btn-ghost underline">Read how it works →</a>
-          <a href="/benchmarks" className="btn btn-ghost underline" style={{ marginLeft: 8 }}>See benchmarks →</a>
-        </div>
-      </div>
-    );
   }
 
+  const headings = {
+    signin: ['Sign in',        'Welcome back.'],
+    signup: ['Create account', 'Get started in seconds.'],
+    reset:  ['Reset password', "We'll send a link to your email."],
+  };
+  const [heading, sub] = headings[mode];
+
   return (
-    <div className="form-container" style={{
-      maxWidth: 640,
-      position: 'relative',
-      padding: '48px',
-      background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%)',
-      backdropFilter: 'blur(20px)',
-      WebkitBackdropFilter: 'blur(20px)',
-      border: '1px solid rgba(212, 169, 109, 0.15)',
-      borderRadius: '16px',
-      boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(212, 169, 109, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
-      overflow: 'hidden'
-    }}>
-      <ParticlesBackground />
-      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 32, position: 'relative', zIndex: 1 }}>
-      {errorMsg && (
-        <div role="status" aria-live="polite" style={{ padding: '12px 16px', background: 'rgba(185, 28, 28, 0.06)', border: '1px solid rgba(185, 28, 28, 0.18)', borderRadius: '8px', color: '#fca5a5', fontSize: '14px', marginBottom: '16px' }}>{errorMsg}</div>
-      )}
-      <Field label="Email" required>
-        <input
-          type="email"
-          required
-          placeholder="you@company.com"
-          value={form.email}
-          onChange={e => update('email', e.target.value)}
-          className="wl-input"
-          style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
-            borderRadius: '8px',
-            padding: '16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: '#f5f1e8',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
-            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
-            e.target.style.boxShadow = 'none';
-          }}
-        />
-      </Field>
+    <div className="auth-wrap">
+      <a href="/" className="auth-logo">
+        <span className="auth-logo-name">Brevitas</span>
+        <span className="auth-logo-tag">Systems</span>
+      </a>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <Field label="Your name">
-          <input
-            type="text"
-            placeholder="Ada Lovelace"
-            value={form.name}
-            onChange={e => update('name', e.target.value)}
-            className="wl-input"
-            style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
-              borderRadius: '8px',
-              padding: '16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: '#f5f1e8',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
-              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
-              e.target.style.boxShadow = 'none';
-            }}
-          />
-        </Field>
-        <Field label="Company">
-          <input
-            type="text"
-            placeholder="Acme"
-            value={form.company}
-            onChange={e => update('company', e.target.value)}
-            className="wl-input"
-            style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
-              borderRadius: '8px',
-              padding: '16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: '#f5f1e8',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
-              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
-              e.target.style.boxShadow = 'none';
-            }}
-          />
-        </Field>
-      </div>
+      <div className="auth-card">
+        <div className="auth-heading">{heading}</div>
+        <div className="auth-sub">{sub}</div>
 
-      <Field label="Role" hint="Helps us prioritize design-partner slots.">
-        <select
-          value={form.role}
-          onChange={e => update('role', e.target.value)}
-          className="wl-input wl-select"
-          style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
-            borderRadius: '8px',
-            padding: '16px 48px 16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: '#f5f1e8',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            appearance: 'none',
-            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
-            backgroundRepeat: 'no-repeat',
-            backgroundPosition: 'right 18px center',
-            cursor: 'pointer'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = `linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)`;
-            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-            e.target.style.backgroundRepeat = 'no-repeat';
-            e.target.style.backgroundPosition = 'right 18px center';
-            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = `linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)`;
-            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-            e.target.style.backgroundRepeat = 'no-repeat';
-            e.target.style.backgroundPosition = 'right 18px center';
-            e.target.style.boxShadow = 'none';
-          }}
-        >
-          <option value="">Select one</option>
-          <option>Engineer — building agents</option>
-          <option>Engineer — platform / infra</option>
-          <option>ML / AI Lead</option>
-          <option>Founder / CTO</option>
-          <option>Researcher</option>
-          <option>Other</option>
-        </select>
-      </Field>
+        {notice && (
+          <div className={`auth-notice ${notice.type}`}>{notice.msg}</div>
+        )}
 
-      <Field label="Pipeline shape" hint="Rough outline is fine. e.g. '3 agents in series: planner → coder → reviewer'.">
-        <textarea
-          placeholder="How many agents? Linear, branching, loops? What's the shared state look like?"
-          value={form.pipeline_shape}
-          onChange={e => update('pipeline_shape', e.target.value)}
-          rows={4}
-          className="wl-input"
-          style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
-            borderRadius: '8px',
-            padding: '16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: '#f5f1e8',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            resize: 'vertical',
-            minHeight: '100px'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
-            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
-            e.target.style.boxShadow = 'none';
-          }}
-        />
-      </Field>
+        <form onSubmit={submit}>
+          <div className="auth-field">
+            <label className="auth-label">Email</label>
+            <input
+              className="auth-input"
+              type="email" required autoComplete="email"
+              placeholder="you@company.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+            />
+          </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <Field label="Orchestrator">
-          <select
-            value={form.orchestrator}
-            onChange={e => update('orchestrator', e.target.value)}
-            className="wl-input wl-select"
-            style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
-              borderRadius: '8px',
-              padding: '16px 48px 16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: '#f5f1e8',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-              appearance: 'none',
-              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
-              backgroundRepeat: 'no-repeat',
-              backgroundPosition: 'right 18px center',
-              cursor: 'pointer'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = `linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)`;
-              e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-              e.target.style.backgroundRepeat = 'no-repeat';
-              e.target.style.backgroundPosition = 'right 18px center';
-              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = `linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)`;
-              e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-              e.target.style.backgroundRepeat = 'no-repeat';
-              e.target.style.backgroundPosition = 'right 18px center';
-              e.target.style.boxShadow = 'none';
-            }}
-          >
-            <option value="">Select one</option>
-            <option>LangGraph</option>
-            <option>CrewAI</option>
-            <option>AutoGen</option>
-            <option>OpenAI Swarm</option>
-            <option>Custom / homegrown</option>
-            <option>Other</option>
-          </select>
-        </Field>
-        <Field label="Monthly LLM spend">
-          <select
-            value={form.monthly_spend}
-            onChange={e => update('monthly_spend', e.target.value)}
-            className="wl-input wl-select"
-            style={{
-              background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-              border: '1px solid rgba(42, 47, 42, 0.8)',
-              borderRadius: '8px',
-              padding: '16px 48px 16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: '#f5f1e8',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-              appearance: 'none',
-              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
-              backgroundRepeat: 'no-repeat',
-              backgroundPosition: 'right 18px center',
-              cursor: 'pointer'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = '#d4a96d';
-              e.target.style.background = `linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)`;
-              e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-              e.target.style.backgroundRepeat = 'no-repeat';
-              e.target.style.backgroundPosition = 'right 18px center';
-              e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-              e.target.style.background = `linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)`;
-              e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a96d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-              e.target.style.backgroundRepeat = 'no-repeat';
-              e.target.style.backgroundPosition = 'right 18px center';
-              e.target.style.boxShadow = 'none';
-            }}
-          >
-            <option value="">Select one</option>
-            <option>&lt; $1k</option>
-            <option>$1k–$10k</option>
-            <option>$10k–$50k</option>
-            <option>$50k–$250k</option>
-            <option>&gt; $250k</option>
-          </select>
-        </Field>
-      </div>
-
-      <Field label="Anything else?" hint="Optional. Tell us about the problem you're solving.">
-        <textarea
-          placeholder="What would make this worth your engineering time?"
-          value={form.notes}
-          onChange={e => update('notes', e.target.value)}
-          rows={3}
-          className="wl-input"
-          style={{
-            background: 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)',
-            border: '1px solid rgba(42, 47, 42, 0.8)',
-            borderRadius: '8px',
-            padding: '16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: '#f5f1e8',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            resize: 'vertical',
-            minHeight: '100px'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = '#d4a96d';
-            e.target.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%)';
-            e.target.style.boxShadow = '0 0 0 3px rgba(212, 169, 109, 0.15), 0 4px 12px rgba(212, 169, 109, 0.1), inset 0 1px 0 rgba(212, 169, 109, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'rgba(42, 47, 42, 0.8)';
-            e.target.style.background = 'linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%)';
-            e.target.style.boxShadow = 'none';
-          }}
-        />
-      </Field>
-
-      <label className="checkbox-container" style={{
-        display: 'flex',
-        gap: '16px',
-        alignItems: 'flex-start',
-        padding: '24px',
-        background: 'linear-gradient(135deg, rgba(212, 169, 109, 0.04) 0%, rgba(22, 27, 23, 0.6) 100%)',
-        border: '1px solid rgba(212, 169, 109, 0.2)',
-        borderRadius: '12px',
-        cursor: 'pointer',
-        transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-      }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.7) 100%)';
-          e.currentTarget.style.borderColor = 'rgba(212, 169, 109, 0.4)';
-          e.currentTarget.style.transform = 'translateY(-2px)';
-          e.currentTarget.style.boxShadow = '0 8px 24px rgba(212, 169, 109, 0.15)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'linear-gradient(135deg, rgba(212, 169, 109, 0.04) 0%, rgba(22, 27, 23, 0.6) 100%)';
-          e.currentTarget.style.borderColor = 'rgba(212, 169, 109, 0.2)';
-          e.currentTarget.style.transform = 'translateY(0)';
-          e.currentTarget.style.boxShadow = 'none';
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={form.design_partner}
-          onChange={e => update('design_partner', e.target.checked)}
-          style={{
-            marginTop: '3px',
-            width: '20px',
-            height: '20px',
-            accentColor: '#d4a96d',
-            cursor: 'pointer'
-          }}
-        />
-        <span>
-          <span className="t-mono" style={{ display: 'block', color: '#d4a96d', marginBottom: 4, fontSize: '11px', letterSpacing: '0.08em' }}>DESIGN PARTNER</span>
-          <span className="t-body" style={{ fontSize: 15, color: '#f5f1e8' }}>
-            I'd like to be considered as a design partner — direct access to the team, custom benchmarks on my pipeline, and early platform access.
-          </span>
-        </span>
-      </label>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-        <button
-          type="submit"
-          disabled={state === 'submitting'}
-          className="btn-primary-enhanced"
-          style={{
-            minWidth: 200,
-            padding: '16px 32px',
-            background: state === 'submitting' ?
-              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)' :
-              'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)',
-            border: '1px solid rgba(212, 169, 109, 0.3)',
-            borderRadius: '8px',
-            color: '#0a0d0a',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontWeight: 600,
-            fontSize: '15px',
-            letterSpacing: '0.02em',
-            cursor: state === 'submitting' ? 'not-allowed' : 'pointer',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            boxShadow: '0 4px 12px rgba(212, 169, 109, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            opacity: state === 'submitting' ? 0.7 : 1
-          }}
-          onMouseEnter={(e) => {
-            if (state !== 'submitting') {
-              e.target.style.background = 'linear-gradient(135deg, #e4b85b 0%, #d4a96d 100%)';
-              e.target.style.transform = 'translateY(-2px)';
-              e.target.style.boxShadow = '0 8px 24px rgba(212, 169, 109, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3)';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (state !== 'submitting') {
-              e.target.style.background = 'linear-gradient(135deg, #d4a96d 0%, #b89755 100%)';
-              e.target.style.transform = 'translateY(0)';
-              e.target.style.boxShadow = '0 4px 12px rgba(212, 169, 109, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)';
-            }
-          }}
-        >
-          {state === 'submitting' ? (
-            <>
-              <span className="spinner"></span>
-              <span>Sending...</span>
-            </>
-          ) : (
-            <>Request access <span style={{ marginLeft: 4 }}>→</span></>
+          {mode !== 'reset' && (
+            <div className="auth-field">
+              <label className="auth-label">Password</label>
+              <input
+                className="auth-input"
+                type="password" required minLength={6}
+                placeholder="••••••••"
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+            </div>
           )}
-        </button>
-        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
-          No spam. We respond to every submission.
-        </span>
+
+          <button className="auth-btn" type="submit" disabled={loading}>
+            {loading ? 'Please wait…'
+              : mode === 'signin' ? 'Sign in'
+              : mode === 'signup' ? 'Create account'
+              : 'Send reset link'}
+          </button>
+        </form>
+
+        <hr className="auth-divider" />
+
+        <div className="auth-links">
+          {mode === 'signin' && <>
+            <button className="auth-link accent" onClick={() => switchMode('signup')}>
+              No account? Sign up →
+            </button>
+            <button className="auth-link" onClick={() => switchMode('reset')}>
+              Forgot password?
+            </button>
+          </>}
+          {(mode === 'signup' || mode === 'reset') && (
+            <button className="auth-link" onClick={() => switchMode('signin')}>
+              ← Back to sign in
+            </button>
+          )}
+        </div>
       </div>
-    </form>
+
+      <a href="/" className="back-link">← brevitassystems.com</a>
     </div>
   );
 }
 
-function Field({ label, hint, required, children }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <span className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
-        {label.toUpperCase()} {required && <span style={{ color: 'var(--bronze)' }}>*</span>}
-      </span>
-      {children}
-      {hint && <span className="t-body" style={{ fontSize: 13, color: 'var(--stone)' }}>{hint}</span>}
-    </label>
-  );
-}
-
-function WaitlistPage() {
-  useFadeUpReveal();
-  return (
-    <>
-      <Nav current="waitlist" />
-
-      <section className="section" style={{ paddingTop: 'clamp(80px, 12vh, 140px)' }}>
-        <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 80, maxWidth: 1280 }} className="wl-grid">
-            {/* Left: copy */}
-            <div>
-              <h1 className="t-display" style={{ margin: '0 0 24px', fontSize: 'clamp(48px, 7vw, 88px)' }}>
-                Get on the list.
-              </h1>
-              <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 520 }}>
-                Early access to the platform, design-partner benchmark reports, and an invite to the private technical channel.
-              </p>
-
-              <div style={{ marginTop: 48, display: 'flex', flexDirection: 'column', gap: 28 }}>
-                {[
-                  ['01', 'Early platform access', 'Versioned releases, drop-in compatible with your existing orchestration. No invasive setup.'],
-                  ['02', 'Monthly benchmark reports', 'The most comprehensive benchmark of multi-agent token efficiency in the space. Quality-parity validated.'],
-                  ['03', 'Private technical channel', 'Direct access to the team. We answer within a business day.'],
-                  ['04', 'Custom pipeline benchmarks', 'Design partners get their own pipeline measured against the harness.'],
-                ].map(([n, h, b]) => (
-                  <div key={n} style={{ display: 'grid', gridTemplateColumns: '40px 1fr', gap: 20 }}>
-                    <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 12, paddingTop: 2 }}>{n}</div>
-                    <div>
-                      <div className="serif" style={{ fontSize: 22, fontWeight: 400, marginBottom: 6 }}>{h}</div>
-                      <div className="t-body" style={{ fontSize: 14, color: 'var(--stone-2)' }}>{b}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: 56, padding: '20px 24px', border: '1px solid var(--line)', borderLeft: '2px solid var(--bronze)', background: 'var(--ink-2)' }}>
-                <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 10 }}>NOTE</div>
-                <p className="t-body" style={{ margin: 0, fontSize: 15 }}>
-                  We're a small team. The waitlist is how we prioritize. Concrete details about your pipeline help us match you to the right cohort.
-                </p>
-              </div>
-            </div>
-
-            {/* Right: form */}
-            <div>
-              <WaitlistForm />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <Footer />
-
-      <style>{`
-        /* Enhanced form container */
-        .form-container {
-          position: relative;
-          padding: 48px;
-          background: linear-gradient(135deg, rgba(22, 27, 23, 0.9) 0%, rgba(15, 20, 16, 0.95) 100%);
-          backdrop-filter: blur(20px);
-          border: 1px solid rgba(212, 169, 109, 0.15);
-          border-radius: 16px;
-          box-shadow:
-            0 24px 48px rgba(0, 0, 0, 0.4),
-            0 12px 24px rgba(212, 169, 109, 0.03),
-            inset 0 1px 0 rgba(255, 255, 255, 0.05);
-          overflow: hidden;
-        }
-
-        /* Animated gradient overlay */
-        .form-container::before {
-          content: '';
-          position: absolute;
-          top: -50%;
-          left: -50%;
-          width: 200%;
-          height: 200%;
-          background: linear-gradient(
-            45deg,
-            transparent,
-            rgba(212, 169, 109, 0.03),
-            transparent,
-            rgba(168, 201, 139, 0.02),
-            transparent
-          );
-          animation: shimmer 8s linear infinite;
-          pointer-events: none;
-        }
-
-        @keyframes shimmer {
-          0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
-          100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
-        }
-
-        /* Enhanced input fields */
-        .wl-input {
-          background: linear-gradient(135deg, rgba(22, 27, 23, 0.6) 0%, rgba(15, 20, 16, 0.8) 100%);
-          border: 1px solid rgba(42, 47, 42, 0.8);
-          border-radius: 8px;
-          padding: 16px 18px;
-          font-family: 'Inter Tight', sans-serif;
-          font-size: 15px;
-          color: var(--fg);
-          transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
-          width: 100%;
-          box-sizing: border-box;
-          outline: none;
-          position: relative;
-        }
-
-        .wl-input:hover {
-          border-color: rgba(212, 169, 109, 0.3);
-          background: linear-gradient(135deg, rgba(22, 27, 23, 0.7) 0%, rgba(15, 20, 16, 0.9) 100%);
-          transform: translateY(-1px);
-        }
-
-        .wl-input:focus {
-          border-color: var(--bronze);
-          background: linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.9) 100%);
-          box-shadow:
-            0 0 0 3px rgba(212, 169, 109, 0.15),
-            0 4px 12px rgba(212, 169, 109, 0.1),
-            inset 0 1px 0 rgba(212, 169, 109, 0.1);
-          transform: translateY(-2px);
-        }
-
-        .wl-input::placeholder {
-          color: rgba(113, 107, 94, 0.7);
-          transition: color 200ms;
-        }
-
-        .wl-input:focus::placeholder {
-          color: rgba(113, 107, 94, 0.5);
-        }
-
-        /* Enhanced select dropdown */
-        .wl-select {
-          appearance: none;
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%23d4a84b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 18px center;
-          padding-right: 48px;
-          cursor: pointer;
-        }
-
-        /* Enhanced textarea */
-        textarea.wl-input {
-          resize: vertical;
-          font-family: inherit;
-          min-height: 100px;
-        }
-
-        /* Field label enhancements */
-        .field-label {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 10px;
-        }
-
-        .field-label .t-mono {
-          color: var(--stone-2);
-          font-size: 11px;
-          letter-spacing: 0.08em;
-          transition: color 200ms;
-        }
-
-        .field-focused .field-label .t-mono {
-          color: var(--bronze);
-        }
-
-        /* Enhanced checkbox container */
-        .checkbox-container {
-          display: flex;
-          gap: 16px;
-          align-items: flex-start;
-          padding: 24px;
-          background: linear-gradient(135deg, rgba(212, 169, 109, 0.04) 0%, rgba(22, 27, 23, 0.6) 100%);
-          border: 1px solid rgba(212, 169, 109, 0.2);
-          border-radius: 12px;
-          cursor: pointer;
-          transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        .checkbox-container:hover {
-          background: linear-gradient(135deg, rgba(212, 169, 109, 0.08) 0%, rgba(22, 27, 23, 0.7) 100%);
-          border-color: rgba(212, 169, 109, 0.4);
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(212, 169, 109, 0.15);
-        }
-
-        .checkbox-container input[type="checkbox"] {
-          margin-top: 3px;
-          width: 20px;
-          height: 20px;
-          accent-color: var(--bronze);
-          cursor: pointer;
-        }
-
-        /* Enhanced primary button */
-        .btn-primary-enhanced {
-          position: relative;
-          padding: 16px 32px;
-          background: linear-gradient(135deg, #d4a96d 0%, #b89755 100%);
-          border: 1px solid rgba(212, 169, 109, 0.3);
-          border-radius: 8px;
-          color: #0a0d0a;
-          font-family: 'Inter Tight', sans-serif;
-          font-weight: 600;
-          font-size: 15px;
-          letter-spacing: 0.02em;
-          cursor: pointer;
-          transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
-          overflow: hidden;
-          box-shadow:
-            0 4px 12px rgba(212, 169, 109, 0.3),
-            inset 0 1px 0 rgba(255, 255, 255, 0.2);
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-        }
-
-        .btn-primary-enhanced::before {
-          content: '';
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          width: 120%;
-          height: 120%;
-          background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 0%, transparent 70%);
-          transform: translate(-50%, -50%) scale(0);
-          transition: transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
-          pointer-events: none;
-        }
-
-        .btn-primary-enhanced:hover {
-          background: linear-gradient(135deg, #e4b85b 0%, #d4a96d 100%);
-          transform: translateY(-2px);
-          box-shadow:
-            0 8px 24px rgba(212, 169, 109, 0.4),
-            inset 0 1px 0 rgba(255, 255, 255, 0.3);
-        }
-
-        .btn-primary-enhanced:hover::before {
-          transform: translate(-50%, -50%) scale(1);
-        }
-
-        .btn-primary-enhanced:active {
-          transform: translateY(0);
-          box-shadow:
-            0 2px 8px rgba(212, 169, 109, 0.3),
-            inset 0 1px 2px rgba(0, 0, 0, 0.2);
-        }
-
-        .btn-primary-enhanced:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-          transform: none;
-        }
-
-        /* Success state styling */
-        .success-container {
-          padding: 56px 48px;
-          background: linear-gradient(135deg, rgba(168, 201, 139, 0.08) 0%, rgba(22, 27, 23, 0.95) 100%);
-          backdrop-filter: blur(20px);
-          border: 1px solid rgba(168, 201, 139, 0.3);
-          border-radius: 16px;
-          box-shadow:
-            0 24px 48px rgba(0, 0, 0, 0.3),
-            0 12px 24px rgba(168, 201, 139, 0.05),
-            inset 0 1px 0 rgba(255, 255, 255, 0.05);
-          animation: successFadeIn 600ms cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        @keyframes successFadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(20px) scale(0.95);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-        }
-
-        /* Loading spinner */
-        .spinner {
-          display: inline-block;
-          width: 18px;
-          height: 18px;
-          border: 2px solid var(--ink);
-          border-top-color: transparent;
-          border-radius: 50%;
-          animation: spin 800ms linear infinite;
-          margin-right: 8px;
-        }
-
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-
-        /* Responsive adjustments */
-        @media (max-width: 900px) {
-          .wl-grid {
-            grid-template-columns: 1fr !important;
-            gap: 64px !important;
-          }
-          .form-container {
-            padding: 32px 24px;
-          }
-        }
-
-        /* Floating particles background */
-        .particles {
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          pointer-events: none;
-          overflow: hidden;
-        }
-
-        .particle {
-          position: absolute;
-          width: 2px;
-          height: 2px;
-          background: rgba(212, 169, 109, 0.3);
-          border-radius: 50%;
-          animation: float 20s linear infinite;
-        }
-
-        @keyframes float {
-          from {
-            transform: translateY(100vh) rotate(0deg);
-            opacity: 0;
-          }
-          10% {
-            opacity: 1;
-          }
-          90% {
-            opacity: 1;
-          }
-          to {
-            transform: translateY(-100vh) rotate(720deg);
-            opacity: 0;
-          }
-        }
-      `}</style>
-    </>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('app')).render(<WaitlistPage />);
+ReactDOM.createRoot(document.getElementById('app')).render(<AuthPage />);
 </script>
 </body>
 </html>

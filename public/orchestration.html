@@ -1,0 +1,1675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orchestration Command — Brevitas Systems</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" async></script>
+<style>
+/* ── Page shell ── */
+html, body { height: 100%; }
+body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
+
+/* ── Nav ── */
+.orch-nav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(6,7,11,0.97);
+  border-bottom: 1px solid var(--line);
+  padding: 0 36px;
+  display: flex; align-items: center; justify-content: space-between;
+  height: 60px;
+}
+.orch-nav-logo {
+  display: flex; align-items: baseline; gap: 10px;
+  font-family: 'Newsreader', serif; font-weight: 300;
+  font-size: 22px; color: var(--bone); letter-spacing: -0.01em;
+}
+.orch-nav-logo span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; letter-spacing: 0.08em;
+  color: var(--stone); margin-top: 2px;
+}
+.orch-nav-links { display: flex; gap: 2px; }
+.orch-nav-links a {
+  font-family: 'Inter Tight', sans-serif; font-size: 13px; font-weight: 500;
+  color: var(--stone-2); padding: 6px 14px; border-radius: 8px;
+  transition: color 80ms, background 80ms; text-decoration: none;
+}
+.orch-nav-links a:hover { color: var(--bone); background: rgba(142,166,255,0.07); }
+.orch-nav-links a.active { color: var(--bronze); background: rgba(142,166,255,0.1); }
+.orch-nav-right {
+  display: flex; align-items: center; gap: 16px;
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--signal); box-shadow: 0 0 0 2px rgba(141,216,198,0.25);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 0 2px rgba(141,216,198,0.25); }
+  50%      { box-shadow: 0 0 0 5px rgba(141,216,198,0.1); }
+}
+.live-label { font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.04em; color:var(--signal); }
+.nav-time { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--stone); }
+
+/* ── Ticker ── */
+.orch-ticker {
+  background: var(--ink-2); border-bottom: 1px solid var(--line);
+  padding: 10px 36px; display: flex; gap: 48px; align-items: center;
+  overflow-x: auto; scrollbar-width: none;
+}
+.orch-ticker::-webkit-scrollbar { display: none; }
+.ticker-item { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.ticker-value {
+  font-family:'JetBrains Mono',monospace; font-size: 18px; font-weight:500;
+  letter-spacing: -0.01em;
+}
+.ticker-value.bronze { color: var(--bronze); }
+.ticker-value.signal { color: var(--signal); }
+.ticker-value.bone   { color: var(--bone); }
+.ticker-label {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:0.04em; color:var(--stone);
+}
+.ticker-sep { width:1px; height:28px; background:var(--line); flex-shrink:0; }
+
+/* ── Main layout ── */
+.orch-main { max-width: 1380px; margin: 0 auto; padding: 40px 36px 80px; }
+
+/* ── Tab bar ── */
+.tab-bar {
+  display: flex; gap: 4px; margin-bottom: 40px;
+  border-bottom: 1px solid var(--line); padding-bottom: 0;
+}
+.tab-btn {
+  font-family:'Inter Tight',sans-serif; font-size:13px; font-weight:500;
+  color:var(--stone); padding: 10px 18px 12px;
+  background:none; border:none; cursor:pointer;
+  border-bottom: 2px solid transparent; margin-bottom:-1px;
+  transition: color 80ms, border-color 80ms;
+}
+.tab-btn:hover { color:var(--bone-dim); }
+.tab-btn.active { color:var(--bronze); border-bottom-color:var(--bronze); }
+
+/* ── Tab panels ── */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Section headers ── */
+.section-header { margin-bottom: 28px; }
+.section-label {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:0.05em; color:var(--stone);
+  margin-bottom: 8px;
+}
+.section-title {
+  font-family:'Newsreader',serif; font-weight:300;
+  font-size:clamp(26px,3vw,38px); line-height:1.1; letter-spacing:-0.01em;
+  color:var(--bone);
+}
+.section-title em { color:var(--signal); font-style:italic; }
+.section-title .bronze { color:var(--bronze); }
+
+/* ── Cards ── */
+.card {
+  background: var(--ink-2); border: 1px solid var(--line);
+  border-radius: 14px; padding: 28px;
+}
+.card--elevated { background: var(--ink-3); }
+
+/* ── Overview stats ── */
+.overview-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; margin-bottom: 36px; }
+@media (max-width:1000px){ .overview-grid { grid-template-columns: repeat(2,1fr); } }
+@media (max-width:600px) { .overview-grid { grid-template-columns: 1fr; } }
+
+.stat-card {
+  background: var(--ink-2); border: 1px solid var(--line);
+  border-radius: 14px; padding: 24px 26px;
+  display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 100ms, transform 100ms;
+}
+.stat-card:hover { border-color: rgba(142,166,255,0.3); transform: translateY(-1px); }
+.stat-card-label {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:0.04em; color:var(--stone);
+}
+.stat-card-value {
+  font-family:'JetBrains Mono',monospace; font-size:36px; font-weight:500;
+  letter-spacing:-0.02em; line-height:1;
+}
+.stat-card-value.bronze { color: var(--bronze); }
+.stat-card-value.signal { color: var(--signal); }
+.stat-card-value.oxblood { color: var(--oxblood); }
+.stat-card-sub {
+  font-family:'Inter Tight',sans-serif; font-size:12px;
+  color:var(--stone); margin-top:2px;
+}
+.stat-card-delta {
+  font-family:'JetBrains Mono',monospace; font-size:11px;
+  color:var(--signal); margin-top:2px;
+}
+
+/* ── Overview two-col layout ── */
+.overview-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width:900px){ .overview-bottom { grid-template-columns: 1fr; } }
+
+/* ── Activity feed ── */
+.feed-list { display:flex; flex-direction:column; gap:2px; }
+.feed-item {
+  display:flex; align-items:flex-start; gap:14px;
+  padding: 12px 16px; border-radius:10px;
+  transition: background 60ms;
+}
+.feed-item:hover { background: rgba(196,206,229,0.04); }
+.feed-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; margin-top:5px; }
+.feed-dot.active  { background:var(--signal); }
+.feed-dot.idle    { background:var(--stone); }
+.feed-dot.warning { background:var(--oxblood); }
+.feed-content { flex:1; }
+.feed-agent { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--stone-2); }
+.feed-msg { font-family:'Inter Tight',sans-serif; font-size:13px; color:var(--bone-dim); line-height:1.5; }
+.feed-time { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--stone); }
+
+/* ── Agent fleet grid ── */
+.agent-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+@media (max-width:1200px){ .agent-grid { grid-template-columns: repeat(2,1fr); } }
+@media (max-width:700px) { .agent-grid { grid-template-columns: 1fr; } }
+
+.agent-card {
+  background: var(--ink-2); border: 1px solid var(--line);
+  border-radius: 16px; padding: 26px;
+  display: flex; flex-direction: column; gap: 18px;
+  transition: border-color 100ms, transform 100ms;
+  position: relative; overflow: hidden;
+}
+.agent-card::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:2px;
+  background: linear-gradient(90deg, transparent, var(--bronze), transparent);
+  opacity:0; transition: opacity 100ms;
+}
+.agent-card:hover { border-color: rgba(142,166,255,0.25); transform: translateY(-1px); }
+.agent-card:hover::before { opacity:1; }
+
+.agent-header { display:flex; align-items:flex-start; justify-content:space-between; }
+.agent-icon {
+  width:38px; height:38px; border-radius:10px;
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Newsreader',serif; font-size:18px; font-weight:400;
+  color:var(--bone-dim); flex-shrink:0;
+}
+.agent-status-badge {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:0.04em;
+  padding: 4px 10px; border-radius:100px;
+}
+.agent-status-badge.active    { background:rgba(141,216,198,0.12); color:var(--signal); border:1px solid rgba(141,216,198,0.25); }
+.agent-status-badge.processing{ background:rgba(142,166,255,0.12); color:var(--bronze); border:1px solid rgba(142,166,255,0.25); }
+.agent-status-badge.idle      { background:rgba(136,145,164,0.12); color:var(--stone-2); border:1px solid rgba(136,145,164,0.2); }
+
+.agent-name {
+  font-family:'Newsreader',serif; font-weight:400; font-size:22px;
+  color:var(--bone); line-height:1.1;
+}
+.agent-role {
+  font-family:'Inter Tight',sans-serif; font-size:12px;
+  color:var(--stone); margin-top:3px;
+}
+.agent-task {
+  background: rgba(196,206,229,0.04); border:1px solid var(--line);
+  border-radius:8px; padding:10px 14px;
+  font-family:'Inter Tight',sans-serif; font-size:12px;
+  color:var(--bone-dim); line-height:1.5;
+}
+.agent-task-label {
+  font-family:'JetBrains Mono',monospace; font-size:9px;
+  letter-spacing:0.04em; color:var(--stone);
+  margin-bottom:5px;
+}
+
+.agent-metrics { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.agent-metric { }
+.agent-metric-label {
+  font-family:'JetBrains Mono',monospace; font-size:9px;
+  letter-spacing:0.04em; color:var(--stone); margin-bottom:5px;
+}
+.agent-metric-value {
+  font-family:'JetBrains Mono',monospace; font-size:16px; font-weight:500;
+  color:var(--bone);
+}
+.agent-metric-value.signal { color:var(--signal); }
+.agent-metric-value.bronze { color:var(--bronze); }
+
+/* context bar */
+.context-bar-wrap { }
+.context-bar-header {
+  display:flex; justify-content:space-between; margin-bottom:7px;
+  font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--stone);
+}
+.context-bar-header span:last-child { color:var(--signal); }
+.context-bar-track {
+  height:5px; background:rgba(196,206,229,0.1); border-radius:100px; overflow:hidden;
+}
+.context-bar-fill {
+  height:100%; border-radius:100px;
+  background: linear-gradient(90deg, var(--bronze-deep), var(--signal));
+  transition: width 500ms var(--ease-out-soft);
+}
+
+/* ── Pipeline SVG container ── */
+.pipeline-wrap {
+  background: var(--ink-2); border: 1px solid var(--line);
+  border-radius: 16px; padding: 40px; overflow: auto;
+}
+.pipeline-svg { width:100%; min-width:800px; }
+
+/* pipeline node styles */
+.pipe-node { cursor:pointer; }
+.pipe-node:hover { opacity: 0.88; }
+.pipe-node-box {
+  rx:12; ry:12;
+  stroke-width:1.5;
+}
+.pipe-node-label-main {
+  font-family:'Newsreader',serif;
+  font-size:16px; font-weight:400;
+  fill:var(--bone);
+}
+.pipe-node-label-sub {
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; letter-spacing:0.04em;
+  fill:var(--stone);
+}
+.pipe-node-badge {
+  font-family:'JetBrains Mono',monospace;
+  font-size:9px; letter-spacing:0.08em;
+}
+.pipe-arrow {
+  stroke:var(--stone); stroke-width:1.5; fill:none;
+  marker-end: url(#arrowhead);
+}
+.pipe-arrow-signal {
+  stroke:var(--signal); stroke-width:1.5; fill:none;
+  stroke-dasharray:6,3;
+  marker-end: url(#arrowhead-signal);
+}
+
+/* brevitas badge in pipeline */
+.bvt-badge-bg { fill:rgba(141,216,198,0.1); rx:8; ry:8; stroke:rgba(141,216,198,0.3); }
+.bvt-badge-text {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  fill:var(--signal); letter-spacing:0.12em;
+}
+
+/* ── Pipeline legend ── */
+.pipeline-legend {
+  display:flex; gap:28px; margin-top:24px; flex-wrap:wrap;
+}
+.legend-item { display:flex; align-items:center; gap:10px; }
+.legend-swatch { width:28px; height:3px; border-radius:2px; }
+.legend-label { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--stone-2); }
+
+/* ── Analytics grid ── */
+.analytics-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:24px; }
+.analytics-grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; margin-bottom:24px; }
+@media(max-width:900px){ .analytics-grid, .analytics-grid-3 { grid-template-columns:1fr; } }
+
+.chart-card {
+  background: var(--ink-2); border:1px solid var(--line);
+  border-radius:16px; padding:28px 28px 22px;
+}
+.chart-title {
+  font-family:'Inter Tight',sans-serif; font-size:13px; font-weight:600;
+  color:var(--bone); margin-bottom:4px;
+}
+.chart-sub { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--stone); margin-bottom:20px; }
+.chart-wrap { position:relative; }
+
+/* difficulty bars (custom) */
+.diff-bars { display:flex; flex-direction:column; gap:14px; margin-top:4px; }
+.diff-row { }
+.diff-row-header { display:flex; justify-content:space-between; margin-bottom:6px; }
+.diff-row-label { font-family:'Inter Tight',sans-serif; font-size:13px; color:var(--bone-dim); }
+.diff-row-pct { font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--bone); }
+.diff-track { height:8px; background:rgba(196,206,229,0.1); border-radius:100px; overflow:hidden; }
+.diff-fill { height:100%; border-radius:100px; transition:width 600ms var(--ease-out-soft); will-change:width; }
+
+/* ── Cost layout ── */
+.cost-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:24px; }
+@media(max-width:900px){ .cost-grid { grid-template-columns:1fr; } }
+
+.cost-compare {
+  background:var(--ink-2); border:1px solid var(--line);
+  border-radius:16px; padding:28px;
+}
+.cost-compare-title {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:0.04em; color:var(--stone); margin-bottom:20px;
+}
+.cost-row { display:flex; align-items:center; gap:16px; margin-bottom:16px; }
+.cost-row-label { font-family:'Inter Tight',sans-serif; font-size:13px; color:var(--stone-2); width:120px; flex-shrink:0; }
+.cost-row-track { flex:1; height:10px; background:rgba(196,206,229,0.08); border-radius:100px; overflow:hidden; }
+.cost-row-fill { height:100%; border-radius:100px; }
+.cost-row-val { font-family:'JetBrains Mono',monospace; font-size:13px; width:64px; text-align:right; }
+
+.savings-hero {
+  text-align:center; padding:32px 0; border-top:1px solid var(--line); margin-top:24px;
+}
+.savings-hero-pct {
+  font-family:'Newsreader',serif; font-weight:300; font-size:clamp(48px,7vw,88px);
+  letter-spacing:-0.03em; line-height:1; color:var(--signal);
+}
+.savings-hero-label { font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.04em; color:var(--stone); margin-top:10px; }
+
+/* per-agent cost table */
+.cost-table { width:100%; border-collapse:collapse; }
+.cost-table th {
+  font-family:'JetBrains Mono',monospace; font-size:9px;
+  letter-spacing:0.04em; color:var(--stone);
+  text-align:left; padding:0 0 14px; border-bottom:1px solid var(--line);
+}
+.cost-table th:not(:first-child) { text-align:right; }
+.cost-table td {
+  padding:12px 0; border-bottom:1px solid rgba(196,206,229,0.07);
+  font-family:'Inter Tight',sans-serif; font-size:13px; color:var(--bone-dim);
+  vertical-align:middle;
+}
+.cost-table td:not(:first-child) { text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; }
+.cost-table td.signal { color:var(--signal); }
+.cost-table td.bronze { color:var(--bronze); }
+.cost-table .agent-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:10px; }
+.cost-table tr:last-child td { border-bottom:none; }
+
+/* ── Breadcrumb ── */
+.breadcrumb {
+  font-family:'JetBrains Mono',monospace; font-size:11px;
+  color:var(--stone); padding:0 36px; margin-top:16px; margin-bottom:-20px;
+  display:flex; gap:8px; align-items:center;
+}
+.breadcrumb a { color:var(--stone); text-decoration:none; transition:color 140ms; }
+.breadcrumb a:hover { color:var(--stone-2); }
+.breadcrumb .sep { color:rgba(196,206,229,0.2); }
+
+/* ── scrollbar ── */
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:var(--ink); }
+::-webkit-scrollbar-thumb { background:rgba(196,206,229,0.15); border-radius:3px; }
+
+/* ── animated number ── */
+.count-up { display:inline-block; }
+
+/* fade in panels */
+.tab-panel.active { animation: fadeUp 120ms ease both; }
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(6px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+
+/* ── Animated Pipeline ── */
+.pipe-ctrl {
+  display:flex; align-items:center; gap:16px; margin-bottom:20px; flex-wrap:wrap;
+}
+.pipe-run-btn {
+  font-family:'Inter Tight',sans-serif; font-size:13px; font-weight:500;
+  color:var(--bone); background:rgba(142,166,255,0.1);
+  border:1px solid rgba(142,166,255,0.3); border-radius:8px;
+  padding:8px 22px; cursor:pointer; transition:all 80ms; flex-shrink:0;
+}
+.pipe-run-btn:hover { background:rgba(142,166,255,0.2); border-color:rgba(142,166,255,0.5); }
+.pipe-run-btn:disabled { opacity:0.38; cursor:default; pointer-events:none; }
+.pipe-status-text { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--stone-2); flex:1; }
+.pipe-speed { display:flex; align-items:center; gap:4px; }
+.pipe-speed-label { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--stone); margin-right:4px; }
+.pipe-speed-btn {
+  font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--stone);
+  background:none; border:1px solid rgba(196,206,229,0.14); border-radius:5px;
+  padding:3px 10px; cursor:pointer; transition:all 60ms;
+}
+.pipe-speed-btn:hover { color:var(--stone-2); }
+.pipe-speed-btn.active { color:var(--bronze); border-color:rgba(142,166,255,0.4); background:rgba(142,166,255,0.08); }
+
+.pnode { opacity:0; transition:opacity 160ms ease; will-change:opacity; }
+.pnode.visible, .pnode.active, .pnode.complete { opacity:1; }
+.pnode-ring { fill:none; opacity:0; transition:opacity 100ms; }
+.pnode.active .pnode-ring { opacity:1; animation:pnRing 1.4s ease-in-out infinite; }
+.pnode.complete .pnode-ring { opacity:0; animation:none; }
+@keyframes pnRing {
+  0%,100% { stroke-width:1.5; stroke-opacity:0.18; }
+  50%      { stroke-width:3.5; stroke-opacity:0.95; }
+}
+.pnode-alabel { transition:opacity 100ms; }
+.pnode:not(.active) .pnode-alabel { opacity:0; }
+.pnode-badge { transition:opacity 140ms; }
+.pnode:not(.complete) .pnode-badge { opacity:0; }
+
+.pipe-log {
+  background:rgba(6,7,11,0.65); border:1px solid var(--line);
+  border-radius:10px; padding:10px 16px; margin-top:16px;
+  height:108px; overflow-y:auto;
+}
+.pipe-log::-webkit-scrollbar { width:3px; }
+.pipe-log::-webkit-scrollbar-thumb { background:rgba(196,206,229,0.12); border-radius:2px; }
+.pipe-log-line {
+  font-family:'JetBrains Mono',monospace; font-size:10px;
+  line-height:1.8; display:flex; gap:12px;
+}
+.pipe-log-ts    { color:var(--stone); flex-shrink:0; width:38px; }
+.pipe-log-agent { color:var(--bronze); flex-shrink:0; min-width:110px; }
+.pipe-log-msg   { color:var(--stone-2); }
+.pipe-log-line.log-ok   .pipe-log-msg { color:var(--signal); }
+.pipe-log-line.log-warn .pipe-log-msg { color:var(--oxblood); }
+.pipe-log-line.log-bvt  .pipe-log-msg { color:#8dd8c6; }
+.pipe-log-line.log-bvt  .pipe-log-agent { color:#8dd8c6; }
+.pipe-log-line.log-sys  .pipe-log-agent { color:var(--stone); }
+.pipe-log-line.log-sys  .pipe-log-msg { color:var(--stone-2); font-style:italic; }
+</style>
+</head>
+<body>
+<video autoplay muted loop playsinline style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;opacity:0.18;pointer-events:none">
+  <source src="/assets/ascii-magic-4.mp4" type="video/mp4">
+</video>
+
+<!-- ── Navigation ── -->
+<nav class="orch-nav">
+  <a href="/" class="orch-nav-logo" style="text-decoration:none">
+    Brevitas
+    <span>Systems</span>
+  </a>
+  <div class="orch-nav-links">
+    <a href="/">Home</a>
+    <a href="/product">Product</a>
+    <a href="/orchestration" class="active">Orchestration</a>
+    <a href="/docs">Docs</a>
+  </div>
+  <div class="orch-nav-right">
+    <div class="live-dot"></div>
+    <span class="live-label">7 agents live</span>
+    <span class="nav-time" id="live-clock">—</span>
+  </div>
+</nav>
+
+<!-- ── Ticker ── -->
+<div class="orch-ticker">
+  <div class="ticker-item">
+    <span class="ticker-value bone" id="tick-calls">—</span>
+    <span class="ticker-label">calls today</span>
+  </div>
+  <div class="ticker-sep"></div>
+  <div class="ticker-item">
+    <span class="ticker-value bronze" id="tick-tokens">—</span>
+    <span class="ticker-label">tokens saved</span>
+  </div>
+  <div class="ticker-sep"></div>
+  <div class="ticker-item">
+    <span class="ticker-value signal" id="tick-savings">—</span>
+    <span class="ticker-label">avg compression</span>
+  </div>
+  <div class="ticker-sep"></div>
+  <div class="ticker-item">
+    <span class="ticker-value signal" id="tick-cost">—</span>
+    <span class="ticker-label">saved in cost</span>
+  </div>
+  <div class="ticker-sep"></div>
+  <div class="ticker-item">
+    <span class="ticker-value bone" id="tick-latency">—</span>
+    <span class="ticker-label">avg latency</span>
+  </div>
+  <div class="ticker-sep"></div>
+  <div class="ticker-item">
+    <span class="ticker-value bronze" id="tick-tasks">—</span>
+    <span class="ticker-label">tasks completed</span>
+  </div>
+</div>
+
+<!-- ── Breadcrumb ── -->
+<div class="breadcrumb">
+  <a href="/">brevitassystems.com</a>
+  <span class="sep">/</span>
+  orchestration
+</div>
+
+<!-- ── Main ── -->
+<div class="orch-main">
+
+  <div class="section-header" style="margin-bottom:32px">
+    <div class="section-label">Multi-Agent Orchestration</div>
+    <h1 class="section-title">Command <em>Center</em></h1>
+  </div>
+
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="agents">Agent Fleet</button>
+    <button class="tab-btn" data-tab="pipeline">Pipeline</button>
+    <button class="tab-btn" data-tab="analytics">Analytics</button>
+    <button class="tab-btn" data-tab="costs">Cost &amp; Context</button>
+  </div>
+
+  <!-- ══════════════ TAB: OVERVIEW ══════════════ -->
+  <div class="tab-panel active" id="tab-overview">
+    <div class="overview-grid">
+      <div class="stat-card">
+        <div class="stat-card-label">Active Agents</div>
+        <div class="stat-card-value bronze">7</div>
+        <div class="stat-card-sub">Orchestrator + 6 specialists</div>
+        <div class="stat-card-delta">↑ 2 since last session</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Tokens Saved Today</div>
+        <div class="stat-card-value signal count-up" data-target="2417382">0</div>
+        <div class="stat-card-sub">via Brevitas compression</div>
+        <div class="stat-card-delta">58.3% avg reduction</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Cost This Session</div>
+        <div class="stat-card-value bone">$1.14</div>
+        <div class="stat-card-sub">vs $2.74 without Brevitas</div>
+        <div class="stat-card-delta" style="color:var(--signal)">↓ $1.60 saved (58.4%)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Tasks Completed</div>
+        <div class="stat-card-value bronze count-up" data-target="347">0</div>
+        <div class="stat-card-sub">last 24 h</div>
+        <div class="stat-card-delta">avg 2.8 agents per task</div>
+      </div>
+    </div>
+
+    <div class="overview-bottom">
+      <!-- Activity feed -->
+      <div class="card">
+        <div class="section-label" style="margin-bottom:18px">Live Activity</div>
+        <div class="feed-list" id="activity-feed"></div>
+      </div>
+
+      <!-- Quick agent status -->
+      <div class="card">
+        <div class="section-label" style="margin-bottom:18px">Agent Statuses</div>
+        <div id="quick-agents"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB: AGENTS ══════════════ -->
+  <div class="tab-panel" id="tab-agents">
+    <div class="section-header" style="margin-bottom:28px">
+      <div class="section-label">Fleet — 7 agents deployed</div>
+      <div class="section-title">Agent <span class="bronze">Roster</span></div>
+    </div>
+    <div class="agent-grid" id="agent-grid"></div>
+  </div>
+
+  <!-- ══════════════ TAB: PIPELINE ══════════════ -->
+  <div class="tab-panel" id="tab-pipeline">
+    <div class="section-header" style="margin-bottom:20px">
+      <div class="section-label">How we orchestrate</div>
+      <div class="section-title">Execution <em>Pipeline</em></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="pipe-ctrl">
+      <button class="pipe-run-btn" id="pipe-run-btn" onclick="startPipeline()">Run pipeline</button>
+      <span class="pipe-status-text" id="pipe-status">Click "Run pipeline" to build the execution graph in real time</span>
+      <div class="pipe-speed">
+        <span class="pipe-speed-label">Speed</span>
+        <button class="pipe-speed-btn active" onclick="setSpeed(1,this)">1×</button>
+        <button class="pipe-speed-btn" onclick="setSpeed(2,this)">2×</button>
+        <button class="pipe-speed-btn" onclick="setSpeed(3,this)">3×</button>
+      </div>
+    </div>
+
+    <!-- SVG — built by JS -->
+    <div class="pipeline-wrap">
+      <svg id="pipe-svg" viewBox="0 0 950 852" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:880px"></svg>
+    </div>
+
+    <!-- Event log -->
+    <div class="pipe-log" id="pipe-log">
+      <div class="pipe-log-line"><span class="pipe-log-ts">—</span><span class="pipe-log-msg">Pipeline ready.</span></div>
+    </div>
+
+    <!-- Legend -->
+    <div class="pipeline-legend" style="margin-top:20px">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:rgba(136,145,164,0.6)"></div>
+        <span class="legend-label">Standard data flow</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#8ea6ff"></div>
+        <span class="legend-label">Bronze — core agent</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#8dd8c6"></div>
+        <span class="legend-label">Teal — Brevitas compression</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:var(--oxblood);opacity:0.8"></div>
+        <span class="legend-label">Red dashed — feedback loop</span>
+      </div>
+    </div>
+
+    <!-- Stats strip -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:20px">
+      <div class="card" style="text-align:center">
+        <div class="stat-card-label">Total pipeline time</div>
+        <div class="stat-card-value bone" style="font-size:28px;margin-top:8px">9.4s</div>
+        <div class="stat-card-sub">including 4 parallel branches</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-card-label">Parallel agents peak</div>
+        <div class="stat-card-value bronze" style="font-size:28px;margin-top:8px">6</div>
+        <div class="stat-card-sub">rows 2 &amp; 3 concurrent</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-card-label">Brevitas passes</div>
+        <div class="stat-card-value signal" style="font-size:28px;margin-top:8px">2</div>
+        <div class="stat-card-sub">512k → 221k → 119k tokens</div>
+      </div>
+      <div class="card" style="text-align:center">
+        <div class="stat-card-label">Feedback loops</div>
+        <div class="stat-card-value signal" style="font-size:28px;margin-top:8px">1</div>
+        <div class="stat-card-sub">test-runner → code-writer</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB: ANALYTICS ══════════════ -->
+  <div class="tab-panel" id="tab-analytics">
+    <div class="section-header" style="margin-bottom:28px">
+      <div class="section-label">Usage patterns — last 30 days</div>
+      <div class="section-title">Task <em>Analytics</em></div>
+    </div>
+
+    <div class="analytics-grid">
+      <!-- Most common tasks chart -->
+      <div class="chart-card">
+        <div class="chart-title">Most Common Task Types</div>
+        <div class="chart-sub">// distribution across 10,412 pipeline runs</div>
+        <div class="chart-wrap" style="height:260px">
+          <canvas id="chart-tasks"></canvas>
+        </div>
+      </div>
+
+      <!-- Task difficulty -->
+      <div class="chart-card">
+        <div class="chart-title">Task Complexity Distribution</div>
+        <div class="chart-sub">// by number of agents involved</div>
+        <div class="diff-bars" style="margin-top:16px">
+          <div class="diff-row">
+            <div class="diff-row-header">
+              <span class="diff-row-label">Simple &mdash; 1–2 agents</span>
+              <span class="diff-row-pct">45%</span>
+            </div>
+            <div class="diff-track">
+              <div class="diff-fill" data-width="45" style="background:var(--signal);width:0%"></div>
+            </div>
+          </div>
+          <div class="diff-row">
+            <div class="diff-row-header">
+              <span class="diff-row-label">Moderate &mdash; 3–4 agents</span>
+              <span class="diff-row-pct">35%</span>
+            </div>
+            <div class="diff-track">
+              <div class="diff-fill" data-width="35" style="background:var(--bronze);width:0%"></div>
+            </div>
+          </div>
+          <div class="diff-row">
+            <div class="diff-row-header">
+              <span class="diff-row-label">Complex &mdash; 5–7 agents</span>
+              <span class="diff-row-pct">15%</span>
+            </div>
+            <div class="diff-track">
+              <div class="diff-fill" data-width="15" style="background:var(--bronze-deep);width:0%"></div>
+            </div>
+          </div>
+          <div class="diff-row">
+            <div class="diff-row-header">
+              <span class="diff-row-label">Deep &mdash; 8+ agents</span>
+              <span class="diff-row-pct">5%</span>
+            </div>
+            <div class="diff-track">
+              <div class="diff-fill" data-width="5" style="background:var(--oxblood);width:0%"></div>
+            </div>
+          </div>
+          <div style="margin-top:20px;border-top:1px solid var(--line);padding-top:18px">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--stone);letter-spacing:0.04em;margin-bottom:12px">Avg agents per task type</div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap">
+              <div style="text-align:center">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--bronze)">1.4</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--stone);letter-spacing:0.04em">Code gen</div>
+              </div>
+              <div style="text-align:center">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--signal)">3.2</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--stone);letter-spacing:0.04em">Research</div>
+              </div>
+              <div style="text-align:center">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--bone)">4.8</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--stone);letter-spacing:0.04em">Data pipeline</div>
+              </div>
+              <div style="text-align:center">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--stone-2)">2.1</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--stone);letter-spacing:0.04em">Docs</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Volume over time -->
+    <div class="chart-card" style="margin-bottom:24px">
+      <div class="chart-title">Pipeline Runs — Last 30 Days</div>
+      <div class="chart-sub">// daily call volume by task category</div>
+      <div class="chart-wrap" style="height:220px">
+        <canvas id="chart-volume"></canvas>
+      </div>
+    </div>
+
+    <div class="analytics-grid-3">
+      <!-- Context hops distribution -->
+      <div class="chart-card">
+        <div class="chart-title">Context Hops per Run</div>
+        <div class="chart-sub">// how far context travels</div>
+        <div class="chart-wrap" style="height:180px">
+          <canvas id="chart-hops"></canvas>
+        </div>
+      </div>
+      <!-- Latency distribution -->
+      <div class="chart-card">
+        <div class="chart-title">Task Latency Distribution</div>
+        <div class="chart-sub">// time to completion (seconds)</div>
+        <div class="chart-wrap" style="height:180px">
+          <canvas id="chart-latency"></canvas>
+        </div>
+      </div>
+      <!-- Agent utilization -->
+      <div class="chart-card">
+        <div class="chart-title">Agent Utilization</div>
+        <div class="chart-sub">// % of time active vs idle</div>
+        <div class="chart-wrap" style="height:180px">
+          <canvas id="chart-utilization"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB: COSTS ══════════════ -->
+  <div class="tab-panel" id="tab-costs">
+    <div class="section-header" style="margin-bottom:28px">
+      <div class="section-label">Token economy</div>
+      <div class="section-title">Cost &amp; <em>Context</em> Savings</div>
+    </div>
+
+    <div class="cost-grid">
+      <!-- Baseline vs Brevitas -->
+      <div class="cost-compare">
+        <div class="cost-compare-title">Session Cost — Baseline vs. Brevitas</div>
+        <div class="cost-row">
+          <span class="cost-row-label">Without Brevitas</span>
+          <div class="cost-row-track">
+            <div class="cost-row-fill" style="width:100%;background:rgba(201,128,120,0.5)"></div>
+          </div>
+          <span class="cost-row-val" style="color:var(--oxblood)">$2.74</span>
+        </div>
+        <div class="cost-row">
+          <span class="cost-row-label">With Brevitas</span>
+          <div class="cost-row-track">
+            <div class="cost-row-fill" style="width:41.6%;background:var(--signal)"></div>
+          </div>
+          <span class="cost-row-val" style="color:var(--signal)">$1.14</span>
+        </div>
+        <div class="savings-hero">
+          <div class="savings-hero-pct">58.4%</div>
+          <div class="savings-hero-label">cost reduction from Brevitas compression</div>
+          <div style="margin-top:16px;font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">
+            $1.60 saved this session · $0.46/k tokens average
+          </div>
+        </div>
+      </div>
+
+      <!-- Context quality -->
+      <div class="cost-compare">
+        <div class="cost-compare-title">Context Retained After Compression</div>
+        <div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Semantic fidelity</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">98.4%</span>
+          </div>
+          <div class="diff-track">
+            <div class="diff-fill" data-width="98.4" style="background:var(--signal);width:0%"></div>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;margin-top:16px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Critical facts preserved</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--bronze)">99.1%</span>
+          </div>
+          <div class="diff-track">
+            <div class="diff-fill" data-width="99.1" style="background:var(--bronze);width:0%"></div>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;margin-top:16px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Structural coherence</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">97.8%</span>
+          </div>
+          <div class="diff-track">
+            <div class="diff-fill" data-width="97.8" style="background:var(--signal);width:0%"></div>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--line);margin-top:20px;padding-top:18px">
+          <div class="cost-compare-title" style="margin-bottom:12px">Token Reduction by Agent Handoff</div>
+          <div class="chart-wrap" style="height:140px">
+            <canvas id="chart-compression"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Per-agent cost table -->
+    <div class="card">
+      <div class="section-label" style="margin-bottom:20px">Per-Agent Token &amp; Cost Breakdown — This Session</div>
+      <table class="cost-table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>After Brevitas</th>
+            <th>Compression</th>
+            <th>Cost (raw)</th>
+            <th>Cost (compressed)</th>
+            <th>Saved</th>
+          </tr>
+        </thead>
+        <tbody id="cost-table-body"></tbody>
+      </table>
+    </div>
+
+    <!-- cumulative savings chart -->
+    <div class="chart-card" style="margin-top:24px">
+      <div class="chart-title">Cumulative Token Savings Over Session</div>
+      <div class="chart-sub">// tokens that never left the pipeline · Brevitas baseline</div>
+      <div class="chart-wrap" style="height:220px">
+        <canvas id="chart-savings"></canvas>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /orch-main -->
+
+<script>
+/* ── Data ── */
+const AGENTS = [
+  {
+    id:'orchestrator', name:'Orchestrator', role:'Planning & task routing',
+    status:'active', bg:'rgba(142,166,255,0.08)',
+    task:'Decomposing user request "Build REST API for inventory management" into 4 subtasks and routing to specialists.',
+    inputTokens: 128420, outputTokens: 18340,
+    afterBrevitas: 72890, contextPct: 56, responsePct: 98.2, latencyMs: 1240,
+    costRaw: 0.22, costCompressed: 0.12,
+  },
+  {
+    id:'researcher', name:'Researcher', role:'Web search & retrieval',
+    status:'processing', bg:'rgba(141,216,198,0.07)',
+    task:'Fetching FastAPI best practices, OpenAPI spec patterns, and DB schema examples from 12 sources.',
+    inputTokens: 342180, outputTokens: 51720,
+    afterBrevitas: 148640, contextPct: 43, responsePct: 97.6, latencyMs: 3820,
+    costRaw: 0.59, costCompressed: 0.25,
+  },
+  {
+    id:'planner', name:'Planner', role:'Strategy & decomposition',
+    status:'idle', bg:'rgba(196,206,229,0.04)',
+    task:'Waiting for Researcher output to finalize endpoint schema plan. ETA ~8s.',
+    inputTokens: 89340, outputTokens: 22100,
+    afterBrevitas: 51200, contextPct: 57, responsePct: 99.1, latencyMs: 890,
+    costRaw: 0.15, costCompressed: 0.09,
+  },
+  {
+    id:'code-writer', name:'Code Writer', role:'Code generation',
+    status:'processing', bg:'rgba(142,166,255,0.07)',
+    task:'Generating FastAPI application with SQLAlchemy models, Pydantic schemas, and pytest suite (≈ 1,800 lines).',
+    inputTokens: 512300, outputTokens: 94200,
+    afterBrevitas: 221450, contextPct: 43, responsePct: 98.8, latencyMs: 5600,
+    costRaw: 0.91, costCompressed: 0.37,
+  },
+  {
+    id:'reviewer', name:'Code Reviewer', role:'Quality assurance',
+    status:'active', bg:'rgba(141,216,198,0.07)',
+    task:'Reviewing generated code for security vulnerabilities, type safety, and test coverage. Found 2 edge cases.',
+    inputTokens: 267440, outputTokens: 41800,
+    afterBrevitas: 119240, contextPct: 44, responsePct: 97.4, latencyMs: 2100,
+    costRaw: 0.46, costCompressed: 0.20,
+  },
+  {
+    id:'summarizer', name:'Summarizer', role:'Context compression · Brevitas',
+    status:'active', bg:'rgba(141,216,198,0.10)',
+    task:'Compressing multi-agent context for final handoff. 423k → 165k tokens. Fidelity score 98.4%.',
+    inputTokens: 423800, outputTokens: 165200,
+    afterBrevitas: 165200, contextPct: 61, responsePct: 98.4, latencyMs: 740,
+    costRaw: 0.76, costCompressed: 0.28,
+  },
+  {
+    id:'validator', name:'Validator', role:'Output verification',
+    status:'idle', bg:'rgba(196,206,229,0.04)',
+    task:'Schema and contract validation pending code reviewer completion.',
+    inputTokens: 94120, outputTokens: 14600,
+    afterBrevitas: 49800, contextPct: 47, responsePct: 99.3, latencyMs: 620,
+    costRaw: 0.17, costCompressed: 0.09,
+  },
+];
+
+const ACTIVITY = [
+  { type:'active',  agent:'Orchestrator', msg:'Routed "Build REST API" to 4 specialist agents in parallel', time:'just now' },
+  { type:'active',  agent:'Summarizer',   msg:'Compressed 423k → 165k tokens (61%) — fidelity 98.4%', time:'12s ago' },
+  { type:'active',  agent:'Code Writer',  msg:'Generated 1,842 lines across 9 files — endpoints, models, tests', time:'38s ago' },
+  { type:'active',  agent:'Code Reviewer',msg:'Flagged 2 edge cases in inventory update handler, sent feedback', time:'52s ago' },
+  { type:'idle',    agent:'Researcher',   msg:'Retrieved 12 docs on FastAPI patterns · 342k tokens ingested', time:'1m 14s ago' },
+  { type:'active',  agent:'Orchestrator', msg:'Initiated new pipeline for user prompt #347', time:'2m ago' },
+  { type:'idle',    agent:'Validator',    msg:'Validated output schema — all 18 contracts passing', time:'3m ago' },
+  { type:'warning', agent:'Code Writer',  msg:'Context window approaching 90% — Brevitas compression triggered', time:'4m 20s ago' },
+];
+
+/* ── Utility ── */
+function fmt(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(2)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(0)+'k';
+  return String(n);
+}
+function fmtNum(n) { return n.toLocaleString(); }
+
+/* ── Clock ── */
+function updateClock() {
+  const d = new Date();
+  document.getElementById('live-clock').textContent =
+    d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+}
+setInterval(updateClock, 1000); updateClock();
+
+/* ── Ticker animation ── */
+function animateTicker() {
+  const targets = [
+    { id:'tick-calls',   end:10412,  suffix:'',      prefix:'' },
+    { id:'tick-tokens',  end:2417382,suffix:'',      prefix:'',fmt: n => fmt(n) },
+    { id:'tick-savings', end:58.3,   suffix:'%',     prefix:'' },
+    { id:'tick-cost',    end:1.60,   suffix:'',      prefix:'$', decimals:2 },
+    { id:'tick-latency', end:4.2,    suffix:'s',     prefix:'' },
+    { id:'tick-tasks',   end:347,    suffix:'',      prefix:'' },
+  ];
+  targets.forEach(({ id, end, suffix, prefix, fmt: fmtFn, decimals }) => {
+    const el = document.getElementById(id);
+    const start = 0; const dur = 700;
+    const startTime = performance.now();
+    function step(now) {
+      const t = Math.min((now - startTime) / dur, 1);
+      const ease = 1 - Math.pow(1 - t, 3);
+      const val = start + (end - start) * ease;
+      if (fmtFn) { el.textContent = prefix + fmtFn(val); }
+      else if (decimals) { el.textContent = prefix + val.toFixed(decimals) + suffix; }
+      else { el.textContent = prefix + Math.floor(val).toLocaleString() + suffix; }
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
+}
+animateTicker();
+
+/* ── Count-up ── */
+document.querySelectorAll('.count-up[data-target]').forEach(el => {
+  const end = parseInt(el.dataset.target);
+  const dur = 750;
+  const startTime = performance.now();
+  function step(now) {
+    const t = Math.min((now - startTime) / dur, 1);
+    const ease = 1 - Math.pow(1 - t, 3);
+    el.textContent = Math.floor(end * ease).toLocaleString();
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+});
+
+/* ── Activity feed ── */
+const feedEl = document.getElementById('activity-feed');
+ACTIVITY.forEach(item => {
+  const div = document.createElement('div');
+  div.className = 'feed-item';
+  div.innerHTML = `
+    <div class="feed-dot ${item.type}"></div>
+    <div class="feed-content">
+      <div class="feed-agent">${item.agent}</div>
+      <div class="feed-msg">${item.msg}</div>
+    </div>
+    <div class="feed-time">${item.time}</div>
+  `;
+  feedEl.appendChild(div);
+});
+
+/* ── Quick agents (overview) ── */
+const quickEl = document.getElementById('quick-agents');
+AGENTS.forEach(a => {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(196,206,229,0.07)';
+  const colors = { active:'var(--signal)', processing:'var(--bronze)', idle:'var(--stone)' };
+  row.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:8px;height:8px;border-radius:50%;background:${colors[a.status]};flex-shrink:0"></div>
+      <div>
+        <div style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--bone)">${a.name}</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--stone)">${a.role}</div>
+      </div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--signal)">${a.contextPct}% compressed</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--stone)">${fmt(a.inputTokens)} in</div>
+    </div>
+  `;
+  quickEl.appendChild(row);
+});
+
+/* ── Agent fleet ── */
+const gridEl = document.getElementById('agent-grid');
+AGENTS.forEach(a => {
+  const card = document.createElement('div');
+  card.className = 'agent-card';
+  const statusLabel = { active:'Active', processing:'Processing', idle:'Idle' }[a.status];
+  card.innerHTML = `
+    <div class="agent-header">
+      <div class="agent-icon" style="background:${a.bg}">${a.name[0]}</div>
+      <div class="agent-status-badge ${a.status}">${statusLabel}</div>
+    </div>
+    <div>
+      <div class="agent-name">${a.name}</div>
+      <div class="agent-role">${a.role}</div>
+    </div>
+    <div class="agent-task">
+      <div class="agent-task-label">Current Task</div>
+      ${a.task}
+    </div>
+    <div class="agent-metrics">
+      <div class="agent-metric">
+        <div class="agent-metric-label">Input Tokens</div>
+        <div class="agent-metric-value bronze">${fmt(a.inputTokens)}</div>
+      </div>
+      <div class="agent-metric">
+        <div class="agent-metric-label">Latency</div>
+        <div class="agent-metric-value">${(a.latencyMs/1000).toFixed(1)}s</div>
+      </div>
+      <div class="agent-metric">
+        <div class="agent-metric-label">Cost</div>
+        <div class="agent-metric-value">$${a.costCompressed.toFixed(2)}</div>
+      </div>
+      <div class="agent-metric">
+        <div class="agent-metric-label">Context Fidelity</div>
+        <div class="agent-metric-value signal">${a.responsePct}%</div>
+      </div>
+    </div>
+    <div class="context-bar-wrap">
+      <div class="context-bar-header">
+        <span>Brevitas compression</span>
+        <span>${a.contextPct}% reduced</span>
+      </div>
+      <div class="context-bar-track">
+        <div class="context-bar-fill" style="width:${a.contextPct}%"></div>
+      </div>
+    </div>
+  `;
+  gridEl.appendChild(card);
+});
+
+/* ── Cost table ── */
+const tbodyEl = document.getElementById('cost-table-body');
+const dotColors = ['#8ea6ff','#8dd8c6','#b6bfd3','#8ea6ff','#8dd8c6','#8dd8c6','#b6bfd3'];
+AGENTS.forEach((a, i) => {
+  const saved = (a.costRaw - a.costCompressed).toFixed(2);
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><span class="agent-dot" style="background:${dotColors[i]}"></span>${a.name}</td>
+    <td class="bronze">${fmtNum(a.inputTokens)}</td>
+    <td>${fmtNum(a.outputTokens)}</td>
+    <td class="signal">${fmtNum(a.afterBrevitas)}</td>
+    <td class="signal">↓${a.contextPct}%</td>
+    <td style="color:var(--oxblood)">$${a.costRaw.toFixed(2)}</td>
+    <td class="signal">$${a.costCompressed.toFixed(2)}</td>
+    <td class="signal">$${saved}</td>
+  `;
+  tbodyEl.appendChild(tr);
+});
+// totals row
+const totals = AGENTS.reduce((acc,a) => ({
+  inp: acc.inp+a.inputTokens, out: acc.out+a.outputTokens,
+  aft: acc.aft+a.afterBrevitas, raw: acc.raw+a.costRaw, comp: acc.comp+a.costCompressed
+}),{inp:0,out:0,aft:0,raw:0,comp:0});
+const trTot = document.createElement('tr');
+trTot.style.fontWeight = '600'; trTot.style.borderTop = '2px solid rgba(196,206,229,0.2)';
+trTot.innerHTML = `
+  <td style="color:var(--bone)"><strong>Total</strong></td>
+  <td class="bronze"><strong>${fmt(totals.inp)}</strong></td>
+  <td><strong>${fmt(totals.out)}</strong></td>
+  <td class="signal"><strong>${fmt(totals.aft)}</strong></td>
+  <td class="signal"><strong>↓${Math.round((1-totals.aft/totals.inp)*100)}%</strong></td>
+  <td style="color:var(--oxblood)"><strong>$${totals.raw.toFixed(2)}</strong></td>
+  <td class="signal"><strong>$${totals.comp.toFixed(2)}</strong></td>
+  <td class="signal"><strong>$${(totals.raw-totals.comp).toFixed(2)}</strong></td>
+`;
+tbodyEl.appendChild(trTot);
+
+/* ── Tab switching ── */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    initChartsForTab(btn.dataset.tab);
+    animateDiffBars();
+  });
+});
+
+/* ── Diff bar animation (triggered on tab show) ── */
+function animateDiffBars() {
+  document.querySelectorAll('.diff-fill[data-width]').forEach(el => {
+    el.style.width = '0%';
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { el.style.width = el.dataset.width + '%'; });
+    });
+  });
+}
+
+/* ── Chart.js globals ── */
+const GRID = 'rgba(196,206,229,0.07)';
+const TICK = { color:'#8891a4', font:{ family:"'JetBrains Mono',monospace", size:10 } };
+
+function baseOptions(title) {
+  return {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{
+      legend:{ display:false },
+      tooltip:{
+        backgroundColor:'rgba(13,16,23,0.92)',
+        borderColor:'rgba(196,206,229,0.15)', borderWidth:1,
+        titleColor:'#8891a4', bodyColor:'#f5f7ff',
+        titleFont:{ family:"'JetBrains Mono',monospace", size:10 },
+        bodyFont:{ family:"'JetBrains Mono',monospace", size:11 },
+        padding:10,
+      },
+    },
+    scales:{
+      x:{ grid:{ color:GRID }, ticks:TICK },
+      y:{ grid:{ color:GRID }, ticks:TICK },
+    },
+  };
+}
+
+const chartsInited = {};
+function initChartsForTab(tab) {
+  if (chartsInited[tab]) return;
+  const C = window.Chart;
+  if (!C) return;
+  chartsInited[tab] = true;
+
+  if (tab === 'analytics') {
+    /* task type horizontal bar */
+    new C(document.getElementById('chart-tasks'), {
+      type:'bar',
+      data:{
+        labels:['Code Generation','Research & Analysis','Data Processing','Documentation','Testing & Review'],
+        datasets:[{
+          data:[38,27,18,11,6],
+          backgroundColor:['rgba(142,166,255,0.7)','rgba(141,216,198,0.7)','rgba(142,166,255,0.5)','rgba(141,216,198,0.4)','rgba(136,145,164,0.4)'],
+          borderColor:['#8ea6ff','#8dd8c6','#6f84d6','#8dd8c6','#8891a4'],
+          borderWidth:1, borderRadius:6, borderSkipped:false,
+        }]
+      },
+      options:{ ...baseOptions(), indexAxis:'y',
+        scales:{
+          x:{ grid:{color:GRID}, ticks:{ ...TICK, callback:v=>v+'%' }, max:50 },
+          y:{ grid:{color:'transparent'}, ticks:{ ...TICK, font:{family:"'Inter Tight',sans-serif",size:12} } }
+        }
+      },
+    });
+
+    /* volume over time */
+    const days = Array.from({length:30},(_,i)=>{ const d=new Date('2026-05-20'); d.setDate(d.getDate()+i); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); });
+    const codeSeries = days.map(()=>Math.floor(80+Math.random()*120));
+    const resSeries  = days.map(()=>Math.floor(40+Math.random()*80));
+    const dataSeries = days.map(()=>Math.floor(20+Math.random()*60));
+    new C(document.getElementById('chart-volume'), {
+      type:'bar',
+      data:{
+        labels:days,
+        datasets:[
+          { label:'Code Gen', data:codeSeries, backgroundColor:'rgba(142,166,255,0.6)', borderRadius:3, stack:'a' },
+          { label:'Research', data:resSeries,  backgroundColor:'rgba(141,216,198,0.5)', borderRadius:3, stack:'a' },
+          { label:'Data',     data:dataSeries, backgroundColor:'rgba(142,166,255,0.3)', borderRadius:3, stack:'a' },
+        ]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{
+          legend:{ display:true, labels:{color:'#8891a4',font:{family:"'JetBrains Mono',monospace",size:10}} },
+          tooltip:{ backgroundColor:'rgba(13,16,23,0.92)', borderColor:'rgba(196,206,229,0.15)', borderWidth:1,
+            titleColor:'#8891a4', bodyColor:'#f5f7ff',
+            titleFont:{family:"'JetBrains Mono',monospace",size:10}, bodyFont:{family:"'JetBrains Mono',monospace",size:11}, padding:10 }
+        },
+        scales:{
+          x:{ stacked:true, grid:{color:'transparent'}, ticks:{...TICK, maxTicksLimit:8} },
+          y:{ stacked:true, grid:{color:GRID}, ticks:TICK },
+        }
+      }
+    });
+
+    /* context hops */
+    new C(document.getElementById('chart-hops'), {
+      type:'bar',
+      data:{
+        labels:['1','2','3','4','5','6','7','8+'],
+        datasets:[{ data:[12,18,28,22,10,6,3,1], backgroundColor:'rgba(142,166,255,0.65)', borderRadius:5, borderSkipped:false }]
+      },
+      options:{ ...baseOptions(), plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(13,16,23,0.92)',borderColor:'rgba(196,206,229,0.15)',borderWidth:1,titleColor:'#8891a4',bodyColor:'#f5f7ff',titleFont:{family:"'JetBrains Mono',monospace",size:10},bodyFont:{family:"'JetBrains Mono',monospace",size:11},padding:10}},
+        scales:{x:{grid:{color:'transparent'},ticks:TICK},y:{grid:{color:GRID},ticks:TICK}} }
+    });
+
+    /* latency */
+    new C(document.getElementById('chart-latency'), {
+      type:'bar',
+      data:{
+        labels:['<1s','1–2s','2–4s','4–8s','8–15s','>15s'],
+        datasets:[{ data:[22,31,24,15,6,2], backgroundColor:'rgba(141,216,198,0.6)', borderRadius:5, borderSkipped:false }]
+      },
+      options:{ ...baseOptions(), plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(13,16,23,0.92)',borderColor:'rgba(196,206,229,0.15)',borderWidth:1,titleColor:'#8891a4',bodyColor:'#f5f7ff',titleFont:{family:"'JetBrains Mono',monospace",size:10},bodyFont:{family:"'JetBrains Mono',monospace",size:11},padding:10}},
+        scales:{x:{grid:{color:'transparent'},ticks:TICK},y:{grid:{color:GRID},ticks:{...TICK,callback:v=>v+'%'}}} }
+    });
+
+    /* utilization doughnut */
+    new C(document.getElementById('chart-utilization'), {
+      type:'doughnut',
+      data:{
+        labels:['Orchestrator','Researcher','Code Writer','Reviewer','Summarizer','Planner','Validator'],
+        datasets:[{
+          data:[18,24,28,14,9,5,2],
+          backgroundColor:['#8ea6ff','#8dd8c6','#6f84d6','#8dd8c6','#8dd8c6','#b6bfd3','#8891a4'],
+          borderWidth:0, hoverOffset:6,
+        }]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false, cutout:'70%',
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ backgroundColor:'rgba(13,16,23,0.92)', borderColor:'rgba(196,206,229,0.15)', borderWidth:1,
+            titleColor:'#8891a4', bodyColor:'#f5f7ff',
+            titleFont:{family:"'JetBrains Mono',monospace",size:10}, bodyFont:{family:"'JetBrains Mono',monospace",size:11}, padding:10 }
+        }
+      }
+    });
+  }
+
+  if (tab === 'costs') {
+    /* compression radar-style line */
+    new C(document.getElementById('chart-compression'), {
+      type:'bar',
+      data:{
+        labels:['Orch→Research','Research→Plan','Plan→Code','Code→Review','Review→Sum','Sum→Output'],
+        datasets:[
+          { label:'Before', data:[128,342,89,512,267,165], backgroundColor:'rgba(201,128,120,0.3)', borderColor:'rgba(201,128,120,0.6)', borderWidth:1, borderRadius:4, borderSkipped:false },
+          { label:'After',  data:[73,149,51,221,119,165],  backgroundColor:'rgba(141,216,198,0.4)', borderColor:'#8dd8c6', borderWidth:1, borderRadius:4, borderSkipped:false },
+        ]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{
+          legend:{ display:true, labels:{color:'#8891a4',font:{family:"'JetBrains Mono',monospace",size:10}} },
+          tooltip:{ backgroundColor:'rgba(13,16,23,0.92)', borderColor:'rgba(196,206,229,0.15)', borderWidth:1,
+            titleColor:'#8891a4', bodyColor:'#f5f7ff',
+            titleFont:{family:"'JetBrains Mono',monospace",size:10}, bodyFont:{family:"'JetBrains Mono',monospace",size:11}, padding:10 }
+        },
+        scales:{
+          x:{ grid:{color:'transparent'}, ticks:{...TICK, maxRotation:25, font:{family:"'JetBrains Mono',monospace",size:9}} },
+          y:{ grid:{color:GRID}, ticks:{...TICK, callback:v=>v+'k'} }
+        }
+      }
+    });
+
+    /* cumulative savings area */
+    const calls = Array.from({length:30},(_,i)=>i+1);
+    let cum = 0;
+    const cumulativeSavings = calls.map(() => { cum += 40000+Math.random()*80000; return Math.floor(cum); });
+    new C(document.getElementById('chart-savings'), {
+      type:'line',
+      data:{
+        labels: calls,
+        datasets:[{
+          label:'Tokens saved',
+          data: cumulativeSavings,
+          fill:true,
+          backgroundColor:'rgba(141,216,198,0.08)',
+          borderColor:'#8dd8c6',
+          borderWidth:2,
+          pointRadius:0,
+          tension:0.4,
+        }]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(13,16,23,0.92)',borderColor:'rgba(196,206,229,0.15)',borderWidth:1,titleColor:'#8891a4',bodyColor:'#f5f7ff',titleFont:{family:"'JetBrains Mono',monospace",size:10},bodyFont:{family:"'JetBrains Mono',monospace",size:11},padding:10}},
+        scales:{
+          x:{grid:{color:'transparent'},ticks:{...TICK,callback:v=>'call '+v}},
+          y:{grid:{color:GRID},ticks:{...TICK,callback:v=>fmt(v)}}
+        }
+      }
+    });
+
+    animateDiffBars();
+  }
+}
+
+/* init overview charts immediately (no tab switch needed) */
+animateDiffBars();
+
+/* ─────────────────────────────────────────────────────────
+   PIPELINE ANIMATION ENGINE
+   ───────────────────────────────────────────────────────── */
+let pipeSpeed = 1;
+let pipeTimers = [];
+
+/* SVG layout constants */
+const VW = 950, VH = 852;
+
+/* Node definitions — id, label, sublabel, x,y,w,h, accent colour, shape */
+const P_NODES = [
+  { id:'user-query',    label:'"Build me a REST API"', sub:'User query',    x:365, y:14,  w:220, h:46,  rx:23,  accent:'rgba(196,206,229,0.45)', fill:'rgba(196,206,229,0.05)', text:'#b6bfd3' },
+  { id:'orchestrator', label:'Route & Decompose',      sub:'Orchestrator', x:160, y:88,  w:430, h:72,  rx:13,  accent:'#8ea6ff',               fill:'#151b28',                text:'#f5f7ff' },
+  { id:'memory',       label:'Memory Retrieval',       sub:'Memory agent', x:14,  y:202, w:148, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
+  { id:'researcher',   label:'Retrieval',              sub:'Researcher',   x:172, y:202, w:148, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
+  { id:'planner',      label:'Strategy',               sub:'Planner',      x:330, y:202, w:142, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
+  { id:'validator',    label:'Schema check',           sub:'Validator',    x:538, y:202, w:154, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
+  { id:'code-writer',  label:'Generation',             sub:'Code writer',  x:122, y:314, w:254, h:78,  rx:13,  accent:'#8ea6ff',               fill:'#151b28',                text:'#f5f7ff' },
+  { id:'test-runner',  label:'Test suite',             sub:'Test runner',  x:454, y:314, w:178, h:78,  rx:10,  accent:'#c98078',               fill:'#1a100e',                text:'#f5f7ff' },
+  { id:'bvt-1',        label:'Context compression',    sub:'Brevitas · pass 1', x:140, y:440, w:220, h:66, rx:10, accent:'#8dd8c6',            fill:'#0d2820',                text:'#f5f7ff' },
+  { id:'code-reviewer',label:'QA & Review',            sub:'Code reviewer', x:122, y:552, w:254, h:70, rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
+  { id:'bvt-2',        label:'Context compression',    sub:'Brevitas · pass 2', x:140, y:670, w:220, h:66, rx:10, accent:'#8dd8c6',            fill:'#0d2820',                text:'#f5f7ff' },
+  { id:'output',       label:'Compressed output',      sub:'→ next agent · 77% lighter', x:355, y:784, w:240, h:50, rx:25, accent:'rgba(141,216,198,0.45)', fill:'rgba(141,216,198,0.06)', text:'#8dd8c6' },
+];
+
+/* Token counts shown when node completes */
+const P_TOKENS = {
+  'user-query':2100, 'orchestrator':8400, 'memory':14200, 'researcher':31800,
+  'planner':22600, 'validator':9200, 'code-writer':112000, 'test-runner':38000,
+  'bvt-1':221000, 'code-reviewer':67000, 'bvt-2':119000, 'output':119000
+};
+
+/* Edge definitions — from/to node IDs, SVG path d, style */
+const P_EDGES = [
+  { id:'e-uq-orch',  from:'user-query',   to:'orchestrator', d:'M 475 60 L 475 88',    color:'rgba(196,206,229,0.5)', w:1.5, dash:false },
+  { id:'e-orch-mem', from:'orchestrator', to:'memory',       d:'M 260 160 Q 140 185 88 202', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-orch-res', from:'orchestrator', to:'researcher',   d:'M 350 160 Q 300 185 246 202', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-orch-pln', from:'orchestrator', to:'planner',      d:'M 425 160 Q 420 185 401 202', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-orch-val', from:'orchestrator', to:'validator',    d:'M 520 160 Q 560 185 615 202', color:'rgba(136,145,164,0.4)', w:1,   dash:true  },
+  { id:'e-mem-cw',   from:'memory',       to:'code-writer',  d:'M 88 268 Q 88 300 182 314',  color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-res-cw',   from:'researcher',   to:'code-writer',  d:'M 246 268 Q 246 300 240 314', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-pln-cw',   from:'planner',      to:'code-writer',  d:'M 401 268 Q 340 300 300 314', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-val-tr',   from:'validator',    to:'test-runner',  d:'M 615 268 Q 615 300 543 314', color:'rgba(136,145,164,0.5)', w:1.5, dash:false },
+  { id:'e-cw-bvt1',  from:'code-writer',  to:'bvt-1',        d:'M 249 392 L 250 440',  color:'#8dd8c6',               w:2,   dash:false },
+  { id:'e-tr-bvt1',  from:'test-runner',  to:'bvt-1',        d:'M 543 392 Q 480 420 360 440', color:'rgba(201,128,120,0.5)', w:1, dash:true  },
+  { id:'e-tr-cw',    from:'test-runner',  to:'code-writer',  d:'M 454 353 Q 420 353 376 353', color:'rgba(201,128,120,0.6)', w:1.5, dash:true, feedback:true },
+  { id:'e-bvt1-cr',  from:'bvt-1',        to:'code-reviewer',d:'M 250 506 Q 250 528 249 552', color:'#8dd8c6',               w:2,   dash:false },
+  { id:'e-cr-bvt2',  from:'code-reviewer',to:'bvt-2',        d:'M 249 622 Q 249 648 250 670', color:'#8dd8c6',               w:2,   dash:false },
+  { id:'e-bvt2-out', from:'bvt-2',         to:'output',       d:'M 250 736 Q 350 760 425 784', color:'#8dd8c6',               w:2,   dash:false },
+];
+
+/* Timeline — each entry fires at `t` ms (at 1× speed) */
+const P_TIMELINE = [
+  { t:0,    fn:()=>{ pLog('system','Pipeline started — task: "Build me a REST API"','log-sys'); } },
+  { t:80,   fn:()=>{ pNode('user-query','active'); } },
+  { t:380,  fn:()=>{ pNode('user-query','complete'); pEdge('e-uq-orch'); } },
+  { t:600,  fn:()=>{ pNode('orchestrator','active'); pLog('orchestrator','Analysing task complexity…',''); } },
+  { t:1400, fn:()=>{ pNode('orchestrator','complete'); pLog('orchestrator','Decomposed into 4 subtasks · dispatching agents','log-ok'); } },
+  { t:1500, fn:()=>{ pEdge('e-orch-mem'); pEdge('e-orch-res'); pEdge('e-orch-pln'); pEdge('e-orch-val'); } },
+  { t:1600, fn:()=>{ pNode('memory','active'); pNode('researcher','active'); pNode('planner','active'); pNode('validator','active'); pLog('system','4 agents running in parallel','log-sys'); } },
+  { t:2200, fn:()=>{ pNode('memory','complete'); pLog('memory','Retrieved 14.2k tokens of relevant context','log-ok'); } },
+  { t:2700, fn:()=>{ pNode('planner','complete'); pLog('planner','Strategy: 3-phase implementation plan ready','log-ok'); } },
+  { t:3100, fn:()=>{ pNode('validator','complete'); pLog('validator','Schema validated — OpenAPI 3.1 contract locked','log-ok'); } },
+  { t:3600, fn:()=>{ pNode('researcher','complete'); pLog('researcher','31.8k tokens retrieved · similar APIs found','log-ok'); } },
+  { t:3700, fn:()=>{ pEdge('e-mem-cw'); pEdge('e-res-cw'); pEdge('e-pln-cw'); pEdge('e-val-tr'); } },
+  { t:3900, fn:()=>{ pNode('code-writer','active'); pNode('test-runner','active'); pLog('system','Code writer + test runner running in parallel','log-sys'); } },
+  { t:4100, fn:()=>{ pLog('code-writer','Generating endpoints: /users /products /orders…',''); } },
+  { t:4800, fn:()=>{ pLog('test-runner','Running unit + integration tests…',''); } },
+  { t:5400, fn:()=>{ pLog('test-runner','2 tests failed — schema mismatch in /orders','log-warn'); pEdge('e-tr-cw'); pLog('test-runner','→ Requesting code-writer revision','log-warn'); } },
+  { t:5800, fn:()=>{ pLog('code-writer','Applying fix — /orders response schema corrected',''); } },
+  { t:6200, fn:()=>{ pNode('test-runner','complete'); pLog('test-runner','All 47 tests passed','log-ok'); } },
+  { t:6400, fn:()=>{ pNode('code-writer','complete'); pLog('code-writer','112k token context · generation complete','log-ok'); } },
+  { t:6500, fn:()=>{ pEdge('e-cw-bvt1'); pEdge('e-tr-bvt1'); } },
+  { t:6700, fn:()=>{ pNode('bvt-1','active'); pLog('bvt:1','Compressing context: 512k → 221k tokens…','log-bvt'); } },
+  { t:7100, fn:()=>{ pNode('bvt-1','complete'); pLog('bvt:1','↓ 56.8% compression · 98.9% context score','log-bvt'); pEdge('e-bvt1-cr'); } },
+  { t:7300, fn:()=>{ pNode('code-reviewer','active'); pLog('code-reviewer','Reviewing code quality, security, docs…',''); } },
+  { t:7900, fn:()=>{ pNode('code-reviewer','complete'); pLog('code-reviewer','3 suggestions applied · code approved','log-ok'); pEdge('e-cr-bvt2'); } },
+  { t:8100, fn:()=>{ pNode('bvt-2','active'); pLog('bvt:2','Final compression: 221k → 119k tokens…','log-bvt'); } },
+  { t:8500, fn:()=>{ pNode('bvt-2','complete'); pLog('bvt:2','↓ 46.2% compression · 99.1% context score','log-bvt'); pEdge('e-bvt2-out'); } },
+  { t:8700, fn:()=>{ pNode('output','active'); } },
+  { t:8900, fn:()=>{ pNode('output','complete'); pLog('system','Pipeline complete · 9.4s · total 77% token savings','log-ok');
+    const btn = document.getElementById('pipe-run-btn');
+    if(btn){ btn.textContent='Run again'; btn.disabled=false; }
+    const st = document.getElementById('pipe-status');
+    if(st){ st.textContent='Complete · 9.4s · 77% token reduction via Brevitas'; st.style.color='var(--signal)'; }
+  }},
+];
+
+function buildPipelineSVG() {
+  const svg = document.getElementById('pipe-svg');
+  if (!svg) return;
+  svg.innerHTML = '';
+
+  /* Defs */
+  const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  defs.innerHTML = `
+    <marker id="arr-gray" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <polygon points="0 0, 8 3.5, 0 7" fill="rgba(136,145,164,0.6)"/>
+    </marker>
+    <marker id="arr-teal" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <polygon points="0 0, 8 3.5, 0 7" fill="#8dd8c6"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+      <polygon points="0 0, 8 3.5, 0 7" fill="rgba(201,128,120,0.7)"/>
+    </marker>
+    <filter id="pglow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feComposite in="SourceGraphic" in2="b" operator="over"/>
+    </filter>`;
+  svg.appendChild(defs);
+
+  /* Edges layer */
+  const eLayer = document.createElementNS('http://www.w3.org/2000/svg','g');
+  eLayer.setAttribute('id','edge-layer');
+  svg.appendChild(eLayer);
+
+  P_EDGES.forEach(e => {
+    const arrowId = e.color.includes('8dd8c6') ? 'arr-teal'
+                  : e.color.includes('201,128') ? 'arr-red' : 'arr-gray';
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('id', e.id);
+    path.setAttribute('d', e.d);
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke', e.color);
+    path.setAttribute('stroke-width', e.w);
+    path.setAttribute('pathLength','1000');
+    if (e.dash) path.setAttribute('stroke-dasharray','6,5');
+    path.setAttribute('marker-end', `url(#${arrowId})`);
+    if (e.feedback) {
+      path.style.opacity = '0';
+      path.style.transition = 'opacity 220ms ease';
+    } else {
+      path.style.strokeDasharray = '1000';
+      path.style.strokeDashoffset = '1000';
+      path.style.transition = 'stroke-dashoffset 280ms cubic-bezier(0.4,0,0.2,1)';
+    }
+    eLayer.appendChild(path);
+  });
+
+  /* Nodes layer */
+  const nLayer = document.createElementNS('http://www.w3.org/2000/svg','g');
+  nLayer.setAttribute('id','node-layer');
+  svg.appendChild(nLayer);
+
+  P_NODES.forEach(n => {
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    g.setAttribute('id','n-'+n.id);
+    g.classList.add('pnode');
+    g.style.cursor = 'default';
+
+    /* Pulse ring (slightly larger than node) */
+    const ring = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    ring.classList.add('pnode-ring');
+    ring.setAttribute('x', n.x - 4);
+    ring.setAttribute('y', n.y - 4);
+    ring.setAttribute('width', n.w + 8);
+    ring.setAttribute('height', n.h + 8);
+    ring.setAttribute('rx', (n.rx||10) + 2);
+    ring.setAttribute('stroke', n.accent);
+    ring.style.strokeWidth = '2';
+    g.appendChild(ring);
+
+    /* Background rect */
+    const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    bg.setAttribute('x', n.x); bg.setAttribute('y', n.y);
+    bg.setAttribute('width', n.w); bg.setAttribute('height', n.h);
+    bg.setAttribute('rx', n.rx||10);
+    bg.setAttribute('fill', n.fill);
+    bg.setAttribute('stroke', n.accent);
+    bg.setAttribute('stroke-width', '1.5');
+    g.appendChild(bg);
+
+    /* Accent top bar (skip for pill nodes — rx≥20) */
+    if ((n.rx||10) < 20) {
+      const bar = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      bar.setAttribute('x', n.x); bar.setAttribute('y', n.y);
+      bar.setAttribute('width', n.w); bar.setAttribute('height', 3);
+      bar.setAttribute('rx', n.rx||10);
+      bar.setAttribute('fill', n.accent.startsWith('rgba') ? 'rgba(196,206,229,0.3)' : n.accent);
+      g.appendChild(bar);
+    }
+
+    /* Sub-label */
+    const sub = document.createElementNS('http://www.w3.org/2000/svg','text');
+    sub.setAttribute('x', (n.rx||10) >= 20 ? n.x + n.w/2 : n.x + 14);
+    sub.setAttribute('y', n.y + ((n.rx||10) >= 20 ? 17 : 20));
+    sub.setAttribute('text-anchor', (n.rx||10) >= 20 ? 'middle' : 'start');
+    sub.setAttribute('font-family',"'JetBrains Mono',monospace");
+    sub.setAttribute('font-size','9');
+    sub.setAttribute('fill', n.accent.startsWith('#8dd') ? '#8dd8c6' : n.accent.startsWith('#8ea') ? '#8ea6ff' : '#8891a4');
+    sub.setAttribute('letter-spacing','0.05em');
+    sub.textContent = n.sub;
+    g.appendChild(sub);
+
+    /* Main label */
+    const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+    const isCentered = (n.rx||10) >= 20;
+    lbl.setAttribute('x', isCentered ? n.x + n.w/2 : n.x + 14);
+    lbl.setAttribute('y', n.y + ((n.rx||10) >= 20 ? 35 : 42));
+    lbl.setAttribute('text-anchor', isCentered ? 'middle' : 'start');
+    lbl.setAttribute('font-family',"'Newsreader',serif");
+    lbl.setAttribute('font-size', (n.rx||10) >= 20 ? 15 : 18);
+    lbl.setAttribute('fill', n.text);
+    lbl.textContent = n.label;
+    g.appendChild(lbl);
+
+    /* "Active" label */
+    const albl = document.createElementNS('http://www.w3.org/2000/svg','text');
+    albl.classList.add('pnode-alabel');
+    albl.setAttribute('x', n.x + n.w - 12);
+    albl.setAttribute('y', n.y + n.h - 8);
+    albl.setAttribute('text-anchor','end');
+    albl.setAttribute('font-family',"'JetBrains Mono',monospace");
+    albl.setAttribute('font-size','8');
+    albl.setAttribute('fill', n.accent.startsWith('#8ea') ? '#8ea6ff' : n.accent.startsWith('#8dd') ? '#8dd8c6' : '#b6bfd3');
+    albl.textContent = 'running…';
+    g.appendChild(albl);
+
+    /* "Complete" token badge */
+    const badge = document.createElementNS('http://www.w3.org/2000/svg','text');
+    badge.classList.add('pnode-badge');
+    badge.setAttribute('x', n.x + n.w - 8);
+    badge.setAttribute('y', n.y + 13);
+    badge.setAttribute('text-anchor','end');
+    badge.setAttribute('font-family',"'JetBrains Mono',monospace");
+    badge.setAttribute('font-size','8');
+    badge.setAttribute('fill','#8dd8c6');
+    const tok = P_TOKENS[n.id];
+    badge.textContent = tok ? (tok >= 1000 ? (tok/1000).toFixed(0)+'k tok' : tok+' tok') : '';
+    g.appendChild(badge);
+
+    nLayer.appendChild(g);
+  });
+}
+
+function pNode(id, state, _time, _tokens) {
+  const g = document.getElementById('n-' + id);
+  if (!g) return;
+  g.classList.add('visible');
+  g.classList.remove('active','complete');
+  if (state === 'active') g.classList.add('active');
+  if (state === 'complete') { g.classList.add('complete'); }
+}
+
+function pEdge(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const edgeDef = P_EDGES.find(e => e.id === id);
+  if (edgeDef && edgeDef.feedback) {
+    el.style.opacity = '1';
+  } else {
+    el.style.strokeDashoffset = '0';
+  }
+}
+
+let pipeLogCount = 0;
+function pLog(agent, msg, cls) {
+  const log = document.getElementById('pipe-log');
+  if (!log) return;
+  const now = ((pipeLogCount * 0.24) + 0.1).toFixed(2) + 's';
+  pipeLogCount++;
+  const line = document.createElement('div');
+  line.className = 'pipe-log-line' + (cls ? ' '+cls : '');
+  line.innerHTML = `<span class="pipe-log-ts">${now}</span><span class="pipe-log-agent">[${agent}]</span> <span class="pipe-log-msg">${msg}</span>`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function setSpeed(s, btn) {
+  pipeSpeed = s;
+  document.querySelectorAll('.pipe-speed-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+function startPipeline() {
+  /* Cancel any pending timers */
+  pipeTimers.forEach(t => clearTimeout(t));
+  pipeTimers = [];
+  pipeLogCount = 0;
+
+  /* Reset status */
+  const btn = document.getElementById('pipe-run-btn');
+  const st  = document.getElementById('pipe-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  if (st)  { st.textContent = 'Pipeline executing…'; st.style.color = 'var(--stone)'; }
+
+  /* Clear log */
+  const log = document.getElementById('pipe-log');
+  if (log) log.innerHTML = '';
+
+  /* Rebuild SVG (resets all nodes + edges) */
+  buildPipelineSVG();
+
+  /* Schedule timeline */
+  P_TIMELINE.forEach(step => {
+    const id = setTimeout(() => step.fn(), step.t / pipeSpeed);
+    pipeTimers.push(id);
+  });
+}
+
+/* Build the SVG on page load so it's visible before first Run */
+document.addEventListener('DOMContentLoaded', buildPipelineSVG);
+</script>
+</body>
+</html>

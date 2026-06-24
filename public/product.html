@@ -66,10 +66,10 @@ function ProductPage() {
       {/* Hero */}
       <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          A drop-in Python SDK that optimizes inter-agent communication.
+          Your AI agents are expensive. We make them <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>a lot cheaper.</em>
         </h1>
         <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-          Wraps your existing orchestration. Agents, prompts, and model choices stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> agents and compresses, de-duplicates, and references instead of re-serializing.
+          Two lines wrap your existing pipeline. Your agents, prompts, and providers stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> them and quietly cuts your bill — typically 40–60%.
         </p>
         <div style={{ maxWidth: 780 }}>
           <CodeBlockPy
@@ -93,23 +93,26 @@ result = run_pipeline(pipeline, task)
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 760 }}>
           <h2 className="t-h2" style={{ margin: '0 0 28px' }}>
-            <em style={{ fontStyle: 'italic' }}>A pipeline-level layer, not a per-call transform.</em>
+            <em style={{ fontStyle: 'italic' }}>Your biggest AI cost isn't a single expensive call. It's what compounds across every hop.</em>
           </h2>
           <p className="t-body-lg" style={{ marginBottom: 24 }}>
-            Brevitas sits between agents, not inside them. Your agents keep their prompts, their roles, and their model choices. The layer operates on whatever flows along the arrows.
+            Per-call compressors and provider caches can only see one message at a time. The real money in a multi-agent pipeline is what flows between calls — the same context re-serialized and billed at every hop.
           </p>
           <p className="t-body" style={{ marginBottom: 24 }}>
-            That distinction matters. A per-call compressor — or a provider's native prompt cache — can only see one message at a time. The single largest source of redundancy in a multi-agent pipeline is <em style={{ fontStyle: 'italic' }}>across</em> calls: the same context re-serialized at every hop. You can't compress what you can't see.
+            Brevitas sees the whole pipeline. It compresses, deduplicates, and references across every hop — not just within one. That's the distinction that makes the numbers move.
           </p>
           <p className="t-body">
-            Brevitas sees the pipeline. It's composable with any orchestrator, agnostic to prompts and models, and optimizes exactly what single-call compressors and native caches can't reach.
+            Works with any orchestrator. Agnostic to your prompts and models. Plugs into what you've already built. No lock-in, no rearchitecting.
           </p>
         </div>
       </section>
 
       {/* Composition matrix */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
+      <section className="section" style={{ borderTop: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
+        <video autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, zIndex: 0, pointerEvents: 'none' }}>
+          <source src="/assets/ascii-magic-3.mp4" type="video/mp4" />
+        </video>
+        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
           <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 48, maxWidth: 900 }}>
             Your stack, unchanged.
           </h2>
@@ -137,38 +140,38 @@ result = run_pipeline(pipeline, task)
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 56, maxWidth: 900 }}>
-            Five moves, stacked, routed per call.
+            Five ways we cut your bill. Routed per call so you only pay for what earns its keep.
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             {[
               {
                 n: '01',
-                h: 'Compress.',
-                b: 'Each inter-agent message is compressed against a relevance model. Connective tissue drops; meaning-bearing tokens stay. Compression ratio is tunable globally, per-agent, or per-task-class.',
+                h: 'Compress. The 40% win.',
+                b: 'Every inter-agent message is compressed before the next model bills for it. Connective filler drops; meaning-bearing tokens stay. This one technique typically recovers 40% of inter-agent token spend.',
                 code: `msg = compress(agent1.output, task_class="code")`,
               },
               {
                 n: '02',
-                h: 'Reference.',
-                b: 'Agent outputs are stored once in session-scoped shared memory. Downstream agents receive content-addressed IDs, not re-serialized payloads. Equivalent to deduplication at the communication layer.',
+                h: 'Reference. Stop paying for the same content twice.',
+                b: 'Agent outputs are stored once and referenced downstream — not re-serialized and re-billed at every hop. Equivalent to deduplication at the billing layer.',
                 code: `memory.put("a1_output") -> "mem://a1:7f3b"`,
               },
               {
                 n: '03',
-                h: 'Delta.',
-                b: 'After the first full context pass, subsequent agent calls receive only the changes to shared state. Analogous to how version control stopped sending full file copies.',
+                h: 'Delta. Only send what changed.',
+                b: 'After the first full context pass, subsequent agent calls receive only the changes — not the entire history re-billed. Analogous to how version control stopped sending full file copies.',
                 code: `delta = diff(state_t, state_t_minus_1)`,
               },
               {
                 n: '04',
-                h: 'Prune.',
-                b: 'A relevance pass drops sections of inter-agent context unlikely to be used by the next agent, based on task class and agent role. Keeps what matters, drops what doesn\'t.',
+                h: 'Prune. Cut what the next agent won\'t use.',
+                b: 'A relevance pass drops context the next agent — given its role and task class — is statistically unlikely to use. You stop paying for tokens that were never going to matter.',
                 code: `ctx = prune(ctx, role="reviewer")`,
               },
               {
                 n: '05',
-                h: 'Route.',
-                b: 'Task-aware routing decides which of the above to apply per call based on task class and pipeline shape. Not every call needs every optimization.',
+                h: 'Route. Apply only what earns its keep.',
+                b: 'Task-aware routing decides which optimizations to apply per call. Not every call benefits from every technique — the router makes sure you\'re only spending compute where it drives savings.',
                 code: `router.decide(call) -> [compress, delta]`,
               },
             ].map((x, i) => (
@@ -277,9 +280,9 @@ pipeline = optimize([architect, builder, reviewer])`} />
       <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 820 }}>
-            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get on the list.</h2>
+            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get your pipeline benchmarked.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              Early-access SDK and design-partner benchmark reports. Tell us what you're building.
+              Tell us what you're running. We'll show you exactly where the money is going — and how much we'd put back in your pocket.
             </p>
             <WaitlistInput variant="inline" source="product-final" />
           </div>

@@ -151,19 +151,22 @@ function HowItWorksPage() {
       {/* Hero */}
       <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          Six techniques. One layer. Task-aware routing decides which to apply per call.
+          Six ways we find money in your agent pipeline. One layer. Zero code changes.
         </h1>
         <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 64 }}>
-          None of them are novel. The combination is. And no one has productized it for multi-agent pipelines.
+          None of the techniques are new. The savings they unlock — 40–60% off your inter-agent token bill — are. Nobody else has productized this for multi-agent pipelines.
         </p>
         <PipelineExplorer />
       </SectionShell>
 
       {/* Architecture */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
+      <section className="section" style={{ borderTop: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
+        <video autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, zIndex: 0, pointerEvents: 'none' }}>
+          <source src="/assets/ascii-magic-2.mp4" type="video/mp4" />
+        </video>
+        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
           <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 40, maxWidth: 900 }}>
-            One diagram. The layer sits between each pair of agents.
+            One diagram. Here's where your money goes — and where we stop it.
           </h2>
           <ArchDiagram />
         </div>
@@ -172,17 +175,17 @@ function HowItWorksPage() {
       <TechniqueSection
         index={1}
         anchor="compression"
-        title="Inter-agent message compression."
-        body={<>Each agent's output is compressed before being passed downstream. A relevance model scores every token and removes connective tissue — articles, filler, restated context — while preserving meaning-bearing structure: nouns, verbs, key technical terms, schemas.</>}
-        extra={<p className="t-body">Compression ratio is a first-class knob. Set it globally, per-agent, or per-task-class. The default is conservative; aggressive modes unlock another 10–20% on long pipelines where quality floor has been characterized.</p>}
+        title="Compression. The 40% win."
+        body={<>Every inter-agent message is compressed before the next model bills for it. Connective filler drops. Meaning-bearing tokens stay. This one technique typically recovers 40% of inter-agent token spend — immediately, on the first run.</>}
+        extra={<p className="t-body">Compression ratio is a knob. Set it globally, per-agent, or per-task-class. The default is conservative; aggressive modes unlock another 10–20% on long pipelines once you've characterized the quality floor.</p>}
         visual={<CompressionSequence />}
       />
 
       <TechniqueSection
         index={2}
         anchor="reference"
-        title="Shared memory with content-addressed references."
-        body={<>Agent outputs are stored once in a session-scoped memory layer. Downstream agents don't receive re-serialized content — they receive stable <span className="mono bronze">mem://</span> references. The resolver fetches and injects on demand, at the call boundary.</>}
+        title="Reference deduplication. Stop paying for the same content twice."
+        body={<>Agent outputs are stored once. Downstream agents receive a stable <span className="mono bronze">mem://</span> reference — not a re-serialized, re-billed copy of the payload. The resolver fetches and injects at the call boundary. You pay once; every downstream agent gets it free.</>}
         extra={
           <div style={{ marginTop: 20 }}>
             <CodeBlockPy source={`# Agent 1 output materialized once
@@ -197,13 +200,13 @@ agent2.prompt = f"Previous analysis: {mem_ref}"`} />
       <TechniqueSection
         index={3}
         anchor="delta"
-        title="Delta mode."
-        body={<>After the first full context pass, subsequent agent calls receive only the <em style={{ fontStyle: 'italic' }}>changes</em> to shared state, not the entire history. Analogous to how version control stopped sending full file copies in 2005.</>}
+        title="Delta mode. Only bill for what changed."
+        body={<>After the first full context pass, subsequent agent calls receive only the <em style={{ fontStyle: 'italic' }}>changes</em> — not the entire history re-billed at every hop. The savings compound the longer the pipeline runs.</>}
         extra={
           <div style={{ marginTop: 20, padding: 20, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
             <div className="t-mono" style={{ color: 'var(--stone-2)', marginBottom: 12, fontSize: 11 }}>ANALOGY</div>
             <p className="t-body" style={{ margin: 0, fontSize: 16 }}>
-              Git doesn't re-send the whole file when you edit one line. Why does your agent pipeline?
+              Git doesn't re-send the whole file when you edit one line. Why does your agent pipeline re-bill the whole context every hop?
             </p>
           </div>
         }
@@ -212,16 +215,16 @@ agent2.prompt = f"Previous analysis: {mem_ref}"`} />
       <TechniqueSection
         index={4}
         anchor="pruning"
-        title="Smart context pruning."
-        body={<>A relevance pass drops sections of inter-agent context that the next agent — given its role and task class — is statistically unlikely to use. The <span className="mono bronze">Reviewer</span> rarely needs the <span className="mono bronze">Architect</span>'s deliberation trace; it needs the decisions.</>}
-        extra={<p className="t-body">Pruning is role-aware and task-aware. The rules are data-driven, trained on logged pipeline traces where we measure which context slices actually influenced the downstream model's output distribution.</p>}
+        title="Pruning. Cut what the next agent won't use."
+        body={<>A relevance pass drops context the next agent — given its role and task class — is statistically unlikely to use. You stop paying for tokens that were never going to matter. The <span className="mono bronze">Reviewer</span> doesn't need the <span className="mono bronze">Architect</span>'s deliberation trace; it needs the decisions.</>}
+        extra={<p className="t-body">Pruning is role-aware and task-aware. Rules are data-driven, trained on real pipeline traces where we measure which context slices actually influenced the downstream model's output — and which were just burning budget.</p>}
       />
 
       <TechniqueSection
         index={5}
         anchor="protocol"
-        title="Compact message protocol."
-        body={<>A structured schema replaces free-form prose for inter-agent messages, reducing syntactic overhead by 20–40% in current tests. Agents still receive rendered text; the wire format is denser.</>}
+        title="Compact protocol. 20–40% cheaper wire format."
+        body={<>A structured schema replaces free-form prose for inter-agent messages, cutting syntactic overhead by 20–40%. Agents still receive rendered text. The wire format is denser. You pay for less.</>}
         extra={
           <div style={{ marginTop: 20 }}>
             <CodeBlockPy source={`# Before (prose, 142 tokens)
@@ -242,22 +245,22 @@ should encapsulate domain operations. The persistence layer mediates..."
       <TechniqueSection
         index={6}
         anchor="routing"
-        title="Task-aware routing."
-        body={<>Not every call needs every optimization. The router decides which subset of the five techniques above to apply on each hop, based on the task class, the agent's role, and the current pipeline shape.</>}
-        extra={<p className="t-body">Router decisions are logged and inspectable. The report object surfaces which technique contributed which percentage of the savings, per call and across the run.</p>}
+        title="Smart routing. Apply only what earns its keep."
+        body={<>Not every call benefits from every optimization. The router decides which subset to apply per hop based on task class, agent role, and pipeline shape. Over-optimizing burns latency budget; under-optimizing burns token budget. The router finds the line.</>}
+        extra={<p className="t-body">Router decisions are logged and inspectable. The report object shows which technique drove which percentage of the savings — per call and across the full run — so you always know where the money came from.</p>}
       />
 
       {/* Stacking */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 760 }}>
-          <h2 className="t-h2" style={{ margin: '0 0 24px' }}>Why they stack.</h2>
+          <h2 className="t-h2" style={{ margin: '0 0 24px' }}>Why the savings compound.</h2>
           <p className="t-body-lg" style={{ marginBottom: 20 }}>
-            The techniques are designed to compose. Compression gets you the first 40% of savings on most pipelines. Reference and delta peel off another 15–20% where the pipeline has shared state. Pruning and protocol earn the last 5–15%.
+            Compression gets you the first 40% on most pipelines. Reference and delta peel off another 15–20% where the pipeline has shared state. Pruning and protocol earn the last 5–15%. Stack them and you're looking at 60%+ off your inter-agent bill.
           </p>
           <p className="t-body" style={{ marginBottom: 40 }}>
-            Applying all six is rarely optimal — a short pipeline with no shared state gets no benefit from delta mode, and enabling it costs latency. The router picks. Measured reductions range from 20% to 70% depending on pipeline shape; the 59.4% number comes from the three-agent coding harness specifically.
+            The router makes sure you're not leaving money on the table — or spending compute where it won't earn its keep. Measured reductions range from 20% to 70% depending on your pipeline shape. The 59.4% number comes from a real three-agent coding pipeline, not a toy benchmark.
           </p>
-          <a href="/benchmarks" className="btn btn-ghost underline">See the measured results →</a>
+          <a href="/benchmarks" className="btn btn-ghost underline">See the measured savings →</a>
         </div>
       </section>
 
@@ -265,7 +268,7 @@ should encapsulate domain operations. The persistence layer mediates..."
       <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 720 }}>
-            <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 32 }}>Want to run the harness yourself?</h2>
+            <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 32 }}>Want to know what your pipeline is actually costing you?</h2>
             <WaitlistInput source="how-final" />
           </div>
         </div>

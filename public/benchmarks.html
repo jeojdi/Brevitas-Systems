@@ -231,14 +231,22 @@ function BenchmarksPage() {
     <>
       <Nav current="benchmarks" />
 
-      <SectionShell overline="MEASURED RESULTS" overlineDot>
-        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          60 tasks. Three agents. Full provenance.
-        </h1>
-        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-          Every number on this page comes from a single harness: a three-agent pipeline solving sixty <span className="mono">HumanEval+</span> tasks, three seeds each. Same task, same providers, same model versions. The only variable is the Brevitas layer.
-        </p>
-      </SectionShell>
+      <section className="section" style={{ position: 'relative', overflow: 'hidden' }}>
+        <video autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, zIndex: 0, pointerEvents: 'none' }}>
+          <source src="/assets/ascii-magic-5.mp4" type="video/mp4" />
+        </video>
+        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
+          <Overline dot>MEASURED RESULTS</Overline>
+          <div style={{ marginTop: 32 }}>
+            <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
+              60 tasks. Three agents. Full provenance.
+            </h1>
+            <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
+              Every number on this page comes from a single harness: a three-agent pipeline solving sixty <span className="mono">HumanEval+</span> tasks, three seeds each. Same task, same providers, same model versions. The only variable is the Brevitas layer.
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* Headline stats */}
       <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 40 }}>
@@ -354,8 +362,11 @@ function BenchmarksPage() {
       </section>
 
       {/* Final CTA */}
-      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
-        <div className="container">
+      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
+        <video autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, zIndex: 0, pointerEvents: 'none' }}>
+          <source src="/assets/ascii-magic-5.mp4" type="video/mp4" />
+        </video>
+        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ maxWidth: 720 }}>
             <Overline dot>RUN IT YOURSELF</Overline>
             <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 16 }}>Want the harness?</h2>

@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pricing · Brevitas Systems</title>
+<meta name="description" content="Simple, transparent pricing for every team size.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="site.css">
+<style>
+.pricing-hero {
+  padding: 120px 0 72px;
+  text-align: center;
+}
+.pricing-hero h1 {
+  font-family: 'Newsreader', serif;
+  font-size: clamp(2.4rem, 5vw, 3.6rem);
+  font-weight: 300;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  color: var(--bone);
+  margin-bottom: 16px;
+}
+.pricing-hero p {
+  font-size: 16px;
+  color: var(--stone-2);
+  max-width: 460px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.pricing-section {
+  padding: 0 0 120px;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .pricing-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .pricing-grid { grid-template-columns: 1fr; }
+}
+
+.plan-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 36px 32px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: border-color 150ms;
+}
+.plan-card:hover {
+  border-color: rgba(142, 166, 255, 0.25);
+}
+.plan-card.featured {
+  border-color: rgba(142, 166, 255, 0.4);
+  background: rgba(142, 166, 255, 0.04);
+  position: relative;
+}
+
+.plan-badge {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bronze);
+  color: var(--ink);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.plan-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stone);
+  margin-bottom: 20px;
+}
+.plan-card.featured .plan-name {
+  color: var(--bronze);
+}
+
+.plan-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.plan-price {
+  font-family: 'Newsreader', serif;
+  font-size: 3rem;
+  font-weight: 300;
+  letter-spacing: -0.03em;
+  color: var(--bone);
+  line-height: 1;
+}
+.plan-price-period {
+  font-size: 13px;
+  color: var(--stone);
+}
+.plan-price-original {
+  font-size: 13px;
+  color: var(--stone);
+  text-decoration: line-through;
+  margin-bottom: 2px;
+}
+.plan-price-save {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--signal);
+  background: rgba(141, 216, 198, 0.1);
+  border: 1px solid rgba(141, 216, 198, 0.2);
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-bottom: 2px;
+}
+
+.plan-desc {
+  font-size: 13px;
+  color: var(--stone);
+  line-height: 1.5;
+  margin: 16px 0 28px;
+}
+
+.plan-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0 0 24px;
+}
+
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+.plan-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--stone-2);
+  line-height: 1.4;
+}
+.plan-features li::before {
+  content: '–';
+  color: var(--stone);
+  flex-shrink: 0;
+  margin-top: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.plan-card.featured .plan-features li {
+  color: var(--bone);
+}
+
+.plan-cta {
+  display: block;
+  width: 100%;
+  padding: 13px 20px;
+  border-radius: 10px;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+  transition: opacity 120ms;
+}
+.plan-cta:hover { opacity: 0.85; }
+.plan-cta.primary {
+  background: var(--bronze);
+  color: var(--ink);
+}
+.plan-cta.secondary {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--bone);
+}
+.plan-cta.secondary:hover {
+  border-color: rgba(142, 166, 255, 0.3);
+  opacity: 1;
+}
+
+.pricing-note {
+  text-align: center;
+  margin-top: 48px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--stone);
+}
+.pricing-note a {
+  color: var(--bronze);
+  text-decoration: none;
+}
+.pricing-note a:hover { opacity: 0.8; }
+</style>
+</head>
+<body>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+
+<script type="text/babel" src="components.jsx"></script>
+
+<div id="root"></div>
+
+<script type="text/babel">
+
+
+const PLANS = [
+  {
+    key: 'individual',
+    name: 'Individual',
+    price: '$10',
+    period: '/mo',
+    desc: 'For solo developers and researchers running agent pipelines.',
+    features: [
+      '1 seat',
+      '500K tokens compressed / month',
+      'Pipeline analytics dashboard',
+      'REST API access',
+      'Community support',
+    ],
+    cta: 'Get started',
+    ctaHref: '/login',
+    ctaStyle: 'secondary',
+  },
+  {
+    key: 'pro',
+    name: 'Pro',
+    price: '$50',
+    period: '/mo',
+    desc: 'For professionals who need deeper insight and higher throughput.',
+    features: [
+      '1 seat',
+      '5M tokens compressed / month',
+      'Full pipeline analytics + exports',
+      'REST API + webhooks',
+      'Custom compression rules',
+      'Priority email support',
+    ],
+    cta: 'Get started',
+    ctaHref: '/login',
+    ctaStyle: 'primary',
+    featured: true,
+    badge: 'Most popular',
+  },
+  {
+    key: 'team',
+    name: 'Team',
+    price: '$70',
+    originalPrice: '$100',
+    period: '/mo',
+    save: 'Save 30%',
+    desc: 'For teams running shared agent infrastructure at scale.',
+    features: [
+      'Up to 5 seats',
+      '25M tokens compressed / month',
+      'Team analytics + shared dashboards',
+      'REST API + webhooks',
+      'Custom integrations',
+      'Priority support',
+    ],
+    cta: 'Get started',
+    ctaHref: '/login',
+    ctaStyle: 'secondary',
+  },
+  {
+    key: 'enterprise',
+    name: 'Enterprise',
+    price: 'Custom',
+    desc: 'For organizations with large-scale pipelines and compliance requirements.',
+    features: [
+      'Unlimited seats',
+      'Custom token limits',
+      'Dedicated account manager',
+      'SLA guarantees',
+      'On-premise deployment option',
+      'Custom contracts & billing',
+    ],
+    cta: 'Contact us',
+    ctaHref: 'mailto:hello@brevitassystems.com',
+    ctaStyle: 'secondary',
+  },
+];
+
+function PricingPage() {
+  return (
+    <>
+      {Nav && <Nav current="pricing" />}
+
+      <section className="pricing-hero">
+        <div className="container">
+          <Overline dot>PRICING</Overline>
+          <h1 style={{ marginTop: 24 }}>Simple, transparent pricing.</h1>
+          <p>One layer between your agents. No usage surprises, no hidden fees.</p>
+        </div>
+      </section>
+
+      <section className="pricing-section">
+        <div className="container">
+          <div className="pricing-grid">
+            {PLANS.map(plan => (
+              <div key={plan.key} className={`plan-card${plan.featured ? ' featured' : ''}`}>
+                {plan.badge && <div className="plan-badge">{plan.badge}</div>}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+                  <div className="plan-name" style={{ marginBottom: 0 }}>{plan.name}</div>
+                  {plan.save && <div className="plan-price-save" style={{ marginBottom: 0 }}>{plan.save}</div>}
+                </div>
+
+                <div className="plan-price-row">
+                  <span className="plan-price">{plan.price}</span>
+                  {plan.period && <span className="plan-price-period">{plan.period}</span>}
+                </div>
+                {plan.originalPrice && (
+                  <div className="plan-price-original">was {plan.originalPrice}/mo</div>
+                )}
+
+                <p className="plan-desc">{plan.desc}</p>
+
+                <hr className="plan-divider" />
+
+                <ul className="plan-features">
+                  {plan.features.map((f, i) => <li key={i}>{f}</li>)}
+                </ul>
+
+                <a href={plan.ctaHref} className={`plan-cta ${plan.ctaStyle}`}>
+                  {plan.cta}
+                </a>
+              </div>
+            ))}
+          </div>
+
+          <p className="pricing-note">
+            All plans include a 14-day free trial. No credit card required. &nbsp;·&nbsp;{' '}
+            <a href="mailto:hello@brevitassystems.com">Questions? Reach out.</a>
+          </p>
+        </div>
+      </section>
+    </>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<PricingPage />);
+</script>
+</body>
+</html>

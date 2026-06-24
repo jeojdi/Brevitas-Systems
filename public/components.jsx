@@ -482,7 +482,7 @@ function WaitlistInput({ variant = 'inline', source = 'unknown' }) {
               aria-label="Work email"
             />
             <button type="submit" className="btn btn-primary">
-              Join the waitlist <span className="arrow">→</span>
+              Join now <span className="arrow">→</span>
             </button>
           </div>
           {err && <div className="t-small" style={{ marginTop: 10, color: 'var(--bone-dim)' }}>! {err}</div>}
@@ -642,6 +642,7 @@ function Nav({ current }) {
     { href: '/product', label: 'Product', k: 'product' },
     { href: '/how-it-works', label: 'How it works', k: 'how' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
+    { href: '/pricing', label: 'Pricing', k: 'pricing' },
     { href: '/docs', label: 'Docs', k: 'docs' },
     { href: '/blog', label: 'Blog', k: 'blog' },
   ];
@@ -659,7 +660,7 @@ function Nav({ current }) {
             ))}
           </div>
           <ThemeToggle />
-          <Button variant="primary" href="/waitlist" className="nav-cta">Join waitlist</Button>
+          <Button variant="primary" href="/login" className="nav-cta">Sign up</Button>
           <button className="nav-hamburger" onClick={() => setSheet(true)} aria-label="Menu">
             <span/><span/><span/>
           </button>
@@ -670,7 +671,7 @@ function Nav({ current }) {
           <button className="nav-sheet-close" onClick={() => setSheet(false)} aria-label="Close">×</button>
           <div className="nav-sheet-links">
             {links.map(l => <a key={l.k} href={l.href}>{l.label}</a>)}
-            <a href="/waitlist" style={{ color: 'var(--bronze)' }}>Join waitlist →</a>
+            <a href="/login" style={{ color: 'var(--bronze)' }}>Sign up →</a>
           </div>
         </div>
       )}
@@ -709,6 +710,7 @@ function Footer() {
               <li><a href="/product">Product</a></li>
               <li><a href="/how-it-works">How it works</a></li>
               <li><a href="/benchmarks">Benchmarks</a></li>
+              <li><a href="/pricing">Pricing</a></li>
               <li><a href="/docs">Docs</a></li>
               <li><a href="/docs">Changelog</a></li>
             </ul>
