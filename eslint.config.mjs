@@ -12,8 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Built dashboard artifacts — not source code
-    "dashboard/dist/**",
+    // Dashboard is a separate Vite sub-project with its own lint config
+    "dashboard/**",
     "public/dashboard/**",
   ]),
 ]);
