@@ -3,11 +3,10 @@ import { supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supaba
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
-import ApiKeys from './components/ApiKeys.jsx'
 import ModelConfig from './components/ModelConfig.jsx'
 import Docs from './components/Docs.jsx'
 
-const TABS = ['Overview', 'Playground', 'Model', 'Docs', 'API Keys']
+const TABS = ['Overview', 'Playground', 'Model', 'Docs']
 
 function MoonIcon() {
   return (
@@ -188,7 +187,6 @@ export default function App() {
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
       </main>
     </div>
   )

@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Dashboard is a separate Vite sub-project with its own lint config
+    "dashboard/**",
+    // public/ files run via Babel standalone in the browser, not via Next.js
+    "public/**",
   ]),
 ]);
 

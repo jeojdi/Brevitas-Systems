@@ -1,4 +1,20 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+
+const STORAGE_KEY = 'bvt_playground'
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? {} } catch { return {} }
+}
+
+function usePersisted(key, defaultValue) {
+  const saved = loadSaved()
+  const [value, setValue] = useState(key in saved ? saved[key] : defaultValue)
+  useEffect(() => {
+    const current = loadSaved()
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, [key]: value }))
+  }, [key, value])
+  return [value, setValue]
+}
 
 const DEMO_MESSAGES = `Agent 1 (Planner): The user wants a rate limiter for their API gateway. I have analyzed the requirements. The rate limiter should use a token bucket algorithm with Redis as the backing store. Each user gets 100 requests per minute. I have analyzed the user request and determined we need a token bucket rate limiter backed by Redis.
 Agent 2 (Architect): Based on the planner's analysis, we need a Redis-backed token bucket. The implementation should use Redis to store bucket state per user. Each user gets 100 tokens per minute refill rate. I recommend using GCRA (Generic Cell Rate Algorithm) for atomic operations in Redis. We need Redis for the token bucket state storage.
@@ -70,14 +86,14 @@ function StageCard({ children, fade = true }) {
 }
 
 export default function Playground({ apiKey }) {
-  const [task, setTask]                    = useState('Write a Python sort utility function')
-  const [messages, setMessages]            = useState(DEMO_MESSAGES)
-  const [context, setContext]              = useState(DEMO_CONTEXT)
-  const [complexity, setComplexity]        = useState(0.5)
-  const [compressionLevel, setCompression] = useState(2)
-  const [pruneBudget, setPruneBudget]      = useState(5)
+  const [task, setTask]                    = usePersisted('task', 'Write a Python sort utility function')
+  const [messages, setMessages]            = usePersisted('messages', DEMO_MESSAGES)
+  const [context, setContext]              = usePersisted('context', DEMO_CONTEXT)
+  const [complexity, setComplexity]        = usePersisted('complexity', 0.5)
+  const [compressionLevel, setCompression] = usePersisted('compressionLevel', 2)
+  const [pruneBudget, setPruneBudget]      = usePersisted('pruneBudget', 5)
+  const [stages, setStages]               = usePersisted('stages', [])
   const [streaming, setStreaming]          = useState(false)
-  const [stages, setStages]               = useState([])   // array of {stage, ...data}
   const [error, setError]                  = useState('')
   const abortRef                           = useRef(null)
 
@@ -147,7 +163,7 @@ export default function Playground({ apiKey }) {
 def compress(messages, prior_context, task=""):
     r = requests.post(
         "http://localhost:8000/v1/compress",
-        headers={"X-API-Key": "${apiKey}"},
+        headers={"X-API-Key": "YOUR_API_KEY"},
         json={
             "messages": messages,
             "prior_context": prior_context,
@@ -164,7 +180,7 @@ def compress(messages, prior_context, task=""):
 
   const curlSnippet =
 `curl -X POST http://localhost:8000/v1/compress \\
-  -H "X-API-Key: ${apiKey}" \\
+  -H "X-API-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "task": "your task here",
