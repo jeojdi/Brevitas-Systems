@@ -76,3 +76,6 @@ api/__pycache__/
 **/__pycache__/
 *.pyc
 dashboard/node_modules/
+
+# large source GIFs (converted to MP4 for web — keep only the mp4s)
+public/assets/*.gif

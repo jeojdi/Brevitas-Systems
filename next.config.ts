@@ -12,10 +12,14 @@ const nextConfig: NextConfig = {
         { source: '/benchmarks', destination: '/benchmarks.html' },
         { source: '/docs', destination: '/docs.html' },
         { source: '/blog', destination: '/blog.html' },
+        { source: '/pricing', destination: '/pricing.html' },
         { source: '/waitlist', destination: '/waitlist.html' },
+        { source: '/login', destination: '/waitlist.html' },
+        { source: '/signup', destination: '/waitlist.html' },
         { source: '/design-canvas', destination: '/design-canvas.html' },
         { source: '/blog/fable-5', destination: '/fable-5.html' },
         { source: '/dashboard', destination: '/dashboard/index.html' },
+        { source: '/orchestration', destination: '/orchestration.html' },
       ],
       afterFiles: [
         {
