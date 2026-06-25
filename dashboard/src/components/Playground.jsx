@@ -163,7 +163,7 @@ export default function Playground({ apiKey }) {
 def compress(messages, prior_context, task=""):
     r = requests.post(
         "http://localhost:8000/v1/compress",
-        headers={"X-API-Key": "${apiKey}"},
+        headers={"X-API-Key": "YOUR_API_KEY"},
         json={
             "messages": messages,
             "prior_context": prior_context,
@@ -180,7 +180,7 @@ def compress(messages, prior_context, task=""):
 
   const curlSnippet =
 `curl -X POST http://localhost:8000/v1/compress \\
-  -H "X-API-Key: ${apiKey}" \\
+  -H "X-API-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "task": "your task here",
