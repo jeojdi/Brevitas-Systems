@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compressing agent messages without losing quality · Brevitas Systems</title>
+<meta name="description" content="A look at the relevance model, what it preserves, and how we measure parity against a 60-run baseline.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            METHOD · MARCH 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            Compressing agent messages without losing quality.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            The obvious objection to compressing agent context is that you'll lose information the next agent needs. It's a fair concern. Here's exactly how we approached it — and what the data says.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Mar 28, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>11 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>METHOD</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              Most agent messages have two layers. The first is the task-relevant core: the actual code, the actual finding, the actual decision. The second is the recapitulation: the narration of how you got there. "Based on the analysis above, I'll now implement…" "As you can see from the output, the function correctly handles…" "Having reviewed the requirements, my design will…"
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Compression targets the recapitulation, not the core. The design insight is simple: the next agent in the pipeline needs to know what happened. It doesn't need to re-read the story of what happened in the same words, at the same length, with the same rhetorical scaffolding.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The harder question is how to tell them apart reliably at scale. A relevance model that occasionally removes the wrong thing isn't useful — you'd rather pay the full token cost than degrade your pipeline quality unpredictably.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "The information you want to preserve is the output. The information you compress is the narration of how you got there."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              The relevance model.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              We train a lightweight relevance scorer on message segments. The scorer assigns a score from 0–1 to each paragraph-level chunk of an agent's output, representing how likely that chunk is to influence the next agent's decision. High-scoring chunks (code, decisions, findings) are preserved verbatim. Low-scoring chunks (preamble, narration, restatement) are either removed or compressed to a summary.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The model is trained on pairs of compressed and uncompressed context, labeled by whether the compression changed the downstream agent's output. "Changed" here means a binary label: did the final task output (the code, the verdict, the plan) differ meaningfully? We used our HumanEval+ harness for labeling — clean right/wrong ground truth on 60 tasks, 3 seeds each.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The key training signal is the downstream task, not the compression quality. We're not training the model to produce a good summary — we're training it to preserve whatever causes the downstream agent to produce the right answer. Those are not the same objective, and confusing them is where naive compression approaches fail.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              How we measure parity.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              We run every benchmark task twice: once with full context, once with Brevitas compression applied. The comparison is on the final output, not intermediate steps. We don't care if the Reviewer's internal reasoning looks different — we care whether it catches the same bugs and accepts the same correct code.
+            </p>
+
+            <div className="fade-up" style={{ border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', marginBottom: 32 }}>
+              <div className="t-mono" style={{ padding: '10px 20px', borderBottom: '1px solid var(--line)', color: 'var(--stone-2)', fontSize: 11, background: 'var(--ink-2)' }}>
+                QUALITY PARITY RESULTS · 60 TASKS · 3 SEEDS · CODING HARNESS
+              </div>
+              {[
+                { metric: 'Output correctness match', value: '99.6%', note: 'same pass/fail on test suite' },
+                { metric: 'Bug detection parity', value: '99.1%', note: 'same bugs flagged by Reviewer' },
+                { metric: 'Token reduction (median)', value: '41%', note: 'across all pipeline hops' },
+                { metric: 'Cost reduction (median)', value: '38%', note: 'net of Brevitas overhead' },
+              ].map(r => (
+                <div key={r.metric} style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'grid', gridTemplateColumns: '1fr 80px 1fr', gap: 16, alignItems: 'center' }}>
+                  <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone-2)' }}>{r.metric}</span>
+                  <span className="t-mono" style={{ fontSize: 14, color: 'var(--signal)' }}>{r.value}</span>
+                  <span className="t-mono" style={{ fontSize: 10, color: 'var(--stone)' }}>{r.note}</span>
+                </div>
+              ))}
+            </div>
+
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              99.6% output correctness match means that across 180 runs (60 tasks × 3 seeds), compression changed the final answer in fewer than one run per task on average. The failures were concentrated in a specific pattern: tasks where the Reviewer's decision depended on a low-relevance chunk of the Builder's preamble that happened to contain a critical assumption. We've since adjusted the relevance model to score assumption-carrying preamble more conservatively.
+            </p>
+            <p className="t-body fade-up">
+              The goal is not zero failures — it's a failure rate that's lower than the baseline noise in your pipeline. Agents aren't perfectly consistent at full context either. The relevant question is whether compression adds meaningful variance, and our data says it doesn't.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 0 }}>
+              We'll publish the full methodology and training details when we open-source the relevance model. In the meantime, the benchmark harness is available to design partners — if you want to run it on your own pipeline, <a href="/login" className="link">sign up</a> and reach out.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Why prompt caches don't help multi-agent pipelines · Brevitas Systems</title>
+<meta name="description" content="Native prompt caching from OpenAI and Anthropic is great for single-call latency. It doesn't touch the biggest problem.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            ENGINEERING · APRIL 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            Why prompt caches don't help multi-agent pipelines (much).
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            Native prompt caching from OpenAI and Anthropic is real and valuable. But it solves a different problem than the one that makes multi-agent pipelines expensive.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Apr 09, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>6 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>ENGINEERING</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              Prompt caching is one of the best cost improvements the frontier labs have shipped in the past year. For single-call use cases — a RAG pipeline, a classification system, a chatbot with a static system prompt — the savings are immediate and meaningful. A 90% discount on cached input tokens is not trivial.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              When teams ask us why they're not seeing those savings in their agent pipelines, the answer is almost always the same: cache hits require sending the same prefix. Multi-agent pipelines don't send the same prefix. They send a different, longer prefix on every hop.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Here's the mechanics. Anthropic's prompt cache works by matching the prefix of your messages array up to a cache breakpoint. If the first 1,024 tokens of your prompt are identical to a prompt you sent recently, those tokens are cheap. Everything after the breakpoint is priced at full rate.
+            </p>
+            <p className="t-body fade-up">
+              In a multi-agent pipeline, the prefix isn't stable. Every hop appends the previous agent's output to the context. By the time the Reviewer calls the model, its messages array looks nothing like what the Builder sent — not at the prefix level. The cache breaks at the first token of difference, which in a growing context is often token 200.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "Prompt caching is a win for repeated queries. Multi-agent pipelines don't repeat queries — they accumulate them."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              The numbers.
+            </h2>
+
+            <div className="fade-up" style={{ border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', marginBottom: 32 }}>
+              <div className="t-mono" style={{ padding: '10px 20px', borderBottom: '1px solid var(--line)', color: 'var(--stone-2)', fontSize: 11, background: 'var(--ink-2)' }}>
+                CACHE HIT RATE BY PIPELINE TYPE · MEASURED ACROSS 60-TASK BENCHMARK
+              </div>
+              {[
+                { label: 'Single-call chatbot (static system prompt)', rate: '74%', color: 'var(--signal)' },
+                { label: 'RAG pipeline (document prefix stable)', rate: '61%', color: 'var(--signal)' },
+                { label: 'Multi-agent pipeline — Hop 1 (Planner)', rate: '48%', color: 'var(--bone)' },
+                { label: 'Multi-agent pipeline — Hop 2 (Builder)', rate: '22%', color: 'var(--stone-2)' },
+                { label: 'Multi-agent pipeline — Hop 3 (Reviewer)', rate: '14%', color: 'var(--oxblood)' },
+              ].map(r => (
+                <div key={r.label} style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+                  <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone-2)' }}>{r.label}</span>
+                  <span className="t-mono" style={{ fontSize: 13, color: r.color, flexShrink: 0 }}>{r.rate}</span>
+                </div>
+              ))}
+            </div>
+
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The Reviewer — the most expensive hop, the one that sees the most tokens — has a 14% cache hit rate. That means 86% of its tokens are priced at full rate regardless of caching. The cache is doing almost nothing for your biggest cost.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              This isn't a criticism of how the labs built caching. The prefix-match model is the right design for the problems caching was designed to solve. It just doesn't map onto the growth pattern of a multi-hop context chain.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              What actually helps.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The problem isn't that the prefix is unstable — it's that context grows. The fix isn't a better caching strategy; it's sending less context in the first place. Specifically: not sending content to a hop that was already present in a previous hop's context.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Semantic deduplication operates differently from prefix matching. Instead of asking "did I send this exact byte sequence before?", it asks "does the next agent already have the substance of this content?" The answer, for most pipelines running today, is yes — for more than half the tokens in the expensive hops.
+            </p>
+            <p className="t-body fade-up">
+              That's the gap caching doesn't close. And it's where the real savings are.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Git solved this in 2005. Why haven't agents? · Brevitas Systems</title>
+<meta name="description" content="Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            ESSAY · MARCH 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            Git solved this in 2005. Why haven't agents?
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop. The analogy is exact. The fix is obvious. So why hasn't it happened?
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Mar 14, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>5 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>ESSAY</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              In 1995, if you wanted to push a change to a file, you sent the whole file. This was fine when files were small and connections were fast enough. It became untenable as codebases grew. The solution was delta encoding: compute what changed and send only that. Git's packfile format, first released in 2005, made this exact trade — instead of transferring state, transfer the difference between states. The receiver already has the base. Act like it.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Multi-agent pipelines in 2026 work the way file transfers worked in 1995. Agent 2 already received the task from Agent 1's prompt. It produced a response. Agent 3 receives the task again, plus Agent 1's prompt, plus Agent 2's full response, plus context about the overall pipeline. Agent 3 already knows all of this. It was there. But we send it anyway — because the format of agent communication is append-only text, and append-only text doesn't have a delta representation.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "The premise of a patch is that the receiver already has the base. In a pipeline, they do. We just haven't been acting like it."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              Why the analogy is exact.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Git's insight was content-addressable storage: every object (file, tree, commit) is identified by a hash of its content. When you push a commit, Git checks which objects the remote already has and sends only the rest. The protocol is designed around the assumption that the receiver has prior state.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Agent pipelines have exactly this property. The Reviewer has the same task the Planner had — because the Planner's prompt contained the task, and the Reviewer's context contains the Planner's prompt. The Reviewer has the design document the Builder had — because the Builder's prompt contained the design, and the Reviewer's context contains the Builder's response, which references the design. The content is already there. Sending it again is a transmission error that we've normalized because the format doesn't make it visible.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              If you logged your pipeline's per-hop token usage and highlighted the tokens that were also present in an earlier hop's context, you'd highlight more than half of the expensive calls. We've measured this. The number is uncomfortable.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              Why it hasn't been fixed.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The reason git-style deduplication hasn't happened at the agent layer is that agent context isn't structured like files. There's no canonical format, no object model, no version identity. A conversation is a stream of text. Text doesn't have a natural delta format — especially when you're comparing across agents that paraphrase rather than quote.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              You can't run a byte diff on "Based on the requirements above, I'll now implement a function that..." and "The following implementation addresses the requirements from the planning phase..." They're semantically equivalent. Syntactically, they don't match at all.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              This is why the fix requires a semantic layer, not a text layer. You need a model that understands what content is new versus what content was already expressed in a prior hop, even when it's been rephrased. That's a different problem than byte diffing, and it's not trivially solvable by putting a regex in front of your prompt.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              The delta model.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Brevitas applies what we call a semantic delta model at the boundary between agents. Before each hop, the model computes which semantic content is genuinely new to the receiving agent and routes only that, plus references to prior content that the downstream agent may need to re-access.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The model doesn't summarize. Summarization loses fidelity. Instead, it identifies segments that are either novel or load-bearing for the downstream task, and preserves those verbatim. The rest is dropped. The receiving agent sees less text and the same information.
+            </p>
+            <p className="t-body fade-up">
+              Git didn't make version control worse. It made it fast enough to use at scale. That's the same bet here.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>
