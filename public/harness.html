@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How we built the coding harness · Brevitas Systems</title>
+<meta name="description" content="Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here's what we learned while building it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            BENCHMARKS · MARCH 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            How we built the coding harness.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here's every design decision we made, and what we'd do differently.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Mar 02, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>8 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>BENCHMARKS</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              We needed a way to measure compression quality that wasn't circular. We couldn't use compression quality itself as the metric — that just measures how much we removed, not whether removing it hurt. We needed a benchmark with verifiable downstream outputs.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The design constraints were: verifiable outputs (right or wrong, no ambiguity), multi-agent structure (at least two hops where context accumulates), and representative of real pipeline behavior (not a toy task). HumanEval+ on a three-agent coding loop satisfied all three.
+            </p>
+            <p className="t-body fade-up">
+              Here's how the harness works, what it measures, and what the design process looked like.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              The three-agent loop.
+            </h2>
+
+            <div className="fade-up" style={{ border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', marginBottom: 32 }}>
+              <div className="t-mono" style={{ padding: '10px 20px', borderBottom: '1px solid var(--line)', color: 'var(--stone-2)', fontSize: 11, background: 'var(--ink-2)' }}>
+                AGENT ROLES · CODING HARNESS
+              </div>
+              {[
+                { name: 'Architect', input: 'Task specification', output: 'Design document: approach, data structures, edge cases', tokens: '~4,200 avg' },
+                { name: 'Builder', input: 'Task + design document', output: 'Implementation: code + inline explanation', tokens: '~9,100 avg' },
+                { name: 'Reviewer', input: 'Task + design + code', output: 'Verdict: pass/fail + specific bug findings', tokens: '~14,800 avg' },
+              ].map(r => (
+                <div key={r.name} style={{ padding: '16px 20px', borderBottom: '1px solid var(--line)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span className="t-mono" style={{ fontSize: 12, color: 'var(--bronze)' }}>{r.name}</span>
+                    <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>{r.tokens} input</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <span className="t-mono" style={{ fontSize: 10, color: 'var(--stone)' }}>IN: {r.input}</span>
+                    <span className="t-mono" style={{ fontSize: 10, color: 'var(--stone-2)' }}>OUT: {r.output}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              We chose three agents because that's the minimum structure where context compounding starts to matter. Two agents gives you one hop; the second agent always has full context from the first, but there's only one accumulation step. At three agents, you have two accumulation steps and the Reviewer's context can be 3–4× the original task length. That's where the cost problem becomes structural.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "A benchmark that measures quality on the final output is the only honest benchmark. Everything else measures how good the compression looks, not how good the result is."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              Why HumanEval+.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              HumanEval+ extends the original HumanEval benchmark with more rigorous test suites — more edge cases, more adversarial inputs, fewer tasks where a trivially wrong implementation still passes. The pass rate on HumanEval+ is meaningfully lower than on standard HumanEval for the same code, which means it's more sensitive to the kinds of quality degradation we'd expect from aggressive compression.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              We ran 60 tasks, 3 seeds each, for 180 total runs per configuration. That's enough to separate signal from noise on a binary metric (pass/fail), but not so many that iteration becomes expensive. We'd recommend at least 120 runs (40 tasks × 3 seeds) for anyone building a similar evaluation.
+            </p>
+            <p className="t-body fade-up">
+              The three-seed design matters. Single seeds on coding benchmarks are noisy — the same model on the same task will pass or fail depending on temperature sampling. Three seeds gives us a majority vote per task and meaningfully reduces variance without tripling our compute budget.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              What we learned.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The Architect's output has the most redundancy. It re-states the task before designing, often at length. In our pipeline, the Architect's preamble — "Based on the problem specification, I'll design a solution that..." — was consistently the lowest-relevance segment, and also consistently the first thing the Builder re-read.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The Builder's preamble is almost always compressible. The explanation of what it's about to do before doing it adds tokens and rarely adds information. The actual code and inline comments are almost never compressible without quality loss.
+            </p>
+            <p className="t-body fade-up">
+              The Reviewer's verdict is compact. Its explanation is padded. We found that Reviewer explanations for correct implementations were on average 40% longer than Reviewer explanations for incorrect ones — more hedging, more qualification, more "this looks correct because..." narration. That padding is the easiest thing to compress without affecting whether the next pipeline step acts on the verdict correctly.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design partners wanted · Brevitas Systems</title>
+<meta name="description" content="We're taking on five more design partners this quarter. Here's what you get, and what we ask for in return.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            PROGRAM · FEBRUARY 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            Design partners wanted.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            We're taking on five more design partners this quarter. Here's exactly what the program looks like — what you get, what we ask for, and who it's for.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Feb 22, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>3 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>PROGRAM</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              We currently have six design partners, all running real multi-agent pipelines in production. The program has shaped almost every product decision we've made in the past three months. We're opening it to five more teams.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              This isn't a beta waitlist. Design partners get direct access to the team and direct influence on what we build. In exchange, we ask for real usage and honest feedback. Here's the full picture.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              What you get.
+            </h2>
+
+            <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 0, border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', marginBottom: 32 }}>
+              {[
+                { title: 'Full middleware access', desc: 'Brevitas installed in your pipeline from day one. We handle the integration call together.' },
+                { title: 'Custom pipeline analysis', desc: 'We run your pipeline through our benchmark harness and give you a full report: where you\'re spending, what\'s redundant, projected savings at your actual token volume.' },
+                { title: 'Weekly syncs', desc: 'Direct call with the founding team. Your feedback goes straight into the backlog.' },
+                { title: 'Roadmap influence', desc: 'You tell us what\'s missing. We tell you what we\'re building. You have a real vote on priority.' },
+              ].map((item, i) => (
+                <div key={i} style={{ padding: '20px 24px', borderBottom: '1px solid var(--line)' }}>
+                  <div className="t-mono" style={{ fontSize: 11, color: 'var(--bronze)', marginBottom: 6, letterSpacing: '0.08em' }}>0{i + 1}</div>
+                  <div style={{ fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 15, color: 'var(--bone)', marginBottom: 6 }}>{item.title}</div>
+                  <div style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5 }}>{item.desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              What we ask for.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Real usage. We can't learn from a test environment. We need Brevitas running on actual pipeline traffic — doesn't have to be all of it, but enough that we can measure real performance on your task distribution.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Honest feedback when things break. Early software breaks. When it does, we want to know fast — not via a support ticket three weeks later, but in the Slack channel or on the weekly call. This is the deal.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              A short conversation at the end of the quarter. We'll ask if you'd be willing to talk publicly about what you found. A 15-minute recorded conversation, not a case study press release. Optional, no pressure, but it helps us explain what we do to the next set of partners.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "We don't need your roadmap. We need your real pipeline. That's where the product gets made."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              Who this is for.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Teams running two or more agents in production with a real monthly AI bill. You don't need to be spending $100k/month — you just need to be running something real, with real data, and be motivated to cut costs without changing your pipeline architecture.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              We work best with teams who have an engineer who cares about the infrastructure layer. Not because Brevitas is complicated to integrate (it isn't), but because the most useful feedback comes from people who understand what's happening between their agents.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 20 }}>
+              Apply.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 32 }}>
+              Drop your email below and we'll follow up within two business days. Tell us briefly what you're building — one sentence is fine. We review every application personally.
+            </p>
+            <div className="fade-up">
+              <WaitlistInput source="design-partner-post" />
+            </div>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>

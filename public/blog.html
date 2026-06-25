@@ -23,21 +23,21 @@
 <script type="text/babel" src="components.jsx"></script>
 
 <script type="text/babel">
+const { useState } = React;
+
 const POSTS = [
   {
     slug: 'fable-5',
     url: '/blog/fable-5',
-    kicker: 'ENGINEERING · JUNE 2026',
     title: 'Fable 5 is built for agents. The token bill will show it.',
-    dek: 'Anthropic\'s Mythos-class model is finally public. It\'s the best thing that\'s happened to multi-agent pipelines in a year. The pricing changes the math.',
+    dek: 'Anthropic\'s Mythos-class model is finally public. The pricing changes the math on every multi-agent pipeline.',
     date: 'Jun 10, 2026',
     read: '8 min',
     tag: 'Engineering',
-    featured: true,
   },
   {
     slug: '60-percent-waste',
-    kicker: 'RESEARCH · APRIL 2026',
+    url: '/blog/60-percent-waste',
     title: 'The 60% waste nobody talks about.',
     dek: 'Why multi-agent pipelines burn most of their tokens on redundant context — and what that costs at scale.',
     date: 'Apr 18, 2026',
@@ -46,16 +46,16 @@ const POSTS = [
   },
   {
     slug: 'why-caches-dont-help',
-    kicker: 'ENGINEERING · APRIL 2026',
+    url: '/blog/why-caches-dont-help',
     title: 'Why prompt caches don\'t help multi-agent pipelines (much).',
-    dek: 'Native prompt caching from OpenAI and Anthropic is great for single-call latency. It doesn\'t touch the biggest problem.',
+    dek: 'Native prompt caching is great for single-call latency. It doesn\'t touch the biggest problem.',
     date: 'Apr 09, 2026',
     read: '6 min',
     tag: 'Engineering',
   },
   {
     slug: 'compression-without-losing-quality',
-    kicker: 'METHOD · MARCH 2026',
+    url: '/blog/compression-without-losing-quality',
     title: 'Compressing agent messages without losing quality.',
     dek: 'A look at the relevance model, what it preserves, and how we measure parity against a 60-run baseline.',
     date: 'Mar 28, 2026',
@@ -64,7 +64,7 @@ const POSTS = [
   },
   {
     slug: 'git-for-agent-context',
-    kicker: 'ESSAY · MARCH 2026',
+    url: '/blog/git-for-agent-context',
     title: 'Git solved this in 2005. Why haven\'t agents?',
     dek: 'Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop.',
     date: 'Mar 14, 2026',
@@ -73,197 +73,288 @@ const POSTS = [
   },
   {
     slug: 'harness',
-    kicker: 'BENCHMARKS · MARCH 2026',
+    url: '/blog/harness',
     title: 'How we built the coding harness.',
-    dek: 'Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here\'s what we learned while building it.',
+    dek: 'Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here\'s what we learned.',
     date: 'Mar 02, 2026',
     read: '8 min',
     tag: 'Benchmarks',
   },
   {
     slug: 'design-partner-program',
-    kicker: 'PROGRAM · FEBRUARY 2026',
+    url: '/blog/design-partner-program',
     title: 'Design partners wanted.',
-    dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for in return.',
+    dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for.',
     date: 'Feb 22, 2026',
     read: '3 min',
     tag: 'Program',
   },
 ];
 
-function TagPill({ children }) {
+const TAG_STYLES = {
+  Engineering: { bg: 'rgba(142,166,255,0.14)', stroke: 'rgba(142,166,255,0.5)' },
+  Research:    { bg: 'rgba(141,216,198,0.14)', stroke: 'rgba(141,216,198,0.5)' },
+  Method:      { bg: 'rgba(196,206,229,0.10)', stroke: 'rgba(196,206,229,0.35)' },
+  Essay:       { bg: 'rgba(201,128,120,0.14)', stroke: 'rgba(201,128,120,0.5)' },
+  Benchmarks:  { bg: 'rgba(142,166,255,0.10)', stroke: 'rgba(142,166,255,0.4)' },
+  Program:     { bg: 'rgba(141,216,198,0.10)', stroke: 'rgba(141,216,198,0.4)' },
+};
+
+/* Simple per-category SVG illustrations */
+function CardIllustration({ tag }) {
+  const s = TAG_STYLES[tag] || TAG_STYLES.Engineering;
+  const c = s.stroke;
+  if (tag === 'Engineering') return (
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      <circle cx="20" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
+      <circle cx="60" cy="20" r="8" stroke={c} strokeWidth="1.5"/>
+      <circle cx="60" cy="60" r="8" stroke={c} strokeWidth="1.5"/>
+      <circle cx="100" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
+      <line x1="28" y1="36" x2="52" y2="24" stroke={c} strokeWidth="1.5"/>
+      <line x1="28" y1="44" x2="52" y2="56" stroke={c} strokeWidth="1.5"/>
+      <line x1="68" y1="24" x2="92" y2="36" stroke={c} strokeWidth="1.5"/>
+      <line x1="68" y1="56" x2="92" y2="44" stroke={c} strokeWidth="1.5"/>
+    </svg>
+  );
+  if (tag === 'Research') return (
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      {[0,1,2,3,4].map(i => (
+        <rect key={i} x={16 + i*20} y={70 - [30,50,20,45,35][i]} width="12" height={[30,50,20,45,35][i]} stroke={c} strokeWidth="1.5" rx="2"/>
+      ))}
+      <line x1="10" y1="70" x2="110" y2="70" stroke={c} strokeWidth="1"/>
+    </svg>
+  );
+  if (tag === 'Method') return (
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      <circle cx="60" cy="40" r="22" stroke={c} strokeWidth="1.5"/>
+      <circle cx="60" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
+      {[0,1,2,3,4,5,6,7].map(i => {
+        const a = (i / 8) * Math.PI * 2;
+        const x1 = 60 + 22 * Math.cos(a); const y1 = 40 + 22 * Math.sin(a);
+        const x2 = 60 + 28 * Math.cos(a); const y2 = 40 + 28 * Math.sin(a);
+        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth="2.5" strokeLinecap="round"/>;
+      })}
+    </svg>
+  );
+  if (tag === 'Essay') return (
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      <path d="M20 18 Q20 10 30 10 L34 10 Q44 10 44 18 Q44 26 34 30 L20 38 L20 18Z" stroke={c} strokeWidth="1.5"/>
+      <path d="M54 18 Q54 10 64 10 L68 10 Q78 10 78 18 Q78 26 68 30 L54 38 L54 18Z" stroke={c} strokeWidth="1.5"/>
+      <line x1="20" y1="55" x2="100" y2="55" stroke={c} strokeWidth="1" strokeDasharray="4 3"/>
+      <line x1="20" y1="65" x2="80" y2="65" stroke={c} strokeWidth="1" strokeDasharray="4 3"/>
+    </svg>
+  );
+  if (tag === 'Benchmarks') return (
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      <polyline points="10,60 30,35 50,45 70,20 90,30 110,15" stroke={c} strokeWidth="1.5" fill="none" strokeLinejoin="round"/>
+      <circle cx="30" cy="35" r="3" fill={c}/>
+      <circle cx="70" cy="20" r="3" fill={c}/>
+      <circle cx="110" cy="15" r="3" fill={c}/>
+      <line x1="10" y1="65" x2="110" y2="65" stroke={c} strokeWidth="1"/>
+    </svg>
+  );
+  /* Program */
   return (
-    <span className="t-mono" style={{
-      fontSize: 10,
-      color: 'var(--bronze)',
-      padding: '3px 8px',
-      border: '1px solid var(--bronze)',
-      borderRadius: 2,
-      letterSpacing: '0.1em',
-    }}>{children.toUpperCase()}</span>
+    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
+      <circle cx="40" cy="30" r="12" stroke={c} strokeWidth="1.5"/>
+      <circle cx="80" cy="30" r="12" stroke={c} strokeWidth="1.5"/>
+      <path d="M20 65 Q20 50 40 50 Q60 50 60 65" stroke={c} strokeWidth="1.5"/>
+      <path d="M60 65 Q60 50 80 50 Q100 50 100 65" stroke={c} strokeWidth="1.5"/>
+    </svg>
   );
 }
 
-function FeaturedCard({ post }) {
+function PostCard({ post, list }) {
+  const ts = TAG_STYLES[post.tag] || TAG_STYLES.Engineering;
+  if (list) {
+    return (
+      <a href={post.url} style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 24, padding: '24px 0', borderBottom: '1px solid var(--line)', color: 'inherit', textDecoration: 'none', transition: 'opacity 120ms' }}
+        onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
+        onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 2 }}>
+          <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>{post.date}</span>
+          <span className="t-mono" style={{ fontSize: 10, color: ts.stroke.replace('0.5','0.9'), letterSpacing: '0.08em' }}>{post.tag.toUpperCase()}</span>
+          <span className="t-mono" style={{ fontSize: 10, color: 'var(--stone)' }}>{post.read} read</span>
+        </div>
+        <div>
+          <h3 className="serif" style={{ fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', lineHeight: 1.2, margin: '0 0 10px', color: 'var(--bone)' }}>{post.title}</h3>
+          <p style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5, margin: 0 }}>{post.dek}</p>
+        </div>
+      </a>
+    );
+  }
   return (
-    <a href={post.url || '#'} className="blog-featured" style={{
-      display: 'grid',
-      gridTemplateColumns: '1.2fr 1fr',
-      gap: 0,
-      border: '1px solid var(--line)',
-      background: 'var(--ink-2)',
-      borderRadius: 4,
-      overflow: 'hidden',
-      color: 'inherit',
-    }}>
-      <div style={{ padding: 'clamp(28px, 4vw, 56px)' }}>
-        <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 20 }}>
-          {post.kicker}
-        </div>
-        <h2 className="serif" style={{
-          fontSize: 'clamp(32px, 4.2vw, 52px)',
-          fontWeight: 400,
-          letterSpacing: '-0.02em',
-          lineHeight: 1.08,
-          margin: '0 0 20px 0',
-        }}>
-          {post.title}
-        </h2>
-        <p className="t-body-lg" style={{ marginBottom: 28, color: 'var(--bone-dim)' }}>
-          {post.dek}
-        </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 32 }}>
-          <TagPill>{post.tag}</TagPill>
-          <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
-            {post.date} · {post.read}
-          </span>
-        </div>
-        <span className="btn btn-ghost underline" style={{ fontSize: 14 }}>Read the piece →</span>
+    <a href={post.url} style={{ display: 'flex', flexDirection: 'column', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 16, overflow: 'hidden', color: 'inherit', textDecoration: 'none', transition: 'border-color 150ms, transform 150ms' }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = ts.stroke; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.transform = ''; }}>
+      {/* Illustration header */}
+      <div style={{ background: ts.bg, height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, borderBottom: '1px solid var(--line)' }}>
+        <CardIllustration tag={post.tag} />
       </div>
-      {/* Featured visual */}
-      <div style={{
-        position: 'relative',
-        background: 'var(--ink-3)',
-        minHeight: 340,
-        borderLeft: '1px solid var(--line)',
-        overflow: 'hidden',
-      }}>
-        <svg viewBox="0 0 480 400" preserveAspectRatio="xMidYMid slice" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
-          <defs>
-            <pattern id="blog-grid" width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M 24 0 L 0 0 0 24" fill="none" stroke="var(--line)" strokeWidth="0.5"/>
-            </pattern>
-          </defs>
-          <rect width="480" height="400" fill="url(#blog-grid)"/>
-          {/* stacked token bars representing waste */}
-          {Array.from({length: 14}).map((_, i) => {
-            const w = 240 - i * 8;
-            const opacity = 1 - i * 0.06;
-            return <rect key={i} x={120} y={60 + i*18} width={w} height={10} fill="var(--bronze)" opacity={opacity*0.3 + 0.08}/>;
-          })}
-          <line x1="120" y1="55" x2="120" y2="340" stroke="var(--stone-2)" strokeWidth="1"/>
-          <text x="120" y="48" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone-2)" letterSpacing="2">REDUNDANCY ACROSS HOPS</text>
-          <text x="120" y="360" fontFamily="JetBrains Mono" fontSize="10" fill="var(--bronze)" letterSpacing="2">60.4%</text>
-          <text x="300" y="360" fontFamily="JetBrains Mono" fontSize="10" fill="var(--stone)" letterSpacing="2">HARNESS · N=60</text>
-        </svg>
+      {/* Card body */}
+      <div style={{ padding: '22px 24px 24px', display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
+        <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)', marginBottom: 12 }}>{post.date}</span>
+        <h3 className="serif" style={{ fontSize: 20, fontWeight: 400, letterSpacing: '-0.015em', lineHeight: 1.25, margin: '0 0 auto', color: 'var(--bone)', paddingBottom: 20 }}>{post.title}</h3>
+        <span className="t-mono" style={{ fontSize: 10, color: ts.stroke.replace('0.5','0.9'), letterSpacing: '0.1em' }}>{post.tag.toUpperCase()}</span>
       </div>
     </a>
   );
 }
 
-function PostCard({ post }) {
+function FilterAccordion({ title, children, defaultOpen }) {
+  const [open, setOpen] = useState(!!defaultOpen);
   return (
-    <a href={post.url || '#'} className="blog-card" style={{
-      display: 'block',
-      padding: '32px 28px',
-      border: '1px solid var(--line)',
-      borderRadius: 2,
-      background: 'transparent',
-      transition: 'border-color 220ms, background 220ms',
-      color: 'inherit',
-    }}>
-      <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 10, marginBottom: 16 }}>{post.kicker}</div>
-      <h3 className="serif" style={{
-        fontSize: 26,
-        fontWeight: 400,
-        letterSpacing: '-0.015em',
-        lineHeight: 1.15,
-        margin: '0 0 14px 0',
-      }}>{post.title}</h3>
-      <p className="t-body" style={{ margin: '0 0 24px 0', color: 'var(--stone-2)', fontSize: 15 }}>{post.dek}</p>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <TagPill>{post.tag}</TagPill>
-        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>
-          {post.date} · {post.read}
-        </span>
-      </div>
-    </a>
+    <div style={{ borderBottom: '1px solid var(--line)' }}>
+      <button onClick={() => setOpen(o => !o)} style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--stone-2)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14 }}>
+        {title}
+        <span style={{ fontSize: 12, color: 'var(--stone)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }}>∨</span>
+      </button>
+      {open && <div style={{ paddingBottom: 14 }}>{children}</div>}
+    </div>
   );
 }
+
+const TAGS = ['All', 'Engineering', 'Research', 'Method', 'Essay', 'Benchmarks', 'Program'];
+const SORTS = [{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }];
 
 function BlogPage() {
-  useFadeUpReveal();
-  const featured = POSTS.find(p => p.featured);
-  const rest = POSTS.filter(p => !p.featured);
+  const [search, setSearch] = useState('');
+  const [activeTag, setActiveTag] = useState('All');
+  const [sort, setSort] = useState('newest');
+  const [view, setView] = useState('grid');
+  const [visibleCount, setVisibleCount] = useState(6);
+
+  const filtered = POSTS
+    .filter(p => activeTag === 'All' || p.tag === activeTag)
+    .filter(p => !search || p.title.toLowerCase().includes(search.toLowerCase()) || p.dek.toLowerCase().includes(search.toLowerCase()));
+  const sorted = sort === 'newest' ? filtered : [...filtered].reverse();
+  const visible = sorted.slice(0, visibleCount);
+
   return (
     <>
       <Nav current="blog" />
 
-      {/* Hero header */}
-      <SectionShell>
-        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px' }}>
-          Notes.
-        </h1>
-        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640 }}>
-          Technical writing from the Brevitas team on multi-agent inference economics, compression methods, and the pipeline-level layer we're building. Written by engineers, for engineers.
-        </p>
-      </SectionShell>
-
-      <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 72 }}>
+      {/* Hero */}
+      <section style={{ padding: '96px 0 56px', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
-          <FeaturedCard post={featured} />
+          <h1 className="serif" style={{ fontSize: 'clamp(48px, 7vw, 80px)', fontWeight: 300, letterSpacing: '-0.03em', lineHeight: 1, margin: '0 0 20px' }}>Notes.</h1>
+          <p style={{ fontSize: 16, color: 'var(--stone-2)', maxWidth: 520, lineHeight: 1.6, margin: 0 }}>
+            Technical writing on multi-agent inference economics, compression methods, and what we're building. Written by engineers, for engineers.
+          </p>
         </div>
       </section>
 
-      <section className="section" style={{ paddingTop: 72, paddingBottom: 120 }}>
+      {/* Main content */}
+      <section style={{ padding: '60px 0 120px' }}>
         <div className="container">
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 40, flexWrap: 'wrap', gap: 16 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              {['All', 'Research', 'Engineering', 'Method', 'Essay', 'Benchmarks', 'Program'].map((tag, i) => (
-                <button key={tag} className="blog-filter" style={{
-                  padding: '6px 12px',
-                  fontFamily: 'JetBrains Mono, monospace',
-                  fontSize: 11,
-                  letterSpacing: '0.08em',
-                  color: i === 0 ? 'var(--bg)' : 'var(--stone-2)',
-                  background: i === 0 ? 'var(--bone)' : 'transparent',
-                  border: `1px solid ${i === 0 ? 'var(--bone)' : 'var(--line)'}`,
-                  borderRadius: 2,
-                  cursor: 'pointer',
-                }}>{tag.toUpperCase()}</button>
-              ))}
+          <div className="blog-layout">
+
+            {/* Left sidebar */}
+            <aside className="blog-sidebar">
+              <div style={{ fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 14, color: 'var(--bone)', marginBottom: 4, paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
+                Filter and sort
+              </div>
+              <FilterAccordion title="Sort by" defaultOpen>
+                {SORTS.map(s => (
+                  <button key={s.value} onClick={() => setSort(s.value)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 0', background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, color: sort === s.value ? 'var(--bone)' : 'var(--stone)', fontWeight: sort === s.value ? 500 : 400 }}>
+                    {s.label}
+                  </button>
+                ))}
+              </FilterAccordion>
+              <FilterAccordion title="Category" defaultOpen>
+                {TAGS.map(t => (
+                  <button key={t} onClick={() => { setActiveTag(t); setVisibleCount(6); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 0', background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, color: activeTag === t ? 'var(--bone)' : 'var(--stone)', fontWeight: activeTag === t ? 500 : 400 }}>
+                    {t}
+                  </button>
+                ))}
+              </FilterAccordion>
+            </aside>
+
+            {/* Main */}
+            <div>
+              {/* Search + view toggle */}
+              <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 36 }}>
+                <div style={{ flex: 1, position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--stone)', fontSize: 14 }}>⌕</span>
+                  <input
+                    type="text"
+                    placeholder="Search posts"
+                    value={search}
+                    onChange={e => { setSearch(e.target.value); setVisibleCount(6); }}
+                    style={{ width: '100%', padding: '12px 16px 12px 40px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, outline: 'none' }}
+                    onFocus={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                    onBlur={e => e.target.style.borderColor = ''}
+                  />
+                </div>
+                <div style={{ display: 'flex', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+                  {[['grid','⊞ Grid'],['list','☰ List']].map(([v, label]) => (
+                    <button key={v} onClick={() => setView(v)} style={{ padding: '10px 16px', background: view === v ? 'var(--ink-3)' : 'none', border: 'none', borderRight: v === 'grid' ? '1px solid var(--line)' : 'none', cursor: 'pointer', color: view === v ? 'var(--bone)' : 'var(--stone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, fontWeight: view === v ? 500 : 400 }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {visible.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--stone)' }}>No posts match your search.</div>
+              ) : view === 'grid' ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }} className="blog-grid">
+                  {visible.map(p => <PostCard key={p.slug} post={p} />)}
+                </div>
+              ) : (
+                <div>
+                  <div style={{ borderTop: '1px solid var(--line)' }}>
+                    {visible.map(p => <PostCard key={p.slug} post={p} list />)}
+                  </div>
+                </div>
+              )}
+
+              {visibleCount < sorted.length && (
+                <div style={{ textAlign: 'center', marginTop: 48 }}>
+                  <button onClick={() => setVisibleCount(v => v + 6)} style={{ padding: '13px 32px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, fontWeight: 500, cursor: 'pointer', transition: 'border-color 120ms' }}
+                    onMouseEnter={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                    onMouseLeave={e => e.target.style.borderColor = ''}>
+                    View more
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 20 }}>
-            {rest.map(p => <PostCard key={p.slug} post={p} />)}
-          </div>
         </div>
       </section>
 
-      {/* Newsletter */}
-      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+      {/* Bottom CTA */}
+      <section style={{ padding: '80px 0 100px', borderTop: '1px solid var(--line)' }}>
         <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 60, alignItems: 'center', maxWidth: 1100 }} className="blog-newsletter">
-            <div>
-              <h2 className="t-h2" style={{ margin: '0 0 16px' }}>
-                <em style={{ fontStyle: 'italic' }}>A monthly note from the team.</em>
+          <div className="blog-cta-grid">
+            {/* Left: editorial CTA */}
+            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <h2 className="serif" style={{ fontSize: 'clamp(32px, 4vw, 48px)', fontWeight: 300, letterSpacing: '-0.025em', lineHeight: 1.12, margin: '0 0 28px', color: 'var(--bone)' }}>
+                Find out what your pipeline is actually costing you.
               </h2>
-              <p className="t-body" style={{ margin: 0, color: 'var(--stone-2)' }}>
-                One email a month. Benchmark updates, engineering deep-dives, what we shipped. No marketing, no tracking pixels.
-              </p>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <a href="/pricing" style={{ display: 'inline-block', padding: '12px 24px', background: 'var(--bone)', color: 'var(--ink)', borderRadius: 8, fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 14, textDecoration: 'none', transition: 'opacity 120ms' }}
+                  onMouseEnter={e => e.target.style.opacity = '0.88'}
+                  onMouseLeave={e => e.target.style.opacity = '1'}>
+                  See pricing
+                </a>
+                <a href="/login" style={{ display: 'inline-block', padding: '12px 24px', background: 'var(--ink-2)', color: 'var(--bone)', border: '1px solid var(--line)', borderRadius: 8, fontFamily: "'Inter Tight', sans-serif", fontWeight: 500, fontSize: 14, textDecoration: 'none', transition: 'border-color 120ms' }}
+                  onMouseEnter={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                  onMouseLeave={e => e.target.style.borderColor = ''}>
+                  Get started
+                </a>
+              </div>
             </div>
-            <div>
+
+            {/* Right: newsletter card */}
+            <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 20, padding: '36px 40px' }}>
+              <div style={{ fontSize: 28, marginBottom: 16 }}>✉</div>
+              <h3 style={{ fontFamily: "'Newsreader', serif", fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 10px', color: 'var(--bone)' }}>
+                Get the newsletter
+              </h3>
+              <p style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5, margin: '0 0 24px' }}>
+                Benchmark updates, engineering deep-dives, what we shipped. One email a month. No tracking.
+              </p>
               <WaitlistInput source="blog-newsletter" />
             </div>
           </div>
@@ -273,13 +364,30 @@ function BlogPage() {
       <Footer />
 
       <style>{`
-        .blog-featured:hover { border-color: var(--bronze); }
-        .blog-card:hover { border-color: var(--bronze); background: var(--ink-2); }
-        .blog-filter:hover { color: var(--fg); border-color: var(--stone-2); }
+        .blog-layout {
+          display: grid;
+          grid-template-columns: 200px 1fr;
+          gap: 56px;
+          align-items: start;
+        }
+        .blog-sidebar {
+          position: sticky;
+          top: 80px;
+        }
+        .blog-cta-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 60px;
+          align-items: center;
+        }
         @media (max-width: 900px) {
-          .blog-featured { grid-template-columns: 1fr !important; }
-          .blog-featured > div:last-child { border-left: none !important; border-top: 1px solid var(--line); }
-          .blog-newsletter { grid-template-columns: 1fr !important; gap: 32px !important; }
+          .blog-layout { grid-template-columns: 1fr; }
+          .blog-sidebar { position: static; }
+          .blog-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .blog-cta-grid { grid-template-columns: 1fr; gap: 40px; }
+        }
+        @media (max-width: 600px) {
+          .blog-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
     </>

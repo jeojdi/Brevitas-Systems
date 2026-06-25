@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The 60% waste nobody talks about · Brevitas Systems</title>
+<meta name="description" content="Why multi-agent pipelines burn most of their tokens on redundant context — and what that costs at scale.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            RESEARCH · APRIL 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            The 60% waste nobody talks about.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            Most teams optimizing AI costs focus on model selection or prompt engineering. They're missing the dominant cost center: every agent in your pipeline is paying to re-read context it didn't generate.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Apr 18, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>9 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>RESEARCH</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <section className="section" style={{ paddingTop: 56, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-body-lg fade-up" style={{ marginBottom: 24 }}>
+              The standard conversation about AI cost optimization goes like this: pick a smaller model for cheap tasks, cache your system prompts, batch your requests. All of that is real. None of it is where most of the money is going in a multi-agent pipeline.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Here's what a typical three-agent pipeline actually looks like at the token level. Agent 1 (the Planner) receives a task and produces a design document. Agent 2 (the Builder) receives the task plus the design document, then produces code. Agent 3 (the Reviewer) receives the task, the design document, the code, and the Builder's explanation — then produces a verdict.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              By the time Agent 3 starts its call, it's reading the original task for the third time. The design document for the second time. The task specification embedded in the Builder's prompt for the second time. In our benchmark across 60 HumanEval+ tasks, <span className="mono" style={{ color: 'var(--signal)' }}>62% of the Reviewer's input tokens were already present in the Planner's context</span>. You paid for them twice.
+            </p>
+            <p className="t-body fade-up">
+              That's the 60% waste. Not inefficient prompts. Not model overfitting. Context duplication across hops, compounding silently with every agent you add to the chain.
+            </p>
+          </div>
+        </section>
+
+        <section style={{ padding: '56px 0' }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <blockquote style={{ borderLeft: '2px solid var(--bronze)', paddingLeft: 28, margin: 0 }}>
+              <p className="serif fade-up" style={{ fontSize: 'clamp(24px, 3.5vw, 34px)', fontWeight: 300, fontStyle: 'italic', letterSpacing: '-0.015em', lineHeight: 1.28, color: 'var(--fg)', margin: 0 }}>
+                "The worst part isn't the waste. It's that the waste scales with quality. The better your agents write, the more the next agent pays to read."
+              </p>
+            </blockquote>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 0, paddingBottom: 0 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              Why it compounds.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The problem isn't linear. A three-agent pipeline doesn't have 3× the token cost of a single-agent call — it has roughly 6× the token cost, because each hop ingests the cumulative output of all previous hops. Add a fourth agent and the multiplier grows again. The model that makes Agent 4 smarter also makes Agent 4's context window fuller and more expensive.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              This is the architectural trap. The pipelines that produce the best results tend to be the ones where each agent has full context — full visibility into what happened before. That's exactly the pattern that maximizes redundant token spend. You can't optimize it away by writing better prompts; the duplication is structural.
+            </p>
+
+            <div className="fade-up" style={{ border: '1px solid var(--line)', borderRadius: 4, overflow: 'hidden', marginBottom: 32 }}>
+              <div className="t-mono" style={{ padding: '10px 20px', borderBottom: '1px solid var(--line)', color: 'var(--stone-2)', fontSize: 11, background: 'var(--ink-2)' }}>
+                TOKEN DISTRIBUTION · THREE-AGENT CODING PIPELINE · 60-TASK BENCHMARK
+              </div>
+              {[
+                { agent: 'Planner', tokens: '4,200', pct: '100%', new_pct: '100%', color: 'var(--bone)' },
+                { agent: 'Builder', tokens: '9,100', pct: '100%', new_pct: '39%', color: 'var(--bone)' },
+                { agent: 'Reviewer', tokens: '14,800', pct: '100%', new_pct: '38%', color: 'var(--oxblood)' },
+              ].map(r => (
+                <div key={r.agent} style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)', display: 'grid', gridTemplateColumns: '100px 1fr 80px 100px', gap: 16, alignItems: 'center' }}>
+                  <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone-2)' }}>{r.agent}</span>
+                  <span className="t-mono" style={{ fontSize: 11, color: r.color }}>{r.tokens} avg tokens</span>
+                  <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>input: {r.pct}</span>
+                  <span className="t-mono" style={{ fontSize: 11, color: 'var(--signal)' }}>new: {r.new_pct}</span>
+                </div>
+              ))}
+            </div>
+
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The Reviewer is doing the most expensive work and seeing the least new information. It ingests 14,800 tokens on average — but only 38% of that is content that didn't already exist in an earlier hop's context. The remaining 62% is redundant. At $10 per million input tokens on a modern frontier model, that's not a rounding error.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              Across a pipeline running 10,000 tasks per month, removing that redundancy saves roughly 56 million input tokens per month. On GPT-4o pricing, that's $560/month at low volume. On Fable 5, it's $560,000/month at enterprise scale. The multiplier on savings grows with your usage.
+            </p>
+          </div>
+        </section>
+
+        <section className="section" style={{ paddingTop: 56 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>
+              What the fix looks like.
+            </h2>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The fix is not to give agents less context. Full context is why these pipelines work — it's what lets the Reviewer catch the bug the Builder missed, because the Reviewer can trace back to the Planner's design intent. Removing context trades quality for cost. That's the wrong trade.
+            </p>
+            <p className="t-body fade-up" style={{ marginBottom: 24 }}>
+              The right fix is to remove only the content that was already present in an earlier hop. The Reviewer still needs the task. It doesn't need the exact same token representation of the task that was used in the Planner's prompt, and then again in the Builder's prompt preamble, and then again in the Builder's explanation of what it built.
+            </p>
+            <p className="t-body fade-up">
+              That's what Brevitas does. We sit between your agents. Before each call, we deduplicate the context against what the pipeline already sent. The model sees the same information. You stop paying for it three times.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>

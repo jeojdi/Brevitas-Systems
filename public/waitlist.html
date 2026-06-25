@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="/theme.css">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -28,7 +28,7 @@ body {
   inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
-  opacity: 0.38;
+  opacity: 0.55;
   z-index: 0;
   pointer-events: none;
 }
@@ -231,8 +231,7 @@ function AuthPage() {
       } else if (mode === 'signup') {
         const { error } = await sb.auth.signUp({ email, password });
         if (error) throw error;
-        setNotice({ type: 'ok', msg: 'Account created — check your email to confirm, then sign in.' });
-        switchMode('signin');
+        window.location.replace('/welcome?email=' + encodeURIComponent(email));
       } else if (mode === 'reset') {
         const { error } = await sb.auth.resetPasswordForEmail(email, {
           redirectTo: window.location.origin + '/dashboard',
