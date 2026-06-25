@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Built dashboard artifacts — not source code
+    "dashboard/dist/**",
+    "public/dashboard/**",
   ]),
 ]);
 
