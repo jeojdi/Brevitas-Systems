@@ -660,7 +660,7 @@ function Nav({ current }) {
     { href: '/how-it-works', label: 'How it works', k: 'how' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
     { href: '/pricing', label: 'Pricing', k: 'pricing' },
-    { href: 'mailto:hello@brevitassystems.com', label: 'Docs', k: 'docs' },
+    { href: 'mailto:james@brevitassystems.com', label: 'Docs', k: 'docs' },
     { href: '/blog', label: 'Blog', k: 'blog' },
   ];
   return (
@@ -728,15 +728,15 @@ function Footer() {
               <li><a href="/how-it-works">How it works</a></li>
               <li><a href="/benchmarks">Benchmarks</a></li>
               <li><a href="/pricing">Pricing</a></li>
-              <li><a href="mailto:hello@brevitassystems.com">Docs</a></li>
-              <li><a href="mailto:hello@brevitassystems.com">Changelog</a></li>
+              <li><a href="mailto:james@brevitassystems.com">Docs</a></li>
+              <li><a href="mailto:james@brevitassystems.com">Changelog</a></li>
             </ul>
           </div>
           <div>
             <h4>Company</h4>
             <ul>
               <li><a href="/blog">Blog</a></li>
-              <li><a href="mailto:james@brevitas.systems">Contact</a></li>
+              <li><a href="mailto:james@brevitassystems.com">Contact</a></li>
               <li><a href="/waitlist">Waitlist</a></li>
             </ul>
           </div>
