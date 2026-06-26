@@ -425,8 +425,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   background: rgba(13, 17, 28, 0.9);
   border: 1px solid rgba(196, 206, 229, 0.26);
   border-radius: 14px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  /* backdrop-filter removed: bg is 90% opaque so blur was ~invisible but cost a
+     GPU re-blur per card on every scroll frame (cards are the most common element) */
   padding: 28px;
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
   transition: border-color var(--dur-sm) var(--ease-out-standard), transform var(--dur-sm) var(--ease-out-standard), box-shadow var(--dur-sm) var(--ease-out-standard);
@@ -479,7 +479,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   opacity: 0.018;
   z-index: 100;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  mix-blend-mode: soft-light;
+  /* mix-blend-mode removed: full-viewport fixed blend forced a recomposite on every scroll frame */
 }
 
 /* Logo mark */
@@ -555,8 +555,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   justify-content: space-between;
   gap: 24px;
   background: var(--nav-bg);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid transparent;
   border-bottom-color: rgba(196, 206, 229, 0.07);
   border-radius: 0;

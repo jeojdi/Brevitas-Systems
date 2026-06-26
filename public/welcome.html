@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Welcome · Brevitas Systems</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -64,8 +68,8 @@ body {
 
 .card {
   background: rgba(6, 7, 11, 0.55);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(196, 206, 229, 0.15);
   border-radius: 20px;
   padding: 56px 72px 52px;
@@ -186,17 +190,18 @@ body {
 }
 .back-link:hover { color: var(--stone-2); }
 </style>
+<link rel="stylesheet" href="/responsive.css">
 </head>
 <body>
 
-<video class="bg-video" autoplay muted loop playsinline>
+<video preload="metadata" poster="/assets/ascii-magic-4-poster.jpg" class="bg-video" autoplay muted loop playsinline>
   <source src="/assets/ascii-magic-4.mp4" type="video/mp4">
 </video>
 
 <div id="app"></div>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
 
 <script type="text/babel">

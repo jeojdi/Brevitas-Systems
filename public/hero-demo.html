@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
 <title>Brevitas — Hero</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -51,11 +57,12 @@ body { font-family: 'Inter Tight', system-ui, sans-serif; background: #06070b; -
 .hero__btn:hover { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.5); transform: translateY(-2px); }
 @media (max-width: 680px) { .hero__nav { padding: 18px 22px; } .nav-links, .nav-cta { display: none; } }
 </style>
+<link rel="stylesheet" href="/responsive.css">
 </head>
 <body>
 
 <section class="hero">
-  <img class="hero__bg" src="assets/brevitas.png" alt="Brevitas">
+  <img class="hero__bg" src="assets/brevitas.jpg" alt="Brevitas">
   <canvas id="wave-canvas"></canvas>
 
   <nav class="hero__nav">

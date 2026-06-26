@@ -1,0 +1,62 @@
+/* ==========================================================================
+   Brevitas Systems — mobile responsive layer
+   --------------------------------------------------------------------------
+   Loaded LAST on every page. Most page layout lives in inline style={{…}}
+   objects (fixed multi-column grids, large paddings/font sizes) which normal
+   CSS @media queries cannot override. This layer reaches them via
+   [style*="…"] attribute selectors + !important, scoped to content regions so
+   the (class-based) nav and footer are left untouched.
+   Uses only existing theme.css tokens — no new colors/fonts.
+   ========================================================================== */
+
+/* ---- Global overflow safety (all viewports) ---------------------------- */
+/* Note: svg intentionally excluded — fixed-size logos/icons must keep dims. */
+img, video, canvas, iframe, table { max-width: 100%; }
+pre, table, .code-block, .codeblock { max-width: 100%; overflow-x: auto; }
+
+/* ======================= Phones (<= 640px) ============================== */
+@media (max-width: 640px) {
+
+  /* Collapse ad-hoc multi-column inline grids to a single column.
+     Scoped to content containers, so .nav-inner / .footer-grid are excluded. */
+  .section [style*="grid-template-columns"],
+  .container [style*="grid-template-columns"],
+  main [style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+    gap: 24px !important;
+  }
+
+  /* Inline flex rows that act as multi-column layouts: let them wrap rather
+     than overflow. Column-direction stacks are already fine and untouched. */
+  .section [style*="display: 'flex'"][style*="gap"]:not([style*="column"]) {
+    flex-wrap: wrap;
+  }
+
+  /* Trim the large inline section / card paddings */
+  .section { padding-top: 56px !important; padding-bottom: 56px !important; }
+  .form-container, .success-container { padding: 28px 22px !important; }
+  .auth-card { padding: 32px 22px 28px !important; }
+
+  /* Display headings: scale with viewport so they never overflow */
+  .t-display-xl { font-size: clamp(32px, 9vw, 44px) !important; line-height: 1.08 !important; }
+  .t-display-l  { font-size: clamp(28px, 8vw, 40px) !important; line-height: 1.12 !important; }
+  .t-display    { font-size: clamp(26px, 7vw, 36px) !important; line-height: 1.15 !important; }
+
+  /* Comfortable tap targets for primary controls */
+  .btn, a.btn, .nav-link { min-height: 44px; display: inline-flex; align-items: center; }
+
+  /* Keep wide auth/waitlist shells edge-friendly */
+  .auth-shell, .waitlist-shell { padding-left: 18px !important; padding-right: 18px !important; }
+}
+
+/* ======================= Small tablets (<= 820px) ======================= */
+@media (max-width: 820px) {
+  /* Dense 3-/4-up inline grids collapse a little earlier to avoid cramping */
+  .section [style*="repeat(3"],
+  .section [style*="repeat(4"],
+  .container [style*="repeat(3"],
+  .container [style*="repeat(4"] {
+    grid-template-columns: 1fr !important;
+    gap: 24px !important;
+  }
+}

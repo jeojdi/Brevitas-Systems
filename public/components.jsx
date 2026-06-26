@@ -97,17 +97,34 @@ function initMatrixCanvas(canvasId) {
         if (cell.pointOp > 0.12) ctx.shadowBlur = 0;
       }
     }
-    raf = requestAnimationFrame(draw);
   }
 
-  const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { cancelAnimationFrame(raf); init(); draw(); }, 150); };
+  // Perf: cap to ~30fps, pause when off-screen or tab hidden, honor reduced-motion.
+  const FRAME_MS = 1000 / 30;
+  const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  let lastFrame = 0, inView = true, pageVisible = !document.hidden;
+  function loop(ts) {
+    raf = requestAnimationFrame(loop);
+    if (ts - lastFrame < FRAME_MS) return;
+    lastFrame = ts;
+    draw();
+  }
+  function start() { if (raf == null && !reduceMotion) { lastFrame = 0; raf = requestAnimationFrame(loop); } }
+  function stop() { if (raf != null) { cancelAnimationFrame(raf); raf = null; } }
+  function sync() { (inView && pageVisible) ? start() : stop(); }
+
+  const io = new IntersectionObserver(([e]) => { inView = e.isIntersecting; sync(); }, { threshold: 0 });
+  const onVisibility = () => { pageVisible = !document.hidden; sync(); };
+  const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { stop(); init(); reduceMotion ? draw() : start(); }, 150); };
+
   window.addEventListener('resize', onResize);
+  document.addEventListener('visibilitychange', onVisibility);
+  io.observe(canvas);
   init();
   pointRipples.push(new PointRipple());
-  schedulePointRipple();
-  draw();
+  if (!reduceMotion) { schedulePointRipple(); start(); } else { draw(); }
 
-  return () => { cancelAnimationFrame(raf); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); };
+  return () => { stop(); io.disconnect(); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); document.removeEventListener('visibilitychange', onVisibility); };
 }
 
 // --- utility hooks ---
@@ -643,7 +660,7 @@ function Nav({ current }) {
     { href: '/how-it-works', label: 'How it works', k: 'how' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
     { href: '/pricing', label: 'Pricing', k: 'pricing' },
-    { href: '/docs', label: 'Docs', k: 'docs' },
+    { href: 'mailto:hello@brevitassystems.com', label: 'Docs', k: 'docs' },
     { href: '/blog', label: 'Blog', k: 'blog' },
   ];
   return (
@@ -687,10 +704,10 @@ function Footer() {
   return (
     <footer className="footer" style={{ position: 'relative', overflow: 'hidden' }}>
       {/* Layer 0: flowers — swaps by theme */}
-      <img className="hero-bg-dark"  src="/assets/flowers%20dark.png" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
-      <img className="hero-bg-light" src="/assets/flowers.png"        alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      <img className="hero-bg-dark"  src="/assets/flowers-dark.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
+      <img className="hero-bg-light" src="/assets/flowers.jpg"        alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
       {/* Layer 1: ASCII canvas — subtle opacity so it doesn't overwhelm */}
-      <canvas id="footer-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, mixBlendMode: 'screen', opacity: 0.45, pointerEvents: 'none' }} />
+      <canvas id="footer-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, opacity: 0.45, pointerEvents: 'none' }} />
       {/* Layer 2: heavy scrim so footer text stays legible */}
       <div aria-hidden="true" className="footer-scrim" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }} />
       {/* Layer 3: content */}
@@ -711,8 +728,8 @@ function Footer() {
               <li><a href="/how-it-works">How it works</a></li>
               <li><a href="/benchmarks">Benchmarks</a></li>
               <li><a href="/pricing">Pricing</a></li>
-              <li><a href="/docs">Docs</a></li>
-              <li><a href="/docs">Changelog</a></li>
+              <li><a href="mailto:hello@brevitassystems.com">Docs</a></li>
+              <li><a href="mailto:hello@brevitassystems.com">Changelog</a></li>
             </ul>
           </div>
           <div>
