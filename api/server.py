@@ -467,6 +467,7 @@ class UsageReportRequest(BaseModel):
     model:            str   = Field(default="", max_length=100)
     baseline_tokens:  int   = Field(ge=0)
     compressed_tokens: int  = Field(ge=0)
+    quality_score:    Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Real quality from gate
     session_id:       str   = Field(default="", max_length=128)
 
 
@@ -475,15 +476,32 @@ class UsageReportRequest(BaseModel):
 def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
     tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
     savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
-    cost_saved    = cost_for_tokens(body.provider, body.model, tokens_saved)
-    fee           = round(cost_saved * 0.10, 8)
+
+    # Phase 3: Only bill savings if quality passes gate
+    quality_floor = 0.8  # Default floor; configurable per customer
+    quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
+
+    if quality_verified:
+        # Quality gate passed: bill the full savings
+        cost_saved = cost_for_tokens(body.provider, body.model, tokens_saved)
+        fee = round(cost_saved * 0.10, 8)
+        quality_status = "verified"
+    else:
+        # Quality not verified or below floor: don't bill savings
+        cost_saved = 0.0
+        fee = 0.0
+        quality_status = "unverified" if body.quality_score is None else "failed"
+        tokens_saved = 0  # Don't report token savings if quality fails
+
+    # Use real quality score if provided, else fallback to 1.0 for legacy compatibility
+    actual_quality = body.quality_score if body.quality_score is not None else 1.0
 
     _store.record_usage(
         key_hash=kh,
         baseline_tokens=body.baseline_tokens,
         optimized_tokens=body.compressed_tokens,
         savings_pct=savings_pct,
-        quality_proxy=1.0,
+        quality_proxy=actual_quality,
         provider=body.provider,
         model=body.model,
         cost_saved_usd=cost_saved,
@@ -492,9 +510,11 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
     )
     return {
         "tokens_saved": tokens_saved,
-        "savings_pct": savings_pct,
+        "savings_pct": savings_pct if quality_verified else 0.0,
         "cost_saved_usd": round(cost_saved, 6),
         "brevitas_fee_usd": round(fee, 6),
+        "quality_score": actual_quality,
+        "quality_status": quality_status,
     }
 
 

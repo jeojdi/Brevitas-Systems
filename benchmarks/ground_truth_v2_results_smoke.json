@@ -1,0 +1,68 @@
+[
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "BEFORE",
+    "n_total": 10,
+    "n_correct": 10,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 481.5,
+    "avg_latency": 0.9882278203964233
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "OLD-LOSSY",
+    "n_total": 10,
+    "n_correct": 7,
+    "accuracy": 70.0,
+    "avg_prompt_tokens": 235.9,
+    "avg_latency": 0.9009592294692993
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "NEW",
+    "n_total": 10,
+    "n_correct": 10,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 465.5,
+    "avg_latency": 0.8928601741790771
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "R1",
+    "mode": "BEFORE",
+    "n_total": 10,
+    "n_correct": 10,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 481.5,
+    "avg_latency": 2.9362874746322634
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "R1",
+    "mode": "OLD-LOSSY",
+    "n_total": 10,
+    "n_correct": 8,
+    "accuracy": 80.0,
+    "avg_prompt_tokens": 235.2,
+    "avg_latency": 2.7158995151519774
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "R1",
+    "mode": "NEW",
+    "n_total": 10,
+    "n_correct": 9,
+    "accuracy": 90.0,
+    "avg_prompt_tokens": 465.5,
+    "avg_latency": 2.6384839534759523
+  }
+]

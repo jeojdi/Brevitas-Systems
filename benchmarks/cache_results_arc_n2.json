@@ -1,0 +1,93 @@
+{
+  "run_results": [
+    {
+      "dataset": "arc",
+      "mode": "BEFORE",
+      "item_idx": 0,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 0,
+      "cache_miss_tokens": 32535,
+      "completion_tokens": 1,
+      "latency_sec": 2.140468120574951,
+      "cost_usd": 0.004555180000000001,
+      "correct": true,
+      "answer_text": "B"
+    },
+    {
+      "dataset": "arc",
+      "mode": "AFTER",
+      "item_idx": 0,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 32512,
+      "cache_miss_tokens": 8,
+      "completion_tokens": 1,
+      "latency_sec": 1.533215045928955,
+      "cost_usd": 0.000456568,
+      "correct": true,
+      "answer_text": "B"
+    },
+    {
+      "dataset": "arc",
+      "mode": "BEFORE",
+      "item_idx": 1,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 0,
+      "cache_miss_tokens": 32564,
+      "completion_tokens": 1,
+      "latency_sec": 1.5057220458984375,
+      "cost_usd": 0.00455924,
+      "correct": true,
+      "answer_text": "C"
+    },
+    {
+      "dataset": "arc",
+      "mode": "AFTER",
+      "item_idx": 1,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 32512,
+      "cache_miss_tokens": 37,
+      "completion_tokens": 1,
+      "latency_sec": 1.45318603515625,
+      "cost_usd": 0.000460628,
+      "correct": true,
+      "answer_text": "C"
+    }
+  ],
+  "summaries": [
+    {
+      "dataset": "arc",
+      "mode": "BEFORE",
+      "model": "deepseek-chat",
+      "n_items": 2,
+      "n_correct": 2,
+      "accuracy_pct": 100.0,
+      "total_cache_hit_tokens": 0,
+      "total_cache_miss_tokens": 65099,
+      "total_completion_tokens": 2,
+      "cache_hit_rate_pct": 0.0,
+      "total_cost_usd": 0.009114420000000002,
+      "avg_latency_sec": 1.8230950832366943
+    },
+    {
+      "dataset": "arc",
+      "mode": "AFTER",
+      "model": "deepseek-chat",
+      "n_items": 2,
+      "n_correct": 2,
+      "accuracy_pct": 100.0,
+      "total_cache_hit_tokens": 65024,
+      "total_cache_miss_tokens": 45,
+      "total_completion_tokens": 2,
+      "cache_hit_rate_pct": 99.93084264396256,
+      "total_cost_usd": 0.000917196,
+      "avg_latency_sec": 1.4932005405426025
+    }
+  ],
+  "config": {
+    "dataset": "arc",
+    "n_samples": 2,
+    "model": "deepseek-chat",
+    "pricing_source": "https://api-docs.deepseek.com/pricing",
+    "cache_hit_discount": 0.9
+  }
+}

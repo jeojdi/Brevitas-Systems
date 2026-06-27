@@ -29,11 +29,43 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ._compress import compress_messages, count_messages_tokens, report_usage
 from .session import BrevitasSession
+from token_efficiency_model.optimizers.provider_cache.anthropic import apply_anthropic_cache
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
+_DEEPSEEK_API  = "https://api.deepseek.com"
+_GROQ_API      = "https://api.groq.com/openai"
+
+# Allowlist of valid upstream URLs for SSRF protection
+_ALLOWED_UPSTREAMS = {_OPENAI_API, _DEEPSEEK_API, _GROQ_API}
 
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
+
+
+def get_openai_compatible_upstream(model: str, override_header: str | None = None) -> str:
+    """
+    Route OpenAI-compatible requests to the correct provider upstream.
+    Returns base URL for the upstream API based on model name prefix or header override.
+
+    Model routing:
+    - deepseek-* → https://api.deepseek.com
+    - grok-* or groq-* → https://api.groq.com/openai
+    - openai models or unrecognized → https://api.openai.com
+
+    Can be overridden with x-brevitas-upstream header (SSRF-protected: allowlist only).
+    Non-allowlisted overrides are ignored; falls back to model-prefix routing.
+    """
+    # SSRF protection: only allow known upstream URLs
+    if override_header and override_header in _ALLOWED_UPSTREAMS:
+        return override_header
+
+    model_lower = (model or "").lower()
+    if model_lower.startswith("deepseek"):
+        return _DEEPSEEK_API
+    elif model_lower.startswith("grok") or model_lower.startswith("groq"):
+        return _GROQ_API
+    else:
+        return _OPENAI_API
 
 # One session per (proxy instance, provider-key) pair is fine for single-user
 # local use; for multi-user, pass session_id in a custom header.
@@ -77,6 +109,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         messages, session, task=body.get("system", "")
     )
     body["messages"] = compressed
+
+    # Apply Anthropic-specific cache_control breakpoints for ephemeral caching
+    body = apply_anthropic_cache(body)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -130,11 +165,15 @@ async def proxy_openai_chat(request: Request) -> Any:
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
 
+    # Route to correct upstream API based on model name or header override
+    override_upstream = request.headers.get("x-brevitas-upstream")
+    upstream_url = get_openai_compatible_upstream(model, override_upstream)
+
     async with httpx.AsyncClient(timeout=120) as client:
         if is_stream:
             async def stream_gen():
                 async with client.stream(
-                    "POST", f"{_OPENAI_API}/v1/chat/completions",
+                    "POST", f"{upstream_url}/v1/chat/completions",
                     headers=headers, json=body
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
@@ -144,7 +183,7 @@ async def proxy_openai_chat(request: Request) -> Any:
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
             resp = await client.post(
-                f"{_OPENAI_API}/v1/chat/completions", headers=headers, json=body
+                f"{upstream_url}/v1/chat/completions", headers=headers, json=body
             )
             data = resp.json()
             try:

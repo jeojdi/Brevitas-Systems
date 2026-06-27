@@ -1,0 +1,93 @@
+{
+  "run_results": [
+    {
+      "dataset": "bbh",
+      "mode": "BEFORE",
+      "item_idx": 0,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 0,
+      "cache_miss_tokens": 44679,
+      "completion_tokens": 186,
+      "latency_sec": 2.9593417644500732,
+      "cost_usd": 0.006307140000000001,
+      "correct": true,
+      "answer_text": "We have five golfers: Ana, Rob, Amy, Dan, Joe.  \nThe order is from highest (1st) to lowest (5th).  \n"
+    },
+    {
+      "dataset": "bbh",
+      "mode": "AFTER",
+      "item_idx": 0,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 44544,
+      "cache_miss_tokens": 105,
+      "completion_tokens": 177,
+      "latency_sec": 2.2942700386047363,
+      "cost_usd": 0.000687876,
+      "correct": true,
+      "answer_text": "We have five golfers: Ana, Rob, Amy, Dan, Joe.  \nThe order is from highest (first) to lowest (fifth)"
+    },
+    {
+      "dataset": "bbh",
+      "mode": "BEFORE",
+      "item_idx": 1,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 0,
+      "cache_miss_tokens": 44679,
+      "completion_tokens": 169,
+      "latency_sec": 3.277777910232544,
+      "cost_usd": 0.006302380000000001,
+      "correct": true,
+      "answer_text": "We have five golfers: Amy, Mel, Rob, Joe, Ada.  \nThey finish in positions 1st through 5th (1 is best"
+    },
+    {
+      "dataset": "bbh",
+      "mode": "AFTER",
+      "item_idx": 1,
+      "model": "deepseek-chat",
+      "cache_hit_tokens": 44544,
+      "cache_miss_tokens": 105,
+      "completion_tokens": 183,
+      "latency_sec": 2.386430025100708,
+      "cost_usd": 0.000689556,
+      "correct": true,
+      "answer_text": "We have five golfers: Amy, Mel, Rob, Joe, Ada.  \nThey finish in positions 1st through 5th (1 is best"
+    }
+  ],
+  "summaries": [
+    {
+      "dataset": "bbh",
+      "mode": "BEFORE",
+      "model": "deepseek-chat",
+      "n_items": 2,
+      "n_correct": 2,
+      "accuracy_pct": 100.0,
+      "total_cache_hit_tokens": 0,
+      "total_cache_miss_tokens": 89358,
+      "total_completion_tokens": 355,
+      "cache_hit_rate_pct": 0.0,
+      "total_cost_usd": 0.012609520000000003,
+      "avg_latency_sec": 3.1185598373413086
+    },
+    {
+      "dataset": "bbh",
+      "mode": "AFTER",
+      "model": "deepseek-chat",
+      "n_items": 2,
+      "n_correct": 2,
+      "accuracy_pct": 100.0,
+      "total_cache_hit_tokens": 89088,
+      "total_cache_miss_tokens": 210,
+      "total_completion_tokens": 360,
+      "cache_hit_rate_pct": 99.76483235906738,
+      "total_cost_usd": 0.001377432,
+      "avg_latency_sec": 2.340350031852722
+    }
+  ],
+  "config": {
+    "dataset": "bbh",
+    "n_samples": 2,
+    "model": "deepseek-chat",
+    "pricing_source": "https://api-docs.deepseek.com/pricing",
+    "cache_hit_discount": 0.9
+  }
+}
