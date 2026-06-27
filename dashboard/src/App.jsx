@@ -5,8 +5,9 @@ import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
 import ModelConfig from './components/ModelConfig.jsx'
 import Docs from './components/Docs.jsx'
+import Billing from './components/Billing.jsx'
 
-const TABS = ['Overview', 'Playground', 'Model', 'Docs']
+const TABS = ['Overview', 'Playground', 'Model', 'Docs', 'Billing']
 
 function MoonIcon() {
   return (
@@ -187,6 +188,7 @@ export default function App() {
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
+        {activeTab === 'Billing'    && <Billing apiKey={apiKey} />}
       </main>
     </div>
   )

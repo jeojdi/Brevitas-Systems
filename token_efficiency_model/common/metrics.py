@@ -1,10 +1,19 @@
 from typing import Iterable
 
+try:
+    import tiktoken
+    _enc = tiktoken.get_encoding("cl100k_base")
+    def _count(text: str) -> int:
+        return len(_enc.encode(text, disallowed_special=()))
+except Exception:
+    def _count(text: str) -> int:
+        return max(1, int(len(text.split()) * 1.3))
+
 
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, int(len(text.split()) * 1.3))
+    return max(1, _count(text))
 
 
 def estimate_tokens_many(chunks: Iterable[str]) -> int:

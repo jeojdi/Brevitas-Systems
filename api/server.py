@@ -23,7 +23,7 @@ from typing import List, Optional
 from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
 from token_efficiency_model.common.metrics import estimate_tokens_many
 from .auth import generate_api_key, hash_key
-from .store import UsageStore
+from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M
 
 # ── Encryption ───────────────────────────────────────────────────────────────
 
@@ -458,6 +458,49 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── External usage reporting (SDK / proxy) ────────────────────────────────────
+
+class UsageReportRequest(BaseModel):
+    provider:         str   = Field(default="", max_length=50)
+    model:            str   = Field(default="", max_length=100)
+    baseline_tokens:  int   = Field(ge=0)
+    compressed_tokens: int  = Field(ge=0)
+    session_id:       str   = Field(default="", max_length=128)
+
+
+@app.post("/v1/usage")
+@limiter.limit("300/minute")
+def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
+    tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
+    savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
+    cost_saved    = cost_for_tokens(body.provider, body.model, tokens_saved)
+    fee           = round(cost_saved * 0.10, 8)
+
+    _store.record_usage(
+        key_hash=kh,
+        baseline_tokens=body.baseline_tokens,
+        optimized_tokens=body.compressed_tokens,
+        savings_pct=savings_pct,
+        quality_proxy=1.0,
+        provider=body.provider,
+        model=body.model,
+        cost_saved_usd=cost_saved,
+        brevitas_fee_usd=fee,
+        session_id=body.session_id,
+    )
+    return {
+        "tokens_saved": tokens_saved,
+        "savings_pct": savings_pct,
+        "cost_saved_usd": round(cost_saved, 6),
+        "brevitas_fee_usd": round(fee, 6),
+    }
+
+
+@app.get("/v1/provider-costs")
+def provider_costs():
+    return {"costs_per_1m_tokens": PROVIDER_COSTS_PER_1M}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
