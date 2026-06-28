@@ -26,10 +26,35 @@ PROVIDER_COSTS_PER_1M: dict = {
 }
 
 
+def infer_provider(model: str, given: str = "") -> str:
+    """Best-effort provider from a model name.
+
+    SDK/proxy callers may label every OpenAI-compatible call provider="openai"
+    even when the upstream is DeepSeek/Groq, which breaks price lookup. The model
+    name is authoritative, so prefer it; fall back to the caller-supplied provider.
+    """
+    m = (model or "").lower()
+    if m.startswith("deepseek"):
+        return "deepseek"
+    if m.startswith("grok") or m.startswith("groq"):
+        return "grok"
+    if m.startswith("claude"):
+        return "anthropic"
+    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3"):
+        return "openai"
+    return given or ""
+
+
 def cost_for_tokens(provider: str, model: str, tokens: int) -> float:
     """Return USD cost for `tokens` input tokens on a given provider/model."""
     rates = PROVIDER_COSTS_PER_1M.get(provider, {})
     rate = rates.get(model) or rates.get("default")
+    if not rate:
+        # Caller's provider label may be wrong for OpenAI-compatible upstreams;
+        # retry under the provider inferred from the model name.
+        inferred = infer_provider(model, provider)
+        if inferred != provider:
+            rate = PROVIDER_COSTS_PER_1M.get(inferred, {}).get(model)
     if not rate:
         return 0.0
     return tokens * rate["input"] / 1_000_000

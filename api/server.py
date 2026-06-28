@@ -23,7 +23,7 @@ from typing import List, Optional
 from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
 from token_efficiency_model.common.metrics import estimate_tokens_many
 from .auth import generate_api_key, hash_key
-from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M
+from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M, infer_provider
 from .mirror import mirror_to_supabase
 
 # ── Supabase Mirror ──────────────────────────────────────────────────────────
@@ -327,6 +327,10 @@ class CompressRequest(BaseModel):
     pipeline:          str       = Field(default="", max_length=100)
     agent:             str       = Field(default="", max_length=100)
     run_id:            str       = Field(default="", max_length=128)
+    # When False, compress without recording a usage_log row. The SDK/proxy set
+    # this so the separate /v1/usage report is the single source of truth and we
+    # don't double-count (one row per call, not two). Standalone callers default True.
+    meter:             bool      = Field(default=True)
 
     @field_validator("messages", "prior_context", mode="before")
     @classmethod
@@ -363,36 +367,39 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     output_tokens    = estimate_tokens_many(compressed_msgs) + estimate_tokens_many(pruned_ctx)
     actual_savings   = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
-    _store.record_usage(
-        key_hash=kh,
-        baseline_tokens=baseline_tokens,
-        optimized_tokens=output_tokens,
-        savings_pct=actual_savings,
-        quality_proxy=result.quality_proxy,
-        pipeline=body.pipeline,
-        agent=body.agent,
-        run_id=body.run_id,
-    )
+    if body.meter:
+        _store.record_usage(
+            key_hash=kh,
+            baseline_tokens=baseline_tokens,
+            optimized_tokens=output_tokens,
+            savings_pct=actual_savings,
+            quality_proxy=result.quality_proxy,
+            pipeline=body.pipeline,
+            agent=body.agent,
+            run_id=body.run_id,
+        )
 
-    # Mirror to Supabase (non-blocking)
-    try:
-        user_id = _get_user_id_for_key(kh)
-        if user_id:
-            mirror_to_supabase(
-                user_id=user_id,
-                key_hash=kh,
-                provider=body.provider or "unknown",
-                model=body.model or "unknown",
-                baseline_tokens=baseline_tokens,
-                optimized_tokens=output_tokens,
-                session_id=body.session_id or "",
-                pipeline=body.pipeline or "",
-                agent=body.agent or "",
-                run_id=body.run_id or "",
-            )
-    except Exception as e:
-        # Log but don't fail the request
-        print(f"Warning: Failed to mirror to Supabase: {e}")
+    # Mirror to Supabase (non-blocking). Only when this call is the metered
+    # source of truth; SDK/proxy calls (meter=False) mirror via /v1/usage instead.
+    if body.meter:
+        try:
+            user_id = _get_user_id_for_key(kh)
+            if user_id:
+                mirror_to_supabase(
+                    user_id=user_id,
+                    key_hash=kh,
+                    provider="unknown",
+                    model="unknown",
+                    baseline_tokens=baseline_tokens,
+                    optimized_tokens=output_tokens,
+                    session_id="",
+                    pipeline=body.pipeline or "",
+                    agent=body.agent or "",
+                    run_id=body.run_id or "",
+                )
+        except Exception as e:
+            # Log but don't fail the request
+            print(f"Warning: Failed to mirror to Supabase: {e}")
 
     return {
         "compressed_messages": compressed_msgs,
@@ -451,16 +458,17 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             output_tokens    = estimate_tokens_many(compressed_msgs) + estimate_tokens_many(pruned_ctx)
             actual_savings   = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
-            _store.record_usage(
-                key_hash=kh,
-                baseline_tokens=baseline_tokens,
-                optimized_tokens=output_tokens,
-                savings_pct=actual_savings,
-                quality_proxy=result.quality_proxy,
-                pipeline=body.pipeline,
-                agent=body.agent,
-                run_id=body.run_id,
-            )
+            if body.meter:
+                _store.record_usage(
+                    key_hash=kh,
+                    baseline_tokens=baseline_tokens,
+                    optimized_tokens=output_tokens,
+                    savings_pct=actual_savings,
+                    quality_proxy=result.quality_proxy,
+                    pipeline=body.pipeline,
+                    agent=body.agent,
+                    run_id=body.run_id,
+                )
 
             event_queue.put({"stage": "done", "result": {
                 "compressed_messages": compressed_msgs,
@@ -527,13 +535,18 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
     tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
     savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
 
+    # Resolve the real provider from the model name (SDK/proxy may mislabel
+    # OpenAI-compatible upstreams like DeepSeek as "openai"), so billing prices
+    # and the recorded provider are correct.
+    eff_provider = infer_provider(body.model, body.provider) or body.provider
+
     # Phase 3: Only bill savings if quality passes gate
     quality_floor = 0.8  # Default floor; configurable per customer
     quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
 
     if quality_verified:
         # Quality gate passed: bill the full savings
-        cost_saved = cost_for_tokens(body.provider, body.model, tokens_saved)
+        cost_saved = cost_for_tokens(eff_provider, body.model, tokens_saved)
         fee = round(cost_saved * 0.10, 8)
         quality_status = "verified"
     else:
@@ -552,7 +565,7 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
         optimized_tokens=body.compressed_tokens,
         savings_pct=savings_pct,
         quality_proxy=actual_quality,
-        provider=body.provider,
+        provider=eff_provider,
         model=body.model,
         cost_saved_usd=cost_saved,
         brevitas_fee_usd=fee,

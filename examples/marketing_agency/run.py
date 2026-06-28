@@ -159,9 +159,9 @@ def main():
         response = requests.get(stats_url, headers=headers, timeout=10)
         response.raise_for_status()
 
-        stats = response.json()
+        agents_data = response.json()  # This is a bare array of agent dicts
 
-        if not stats or "by_agent" not in stats or len(stats.get("by_agent", [])) == 0:
+        if not agents_data or not isinstance(agents_data, list) or len(agents_data) == 0:
             print("⚠️  No agent statistics recorded in database")
             print("Possible causes:")
             print("  - Brevitas server not running (start with: uvicorn api.server:app)")
@@ -169,13 +169,22 @@ def main():
             print("  - Calls did not route through /v1/compress")
             sys.exit(1)
 
+        # Compute totals from the agent list
+        stats = {
+            "by_agent": agents_data,
+            "pipeline_total": {
+                "calls": sum(a.get("calls", 0) for a in agents_data),
+                "tokens_saved": sum(a.get("tokens_saved", 0) for a in agents_data),
+                "cost_saved_usd": sum(a.get("cost_saved_usd", 0) for a in agents_data),
+            }
+        }
+
         print_stats_table(stats)
 
         print("✓ Campaign complete! All agents tracked and attributed to pipeline='campaign-launch'")
-        if "pipeline_total" in stats:
-            total = stats["pipeline_total"]
-            print(f"✓ Total savings: ${total.get('cost_saved_usd', 0):.2f}")
-            print(f"✓ Total tokens saved: {total.get('tokens_saved', 0):,}")
+        total = stats["pipeline_total"]
+        print(f"✓ Total savings: ${total.get('cost_saved_usd', 0):.2f}")
+        print(f"✓ Total tokens saved: {total.get('tokens_saved', 0):,}")
 
     except requests.exceptions.ConnectionError:
         print("❌ ERROR: Cannot connect to Brevitas API")

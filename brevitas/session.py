@@ -13,6 +13,9 @@ class BrevitasSession:
         self.session_id = session_id or ("sess_" + secrets.token_urlsafe(12))
         self._prior_content: list[str] = []
         self.hop_count: int = 0
+        # Quality of the most recent compression (from /v1/compress), forwarded
+        # to /v1/usage so the billing quality gate has a signal to act on.
+        self.last_quality: float | None = None
 
     def record_response(self, text: str) -> None:
         """Call after each agent response to build cross-hop context."""
@@ -29,3 +32,4 @@ class BrevitasSession:
     def reset(self) -> None:
         self._prior_content.clear()
         self.hop_count = 0
+        self.last_quality = None
