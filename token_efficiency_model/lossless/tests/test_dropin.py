@@ -207,21 +207,17 @@ def test_retrieval_fallback_when_unavailable():
         mock_api.chat.completions.create.return_value = mock_response
         mock_route.return_value = mock_api
 
+        big = " ".join(["context"] * 1500)  # large enough to be routable
         messages = [
-            {"role": "user", "content": "context chunk 1"},
+            {"role": "user", "content": big + " one"},
             {"role": "assistant", "content": "response 1"},
-            {"role": "user", "content": "context chunk 2"},
+            {"role": "user", "content": big + " two"},
         ]
 
-        response, report = client.chat(
-            messages=messages,
-            model="gpt-4",
-            use_retrieval=True,
-        )
+        response, report = client.chat(messages=messages, model="gpt-4")
 
-    # No error; retrieval was silently skipped
+    # No error; retrieval falls back safely when encoder unavailable
     assert isinstance(report, SavingsReport)
-    # When encoder unavailable, retrieval_applied should be False
     assert report.retrieval_applied is False
 
 
@@ -235,9 +231,11 @@ def test_retrieval_reports_metadata():
     mock_response.usage.prompt_tokens_details = {}
     mock_response.choices = [MagicMock(message=MagicMock(content="response"))]
 
-    # Mock retrieval to succeed (reduce to half the context)
+    # large UNIQUE per-call context so the router auto-selects "retrieve"
+    c1 = " ".join(["alpha"] * 1500)
+    c3 = " ".join(["gamma"] * 1500)
     mock_retrieval_result = {
-        "selected_context": ["chunk1", "chunk3"],
+        "selected_context": [c1, c3],
         "baseline_tokens": 600,
         "optimized_tokens": 300,
         "savings_pct": 50.0,
@@ -246,7 +244,7 @@ def test_retrieval_reports_metadata():
     }
 
     with patch.object(client, "_route_client") as mock_route, patch(
-        "token_efficiency_model.lossless.dropin.retrieval_select",
+        "token_efficiency_model.lossless.engine.retrieval_select",
         return_value=mock_retrieval_result,
     ):
         mock_api = MagicMock()
@@ -255,12 +253,11 @@ def test_retrieval_reports_metadata():
 
         response, report = client.chat(
             messages=[
-                {"role": "user", "content": "chunk1"},
+                {"role": "user", "content": c1},
                 {"role": "assistant", "content": "response"},
-                {"role": "user", "content": "chunk2"},
+                {"role": "user", "content": "the new question " + " ".join(["q"] * 50)},
             ],
             model="gpt-4",
-            use_retrieval=True,
         )
 
     assert report.retrieval_applied is True

@@ -29,7 +29,17 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ._compress import count_messages_tokens, report_usage
 from .session import BrevitasSession
-from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache, savings_from_usage
+from token_efficiency_model.lossless.engine import optimize_request, record_usage
+from token_efficiency_model.lossless.router import BrevitasRouter
+
+# one router per (provider, key) — learns each session's repeat + real cache behavior
+_routers: dict[str, BrevitasRouter] = {}
+
+
+def _router_for(key: str, provider: str) -> BrevitasRouter:
+    if key not in _routers:
+        _routers[key] = BrevitasRouter(provider=provider)
+    return _routers[key]
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
@@ -104,10 +114,12 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
     session = _session_for(f"ant:{api_key}")
+    router = _router_for(f"ant:{api_key}", "anthropic")
 
-    # Lossless: never rewrite message content. Apply cache_control breakpoints on the
-    # stable prefix (>=1024 tok) so Anthropic bills repeated prefix at ~10% of input price.
-    apply_anthropic_cache(body)
+    # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
+    # per request, based on context repetition + observed cache behavior. Never rewrites the
+    # volatile message lossily; fails safe to full context.
+    optimize_request(body, "anthropic", router, session.session_id)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -133,10 +145,10 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            # Honest savings from REAL provider usage (cache_read vs full price).
+            # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
-                s = savings_from_usage(usage, "anthropic")
+                s = record_usage(usage, "anthropic", router, session.session_id)
                 report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
@@ -151,10 +163,15 @@ async def proxy_openai_chat(request: Request) -> Any:
     messages: list[dict] = body.get("messages", [])
     model: str = body.get("model", "")
     auth = request.headers.get("authorization", "")
+    provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
     session = _session_for(f"oai:{auth}")
+    router = _router_for(f"oai:{auth}", provider)
 
-    # Lossless: forward messages unchanged. OpenAI/DeepSeek auto-cache the repeated prefix
-    # (>=1024 tok) at ~50% off — preserved precisely because we don't mutate the prefix.
+    # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
+    # byte-identical (auto-cached server-side); retrieve reduces context when the router
+    # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
+    optimize_request(body, provider, router, session.session_id)
+
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
 
@@ -183,11 +200,11 @@ async def proxy_openai_chat(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            # Honest savings from REAL provider usage (cached_tokens vs full price).
+            # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
-                s = savings_from_usage(usage, "openai")
-                report_usage("openai", model, int(s.uncached_cost), int(s.actual_cost), session)
+                s = record_usage(usage, provider, router, session.session_id)
+                report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 

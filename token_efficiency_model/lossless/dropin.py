@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .api_adapter import retrieval_select
 from .provider_cache import apply_anthropic_cache, savings_from_usage
+from .engine import optimize_request, record_usage
+from .router import BrevitasRouter
 
 
 @dataclass
@@ -63,6 +65,10 @@ class BrevitasDropIn:
         self.provider = provider
         self.api_key = api_key
         self._client = None
+        # one router per client; auto-decides cache_only vs retrieve per call and learns
+        # each provider's real cache-hit rate from responses.
+        self._router = BrevitasRouter(provider=(provider or "openai"))
+        self._session_seq = 0
 
     def _detect_provider(self, model: Optional[str] = None) -> str:
         """Detect provider from explicit arg, model name, or base_url."""
@@ -113,94 +119,56 @@ class BrevitasDropIn:
         self,
         messages: List[Dict[str, str]],
         model: str,
-        use_retrieval: bool = False,
-        retrieval_k: int = 5,
-        retrieval_min_score: float = 0.2,
+        session_id: str = "default",
         **kwargs: Any,
     ) -> Tuple[Any, SavingsReport]:
-        """Call the provider's chat API with lossless token savings applied.
+        """Call the provider's chat API with lossless token savings applied AUTOMATICALLY.
+
+        The built-in router decides per call whether to lean on provider caching (cache_only)
+        or reduce context via retrieval, based on whether your context repeats and the
+        provider's real (observed) cache-hit rate. All lossless; fails safe to full context.
 
         Args:
             messages: Chat messages (standard OpenAI/Anthropic format).
             model: Model name (used for provider detection if needed).
-            use_retrieval: If True, apply retrieval-based context reduction (fail-safe to full).
-            retrieval_k: Top-k chunks to retrieve (if use_retrieval=True).
-            retrieval_min_score: Min confidence to accept retrieved context.
-            **kwargs: All other chat() args (temperature, max_tokens, tools, etc.).
+            session_id: Group calls that share context (e.g. one conversation/agent) so the
+                router can detect repetition and learn cache behavior. Default "default".
+            **kwargs: All other chat() args (temperature, max_tokens, tools, system, etc.).
 
         Returns:
-            (response, savings_report) where response is the model's chat.completion,
-            and savings_report is a SavingsReport with honest cost/token metrics.
+            (response, SavingsReport) — honest cost/token metrics from real usage.
         """
         provider = self._detect_provider(model)
         client = self._route_client(provider)
 
-        # Prepare the request body
         body = {"messages": messages, "model": model, **kwargs}
 
-        # Optional: apply retrieval-based context reduction
-        retrieval_meta = None
-        if use_retrieval and messages:
-            prior_context = self._extract_context_chunks(messages)
-            if prior_context:
-                retrieval_meta = retrieval_select(
-                    task=self._extract_task(messages),
-                    prior_context=prior_context,
-                    k=retrieval_k,
-                    min_top_score=retrieval_min_score,
-                )
-                if retrieval_meta.get("selected_context") and not retrieval_meta.get(
-                    "fallback_applied"
-                ):
-                    # Safe to reduce context; rebuild messages with selected chunks
-                    messages = self._rebuild_messages_with_retrieved(
-                        messages, retrieval_meta["selected_context"], prior_context
-                    )
-                    body["messages"] = messages
+        # Router-driven, automatic, lossless optimization (cache_only | retrieve | passthrough)
+        decision = optimize_request(body, provider, self._router, session_id)
 
-        # Apply provider-specific caching/optimization
-        cache_plan = None
-        if provider == "anthropic":
-            cache_plan = apply_anthropic_cache(body)
-            # Convert body to Anthropic's format if needed
-            # (apply_anthropic_cache modifies body in-place with cache_control markers)
-        else:
-            # OpenAI/DeepSeek: rely on their automatic prefix caching
-            # (just don't mutate the stable prefix; it's handled server-side)
-            pass
-
-        # Call the provider
         if provider == "anthropic":
             response = client.messages.create(**body)
         else:
-            # OpenAI/DeepSeek style
             response = client.chat.completions.create(**body)
 
-        # Compute honest savings from usage
+        # Honest savings + feed real cache-hit rate back to the router
         usage = self._extract_usage(response, provider)
-        savings = savings_from_usage(usage, provider)
+        savings = record_usage(usage, provider, self._router, session_id)
 
-        # Build the report
         report = SavingsReport(
             provider=provider,
             cached_tokens=savings.cached_tokens,
             uncached_cost=savings.uncached_cost,
             actual_cost=savings.actual_cost,
             savings_pct=savings.savings_pct,
-            cache_placement=(
-                asdict(cache_plan)
-                if cache_plan and provider == "anthropic"
-                else None
-            ),
-            retrieval_applied=bool(retrieval_meta and not retrieval_meta.get("fallback_applied")),
-            retrieval_baseline_tokens=(
-                retrieval_meta.get("baseline_tokens") if retrieval_meta else None
-            ),
-            retrieval_optimized_tokens=(
-                retrieval_meta.get("optimized_tokens") if retrieval_meta else None
-            ),
+            cache_placement={"strategy": decision.get("strategy"),
+                             "reason": decision.get("reason"),
+                             **{k: v for k, v in decision.items()
+                                if k in ("cache_breakpoints", "cached_prefix_tokens", "kept", "of")}},
+            retrieval_applied=(decision.get("strategy") == "retrieve"),
+            retrieval_baseline_tokens=decision.get("baseline_tokens"),
+            retrieval_optimized_tokens=decision.get("optimized_tokens"),
         )
-
         return response, report
 
     def _extract_usage(self, response: Any, provider: str) -> dict:
@@ -216,12 +184,14 @@ class BrevitasDropIn:
                     response.usage, "cache_read_input_tokens", 0
                 ),
             }
-        else:  # OpenAI / DeepSeek
-            details = response.usage.prompt_tokens_details or {}
+        else:  # OpenAI / DeepSeek — prompt_tokens_details may be a pydantic obj or dict
+            details = getattr(response.usage, "prompt_tokens_details", None) or {}
+            cached = details.get("cached_tokens", 0) if isinstance(details, dict) \
+                else getattr(details, "cached_tokens", 0) or 0
             return {
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
-                "prompt_tokens_details": details,
+                "prompt_tokens_details": {"cached_tokens": cached},
             }
 
     def _extract_context_chunks(self, messages: List[Dict[str, str]]) -> List[str]:
@@ -279,3 +249,7 @@ class BrevitasDropIn:
         # Always keep the latest message
         kept.append(original_messages[-1])
         return kept if kept else original_messages
+
+
+# Friendly alias for the importable service
+BrevitasClient = BrevitasDropIn

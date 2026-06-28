@@ -1,13 +1,23 @@
 """
-Brevitas — drop compression between your agents.
+Brevitas — drop lossless token savings between your agents and the model.
 
-Quick start (SDK wrapper):
-    import anthropic, brevitas
+Quick start (importable service — recommended):
+    from brevitas import BrevitasClient
 
-    brevitas.configure(
-        api_key="bvt_...",
-        base_url="http://localhost:8000",   # or https://api.brevitassystems.com
+    client = BrevitasClient(provider="openai", api_key="sk-...")
+    response, savings = client.chat(
+        messages=[{"role": "system", "content": BRAND_PROMPT},
+                  {"role": "user", "content": "Write a tweet for our oak table."}],
+        model="gpt-4o", session_id="marketing-agent",
     )
+    print(savings.savings_pct, savings.cache_placement["strategy"])
+
+The client auto-routes every call (cache vs retrieve), keeps the prefix byte-identical so
+provider caching fires, learns each provider's real cache-hit rate, and reports honest
+savings. Lossless — never drops load-bearing content; fails safe to full context.
+
+Quick start (SDK wrapper around an existing client):
+    import anthropic, brevitas
     client = brevitas.wrap(anthropic.Anthropic(api_key="sk-ant-..."))
 
     # All calls are now automatically compressed
@@ -24,6 +34,7 @@ Quick start (zero-code proxy):
 """
 from .config import configure, get as get_config
 from .session import BrevitasSession
+from token_efficiency_model.lossless import BrevitasClient, SavingsReport, BrevitasRouter
 
 
 def wrap(client, session: BrevitasSession | None = None):
@@ -53,5 +64,6 @@ def wrap(client, session: BrevitasSession | None = None):
     )
 
 
-__all__ = ["configure", "get_config", "wrap", "BrevitasSession"]
-__version__ = "0.1.0"
+__all__ = ["BrevitasClient", "SavingsReport", "BrevitasRouter",
+           "configure", "get_config", "wrap", "BrevitasSession"]
+__version__ = "0.2.0"
