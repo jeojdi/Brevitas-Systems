@@ -56,3 +56,20 @@ robust and theory-backed; exact cost % needs an isolated per-condition run.
    BBH (-10). On BBH logic, demos HURT — zero-shot (100% DeepSeek) wins; best compression there
    is to send NO demos.
 4. The earlier n=8 "adaptive beats full (62.5)" was sampling noise; n=50 corrects it.
+
+## ISOLATED COST TEST (clean, no cache contamination) — n=30, real USD
+
+| provider | UNIQUE context (diff every call) | SHARED context (reused, agent-typical) |
+|---|---|---|
+| DeepSeek (cache 90% off) | **retrieval −38.9% cheaper** | **full+cache wins; retrieval +74% MORE** |
+| gpt-4o-mini (cache 50% off) | **retrieval −38.7% cheaper** | **retrieval −40.7% cheaper** |
+
+Driver: DeepSeek caches a repeated full context at 0.1x → so cheap that retrieval (full-price
+varying tokens) can't beat it when context repeats. OpenAI caches at only 0.5x → fewer tokens
+still wins. The earlier "retrieval +54% more expensive everywhere" was a contaminated artifact;
+clean isolated test shows it is PATTERN- and PROVIDER-dependent.
+
+RECOMMENDATION:
+- Caching = universal safe win (lossless, always on, never costs more).
+- Retrieval ON when: unique large context per call, OR provider with weak caching (OpenAI).
+- Retrieval OFF when: same big context reused every turn AND strong-caching provider (DeepSeek/Anthropic).
