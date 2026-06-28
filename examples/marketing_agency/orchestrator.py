@@ -36,7 +36,7 @@ class MarketingAgency:
         """
         Call an agent through Brevitas with proper label tracking.
 
-        For real runs: Uses Brevitas-wrapped client (routes through /v1/compress, records usage)
+        For real runs (provider_name='deepseek'): Uses Brevitas-wrapped client
         For mock: Uses deterministic mock provider
         """
         # Use the Brevitas SDK with agent context manager
@@ -47,8 +47,8 @@ class MarketingAgency:
                 {"role": "user", "content": user_input},
             ]
 
-            # Route through Brevitas if client is available (real run)
-            if self.brevitas_client is not None:
+            # Route through Brevitas for real DeepSeek runs
+            if self.provider_name == "deepseek" and self.brevitas_client is not None:
                 response = self.brevitas_client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -56,7 +56,7 @@ class MarketingAgency:
                 )
                 return response.choices[0].message.content
             else:
-                # Fall back to provider (mock only)
+                # Use mock provider for CI testing
                 response_text = self.provider.chat(model, messages, temperature=0.7)
                 return response_text
 
