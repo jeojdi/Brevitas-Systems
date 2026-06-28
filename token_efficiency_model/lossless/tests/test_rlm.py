@@ -74,3 +74,64 @@ def test_rlm_repl_error_is_surfaced_not_crashed():
     res = rlm.run("small P", "q")
     assert res.answer == ""           # never finalized
     assert res.iters == 2
+
+
+def test_rlm_grep_function_finds_patterns():
+    """Test that grep() helper function locates lines matching patterns in P."""
+    P = "line 1: start\nline 2: middle data\nline 3: end\nline 4: middle again"
+
+    def fake_llm(text: str) -> str:
+        if "Question:" in text:
+            return (
+                "```python\n"
+                "results = grep('middle', context_lines=0)\n"
+                "set_final(str(len(results)))\n"
+                "```"
+            )
+        return ""
+
+    rlm = RLM(fake_llm)
+    res = rlm.run(P, "How many lines have 'middle'?")
+    # grep should find 2 lines with 'middle' (plus 1 '---' separator each) = should be > 0
+    assert res.answer != ""
+    assert res.answer != "0"
+
+
+def test_rlm_peek_function_extracts_slice():
+    """Test that peek() helper function returns character slices."""
+    P = "0123456789abcdefghij"
+
+    def fake_llm(text: str) -> str:
+        if "Question:" in text:
+            return (
+                "```python\n"
+                "chunk = peek(5, 10)\n"
+                "set_final(chunk)\n"
+                "```"
+            )
+        return ""
+
+    rlm = RLM(fake_llm)
+    res = rlm.run(P, "Get chars 5-10")
+    assert res.answer == "56789"
+
+
+def test_rlm_fallback_synthesis_when_no_set_final():
+    """Test that RLM synthesizes an answer if the loop ends without calling set_final."""
+    P = "The capital of France is Paris. Paris is located in central Europe."
+
+    calls = []
+
+    def fake_llm(text: str) -> str:
+        calls.append(("llm", "root" if "Question:" in text else "synthesis"))
+        if "Question:" in text:
+            # emit code that searches but doesn't set_final
+            return "```python\nresults = grep('capital', context_lines=1)\nprint(results)\n```"
+        # fallback synthesis call — just return a fixed answer
+        return "Paris"
+
+    rlm = RLM(fake_llm, max_iters=2)
+    res = rlm.run(P, "What is the capital of France?")
+    # After 2 iters without set_final, should trigger fallback synthesis
+    assert res.answer == "Paris"
+    assert res.sub_calls >= 1  # the synthesis call counts as a sub_call
