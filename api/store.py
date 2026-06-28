@@ -220,6 +220,11 @@ class UsageStore:
             ).fetchall()
 
         calls, saved, avg_savings, avg_quality, total_base, total_opt, total_cost_saved, total_fee = agg
+
+        # Get per-pipeline and per-agent breakdowns
+        by_pipeline = self.get_stats_by_pipeline(key_hash)
+        by_agent = self.get_stats_by_agent(key_hash)
+
         return {
             "total_calls": calls,
             "total_tokens_saved": saved,
@@ -253,6 +258,8 @@ class UsageStore:
                 }
                 for b in billing
             ],
+            "by_pipeline": by_pipeline,
+            "by_agent": by_agent,
         }
 
     def get_stats_by_pipeline(self, key_hash: str, start: str = "", end: str = "") -> list:

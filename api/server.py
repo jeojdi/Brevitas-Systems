@@ -546,6 +546,48 @@ def stats(request: Request, kh: str = Depends(_authenticated)):
     return _store.get_stats(kh)
 
 
+@app.get("/v1/stats/pipelines")
+@limiter.limit("120/minute")
+def stats_pipelines(
+    request: Request,
+    kh: str = Depends(_authenticated),
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    """Get aggregated stats by pipeline."""
+    return _store.get_stats_by_pipeline(kh, start=start or "", end=end or "")
+
+
+@app.get("/v1/stats/agents")
+@limiter.limit("120/minute")
+def stats_agents(
+    request: Request,
+    kh: str = Depends(_authenticated),
+    pipeline: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    """Get aggregated stats by agent, optionally filtered by pipeline."""
+    return _store.get_stats_by_agent(
+        kh, pipeline=pipeline or "", start=start or "", end=end or ""
+    )
+
+
+@app.get("/v1/stats/runs")
+@limiter.limit("120/minute")
+def stats_runs(
+    request: Request,
+    kh: str = Depends(_authenticated),
+    pipeline: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
+    """Get aggregated stats by run, optionally filtered by pipeline."""
+    return _store.get_stats_by_run(
+        kh, pipeline=pipeline or "", start=start or "", end=end or ""
+    )
+
+
 @app.get("/v1/health")
 def health():
     return {"status": "ok"}
