@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .._compress import report_usage
+from ..labels import resolve_labels
 from ..session import BrevitasSession
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
@@ -25,6 +27,7 @@ class _BrevitasCompletions:
 
     def create(self, *, messages: list[dict], model: str = "", **kwargs: Any) -> Any:
         sid = kwargs.pop("_brevitas_session", self._session.session_id)
+        labels = resolve_labels(kwargs.pop("_brevitas_meta", None))  # pipeline/agent/run_id
         provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
         body = {"messages": list(messages), "model": model, **kwargs}
         optimize_request(body, provider, self._router, sid)   # lossless, in-place
@@ -35,9 +38,14 @@ class _BrevitasCompletions:
             details = getattr(response.usage, "prompt_tokens_details", None) or {}
             cached = details.get("cached_tokens", 0) if isinstance(details, dict) \
                 else getattr(details, "cached_tokens", 0)
-            usage = {"prompt_tokens": response.usage.prompt_tokens,
-                     "prompt_tokens_details": {"cached_tokens": cached}}
-            record_usage(usage, provider, self._router, sid)
+            prompt = response.usage.prompt_tokens
+            usage = {"prompt_tokens": prompt, "prompt_tokens_details": {"cached_tokens": cached}}
+            s = record_usage(usage, provider, self._router, sid)
+            # emit labeled usage for per-pipeline/agent/run tracking + billing.
+            # baseline = full prompt tokens (uncached); optimized = tokens still billed fresh.
+            report_usage(provider, model, prompt, prompt - cached, self._session,
+                         pipeline=labels["pipeline"], agent=labels["agent"],
+                         run_id=labels["run_id"])
         except (AttributeError, IndexError):
             pass
         self._session.advance()

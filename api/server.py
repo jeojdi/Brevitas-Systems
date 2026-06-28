@@ -300,6 +300,9 @@ class CompressRequest(BaseModel):
     prune_budget:      int       = Field(default=5, ge=1, le=50)
     delta_mode:        str       = Field(default="off", pattern="^(off|on)$")
     wire_mode:         str       = Field(default="json", pattern="^(json|msgpack)$")
+    pipeline:          str       = Field(default="", max_length=100)
+    agent:             str       = Field(default="", max_length=100)
+    run_id:            str       = Field(default="", max_length=128)
 
     @field_validator("messages", "prior_context", mode="before")
     @classmethod
@@ -465,6 +468,9 @@ class UsageReportRequest(BaseModel):
     compressed_tokens: int  = Field(ge=0)
     quality_score:    Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Real quality from gate
     session_id:       str   = Field(default="", max_length=128)
+    pipeline:         str   = Field(default="", max_length=100)
+    agent:            str   = Field(default="", max_length=100)
+    run_id:           str   = Field(default="", max_length=128)
 
 
 @app.post("/v1/usage")
@@ -503,6 +509,9 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
         cost_saved_usd=cost_saved,
         brevitas_fee_usd=fee,
         session_id=body.session_id,
+        pipeline=body.pipeline,
+        agent=body.agent,
+        run_id=body.run_id,
     )
     return {
         "tokens_saved": tokens_saved,

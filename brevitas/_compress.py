@@ -39,6 +39,9 @@ def compress_messages(
     complexity: float = 0.5,
     compression_level: int = 2,
     prune_budget: int = 5,
+    pipeline: str = "",
+    agent: str = "",
+    run_id: str = "",
 ) -> tuple[list[dict], int, int]:
     """
     Compress a messages list via the Brevitas API, preserving prefix stability.
@@ -89,6 +92,12 @@ def compress_messages(
                 "complexity": complexity,
                 "compression_level": compression_level,
                 "prune_budget": prune_budget,
+                "pipeline": pipeline,
+                "agent": agent,
+                "run_id": run_id,
+                # report_usage() below records the billing row via /v1/usage;
+                # don't also record here or every call double-counts.
+                "meter": False,
             },
             timeout=cfg.get("timeout", 30),
         )
@@ -114,6 +123,18 @@ def compress_messages(
             # All other messages pass through unchanged (same dict, same content)
             out_messages.append(m)
 
+    # Remember the pipeline's quality estimate so report_usage() can forward it
+    # to the billing quality gate (otherwise savings are never billed).
+    session.last_quality = data.get("quality_proxy")
+
+    # Use the server's authoritative counts for BOTH baseline and optimized so
+    # report_usage compares like-for-like. The client-side baseline counted only
+    # the messages (not prior_context), while optimized comes from the server and
+    # includes pruned context — mixing them made multi-hop calls look like a loss
+    # (compressed >= baseline) and get dropped from billing.
+    server_baseline = data.get("baseline_tokens")
+    if server_baseline:
+        baseline_tokens = int(server_baseline)
     compressed_tokens = data.get("optimized_tokens", count_messages_tokens(out_messages))
     return out_messages, baseline_tokens, compressed_tokens
 
@@ -124,6 +145,9 @@ def report_usage(
     baseline_tokens: int,
     compressed_tokens: int,
     session: BrevitasSession,
+    pipeline: str = "",
+    agent: str = "",
+    run_id: str = "",
 ) -> None:
     """Report usage to Brevitas for billing. Fire-and-forget."""
     cfg = _cfg()
@@ -139,6 +163,10 @@ def report_usage(
                 "baseline_tokens": baseline_tokens,
                 "compressed_tokens": compressed_tokens,
                 "session_id": session.session_id,
+                "pipeline": pipeline,
+                "agent": agent,
+                "run_id": run_id,
+                "quality_score": session.last_quality,
             },
             timeout=5,
         )
