@@ -14,6 +14,7 @@ from typing import Any
 
 from .._compress import compress_messages, report_usage
 from ..session import BrevitasSession
+from ..labels import resolve_labels
 
 _PROVIDER = "openai"
 
@@ -25,8 +26,14 @@ class _BrevitasCompletions:
 
     def create(self, *, messages: list[dict], model: str = "", **kwargs: Any) -> Any:
         task = kwargs.pop("_brevitas_task", "")
+        _brevitas_meta = kwargs.pop("_brevitas_meta", None)
+        labels = resolve_labels(_brevitas_meta)
+
         compressed, baseline, compressed_tok = compress_messages(
-            messages, self._session, task=task
+            messages, self._session, task=task,
+            pipeline=labels["pipeline"],
+            agent=labels["agent"],
+            run_id=labels["run_id"],
         )
         response = self._orig.create(messages=compressed, model=model, **kwargs)
         response_text = ""
@@ -34,7 +41,10 @@ class _BrevitasCompletions:
             response_text = response.choices[0].message.content or ""
         self._session.record_response(response_text)
         self._session.advance()
-        report_usage(_PROVIDER, model, baseline, compressed_tok, self._session)
+        report_usage(_PROVIDER, model, baseline, compressed_tok, self._session,
+                     pipeline=labels["pipeline"],
+                     agent=labels["agent"],
+                     run_id=labels["run_id"])
         return response
 
     def __getattr__(self, name: str) -> Any:

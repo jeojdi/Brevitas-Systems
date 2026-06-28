@@ -419,6 +419,9 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 optimized_tokens=output_tokens,
                 savings_pct=actual_savings,
                 quality_proxy=result.quality_proxy,
+                pipeline=body.pipeline,
+                agent=body.agent,
+                run_id=body.run_id,
             )
 
             event_queue.put({"stage": "done", "result": {

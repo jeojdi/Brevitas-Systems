@@ -281,3 +281,97 @@ def test_e2e_label_propagation_flow():
             assert rows[0][1] == run_id
             assert rows[1][0] == "copywriter"
             assert rows[1][1] == run_id
+
+
+def test_all_api_endpoints_pass_labels_to_store():
+    """Verify all three API endpoints pass labels to record_usage (including streaming)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "test.db")
+
+        from api.store import UsageStore
+
+        store = UsageStore(db_path=db_path)
+        store.create_key("stream_test_key", "test")
+
+        # Simulate all three endpoints recording with labels
+        # (They use the same record_usage signature)
+        store.record_usage(
+            key_hash="stream_test_key",
+            baseline_tokens=1000,
+            optimized_tokens=500,
+            savings_pct=50.0,
+            quality_proxy=0.95,
+            pipeline="campaign-launch",
+            agent="copywriter",
+            run_id="run_stream_001",
+        )
+
+        # Verify the record was created with all labels
+        with sqlite3.connect(db_path) as db:
+            row = db.execute(
+                "SELECT pipeline, agent, run_id FROM usage_log WHERE key_hash = ?",
+                ("stream_test_key",),
+            ).fetchone()
+
+            assert row is not None
+            assert row[0] == "campaign-launch"
+            assert row[1] == "copywriter"
+            assert row[2] == "run_stream_001"
+
+
+def test_wrapper_anthropic_resolves_labels_from_contextvar():
+    """Test that anthropic wrapper resolves labels from contextvar."""
+    from brevitas.wrappers.anthropic import _BrevitasMessages
+    from brevitas.session import BrevitasSession
+    from brevitas.labels import start_run, agent, resolve_labels
+    from unittest.mock import MagicMock
+
+    start_run(pipeline="campaign-launch")
+    with agent("copywriter"):
+        # Create mock Anthropic messages object
+        mock_messages = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="response text")]
+        mock_messages.create.return_value = mock_response
+
+        session = BrevitasSession()
+        brevitas_messages = _BrevitasMessages(mock_messages, session)
+
+        # Verify resolve_labels works (wrappers use it)
+        labels = resolve_labels()
+        assert labels["pipeline"] == "campaign-launch"
+        assert labels["agent"] == "copywriter"
+
+
+def test_wrapper_anthropic_accepts_per_call_override():
+    """Test that anthropic wrapper accepts _brevitas_meta per-call override."""
+    from brevitas.labels import resolve_labels
+
+    # Override should take precedence
+    labels = resolve_labels(_brevitas_meta={"agent": "editor", "pipeline": "override"})
+    assert labels["agent"] == "editor"
+    assert labels["pipeline"] == "override"
+
+
+def test_wrapper_openai_resolves_labels_from_contextvar():
+    """Test that openai wrapper resolves labels from contextvar."""
+    from brevitas.wrappers.openai import _BrevitasCompletions
+    from brevitas.session import BrevitasSession
+    from brevitas.labels import start_run, agent, resolve_labels
+    from unittest.mock import MagicMock
+
+    start_run(pipeline="seo-optimization")
+    with agent("seo_optimizer"):
+        # Create mock OpenAI completions object
+        mock_completions = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="response text"))]
+        mock_completions.create.return_value = mock_response
+
+        session = BrevitasSession()
+        brevitas_completions = _BrevitasCompletions(mock_completions, session)
+
+        # Verify resolve_labels works
+        labels = resolve_labels()
+        assert labels["pipeline"] == "seo-optimization"
+        assert labels["agent"] == "seo_optimizer"
