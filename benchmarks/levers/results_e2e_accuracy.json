@@ -1,0 +1,20 @@
+{
+  "dataset": "hotpot_qa/distractor (validation)",
+  "model": "deepseek-chat",
+  "n_questions": 40,
+  "top_k": 5,
+  "full_context": {
+    "EM": 62.5,
+    "F1": 78.37,
+    "prompt_tokens": 57623
+  },
+  "lossless_retrieval": {
+    "EM": 55.0,
+    "F1": 70.01,
+    "prompt_tokens": 25870,
+    "cached_tokens": 6144
+  },
+  "token_reduction_pct": 55.1,
+  "EM_delta": -7.5,
+  "F1_delta": -8.36
+}

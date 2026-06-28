@@ -1,0 +1,24 @@
+{
+  "benchmark": "BBH logical_deduction_five_objects",
+  "task": "logic",
+  "model": "deepseek-chat",
+  "n_questions": 2,
+  "n_demos_pool": 16,
+  "full_fewshot": {
+    "accuracy": 0.0,
+    "prompt_tokens": 5263,
+    "cached_tokens": 0
+  },
+  "adaptive_retrieved_demos": {
+    "accuracy": 100.0,
+    "prompt_tokens": 1934,
+    "cached_tokens": 0,
+    "avg_k_chosen": 5.0,
+    "acc_delta_vs_full": 100.0,
+    "token_reduction_pct": 63.25
+  },
+  "zeroshot": {
+    "accuracy": 100.0,
+    "prompt_tokens": 349
+  }
+}

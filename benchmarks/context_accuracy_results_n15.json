@@ -1,0 +1,20 @@
+[
+  {
+    "dataset": "HotpotQA",
+    "strategy": "FULL-CONTEXT",
+    "total_samples": 15,
+    "correct": 13,
+    "accuracy": 86.66666666666667,
+    "avg_input_tokens": 1350.6,
+    "avg_latency": 0.8559479395548503
+  },
+  {
+    "dataset": "HotpotQA",
+    "strategy": "LOSSY-PRUNE",
+    "total_samples": 15,
+    "correct": 10,
+    "accuracy": 66.66666666666666,
+    "avg_input_tokens": 455.06666666666666,
+    "avg_latency": 0.836630121866862
+  }
+]

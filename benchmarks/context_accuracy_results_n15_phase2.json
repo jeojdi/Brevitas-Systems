@@ -1,0 +1,29 @@
+[
+  {
+    "dataset": "HotpotQA",
+    "strategy": "FULL-CONTEXT",
+    "total_samples": 15,
+    "correct": 13,
+    "accuracy": 86.66666666666667,
+    "avg_input_tokens": 1350.6,
+    "avg_latency": 0.8454266548156738
+  },
+  {
+    "dataset": "HotpotQA",
+    "strategy": "LOSSY-PRUNE",
+    "total_samples": 15,
+    "correct": 10,
+    "accuracy": 66.66666666666666,
+    "avg_input_tokens": 455.06666666666666,
+    "avg_latency": 0.8472118059794108
+  },
+  {
+    "dataset": "HotpotQA",
+    "strategy": "RLM-RETRIEVAL",
+    "total_samples": 15,
+    "correct": 12,
+    "accuracy": 80.0,
+    "avg_input_tokens": 619.1333333333333,
+    "avg_latency": 0.8836680253346761
+  }
+]

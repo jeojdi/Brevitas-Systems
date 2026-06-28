@@ -27,13 +27,55 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ._compress import compress_messages, count_messages_tokens, report_usage
+from ._compress import count_messages_tokens, report_usage
 from .session import BrevitasSession
+from token_efficiency_model.lossless.engine import optimize_request, record_usage
+from token_efficiency_model.lossless.router import BrevitasRouter
+
+# one router per (provider, key) — learns each session's repeat + real cache behavior
+_routers: dict[str, BrevitasRouter] = {}
+
+
+def _router_for(key: str, provider: str) -> BrevitasRouter:
+    if key not in _routers:
+        _routers[key] = BrevitasRouter(provider=provider)
+    return _routers[key]
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
+_DEEPSEEK_API  = "https://api.deepseek.com"
+_GROQ_API      = "https://api.groq.com/openai"
+
+# Allowlist of valid upstream URLs for SSRF protection
+_ALLOWED_UPSTREAMS = {_OPENAI_API, _DEEPSEEK_API, _GROQ_API}
 
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
+
+
+def get_openai_compatible_upstream(model: str, override_header: str | None = None) -> str:
+    """
+    Route OpenAI-compatible requests to the correct provider upstream.
+    Returns base URL for the upstream API based on model name prefix or header override.
+
+    Model routing:
+    - deepseek-* → https://api.deepseek.com
+    - grok-* or groq-* → https://api.groq.com/openai
+    - openai models or unrecognized → https://api.openai.com
+
+    Can be overridden with x-brevitas-upstream header (SSRF-protected: allowlist only).
+    Non-allowlisted overrides are ignored; falls back to model-prefix routing.
+    """
+    # SSRF protection: only allow known upstream URLs
+    if override_header and override_header in _ALLOWED_UPSTREAMS:
+        return override_header
+
+    model_lower = (model or "").lower()
+    if model_lower.startswith("deepseek"):
+        return _DEEPSEEK_API
+    elif model_lower.startswith("grok") or model_lower.startswith("groq"):
+        return _GROQ_API
+    else:
+        return _OPENAI_API
 
 # One session per (proxy instance, provider-key) pair is fine for single-user
 # local use; for multi-user, pass session_id in a custom header.
@@ -72,11 +114,12 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
     session = _session_for(f"ant:{api_key}")
+    router = _router_for(f"ant:{api_key}", "anthropic")
 
-    compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=body.get("system", "")
-    )
-    body["messages"] = compressed
+    # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
+    # per request, based on context repetition + observed cache behavior. Never rewrites the
+    # volatile message lossily; fails safe to full context.
+    optimize_request(body, "anthropic", router, session.session_id)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -90,7 +133,6 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
-            report_usage("anthropic", model, baseline, compressed_tok, session)
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
@@ -98,13 +140,16 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 f"{_ANTHROPIC_API}/v1/messages", headers=headers, json=body
             )
             data = resp.json()
-            # Record response for cross-hop context
             try:
                 text = data["content"][0]["text"]
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            report_usage("anthropic", model, baseline, compressed_tok, session)
+            # Honest savings from REAL usage + feed cache-hit rate back to the router.
+            usage = data.get("usage", {})
+            if usage:
+                s = record_usage(usage, "anthropic", router, session.session_id)
+                report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
@@ -118,33 +163,36 @@ async def proxy_openai_chat(request: Request) -> Any:
     messages: list[dict] = body.get("messages", [])
     model: str = body.get("model", "")
     auth = request.headers.get("authorization", "")
+    provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
     session = _session_for(f"oai:{auth}")
+    router = _router_for(f"oai:{auth}", provider)
 
-    system_msgs = [m["content"] for m in messages if m.get("role") == "system"]
-    task = system_msgs[0] if system_msgs else ""
-    compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=task
-    )
-    body["messages"] = compressed
+    # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
+    # byte-identical (auto-cached server-side); retrieve reduces context when the router
+    # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
+    optimize_request(body, provider, router, session.session_id)
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
+
+    # Route to correct upstream API based on model name or header override
+    override_upstream = request.headers.get("x-brevitas-upstream")
+    upstream_url = get_openai_compatible_upstream(model, override_upstream)
 
     async with httpx.AsyncClient(timeout=120) as client:
         if is_stream:
             async def stream_gen():
                 async with client.stream(
-                    "POST", f"{_OPENAI_API}/v1/chat/completions",
+                    "POST", f"{upstream_url}/v1/chat/completions",
                     headers=headers, json=body
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
-            report_usage("openai", model, baseline, compressed_tok, session)
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
             resp = await client.post(
-                f"{_OPENAI_API}/v1/chat/completions", headers=headers, json=body
+                f"{upstream_url}/v1/chat/completions", headers=headers, json=body
             )
             data = resp.json()
             try:
@@ -152,7 +200,11 @@ async def proxy_openai_chat(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            report_usage("openai", model, baseline, compressed_tok, session)
+            # Honest savings from REAL usage + feed cache-hit rate back to the router.
+            usage = data.get("usage", {})
+            if usage:
+                s = record_usage(usage, provider, router, session.session_id)
+                report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 

@@ -1,0 +1,26 @@
+{
+  "lever": 2,
+  "results": [
+    {
+      "scenario": "shared_context_multi_agent",
+      "n_agents": 6,
+      "baseline_bytes": 276559,
+      "dedup_bytes": 78474,
+      "savings_pct": 71.62,
+      "reconstruction_ok": true
+    },
+    {
+      "scenario": "single_edit_locality",
+      "artifact_bytes": 60094,
+      "incremental_bytes": 3971,
+      "incremental_pct": 6.61,
+      "reconstruction_ok": true
+    }
+  ],
+  "checks": {
+    "lossless_reconstruction": true,
+    "shared_context_savings>=60%": true,
+    "single_edit_incremental<=20%": true
+  },
+  "passed": true
+}

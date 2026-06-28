@@ -1,4 +1,5 @@
 from typing import Iterable
+import warnings
 
 try:
     import tiktoken
@@ -33,6 +34,19 @@ def savings_pct(original_tokens: int, optimized_tokens: int) -> float:
 
 
 def quality_proxy_score(compression_strength: float, prune_strength: float, route_fit: float) -> float:
+    """DEPRECATED: Fake heuristic quality score. Use real quality gate instead.
+
+    This function uses arbitrary weights and does not measure actual answer quality.
+    Replaced by token_efficiency_model.quality.gate.assess() which uses embedding
+    similarity + LLM-as-judge.
+
+    Phase 3 (Quality Gate & Billing) marks this as fallback only. Do not use on live path.
+    """
+    warnings.warn(
+        "quality_proxy_score is deprecated; use token_efficiency_model.quality.gate.assess() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     quality = 1.0
     quality -= 0.18 * compression_strength
     quality -= 0.22 * prune_strength

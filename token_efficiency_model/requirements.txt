@@ -1,1 +1,9 @@
 numpy>=1.24.0
+
+# Phase 2: Lossless context retrieval (RLM)
+# Choose one retrieval method:
+# Option 1: ColBERT via PyLate (highest fidelity late-interaction)
+# pylate>=0.1.0
+# Option 2: Sentence-transformers dense retrieval (fallback)
+# sentence-transformers>=2.2.0
+# Without either: keyword-based fallback (lower retrieval quality, but functional)

@@ -1,0 +1,24 @@
+{
+  "benchmark": "BBH logical_deduction_five_objects",
+  "task": "logic",
+  "model": "gpt-4o-mini",
+  "n_questions": 50,
+  "n_demos_pool": 16,
+  "full_fewshot": {
+    "accuracy": 76.0,
+    "prompt_tokens": 132142,
+    "cached_tokens": 119936
+  },
+  "adaptive_retrieved_demos": {
+    "accuracy": 66.0,
+    "prompt_tokens": 49511,
+    "cached_tokens": 0,
+    "avg_k_chosen": 5.2,
+    "acc_delta_vs_full": -10.0,
+    "token_reduction_pct": 62.53
+  },
+  "zeroshot": {
+    "accuracy": 76.0,
+    "prompt_tokens": 8442
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "model": "gpt-4o-mini",
+  "n": 30,
+  "note": "each condition isolated; cost in USD (input-side)",
+  "UNIQUE_context": {
+    "full_cost_usd": 0.006358,
+    "adaptive_cost_usd": 0.003895,
+    "cost_save_pct": 38.74,
+    "cheaper": "adaptive"
+  },
+  "SHARED_KB": {
+    "full_cost_usd": 0.006036,
+    "adaptive_cost_usd": 0.003581,
+    "cost_save_pct": 40.67,
+    "cheaper": "adaptive"
+  }
+}

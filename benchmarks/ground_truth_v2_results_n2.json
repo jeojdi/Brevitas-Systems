@@ -1,0 +1,35 @@
+[
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "BEFORE",
+    "n_total": 2,
+    "n_correct": 2,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 454.5,
+    "avg_latency": 0.961400032043457
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "OLD-LOSSY",
+    "n_total": 2,
+    "n_correct": 2,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 232.5,
+    "avg_latency": 0.9976739883422852
+  },
+  {
+    "benchmark": "ARC-Challenge",
+    "category": "logical_reasoning",
+    "model": "V3",
+    "mode": "NEW",
+    "n_total": 2,
+    "n_correct": 2,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 438.5,
+    "avg_latency": 0.8488143682479858
+  }
+]

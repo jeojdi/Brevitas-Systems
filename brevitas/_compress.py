@@ -41,7 +41,9 @@ def compress_messages(
     prune_budget: int = 5,
 ) -> tuple[list[dict], int, int]:
     """
-    Compress a messages list via the Brevitas API.
+    Compress a messages list via the Brevitas API, preserving prefix stability.
+    Only the LAST user message is compressed (volatile tail).
+    All earlier messages (system + tools + prior turns = stable prefix) are left BYTE-IDENTICAL.
     Returns (compressed_messages, baseline_tokens, compressed_tokens).
     If compression fails or is disabled, returns the original messages unchanged.
     """
@@ -50,17 +52,30 @@ def compress_messages(
         baseline = count_messages_tokens(messages)
         return messages, baseline, baseline
 
-    # Extract text from messages for compression (keep roles/structure intact)
-    texts = []
-    for m in messages:
-        content = m.get("content", "")
-        if isinstance(content, str):
-            texts.append(content)
-        elif isinstance(content, list):
-            parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-            texts.append(" ".join(parts))
-
     baseline_tokens = count_messages_tokens(messages)
+
+    # Find the index of the last user-role message (volatile tail)
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    # If no user message, return unchanged
+    if last_user_idx < 0:
+        return messages, baseline_tokens, baseline_tokens
+
+    # Extract only the last user message for compression
+    last_msg = messages[last_user_idx]
+    content = last_msg.get("content", "")
+    if isinstance(content, str):
+        last_text = content
+    elif isinstance(content, list):
+        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        last_text = " ".join(parts)
+    else:
+        return messages, baseline_tokens, baseline_tokens
+
     prior = session.prior_context()
 
     try:
@@ -68,8 +83,8 @@ def compress_messages(
             f"{cfg['base_url']}/v1/compress",
             headers={"X-API-Key": cfg["api_key"]},
             json={
-                "task": task or (texts[0][:200] if texts else ""),
-                "messages": texts,
+                "task": task or (last_text[:200] if last_text else ""),
+                "messages": [last_text],  # Only compress the last user message
                 "prior_context": prior,
                 "complexity": complexity,
                 "compression_level": compression_level,
@@ -82,19 +97,22 @@ def compress_messages(
     except Exception:
         return messages, baseline_tokens, baseline_tokens
 
-    compressed_texts = data.get("compressed_messages", texts)
-    pruned_context   = data.get("pruned_context", [])
+    compressed_texts = data.get("compressed_messages", [last_text])
 
-    # Rebuild messages with compressed content, preserving roles
+    # Rebuild messages: prefix stays IDENTICAL, only last user message may change
     out_messages: list[dict] = []
     for i, m in enumerate(messages):
-        new_m = dict(m)
-        if i < len(compressed_texts):
+        if i == last_user_idx and compressed_texts:
+            # Replace only the last user message with its compressed version
+            new_m = dict(m)
             if isinstance(m.get("content"), list):
-                new_m["content"] = [{"type": "text", "text": compressed_texts[i]}]
+                new_m["content"] = [{"type": "text", "text": compressed_texts[0]}]
             else:
-                new_m["content"] = compressed_texts[i]
-        out_messages.append(new_m)
+                new_m["content"] = compressed_texts[0]
+            out_messages.append(new_m)
+        else:
+            # All other messages pass through unchanged (same dict, same content)
+            out_messages.append(m)
 
     compressed_tokens = data.get("optimized_tokens", count_messages_tokens(out_messages))
     return out_messages, baseline_tokens, compressed_tokens

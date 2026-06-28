@@ -1,0 +1,35 @@
+[
+  {
+    "benchmark": "BBH-LogicalDeduction",
+    "category": "deep_thinking",
+    "model": "V3",
+    "mode": "BEFORE",
+    "n_total": 1,
+    "n_correct": 1,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 564.0,
+    "avg_latency": 3.0504310131073
+  },
+  {
+    "benchmark": "BBH-LogicalDeduction",
+    "category": "deep_thinking",
+    "model": "V3",
+    "mode": "OLD-LOSSY",
+    "n_total": 1,
+    "n_correct": 1,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 269.0,
+    "avg_latency": 6.319277048110962
+  },
+  {
+    "benchmark": "BBH-LogicalDeduction",
+    "category": "deep_thinking",
+    "model": "V3",
+    "mode": "NEW",
+    "n_total": 1,
+    "n_correct": 1,
+    "accuracy": 100.0,
+    "avg_prompt_tokens": 547.0,
+    "avg_latency": 2.4231090545654297
+  }
+]

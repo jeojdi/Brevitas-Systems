@@ -1,0 +1,37 @@
+{
+  "lever": 3,
+  "results": [
+    {
+      "scenario": "code_edit_myers",
+      "full_bytes": 6218,
+      "delta_bytes": 119,
+      "delta_pct": 1.91,
+      "method": "myers",
+      "reconstruction_ok": true
+    },
+    {
+      "scenario": "large_blob_rsync",
+      "full_bytes": 94492,
+      "delta_bytes": 2036,
+      "delta_pct": 2.15,
+      "method": "rsync",
+      "reconstruction_ok": true
+    },
+    {
+      "scenario": "multiturn_plan_revision",
+      "turns": 6,
+      "full_bytes": 28526,
+      "delta_bytes": 5182,
+      "delta_pct": 18.17,
+      "reconstruction_ok": true
+    }
+  ],
+  "checks": {
+    "all_lossless": true,
+    "code_edit_delta<=15%": true,
+    "large_blob_delta<=15%": true,
+    "multiturn_delta<=50%": true,
+    "drift_fails_safe": true
+  },
+  "passed": true
+}

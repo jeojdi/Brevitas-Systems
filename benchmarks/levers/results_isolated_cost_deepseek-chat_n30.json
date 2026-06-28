@@ -1,0 +1,17 @@
+{
+  "model": "deepseek-chat",
+  "n": 30,
+  "note": "each condition isolated; cost in USD (input-side)",
+  "UNIQUE_context": {
+    "full_cost_usd": 0.010617,
+    "adaptive_cost_usd": 0.00649,
+    "cost_save_pct": 38.88,
+    "cheaper": "adaptive"
+  },
+  "SHARED_KB": {
+    "full_cost_usd": 0.002854,
+    "adaptive_cost_usd": 0.004971,
+    "cost_save_pct": -74.17,
+    "cheaper": "full"
+  }
+}
