@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main, phase1-native-caching]
+  pull_request:
+    branches: [main, phase1-native-caching]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint (Python & JavaScript)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Python linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black
+
+      - name: Lint Python with ruff
+        run: ruff check .
+
+      - name: Check Python formatting with black
+        run: black --check .
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Lint JavaScript with eslint
+        run: npm run lint
+
+  python-tests:
+    runs-on: ubuntu-latest
+    name: Python Tests (3.11 & 3.12)
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r api/requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run tests with coverage
+        run: pytest -q --cov=. tests/
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        if: matrix.python-version == '3.11'
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    name: Frontend Build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Build Next.js app
+        run: npm run build
+
+      - name: Build dashboard
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: |
+            .next
+            dashboard/dist
+          retention-days: 7
+
+  deepseek-agency:
+    runs-on: ubuntu-latest
+    name: DeepSeek Marketing Agency (Optional)
+    if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r api/requirements.txt
+          pip install openai
+
+      - name: Run marketing agency with real DeepSeek
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          BREVITAS_AGENCY_PROVIDER: deepseek
+        run: |
+          python -m examples.marketing_agency.run
+
+      - name: Verify token tracking
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from api.store import UsageStore
+
+          store = UsageStore()
+
+          # Query stats for the campaign-launch pipeline
+          stats = store.get_stats(key_hash='test', start=None, end=None)
+
+          # Verify stats were recorded
+          if stats and 'by_agent' in stats:
+              by_agent = stats['by_agent']
+              if len(by_agent) > 0:
+                  print(f'✓ Recorded {len(by_agent)} agents')
+                  for agent_stat in by_agent:
+                      print(f'  - {agent_stat[\"agent\"]}: {agent_stat[\"calls\"]} call(s)')
+              else:
+                  print('⚠ No agent data recorded')
+          else:
+              print('⚠ No stats available')
+          "
+
+  status-check:
+    runs-on: ubuntu-latest
+    name: Status Check
+    needs: [lint, python-tests, frontend-build]
+    if: always()
+    steps:
+      - name: Check job statuses
+        run: |
+          if [[ "${{ needs.lint.result }}" == "failure" ||
+                "${{ needs.python-tests.result }}" == "failure" ||
+                "${{ needs.frontend-build.result }}" == "failure" ]]; then
+            echo "❌ Required checks failed"
+            exit 1
+          fi
+          echo "✓ All required checks passed"

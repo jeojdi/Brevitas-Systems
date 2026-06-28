@@ -67,3 +67,20 @@ if git diff --cached --name-only | xargs grep -E 'http://localhost|http://127\.0
 fi
 
 echo "✅ Security checks completed successfully!"
+
+# Optional: Run quick tests if pytest is available
+echo ""
+echo "Running quick test suite..."
+if command -v pytest &> /dev/null; then
+  pytest -q --tb=short 2>/dev/null || {
+    echo "⚠️  Some tests failed. Review before pushing."
+    echo "Run 'pytest -v' for detailed output."
+    # Note: Not exiting with error to allow manual review
+    # Uncomment the line below to make test failure block the push
+    # exit 1
+  }
+else
+  echo "⚠️  pytest not installed. Skipping tests. Install with: pip install pytest"
+fi
+
+echo "✅ Pre-push checks completed!"
