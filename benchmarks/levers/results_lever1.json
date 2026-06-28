@@ -1,0 +1,28 @@
+{
+  "lever": 1,
+  "results": [
+    {
+      "scenario": "anthropic_multiturn_loop",
+      "turns": 6,
+      "breakpoints": 4,
+      "cached_prefix_tokens": 2500,
+      "uncached_cost": 15030.0,
+      "actual_cost": 4405.0,
+      "savings_pct": 70.69,
+      "prefix_byte_identical": true
+    },
+    {
+      "scenario": "openai_steady_state_call",
+      "prompt_tokens": 5000,
+      "cached_tokens": 4200,
+      "savings_pct": 42.0
+    }
+  ],
+  "checks": {
+    "anthropic_loop_savings>=50%": true,
+    "breakpoint_on_large_prefix": true,
+    "prefix_byte_identical": true,
+    "openai_steady_savings>=35%": true
+  },
+  "passed": true
+}
