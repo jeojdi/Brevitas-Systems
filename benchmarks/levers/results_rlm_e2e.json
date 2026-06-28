@@ -1,0 +1,23 @@
+{
+  "dataset": "hotpot_qa/distractor",
+  "model": "gpt-4o-mini",
+  "n": 15,
+  "full": {
+    "EM": 66.67,
+    "F1": 74.92,
+    "prompt_tokens": 23723,
+    "model_calls": 15
+  },
+  "retrieval": {
+    "EM": 53.33,
+    "F1": 63.49,
+    "prompt_tokens": 9970,
+    "model_calls": 15
+  },
+  "rlm": {
+    "EM": 46.67,
+    "F1": 69.75,
+    "prompt_tokens": 76393,
+    "model_calls": 36
+  }
+}

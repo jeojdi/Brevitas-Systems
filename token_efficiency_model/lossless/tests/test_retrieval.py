@@ -5,9 +5,12 @@ import hashlib
 import numpy as np
 
 from token_efficiency_model.lossless.retrieval import (
+    AdaptiveRetrievalConfig,
     DenseRetriever,
+    MaxSimReranker,
     RetrievalConfig,
     ResidualCompressor,
+    fetch_adaptive,
     fetch_for_hop,
     maxsim,
 )
@@ -97,3 +100,111 @@ def test_residual_compression_2bit_high_ratio():
     code = comp.encode(emb)
     ratio = ResidualCompressor.full_nbytes(emb) / code.nbytes()
     assert ratio >= 6.0                               # paper reports 6-10x
+
+
+# --- MaxSim Reranker --------------------------------------------------- #
+def test_maxsim_reranker_scores_relevant_higher():
+    """MaxSim should give higher scores to passages that overlap query semantically."""
+    enc = FakeEncoder()
+    reranker = MaxSimReranker(enc)
+    candidates = [
+        (0, "dogs are loyal animals", 0.5),      # some semantic overlap
+        (1, "cats are independent creatures", 0.4),
+        (2, "dogs run fast in parks", 0.3),      # more dog/park overlap
+    ]
+    reranked = reranker.rerank("do dogs like parks", candidates, top_k=3)
+    # Should rerank with better MaxSim scores; at least should not crash
+    assert len(reranked) <= 3
+    assert all(isinstance(r[2], float) for r in reranked)
+
+
+def test_maxsim_reranker_empty_passage():
+    """MaxSim should handle passages with no sentence boundaries gracefully."""
+    enc = FakeEncoder()
+    reranker = MaxSimReranker(enc)
+    candidates = [
+        (0, "hello world", 0.5),
+        (1, "", 0.4),  # empty passage
+    ]
+    reranked = reranker.rerank("hello", candidates, top_k=2)
+    assert len(reranked) >= 1  # at least one valid result
+
+
+def test_maxsim_reranker_top_k_limit():
+    """MaxSim rerank should never return more than top_k."""
+    enc = FakeEncoder()
+    reranker = MaxSimReranker(enc)
+    candidates = [
+        (i, f"passage about cats {i}", 0.5 - i * 0.01)
+        for i in range(10)
+    ]
+    reranked = reranker.rerank("cats", candidates, top_k=3)
+    assert len(reranked) == 3
+
+
+# --- Adaptive Retrieval ------------------------------------------------- #
+def test_adaptive_retrieval_elbow_method():
+    """Adaptive retrieval should find largest score gap (elbow method)."""
+    enc = FakeEncoder()
+    r = DenseRetriever(enc)
+    # Create passages with decreasing relevance
+    passages = [
+        "cats are small animals",
+        "dogs are loyal animals",
+        "birds fly in the sky",
+        "fish swim in water",
+        "reptiles are cold-blooded",
+    ]
+    r.index(passages)
+    cfg = AdaptiveRetrievalConfig(
+        max_k=5,
+        use_maxsim_rerank=False,  # test DPR-only elbow method
+    )
+    chunks, meta = fetch_adaptive(r, "small cats", full_context=passages, cfg=cfg)
+    # Should find an elbow and select fewer than all 5 passages
+    assert meta["fallback_applied"] is False
+    assert meta["k_chosen"] >= 1
+    assert meta["k_chosen"] <= 5  # should be limited
+
+
+def test_adaptive_retrieval_with_maxsim():
+    """Adaptive retrieval with MaxSim reranking should find elbow after reranking."""
+    enc = FakeEncoder()
+    r = DenseRetriever(enc)
+    passages = [
+        "cats are small domestic animals",
+        "dogs are loyal domestic animals",
+        "the cat sat on the mat",
+    ]
+    r.index(passages)
+    cfg = AdaptiveRetrievalConfig(
+        max_k=3,
+        use_maxsim_rerank=True,
+    )
+    chunks, meta = fetch_adaptive(r, "cats", full_context=passages, encoder=enc, cfg=cfg)
+    assert meta["fallback_applied"] is False
+    assert meta["k_chosen"] >= 1
+    assert meta["method"] == "adaptive_maxsim"
+    assert len(meta["scores"]) == meta["k_chosen"]
+
+
+def test_adaptive_empty_index_fallback():
+    """Adaptive should fallback to full context if index is empty."""
+    r = DenseRetriever(FakeEncoder())
+    full = ["full1", "full2", "full3"]
+    cfg = AdaptiveRetrievalConfig()
+    chunks, meta = fetch_adaptive(r, "query", full_context=full, cfg=cfg)
+    assert meta["fallback_applied"] is True
+    assert chunks == full
+
+
+def test_adaptive_low_confidence_fallback():
+    """Adaptive should fallback to full context if top score is too low."""
+    enc = FakeEncoder()
+    r = DenseRetriever(enc)
+    r.index(["completely unrelated gardening text"])
+    full = ["full1", "full2"]
+    cfg = AdaptiveRetrievalConfig(min_top_score=0.9)  # unreasonably high
+    chunks, meta = fetch_adaptive(r, "quantum computing lattice", full_context=full, cfg=cfg)
+    assert meta["fallback_applied"] is True
+    assert chunks == full

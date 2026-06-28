@@ -1,0 +1,35 @@
+{
+  "dataset": "hotpot_qa/distractor (validation)",
+  "model": "deepseek-chat",
+  "n_questions": 8,
+  "full_context": {
+    "EM": 50.0,
+    "F1": 65.48,
+    "prompt_tokens": 12639
+  },
+  "fixed_k5": {
+    "EM": 50.0,
+    "F1": 59.38,
+    "prompt_tokens": 5354,
+    "cached_tokens": 4992,
+    "EM_delta": 0.0,
+    "token_reduction_pct": 57.64
+  },
+  "fixed_k8": {
+    "EM": 62.5,
+    "F1": 69.64,
+    "prompt_tokens": 9073,
+    "cached_tokens": 8576,
+    "EM_delta": 12.5,
+    "token_reduction_pct": 28.21
+  },
+  "adaptive_maxsim": {
+    "EM": 62.5,
+    "F1": 80.21,
+    "prompt_tokens": 6718,
+    "cached_tokens": 0,
+    "avg_k_chosen": 6.0,
+    "EM_delta": 12.5,
+    "token_reduction_pct": 46.85
+  }
+}
