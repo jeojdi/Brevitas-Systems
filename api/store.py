@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # Cost per 1M tokens (USD) — updated from provider pricing pages
 PROVIDER_COSTS_PER_1M: dict = {
@@ -116,7 +117,7 @@ class UsageStore:
         baseline_tokens: int,
         optimized_tokens: int,
         savings_pct: float,
-        quality_proxy: float,
+        quality_proxy: Optional[float],
         provider: str = "",
         model: str = "",
         cost_saved_usd: float = 0.0,
@@ -135,7 +136,7 @@ class UsageStore:
                     baseline_tokens,
                     optimized_tokens,
                     round(savings_pct, 4),
-                    round(quality_proxy, 6),
+                    round(quality_proxy, 6) if quality_proxy is not None else None,
                     provider,
                     model,
                     round(cost_saved_usd, 8),

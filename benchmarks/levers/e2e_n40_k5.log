@@ -1,0 +1,64 @@
+Using the latest cached version of the dataset since hotpot_qa couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'distractor' at /Users/james/.cache/huggingface/datasets/hotpot_qa/distractor/0.0.0/1908d6afbbead072334abe2965f91bd2709910ab (last modified on Fri Jun 26 22:45:21 2026).
+[1/40] gold='yes' full='Yes'(EM1) loss='No'(EM0)
+[2/40] gold='Chief of Protocol' full='United States ambassador to Gh'(EM0) loss='Shirley Temple'(EM0)
+[3/40] gold='Animorphs' full='Animorphs'(EM1) loss='Animorphs'(EM1)
+[4/40] gold='no' full='Yes'(EM0) loss='No'(EM1)
+[5/40] gold='Greenwich Village, New York Ci' full='Greenwich Village'(EM0) loss='New York City'(EM0)
+[6/40] gold='YG Entertainment' full='YG Entertainment'(EM1) loss='YG Entertainment'(EM1)
+[7/40] gold='Eenasul Fateh' full='Eenasul Fateh'(EM1) loss='Eenasul Fateh'(EM1)
+[8/40] gold='3,677 seated' full='4,000 capacity (3,677 seated)'(EM0) loss='4,000'(EM0)
+[9/40] gold='Terry Richardson' full='Annie Morton'(EM0) loss='Annie Morton'(EM0)
+[10/40] gold='yes' full='Yes'(EM1) loss='Yes'(EM1)
+[11/40] gold='Kansas Song' full='Kansas Song (We’re From Kansas'(EM0) loss='Kansas Song (We’re From Kansas'(EM0)
+[12/40] gold='David Weissman' full='David Weissman'(EM1) loss='David Weissman'(EM1)
+[13/40] gold='1999' full='1999'(EM1) loss='1999'(EM1)
+[14/40] gold='no' full='No'(EM1) loss='Yes'(EM0)
+[15/40] gold='from 1986 to 2013' full='1986 to 2013'(EM0) loss='1986 to 2013'(EM0)
+[16/40] gold='9,984' full='9,984'(EM1) loss='The context does not provide t'(EM0)
+[17/40] gold='the North Atlantic Conference' full='North Atlantic Conference'(EM1) loss='America East Conference'(EM0)
+[18/40] gold='yes' full='yes'(EM1) loss='Yes'(EM1)
+[19/40] gold='1969 until 1974' full='1969 until 1974'(EM1) loss='1969 to 1974'(EM0)
+[20/40] gold='Robert Erskine Childers DSC' full='Robert Erskine Childers'(EM0) loss='Robert Erskine Childers'(EM0)
+[21/40] gold='Pedro Rodríguez' full='Pedro Rodríguez'(EM1) loss='Pedro Rodríguez'(EM1)
+[22/40] gold='Sonic' full='Sonic the Hedgehog'(EM0) loss='Sonic'(EM1)
+[23/40] gold='keyboard function keys' full='Siri Remote'(EM0) loss='Siri Remote'(EM0)
+[24/40] gold='Badly Drawn Boy' full='Badly Drawn Boy'(EM1) loss='Badly Drawn Boy'(EM1)
+[25/40] gold="World's Best Goalkeeper" full="IFFHS World's Best Goalkeeper"(EM0) loss="World's Best Goalkeeper"(EM1)
+[26/40] gold='Barton Lee Hazlewood' full='Lee Hazlewood'(EM0) loss='Lee Hazlewood'(EM0)
+[27/40] gold='1838' full='1838'(EM1) loss='1838'(EM1)
+[28/40] gold='yes' full='Yes'(EM1) loss='Yes'(EM1)
+[29/40] gold='Henry J. Kaiser' full='Henry J. Kaiser'(EM1) loss='Henry J. Kaiser'(EM1)
+[30/40] gold='Arena of Khazan' full='Arena of Khazan'(EM1) loss='Arena of Khazan'(EM1)
+[31/40] gold='2000' full='2000'(EM1) loss='2000'(EM1)
+[32/40] gold='Fujioka, Gunma' full='Fujioka, Gunma'(EM1) loss='Fujioka, Gunma'(EM1)
+[33/40] gold='Charles Eugène' full='Charles Nungesser'(EM0) loss='Charles Nungesser'(EM0)
+[34/40] gold='no' full='No'(EM1) loss='No'(EM1)
+[35/40] gold='Letters to Cleo' full='Screaming Trees'(EM0) loss='Screaming Trees'(EM0)
+[36/40] gold='October 1922' full='1923'(EM0) loss='1923'(EM0)
+[37/40] gold='2000' full='2000'(EM1) loss='2000'(EM1)
+[38/40] gold='World War II' full='World War II'(EM1) loss='World War I'(EM0)
+[39/40] gold='no' full='No'(EM1) loss='No'(EM1)
+[40/40] gold='New York City' full='New York City'(EM1) loss='New York City'(EM1)
+
+=== E2E accuracy (HotpotQA + DeepSeek) ===
+{
+  "dataset": "hotpot_qa/distractor (validation)",
+  "model": "deepseek-chat",
+  "n_questions": 40,
+  "top_k": 5,
+  "full_context": {
+    "EM": 62.5,
+    "F1": 78.37,
+    "prompt_tokens": 57623
+  },
+  "lossless_retrieval": {
+    "EM": 55.0,
+    "F1": 70.01,
+    "prompt_tokens": 25870,
+    "cached_tokens": 6144
+  },
+  "token_reduction_pct": 55.1,
+  "EM_delta": -7.5,
+  "F1_delta": -8.36
+}

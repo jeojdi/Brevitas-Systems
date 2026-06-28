@@ -363,6 +363,34 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     }
 
 
+class RetrievalCompressRequest(BaseModel):
+    task:              str       = Field(default="", max_length=2000)
+    prior_context:     List[str] = Field(default=[], max_length=500)
+    k:                 int       = Field(default=5, ge=1, le=50)
+    min_top_score:     float     = Field(default=0.2, ge=0.0, le=1.0)
+
+
+@app.post("/v1/compress/retrieval")
+@limiter.limit("60/minute")
+def compress_retrieval(request: Request, body: RetrievalCompressRequest,
+                       kh: str = Depends(_authenticated)):
+    """Lossless-lever path: reduce prior_context to the chunks relevant to `task` using
+    dense retrieval (Lever 4 — DPR/ColBERTv2 family), with an accuracy-first fail-safe to
+    full context. Savings are measured with the real tokenizer; no quality proxy."""
+    from token_efficiency_model.lossless.api_adapter import retrieval_select
+
+    out = retrieval_select(body.task, body.prior_context, k=body.k,
+                           min_top_score=body.min_top_score)
+    _store.record_usage(
+        key_hash=kh,
+        baseline_tokens=out["baseline_tokens"],
+        optimized_tokens=out["optimized_tokens"],
+        savings_pct=out["savings_pct"],
+        quality_proxy=None,
+    )
+    return out
+
+
 class _ClientGone(Exception):
     """Raised inside the worker thread to unwind the pipeline when the client disconnects."""
 
