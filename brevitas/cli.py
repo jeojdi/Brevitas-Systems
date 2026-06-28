@@ -223,5 +223,40 @@ def optimize(prompt: str, path: str, task: str, rate, as_json: bool) -> None:
     _print("\n[bold]Optimized prompt:[/bold]\n" + optimized)
 
 
+@main.command()
+@click.argument("path", default=".", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def analyze(path: str, as_json: bool) -> None:
+    """Scan ANY codebase for LLM API calls (SDK + raw HTTP) and recommend a per-call
+    strategy: optimize (compress simple/creative prompts) vs lossless (keep complex ones,
+    save via caching)."""
+    from .scanner.broad import analyze_path
+    rep = analyze_path(path)
+
+    if as_json:
+        import json as _json
+        click.echo(_json.dumps({
+            "files_scanned": rep.files_scanned,
+            "optimize": len(rep.optimize), "lossless": len(rep.lossless),
+            "calls": [{
+                "location": c.location, "provider": c.provider, "transport": c.transport,
+                "task": c.task, "complexity": c.complexity, "strategy": c.strategy.value,
+                "prompt_excerpt": c.prompt_excerpt, "reason": c.reason,
+            } for c in rep.calls],
+        }, indent=2))
+        return
+
+    if not rep.calls:
+        _print(f"[dim]Scanned {rep.files_scanned} files — no LLM API calls found.[/dim]")
+        return
+    _print(f"\n[bold]{len(rep.calls)}[/bold] LLM API call(s) across {rep.files_scanned} files:\n")
+    for c in rep.calls:
+        color = "yellow" if c.strategy.value == "optimize" else ("green" if c.strategy.value == "lossless" else "dim")
+        _print(f"  [cyan]{c.location}[/cyan]  {c.provider}/{c.transport}  "
+               f"[{color}]{c.strategy.value.upper()}[/{color}]  [dim]{c.reason}[/dim]")
+    _print(f"\n[bold]Recommend[/bold]: [yellow]{len(rep.optimize)} OPTIMIZE[/yellow] "
+           f"(compress) · [green]{len(rep.lossless)} LOSSLESS[/green] (keep + cache)")
+
+
 if __name__ == "__main__":
     main()
