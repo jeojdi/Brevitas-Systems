@@ -24,6 +24,24 @@ from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipel
 from token_efficiency_model.common.metrics import estimate_tokens_many
 from .auth import generate_api_key, hash_key
 from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M
+from .mirror import mirror_to_supabase
+
+# ── Supabase Mirror ──────────────────────────────────────────────────────────
+
+def _get_user_id_for_key(key_hash: str) -> Optional[str]:
+    """
+    Get user UUID for an API key.
+
+    In a production deployment, the api_keys table would have a user_id column
+    populated during key creation. This function would query that.
+
+    For now, returns None (mirror is optional and non-blocking).
+    """
+    # TODO: Query api_keys table to get user_id
+    # In production: SELECT user_id FROM api_keys WHERE key_hash = ?
+    # For now, mirror is optional
+    return None
+
 
 # ── Encryption ───────────────────────────────────────────────────────────────
 
@@ -355,6 +373,26 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
         agent=body.agent,
         run_id=body.run_id,
     )
+
+    # Mirror to Supabase (non-blocking)
+    try:
+        user_id = _get_user_id_for_key(kh)
+        if user_id:
+            mirror_to_supabase(
+                user_id=user_id,
+                key_hash=kh,
+                provider=body.provider or "unknown",
+                model=body.model or "unknown",
+                baseline_tokens=baseline_tokens,
+                optimized_tokens=output_tokens,
+                session_id=body.session_id or "",
+                pipeline=body.pipeline or "",
+                agent=body.agent or "",
+                run_id=body.run_id or "",
+            )
+    except Exception as e:
+        # Log but don't fail the request
+        print(f"Warning: Failed to mirror to Supabase: {e}")
 
     return {
         "compressed_messages": compressed_msgs,
