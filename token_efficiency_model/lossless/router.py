@@ -48,6 +48,9 @@ class _SessionState:
     last_prefix_hash: str = ""
     calls: int = 0
     repeats: int = 0
+    # observed REAL cache performance from provider usage: EWMA of cached/prompt fraction
+    obs_hit: float = -1.0          # -1 = no observation yet
+    obs_count: int = 0
 
 
 @dataclass
@@ -60,6 +63,17 @@ class BrevitasRouter:
 
     def _discount(self) -> float:
         return CACHE_DISCOUNT.get(self.provider.lower(), CACHE_DISCOUNT["default"])
+
+    def observe_usage(self, session_id: str, prompt_tokens: int, cached_tokens: int) -> None:
+        """Feed back REAL provider usage so the router learns the provider's actual cache
+        hit rate (advertised discounts don't always activate). Call after each cache_only
+        request with the response's usage. EWMA of cached/prompt fraction."""
+        if prompt_tokens <= 0:
+            return
+        st = self._sessions.setdefault(session_id, _SessionState())
+        hit = max(0.0, min(1.0, cached_tokens / prompt_tokens))
+        st.obs_hit = hit if st.obs_hit < 0 else 0.5 * st.obs_hit + 0.5 * hit
+        st.obs_count += 1
 
     def _observe(self, session_id: str, stable_context: Sequence[str]) -> float:
         """Update repeat tracking; return this session's running repeat rate."""
@@ -83,15 +97,23 @@ class BrevitasRouter:
             return RouteDecision("passthrough", "context below cacheable minimum",
                                  0.0, 0.0, repeat_rate, disc)
 
-        # Estimated amortized input cost per call (relative units; tail q is common to both).
-        # cache_only: the repeating fraction is billed at the cache discount, the rest fresh.
-        cache_only = ctx_tokens * (repeat_rate * disc + (1 - repeat_rate) * 1.0) + q_tokens
-        # retrieve: a smaller subset, but varies per call -> billed fresh (no cache benefit).
+        st = self._sessions[session_id]
+        # Effective cache multiplier for cache_only. If we have REAL observations of how much
+        # the provider actually caches (obs_hit), use them — advertised discounts don't always
+        # activate (e.g. OpenAI underdelivered in tests). Else fall back to repeat_rate model.
+        if st.obs_hit >= 0.0 and st.obs_count >= 2:
+            eff_mult = (1 - st.obs_hit) * 1.0 + st.obs_hit * disc
+            why_basis = f"observed cache hit {st.obs_hit:.0%}"
+        else:
+            eff_mult = repeat_rate * disc + (1 - repeat_rate) * 1.0
+            why_basis = f"repeat {repeat_rate:.0%} x discount {disc:.0%}"
+
+        cache_only = ctx_tokens * eff_mult + q_tokens
         retrieve = ctx_tokens * self.retrieve_keep_frac * 1.0 + q_tokens
 
         if retrieve < cache_only:
-            strat, why = "retrieve", "retrieval estimated cheaper (low repeat or weak cache)"
+            strat, why = "retrieve", f"retrieval cheaper ({why_basis})"
         else:
-            strat, why = "cache_only", "caching estimated cheaper (context repeats + strong cache)"
+            strat, why = "cache_only", f"caching cheaper ({why_basis})"
         return RouteDecision(strat, why, round(cache_only, 1), round(retrieve, 1),
                              round(repeat_rate, 3), disc)

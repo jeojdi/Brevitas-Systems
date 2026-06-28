@@ -46,6 +46,30 @@ def test_openai_partial_repeat_prefers_retrieve():
     assert d.strategy == "retrieve"
 
 
+def test_cache_feedback_flips_decision_when_provider_underdelivers():
+    """If observed real cache hit is low (provider not actually caching), the router should
+    switch a repeating-context session from cache_only to retrieve — avoiding money loss."""
+    r = BrevitasRouter(provider="openai")
+    ctx = [_big()]
+    for _ in range(5):
+        r.decide("sess", ctx, "q")
+        r.observe_usage("sess", prompt_tokens=3000, cached_tokens=150)  # 5% hit
+    d = r.decide("sess", ctx, "q")
+    assert "observed" in d.reason
+    assert d.strategy == "retrieve"
+
+
+def test_cache_feedback_keeps_cache_when_provider_delivers():
+    """High observed cache hit (90%) on a strong-cache provider -> stay cache_only."""
+    r = BrevitasRouter(provider="deepseek")
+    ctx = [_big()]
+    for _ in range(5):
+        r.decide("sess", ctx, "q")
+        r.observe_usage("sess", prompt_tokens=3000, cached_tokens=2700)  # 90% hit
+    d = r.decide("sess", ctx, "q")
+    assert d.strategy == "cache_only"
+
+
 def test_cost_estimates_present_and_ordered():
     r = BrevitasRouter(provider="deepseek")
     ctx = [_big()]
