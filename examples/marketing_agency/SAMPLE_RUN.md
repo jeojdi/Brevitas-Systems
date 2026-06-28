@@ -1,336 +1,67 @@
-# Sample Marketing Agency Campaign Run
+# Marketing Agency — Live DeepSeek Run (real, measured)
 
-## Status
+**This is a real run against the DeepSeek API**, recorded in the Brevitas usage store
+(`api/brevitas.db`, table `usage_log`) and attributed per agent under
+`pipeline = "campaign-launch"`. Numbers below are measured token counts from the
+Brevitas pipeline — not estimates, not constants.
 
-**Status:** ✅ LIVE DeepSeek Run (Real API Integration)  
-**Date:** 2026-06-27  
-**Provider:** DeepSeek (Real API via Brevitas SDK)  
-**Run ID:** run_eau51P6tqM42BLKZ  
-**Pipeline:** campaign-launch  
-**Duration:** ~5 minutes (7 sequential agent calls to real DeepSeek API)
+## How it was run (reproducible)
 
----
-
-## CRITICAL FIX: REAL BREVITAS INTEGRATION ✅
-
-The marketing agency backend has been **wired for real** — no more hardcoded fake stats.
-
-### Before (Broken)
-```python
-# Called provider.chat() directly — bypassed Brevitas entirely
-response_text = self.provider.chat(model, messages, temperature=0.7)
-return response_text  # No usage tracking, no labels recorded
-```
-
-### After (Fixed)
-```python
-# Routes through Brevitas SDK wrapper
-if self.provider_name == "deepseek" and self.brevitas_client is not None:
-    response = self.brevitas_client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.7,
-    )  # → routes through /v1/compress endpoint
-    return response.choices[0].message.content  # Usage recorded with labels
-```
-
-### Architecture
-1. **Brevitas SDK Configuration:**
-   ```python
-   brevitas.configure(api_key="bvt_...", base_url="http://localhost:8000")
-   ```
-
-2. **DeepSeek Client + Wrapper:**
-   ```python
-   deepseek_client = OpenAI(
-       api_key=os.environ.get("DEEPSEEK_API_KEY"),
-       base_url="https://api.deepseek.com/v1"
-   )
-   brevitas_client = brevitas.wrap(deepseek_client)
-   ```
-
-3. **Label Propagation:**
-   ```python
-   with start_run(pipeline="campaign-launch"):
-       with agent("intake"):  # Sets labels via contextvars
-           response = brevitas_client.chat.completions.create(...)
-           # Labels: pipeline="campaign-launch", agent="intake", run_id=<auto>
-   ```
-
-4. **Tracking Flow:**
-   - Each `brevitas_client.chat.completions.create()` call intercepts the request
-   - Compresses via Brevitas `/v1/compress` endpoint
-   - Records baseline_tokens vs optimized_tokens
-   - Persists with labels (pipeline, agent, run_id) to usage_log
-   - No calls bypass the tracking system
-
----
-
-## Campaign Execution: AuthFlow Product Launch
-
-### Brief
-**Product:** AuthFlow - Developer-friendly authentication platform  
-**Goal:** Launch Q3 marketing campaign to acquire 100k+ developer signups  
-**Target Audience:** Full-stack engineers, indie hackers, startup CTOs  
-**Budget:** $75,000  
-**Timeline:** 45 days (July 1 - August 15)  
-**Core Message:** "Auth shouldn't require a PhD" — transparent, open, no lock-in
-
----
-
-### Live Campaign Workflow
-
-**[1/7] INTAKE AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-chat`
-- **Task:** Parse client brief → structured goals, audience, budget, timeline, metrics
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  Core Goal: Launch Q3 marketing campaign to acquire 100k+ developer signups
-  Target Audience: Full-stack engineers, indie hackers, startup CTOs
-  Budget: $75,000
-  Timeline: 45 days (July 1 - August 15)
-  Key Message: "Auth without the PhD"
-  ```
-
-**[2/7] RESEARCHER AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-reasoner`
-- **Task:** Market analysis, competitive landscape, audience insights
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  Market Trends:
-  - Developer authentication market growing at 40% YoY
-  - Anti-vendor-lock-in sentiment rising
-  - Demand for transparent, open pricing
-  - Shift toward infrastructure-as-code auth solutions
-  
-  Top Competitors: Auth0, Firebase, Okta, Cognito
-  Market Gap: Transparent pricing + open API + developer-first UX
-  ```
-
-**[3/7] STRATEGIST AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-reasoner`
-- **Task:** Multi-channel strategy, messaging pillars, budget allocation
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  Channel Strategy:
-  1. LinkedIn (40% budget): Thought leadership, CTOs, tech leads
-  2. Twitter/X (30% budget): Community, viral potential, developers
-  3. Product Hunt (20% budget): Launch day, organic discovery
-  4. Content (10% budget): Blog, case studies, technical posts
-  
-  Messaging Pillars:
-  - "No Lock-In": Transparent pricing, open API, data ownership
-  - "Developer First": Built by engineers, for engineers
-  - "Trust & Simplicity": Clear pricing, honest documentation
-  ```
-
-**[4/7] COPYWRITER AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-chat`
-- **Task:** Create multi-channel copy variants (LinkedIn, Twitter, Product Hunt)
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  LinkedIn Headline:
-  "Your auth provider shouldn't hold your data hostage. AuthFlow: transparent 
-  pricing, open API, your rules. Join 1000+ developers choosing freedom over 
-  vendor lock-in."
-  
-  Twitter Hook:
-  "auth0 is expensive. firebase locks you in. built different. authflow. 
-  open. transparent. yours. 🔓"
-  
-  Product Hunt:
-  "AuthFlow — The Auth Solution That Respects Developers. No Lock-In. 
-  Transparent Pricing. Open API."
-  ```
-
-**[5/7] SEO_OPTIMIZER AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-chat`
-- **Task:** Keywords, on-page optimization, link strategy
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  Primary Keywords:
-  - "transparent pricing authentication" (Unique, low competition)
-  - "auth0 alternative" (High intent, competitive)
-  - "open source authentication" (Strategic, growing)
-  - "developer authentication platform" (Broad, scalable)
-  
-  Meta Title: "AuthFlow | Transparent Authentication for Developers"
-  Meta Desc: "Open API authentication with transparent pricing. No vendor 
-  lock-in, full data ownership. Built for developers, by developers."
-  
-  Content Strategy: 6 pillar articles on auth transparency, security, cost
-  ```
-
-**[6/7] EDITOR AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-chat`
-- **Task:** QA review, brand consistency, tone alignment
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  QA Assessment: APPROVED ✅
-  
-  Brand Alignment: Excellent
-  - Tone consistently "anti-enterprise-bloat"
-  - Messaging aligned with transparency pillar
-  - Developer-first language throughout
-  
-  Feedback:
-  + Strong value prop differentiation
-  + Copy avoids buzzwords, speaks engineer reality
-  - Minor: Tighten LinkedIn CTA to 2-sentence summary
-  - Minor: Add social proof count ("1000+ developers trust AuthFlow")
-  ```
-
-**[7/7] REPORTER AGENT** ✅ Real DeepSeek Call
-- **Model:** `deepseek-chat`
-- **Task:** Assemble comprehensive campaign brief + execution plan
-- **Status:** Successfully executed via Brevitas SDK
-- **Real Output Summary:**
-  ```
-  AUTHFLOW Q3 CAMPAIGN BRIEF
-  
-  Executive Summary:
-  45-day Q3 campaign targeting developers frustrated with incumbent auth 
-  solutions. Budget $75k, goal 5k signups at <$15 CAC, 50k+ impressions.
-  
-  Campaign capitalizes on rising anti-vendor-lock-in sentiment. Emphasizes:
-  - Transparent, published pricing
-  - Open REST API (no proprietary lock-in)
-  - Developer-first design philosophy
-  
-  Timeline & Budget:
-  - Week 1-2: Content prep, ads setup
-  - Week 3-6: Campaign execution (LinkedIn, Twitter, PH launch)
-  - Week 7-8: Data analysis, optimization
-  
-  Success Metrics:
-  - Impressions: 50k+
-  - CTR: 3-5%
-  - Signups: 5k+
-  - CAC: <$15
-  ```
-
----
-
-## Campaign Results
-
-```
-============================================================
-Campaign planning complete!
-============================================================
-
-✅ All 7 agents executed successfully
-✅ Real DeepSeek API calls (not mock/cached)
-✅ Brevitas SDK routing enabled for all calls
-✅ Labels tracked:
-   - pipeline = "campaign-launch"
-   - run_id = "run_eau51P6tqM42BLKZ"
-   - agent = "intake", "researcher", "strategist", etc.
-✅ Each agent wrapped with: with agent("<role>"):
-✅ Token usage recorded (baseline vs optimized)
-```
-
----
-
-## System Integrity
-
-### What Changed
-
-**Honest Reporting:**
-- ❌ **Before:** Hardcoded `mock_stats` dict printed regardless of provider
-- ✅ **After:** Only real measured stats from API (or honest error)
-
-**Tracking Bypass:**
-- ❌ **Before:** Direct provider.chat() calls, zero tracking
-- ✅ **After:** All calls route through Brevitas `/v1/compress` endpoint
-
-**Error Handling:**
-- ❌ **Before:** Silent failures with fabricated numbers
-- ✅ **After:** Clear error messages with troubleshooting guidance
-
-### Verification
-
-The system now verifies:
-1. Brevitas server running → connect and fetch stats
-2. API key valid → request succeeds (200 OK)
-3. Calls actually recorded → at least 1 agent row in database
-4. Labels persisted → pipeline, agent, run_id populated
-5. Reconciliation → Σ(agent savings) = pipeline total
-
-If any check fails, the system exits with an error rather than printing fabricated numbers.
-
----
-
-## How to Run This
-
-### Prerequisites
-1. Brevitas API server: `uvicorn api.server:app --host 127.0.0.1 --port 8000`
-2. Brevitas API key: `BREVITAS_API_KEY=<key>`
-3. DeepSeek API key: `DEEPSEEK_API_KEY=<key>`
-
-### Execute Campaign
 ```bash
-export BREVITAS_API_KEY="bvt_..."
-export DEEPSEEK_API_KEY="sk-..."
-export BREVITAS_AGENCY_PROVIDER=deepseek
+# 1. start the Brevitas API server
+python -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 
-# Run campaign (3-5 minutes for 7 sequential DeepSeek calls)
+# 2. create a Brevitas key and set the provider to DeepSeek
+KEY=$(curl -s -X POST localhost:8000/v1/keys -d '{"name":"agency-live-run"}' | jq -r .api_key)
+curl -s -X PUT localhost:8000/v1/provider -H "X-API-Key: $KEY" \
+  -d "{\"provider\":\"deepseek\",\"provider_api_key\":\"$DEEPSEEK_API_KEY\",\"model\":\"deepseek-chat\"}"
+
+# 3. run the 7-agent campaign live (takes several minutes — reasoner agents are slow)
+BREVITAS_API_KEY=$KEY DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY \
+BREVITAS_AGENCY_PROVIDER=deepseek BREVITAS_BASE_URL=http://127.0.0.1:8000 \
 python -m examples.marketing_agency.run
 ```
 
-### Expected Output
-```
-🚀 Starting campaign with DEEPSEEK provider...
-✓ Brevitas configured (api_key=bvt_...)
-✓ DeepSeek client configured (base_url=https://api.deepseek.com/v1)
+All 7 agents executed against real DeepSeek (`deepseek-chat` / `deepseek-reasoner`),
+each call routed through Brevitas `/v1/compress` with `pipeline`/`agent`/`run_id` labels.
 
-Pipeline: campaign-launch
-Run ID: run_eau51P6tqM42BLKZ
+## Per-agent savings (measured)
 
-[1/7] INTAKE AGENT: ✓ Brief processed
-[2/7] RESEARCHER AGENT: ✓ Market research complete
-[3/7] STRATEGIST AGENT: ✓ Strategy developed
-[4/7] COPYWRITER AGENT: ✓ Copy created
-[5/7] SEO_OPTIMIZER AGENT: ✓ SEO strategy complete
-[6/7] EDITOR AGENT: ✓ QA review complete
-[7/7] REPORTER AGENT: ✓ Final brief assembled
+| Agent          | Model             | Baseline tok | Optimized tok | Saved | Savings % |
+|----------------|-------------------|-------------:|--------------:|------:|----------:|
+| intake         | deepseek-chat     |          240 |           188 |    52 |     21.7% |
+| researcher     | deepseek-reasoner |          727 |           671 |    56 |      7.7% |
+| strategist     | deepseek-reasoner |          908 |           511 |   397 |     43.7% |
+| copywriter     | deepseek-chat     |          867 |           461 |   406 |     46.8% |
+| seo_optimizer  | deepseek-chat     |        2,018 |         1,612 |   406 |     20.1% |
+| editor         | deepseek-chat     |        4,054 |         3,815 |   239 |      5.9% |
+| reporter       | deepseek-chat     |        6,369 |         5,623 |   746 |     11.7% |
+| **TOTAL**      |                   |   **15,183** |    **12,881** | **2,302** | **15.2%** |
 
-Campaign planning complete!
+**Reconciliation:** Σ(per-agent saved) = 2,302 = pipeline total. ✓ Attribution holds
+across all 7 agents under `pipeline="campaign-launch"`.
 
-Fetching per-agent statistics from Brevitas API...
-[REAL stats printed here from /v1/stats/agents?pipeline=campaign-launch]
-```
+Context accumulates down the pipeline (reporter sees all prior outputs → 6,369 baseline
+tokens), so later agents carry the largest absolute savings.
 
----
+## Known issues found during this run (open — must fix)
 
-## Production Status
+1. **`run.py` response-shape mismatch (cosmetic, misleading).** `run.py` expects the
+   stats response as `{"by_agent": [...], "pipeline_total": {...}}`, but
+   `GET /v1/stats/agents` returns a bare JSON array. So `run.py` prints "No agent
+   statistics recorded" and exits 1 **even though the data was recorded correctly**.
+   The numbers above were read directly from the API/DB, not from `run.py`'s summary.
 
-✅ **System is now production-ready:**
-- Real API integration verified
-- All calls tracked with labels
-- Reconciliation invariants validated
-- Error handling honest and clear
-- 19/19 integration tests passing
+2. **Double-recording.** An agent call can produce two `usage_log` rows — one from the
+   server-side `/v1/compress` handler and one from the SDK wrapper's `/v1/usage` report
+   (observed for `intake`). This inflates `calls` and can double-count savings.
 
-**No more:**
-- ❌ Fake hardcoded stats
-- ❌ Tracking bypass
-- ❌ Silent failures
+3. **Provider mislabel -> $0 billing.** The SDK wrapper records `provider="openai"` (and
+   some rows have empty provider) for what are DeepSeek calls, so `cost_for_tokens` finds
+   no matching DeepSeek price and `cost_saved_usd`/`brevitas_fee_usd` come out **0**.
+   Token tracking is correct; the **cost/fee (billing) path is not yet functional** until
+   the provider label is fixed to `deepseek`.
 
-**Only:**
-- ✅ Real measured data
-- ✅ Full label tracking
-- ✅ Honest error reporting
-
----
-
-**Generated:** 2026-06-27  
-**Campaign:** AuthFlow Q3 Product Launch  
-**Pipeline:** campaign-launch  
-**Run ID:** run_eau51P6tqM42BLKZ  
-**Status:** ✅ Live execution verified, real DeepSeek API, all 7 agents executed successfully
+**Bottom line:** per-pipeline / per-agent **token** tracking works end-to-end on live
+DeepSeek and reconciles. The **dollar billing** half needs the provider-label fix before
+the "charge a % of savings" number is real.
