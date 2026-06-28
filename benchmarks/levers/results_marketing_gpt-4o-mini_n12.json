@@ -1,0 +1,15 @@
+{
+  "scenario": "marketing_agent",
+  "model": "gpt-4o-mini",
+  "n_tasks": 12,
+  "brand_prompt_tokens": 3753,
+  "total_prompt_tokens": 45262,
+  "cached_tokens_seen": 40832,
+  "cost_if_uncached_usd": 0.006789,
+  "cost_with_caching_usd": 0.003727,
+  "caching_savings_pct": 45.11,
+  "router_decisions": {
+    "cache_only": 11,
+    "retrieve": 1
+  }
+}

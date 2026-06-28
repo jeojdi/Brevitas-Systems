@@ -1,0 +1,15 @@
+{
+  "scenario": "marketing_agent",
+  "model": "deepseek-chat",
+  "n_tasks": 12,
+  "brand_prompt_tokens": 3753,
+  "total_prompt_tokens": 45243,
+  "cached_tokens_seen": 40832,
+  "cost_if_uncached_usd": 0.012216,
+  "cost_with_caching_usd": 0.002293,
+  "caching_savings_pct": 81.23,
+  "router_decisions": {
+    "cache_only": 11,
+    "retrieve": 1
+  }
+}

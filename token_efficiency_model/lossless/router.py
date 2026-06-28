@@ -1,0 +1,97 @@
+"""Auto-router — picks the cheapest lossless strategy per request, automatically.
+
+The benchmarks showed the right strategy depends on (a) whether the bulk context REPEATS
+across calls and (b) the provider's prompt-cache discount. This router detects both at
+runtime and chooses, per request, between:
+
+  * "cache_only" : keep the full context, rely on provider prefix caching (best when the
+                   context repeats AND the provider caches strongly, e.g. DeepSeek/Anthropic).
+  * "retrieve"   : send only the relevant retrieved subset (best when the context is large
+                   and varies per call, OR the provider caches weakly, e.g. OpenAI).
+  * "passthrough": context too small to bother.
+
+Decision is by estimated amortized input cost — no guessing. Lossless either way: cache_only
+sends everything; retrieve fails safe to full context on low confidence.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence
+
+from .provider_cache import count_tokens
+
+# cached-token price as a fraction of fresh input price (from provider docs)
+CACHE_DISCOUNT = {
+    "anthropic": 0.10,   # cache read ~10% of input
+    "deepseek": 0.10,    # disk cache ~10%
+    "openai": 0.50,      # cached input ~50%
+    "groq": 1.00,        # no caching
+    "default": 0.50,
+}
+MIN_CACHEABLE = 1024     # provider minimum cacheable prefix (tokens)
+
+
+@dataclass
+class RouteDecision:
+    strategy: str                 # cache_only | retrieve | passthrough
+    reason: str
+    est_cost_cache_only: float
+    est_cost_retrieve: float
+    repeat_rate: float            # 0..1 how often this session's context has repeated
+    provider_cache_discount: float
+
+
+@dataclass
+class _SessionState:
+    last_prefix_hash: str = ""
+    calls: int = 0
+    repeats: int = 0
+
+
+@dataclass
+class BrevitasRouter:
+    provider: str = "openai"
+    # fraction of a large context that retrieval typically keeps (from benchmarks ~0.6)
+    retrieve_keep_frac: float = 0.6
+
+    _sessions: Dict[str, _SessionState] = field(default_factory=dict)
+
+    def _discount(self) -> float:
+        return CACHE_DISCOUNT.get(self.provider.lower(), CACHE_DISCOUNT["default"])
+
+    def _observe(self, session_id: str, stable_context: Sequence[str]) -> float:
+        """Update repeat tracking; return this session's running repeat rate."""
+        st = self._sessions.setdefault(session_id, _SessionState())
+        h = hashlib.sha256("".join(stable_context).encode("utf-8")).hexdigest()
+        st.calls += 1
+        if h == st.last_prefix_hash:
+            st.repeats += 1
+        st.last_prefix_hash = h
+        return st.repeats / max(1, st.calls - 1) if st.calls > 1 else 0.0
+
+    def decide(self, session_id: str, stable_context: Sequence[str],
+               volatile_query: str = "") -> RouteDecision:
+        """Choose the cheapest strategy for this request."""
+        ctx_tokens = sum(count_tokens(c) for c in stable_context)
+        q_tokens = count_tokens(volatile_query)
+        repeat_rate = self._observe(session_id, stable_context)
+        disc = self._discount()
+
+        if ctx_tokens < MIN_CACHEABLE:
+            return RouteDecision("passthrough", "context below cacheable minimum",
+                                 0.0, 0.0, repeat_rate, disc)
+
+        # Estimated amortized input cost per call (relative units; tail q is common to both).
+        # cache_only: the repeating fraction is billed at the cache discount, the rest fresh.
+        cache_only = ctx_tokens * (repeat_rate * disc + (1 - repeat_rate) * 1.0) + q_tokens
+        # retrieve: a smaller subset, but varies per call -> billed fresh (no cache benefit).
+        retrieve = ctx_tokens * self.retrieve_keep_frac * 1.0 + q_tokens
+
+        if retrieve < cache_only:
+            strat, why = "retrieve", "retrieval estimated cheaper (low repeat or weak cache)"
+        else:
+            strat, why = "cache_only", "caching estimated cheaper (context repeats + strong cache)"
+        return RouteDecision(strat, why, round(cache_only, 1), round(retrieve, 1),
+                             round(repeat_rate, 3), disc)
