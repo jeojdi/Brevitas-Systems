@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .._compress import report_usage
+from ..labels import resolve_labels
 from ..session import BrevitasSession
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
@@ -27,28 +29,37 @@ class _BrevitasMessages:
 
     def _optimize(self, messages, model, kwargs):
         sid = kwargs.pop("_brevitas_session", self._session.session_id)
+        labels = resolve_labels(kwargs.pop("_brevitas_meta", None))
         body = {"messages": list(messages), "model": model, **kwargs}
         optimize_request(body, _PROVIDER, self._router, sid)   # lossless, in-place
-        return body, sid
+        return body, sid, labels
 
     def create(self, *, messages: list[dict], model: str = "", **kwargs: Any) -> Any:
-        body, sid = self._optimize(messages, model, kwargs)
+        body, sid, labels = self._optimize(messages, model, kwargs)
         response = self._orig.create(**body)
         try:
             block = response.content[0]
             self._session.record_response(getattr(block, "text", ""))
             u = response.usage
-            usage = {"input_tokens": getattr(u, "input_tokens", 0),
-                     "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0),
-                     "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0)}
+            fresh = getattr(u, "input_tokens", 0)
+            write = getattr(u, "cache_creation_input_tokens", 0)
+            read = getattr(u, "cache_read_input_tokens", 0)
+            usage = {"input_tokens": fresh, "cache_creation_input_tokens": write,
+                     "cache_read_input_tokens": read}
             record_usage(usage, _PROVIDER, self._router, sid)
+            # labeled usage for tracking: baseline = all input tokens; optimized = fresh+write
+            # (read tokens are cache hits billed at ~10%).
+            total_in = fresh + write + read
+            report_usage(_PROVIDER, model, total_in, fresh + write, self._session,
+                         pipeline=labels["pipeline"], agent=labels["agent"],
+                         run_id=labels["run_id"])
         except (AttributeError, IndexError):
             pass
         self._session.advance()
         return response
 
     def stream(self, *, messages: list[dict], model: str = "", **kwargs: Any):
-        body, _ = self._optimize(messages, model, kwargs)
+        body, _, _ = self._optimize(messages, model, kwargs)
         return self._orig.stream(**body)
 
     def __getattr__(self, name: str) -> Any:

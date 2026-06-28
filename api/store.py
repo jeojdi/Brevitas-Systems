@@ -27,10 +27,35 @@ PROVIDER_COSTS_PER_1M: dict = {
 }
 
 
+def infer_provider(model: str, given: str = "") -> str:
+    """Best-effort provider from a model name.
+
+    SDK/proxy callers may label every OpenAI-compatible call provider="openai"
+    even when the upstream is DeepSeek/Groq, which breaks price lookup. The model
+    name is authoritative, so prefer it; fall back to the caller-supplied provider.
+    """
+    m = (model or "").lower()
+    if m.startswith("deepseek"):
+        return "deepseek"
+    if m.startswith("grok") or m.startswith("groq"):
+        return "grok"
+    if m.startswith("claude"):
+        return "anthropic"
+    if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3"):
+        return "openai"
+    return given or ""
+
+
 def cost_for_tokens(provider: str, model: str, tokens: int) -> float:
     """Return USD cost for `tokens` input tokens on a given provider/model."""
     rates = PROVIDER_COSTS_PER_1M.get(provider, {})
     rate = rates.get(model) or rates.get("default")
+    if not rate:
+        # Caller's provider label may be wrong for OpenAI-compatible upstreams;
+        # retry under the provider inferred from the model name.
+        inferred = infer_provider(model, provider)
+        if inferred != provider:
+            rate = PROVIDER_COSTS_PER_1M.get(inferred, {}).get(model)
     if not rate:
         return 0.0
     return tokens * rate["input"] / 1_000_000
@@ -63,7 +88,7 @@ class UsageStore:
                     baseline_tokens  INTEGER NOT NULL,
                     optimized_tokens INTEGER NOT NULL,
                     savings_pct      REAL NOT NULL,
-                    quality_proxy    REAL NOT NULL,
+                    quality_proxy    REAL,
                     provider         TEXT NOT NULL DEFAULT '',
                     model            TEXT NOT NULL DEFAULT '',
                     cost_saved_usd   REAL NOT NULL DEFAULT 0.0,
@@ -87,6 +112,9 @@ class UsageStore:
                 ("cost_saved_usd",   "REAL NOT NULL DEFAULT 0.0"),
                 ("brevitas_fee_usd", "REAL NOT NULL DEFAULT 0.0"),
                 ("session_id",       "TEXT NOT NULL DEFAULT ''"),
+                ("pipeline",         "TEXT NOT NULL DEFAULT ''"),
+                ("agent",            "TEXT NOT NULL DEFAULT ''"),
+                ("run_id",           "TEXT NOT NULL DEFAULT ''"),
             ]:
                 if col not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {defn}")
@@ -123,13 +151,16 @@ class UsageStore:
         cost_saved_usd: float = 0.0,
         brevitas_fee_usd: float = 0.0,
         session_id: str = "",
+        pipeline: str = "",
+        agent: str = "",
+        run_id: str = "",
     ) -> None:
         with self._conn() as db:
             db.execute(
                 "INSERT INTO usage_log "
                 "(key_hash, ts, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, "
-                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, run_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key_hash,
                     datetime.now(timezone.utc).isoformat(),
@@ -142,6 +173,9 @@ class UsageStore:
                     round(cost_saved_usd, 8),
                     round(brevitas_fee_usd, 8),
                     session_id,
+                    pipeline,
+                    agent,
+                    run_id,
                 ),
             )
 
@@ -212,6 +246,11 @@ class UsageStore:
             ).fetchall()
 
         calls, saved, avg_savings, avg_quality, total_base, total_opt, total_cost_saved, total_fee = agg
+
+        # Get per-pipeline and per-agent breakdowns
+        by_pipeline = self.get_stats_by_pipeline(key_hash)
+        by_agent = self.get_stats_by_agent(key_hash)
+
         return {
             "total_calls": calls,
             "total_tokens_saved": saved,
@@ -245,4 +284,137 @@ class UsageStore:
                 }
                 for b in billing
             ],
+            "by_pipeline": by_pipeline,
+            "by_agent": by_agent,
         }
+
+    def get_stats_by_pipeline(self, key_hash: str, start: str = "", end: str = "") -> list:
+        """Get aggregated stats by pipeline."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    pipeline,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(baseline_tokens), 0) as total_baseline,
+                    COALESCE(SUM(optimized_tokens), 0) as total_optimized,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY pipeline ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "pipeline": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[7], 6),
+                "brevitas_fee_usd": round(r[8], 6),
+            }
+            for r in rows
+        ]
+
+    def get_stats_by_agent(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        """Get aggregated stats by agent (optionally filtered by pipeline)."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    agent,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if pipeline:
+                query += " AND pipeline = ?"
+                params.append(pipeline)
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY agent ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "agent": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[5], 6),
+                "brevitas_fee_usd": round(r[6], 6),
+            }
+            for r in rows
+        ]
+
+    def get_stats_by_run(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        """Get aggregated stats by run (optionally filtered by pipeline)."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    run_id,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if pipeline:
+                query += " AND pipeline = ?"
+                params.append(pipeline)
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY run_id ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "run_id": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[5], 6),
+                "brevitas_fee_usd": round(r[6], 6),
+            }
+            for r in rows
+        ]

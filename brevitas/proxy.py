@@ -88,6 +88,21 @@ def _session_for(key: str) -> BrevitasSession:
     return _sessions[key]
 
 
+def parse_brevitas_headers(headers: dict) -> dict[str, str]:
+    """Extract brevitas tracking labels from request headers (x-brevitas-pipeline/agent/run-id).
+    Returns dict with 'pipeline', 'agent', 'run_id' keys (empty strings if not present)."""
+    def _get(name: str) -> str:
+        try:
+            return headers.get(name, "") or ""
+        except AttributeError:
+            return ""
+    return {
+        "pipeline": _get("x-brevitas-pipeline"),
+        "agent": _get("x-brevitas-agent"),
+        "run_id": _get("x-brevitas-run-id"),
+    }
+
+
 def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
     """Extract provider auth headers from the incoming request."""
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -115,6 +130,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     api_key = request.headers.get("x-api-key", "")
     session = _session_for(f"ant:{api_key}")
     router = _router_for(f"ant:{api_key}", "anthropic")
+    labels = parse_brevitas_headers(request.headers)
 
     # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
     # per request, based on context repetition + observed cache behavior. Never rewrites the
@@ -149,7 +165,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             usage = data.get("usage", {})
             if usage:
                 s = record_usage(usage, "anthropic", router, session.session_id)
-                report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session)
+                report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
+                             pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
@@ -166,6 +183,7 @@ async def proxy_openai_chat(request: Request) -> Any:
     provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
     session = _session_for(f"oai:{auth}")
     router = _router_for(f"oai:{auth}", provider)
+    labels = parse_brevitas_headers(request.headers)
 
     # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
     # byte-identical (auto-cached server-side); retrieve reduces context when the router
@@ -204,7 +222,8 @@ async def proxy_openai_chat(request: Request) -> Any:
             usage = data.get("usage", {})
             if usage:
                 s = record_usage(usage, provider, router, session.session_id)
-                report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session)
+                report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
+                             pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
