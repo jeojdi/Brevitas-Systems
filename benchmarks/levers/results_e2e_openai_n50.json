@@ -1,0 +1,39 @@
+{
+  "dataset": "hotpot_qa/distractor (validation)",
+  "model": "gpt-4o-mini",
+  "n_questions": 50,
+  "full_context": {
+    "EM": 64.0,
+    "F1": 74.22,
+    "prompt_tokens": 74906,
+    "cached_tokens": 2432
+  },
+  "fixed_k5": {
+    "EM": 56.0,
+    "F1": 64.7,
+    "prompt_tokens": 33852,
+    "cached_tokens": 0,
+    "EM_delta": -8.0,
+    "F1_delta": -9.52,
+    "token_reduction_pct": 54.81
+  },
+  "fixed_k8": {
+    "EM": 62.0,
+    "F1": 71.29,
+    "prompt_tokens": 57785,
+    "cached_tokens": 2304,
+    "EM_delta": -2.0,
+    "F1_delta": -2.93,
+    "token_reduction_pct": 22.86
+  },
+  "adaptive_maxsim": {
+    "EM": 58.0,
+    "F1": 65.36,
+    "prompt_tokens": 46013,
+    "cached_tokens": 0,
+    "EM_delta": -6.0,
+    "F1_delta": -8.86,
+    "token_reduction_pct": 38.57,
+    "avg_k_chosen": 6.26
+  }
+}

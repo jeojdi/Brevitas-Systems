@@ -1,0 +1,25 @@
+{
+  "benchmark": "HumanEval",
+  "task": "swe",
+  "metric": "pass@1 (executed)",
+  "model": "gpt-4o-mini",
+  "n_problems": 50,
+  "n_demos_pool": 12,
+  "full_fewshot": {
+    "pass@1": 64.0,
+    "prompt_tokens": 78129,
+    "cached_tokens": 52480
+  },
+  "adaptive_retrieved_demos": {
+    "pass@1": 82.0,
+    "prompt_tokens": 36175,
+    "cached_tokens": 0,
+    "avg_k_chosen": 5.0,
+    "pass_delta_vs_full": 18.0,
+    "token_reduction_pct": 53.7
+  },
+  "zeroshot": {
+    "pass@1": 60.0,
+    "prompt_tokens": 5929
+  }
+}

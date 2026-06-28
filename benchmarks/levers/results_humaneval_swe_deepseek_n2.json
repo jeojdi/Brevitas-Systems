@@ -1,0 +1,25 @@
+{
+  "benchmark": "HumanEval",
+  "task": "swe",
+  "metric": "pass@1 (executed)",
+  "model": "deepseek-chat",
+  "n_problems": 2,
+  "n_demos_pool": 12,
+  "full_fewshot": {
+    "pass@1": 100.0,
+    "prompt_tokens": 3611,
+    "cached_tokens": 0
+  },
+  "adaptive_retrieved_demos": {
+    "pass@1": 100.0,
+    "prompt_tokens": 1709,
+    "cached_tokens": 0,
+    "avg_k_chosen": 5.0,
+    "pass_delta_vs_full": 0.0,
+    "token_reduction_pct": 52.67
+  },
+  "zeroshot": {
+    "pass@1": 100.0,
+    "prompt_tokens": 269
+  }
+}
