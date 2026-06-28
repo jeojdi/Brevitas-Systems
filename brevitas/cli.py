@@ -59,6 +59,66 @@ def start(port: int, api_key: str, base_url: str, host: str) -> None:
 
 
 @main.command()
+@click.argument("path", default=".", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a table.")
+def scan(path: str, as_json: bool) -> None:
+    """Scan a codebase for LLM API calls Brevitas can sit in front of."""
+    from .scanner import scan_path
+    from .scanner.report import render_report
+
+    report = scan_path(path)
+
+    if as_json:
+        import json as _json
+        from dataclasses import asdict
+        click.echo(_json.dumps({
+            "files_scanned": report.files_scanned,
+            "is_pipeline": report.is_pipeline,
+            "findings": [
+                {**asdict(f), "kind": f.kind.value, "recommendation": f.recommendation.value}
+                for f in report.findings
+            ],
+            "errors": report.errors,
+        }, indent=2))
+        return
+
+    render_report(report)
+
+
+@main.command()
+@click.argument("path", default=".", required=False)
+@click.option("--write", "-w", is_flag=True, help="Apply the changes (default: dry-run diff).")
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt when writing.")
+def apply(path: str, write: bool, yes: bool) -> None:
+    """Wrap detected LLM clients with brevitas.wrap() (dry-run unless --write)."""
+    from .scanner import plan_changes, scan_path, write_changes
+    from .scanner.report import render_diff
+
+    report = scan_path(path)
+    changes = plan_changes(report)
+
+    if not changes:
+        _print("[dim]No applicable clients to wrap. Run [yellow]brevitas scan[/yellow] for details.[/dim]")
+        return
+
+    render_diff(changes)
+    total = sum(c.wrapped for c in changes)
+    _print(f"\n[bold]{total}[/bold] client(s) across [bold]{len(changes)}[/bold] file(s).")
+
+    if not write:
+        _print("[dim]Dry run. Re-run with [yellow]--write[/yellow] to apply these changes.[/dim]")
+        return
+
+    if not yes and not click.confirm("Apply these changes?", default=False):
+        _print("[dim]Aborted.[/dim]")
+        return
+
+    written = write_changes(changes)
+    _print(f"[green]✓ Wrapped {total} client(s) in {written} file(s).[/green]")
+    _print("[dim]Set BREVITAS_API_KEY so the wrapped calls authenticate.[/dim]")
+
+
+@main.command()
 @click.argument("key")
 @click.argument("value")
 def config(key: str, value: str) -> None:

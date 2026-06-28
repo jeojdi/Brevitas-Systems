@@ -1,0 +1,1 @@
+- [Brevitas Scanner Module](project_brevitas_scanner.md) — architecture facts and known issues from reviewing the scanner/codemod feature (col_offset is byte-based, write_changes is non-atomic, false-APPLY bug for variable-based wrap)
