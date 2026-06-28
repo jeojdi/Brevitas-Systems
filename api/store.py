@@ -254,3 +254,134 @@ class UsageStore:
                 for b in billing
             ],
         }
+
+    def get_stats_by_pipeline(self, key_hash: str, start: str = "", end: str = "") -> list:
+        """Get aggregated stats by pipeline."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    pipeline,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(baseline_tokens), 0) as total_baseline,
+                    COALESCE(SUM(optimized_tokens), 0) as total_optimized,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY pipeline ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "pipeline": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[7], 6),
+                "brevitas_fee_usd": round(r[8], 6),
+            }
+            for r in rows
+        ]
+
+    def get_stats_by_agent(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        """Get aggregated stats by agent (optionally filtered by pipeline)."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    agent,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if pipeline:
+                query += " AND pipeline = ?"
+                params.append(pipeline)
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY agent ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "agent": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[5], 6),
+                "brevitas_fee_usd": round(r[6], 6),
+            }
+            for r in rows
+        ]
+
+    def get_stats_by_run(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        """Get aggregated stats by run (optionally filtered by pipeline)."""
+        with self._conn() as db:
+            query = """
+                SELECT
+                    run_id,
+                    COUNT(*) as calls,
+                    COALESCE(SUM(baseline_tokens - optimized_tokens), 0) as tokens_saved,
+                    COALESCE(AVG(savings_pct), 0) as avg_savings_pct,
+                    COALESCE(AVG(quality_proxy), 0) as avg_quality,
+                    COALESCE(SUM(cost_saved_usd), 0) as cost_saved_usd,
+                    COALESCE(SUM(brevitas_fee_usd), 0) as brevitas_fee_usd
+                FROM usage_log
+                WHERE key_hash = ?
+            """
+            params = [key_hash]
+
+            if pipeline:
+                query += " AND pipeline = ?"
+                params.append(pipeline)
+            if start:
+                query += " AND ts >= ?"
+                params.append(start)
+            if end:
+                query += " AND ts <= ?"
+                params.append(end)
+
+            query += " GROUP BY run_id ORDER BY tokens_saved DESC"
+
+            rows = db.execute(query, params).fetchall()
+
+        return [
+            {
+                "run_id": r[0] or "",
+                "calls": r[1],
+                "tokens_saved": r[2],
+                "avg_savings_pct": round(r[3], 2),
+                "avg_quality": round(r[4], 4),
+                "cost_saved_usd": round(r[5], 6),
+                "brevitas_fee_usd": round(r[6], 6),
+            }
+            for r in rows
+        ]
