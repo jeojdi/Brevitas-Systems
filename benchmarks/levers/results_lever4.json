@@ -1,0 +1,18 @@
+{
+  "lever": 4,
+  "results": {
+    "n_examples": 120,
+    "recall@2": 0.6125,
+    "recall@5": 0.7792,
+    "token_reduction_pct@5": 54.75,
+    "colbertv2_compression_ratio": 10.62,
+    "recall_retention_compressed": 0.9519
+  },
+  "checks": {
+    "recall@5>=0.70": true,
+    "token_reduction>=40%": true,
+    "compression_ratio>=3x": true,
+    "recall_retention>=0.95": true
+  },
+  "passed": true
+}
