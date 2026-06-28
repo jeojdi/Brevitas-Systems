@@ -102,10 +102,29 @@ jobs:
             dashboard/dist
           retention-days: 7
 
+  # The `secrets` context is NOT available in job-level `if:` conditions, so we
+  # surface presence of the key as a job output and gate the agency job on that.
+  check-deepseek-secret:
+    runs-on: ubuntu-latest
+    name: Check DeepSeek Secret
+    outputs:
+      has_key: ${{ steps.check.outputs.has_key }}
+    steps:
+      - id: check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -n "$DEEPSEEK_API_KEY" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deepseek-agency:
     runs-on: ubuntu-latest
     name: DeepSeek Marketing Agency (Optional)
-    if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+    needs: check-deepseek-secret
+    if: needs.check-deepseek-secret.outputs.has_key == 'true'
     steps:
       - uses: actions/checkout@v4
 
