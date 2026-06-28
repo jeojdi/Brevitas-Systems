@@ -5,11 +5,13 @@ Sequential execution: intake → researcher → strategist → {copywriter, seo_
 All calls routed through Brevitas SDK with pipeline/agent labels.
 """
 import sys
+import os
 from pathlib import Path
 
 # Ensure brevitas is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import brevitas
 from brevitas.labels import start_run, agent
 from .provider import get_provider
 
@@ -17,13 +19,26 @@ from .provider import get_provider
 class MarketingAgency:
     """Orchestrates a 7-agent campaign planning workflow."""
 
-    def __init__(self, provider_name: str = None):
-        """Initialize with a provider (mock or deepseek)."""
+    def __init__(self, provider_name: str = None, brevitas_client=None):
+        """
+        Initialize with a provider and optional Brevitas client.
+
+        Args:
+            provider_name: "mock" or "deepseek"
+            brevitas_client: Brevitas-wrapped OpenAI client (for real runs)
+        """
+        self.provider_name = provider_name
         self.provider = get_provider(provider_name)
+        self.brevitas_client = brevitas_client
         self.context = {}  # Shared context between agents
 
     def _call_agent(self, agent_name: str, model: str, system_prompt: str, user_input: str) -> str:
-        """Call an agent through Brevitas with proper label tracking."""
+        """
+        Call an agent through Brevitas with proper label tracking.
+
+        For real runs: Uses Brevitas-wrapped client (routes through /v1/compress, records usage)
+        For mock: Uses deterministic mock provider
+        """
         # Use the Brevitas SDK with agent context manager
         with agent(agent_name):
             # Build the messages
@@ -32,10 +47,18 @@ class MarketingAgency:
                 {"role": "user", "content": user_input},
             ]
 
-            # Call through the provider
-            # For DeepSeek, use the real API; for mock, use deterministic responses
-            response_text = self.provider.chat(model, messages, temperature=0.7)
-            return response_text
+            # Route through Brevitas if client is available (real run)
+            if self.brevitas_client is not None:
+                response = self.brevitas_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                )
+                return response.choices[0].message.content
+            else:
+                # Fall back to provider (mock only)
+                response_text = self.provider.chat(model, messages, temperature=0.7)
+                return response_text
 
     def intake(self, brief: str) -> str:
         """Agent 1: Parse client brief into structured goals."""

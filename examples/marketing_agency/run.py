@@ -5,13 +5,15 @@ Usage:
     # With mock provider (deterministic, no API key required):
     python -m examples.marketing_agency.run
 
-    # With real DeepSeek (requires DEEPSEEK_API_KEY):
-    BREVITAS_AGENCY_PROVIDER=deepseek python -m examples.marketing_agency.run
+    # With real DeepSeek (requires DEEPSEEK_API_KEY + Brevitas API key):
+    BREVITAS_API_KEY=bvt_... DEEPSEEK_API_KEY=sk-... python -m examples.marketing_agency.run
 
-Results are printed to stdout with per-agent savings breakdown.
+Results are fetched from the Brevitas API and printed to stdout.
 """
 import sys
 import os
+import time
+import requests
 from pathlib import Path
 
 # Ensure brevitas is importable
@@ -88,16 +90,47 @@ def print_stats_table(stats: dict) -> None:
 
 
 def main():
-    """Execute the marketing campaign and print results."""
+    """Execute the marketing campaign and fetch real results from Brevitas API."""
     provider_name = os.environ.get("BREVITAS_AGENCY_PROVIDER", "mock")
+    brevitas_api_key = os.environ.get("BREVITAS_API_KEY")
+    brevitas_base_url = os.environ.get("BREVITAS_BASE_URL", "http://localhost:8000")
 
     print(f"\n🚀 Starting campaign with {provider_name.upper()} provider...\n")
 
-    # Create the agency
-    agency = MarketingAgency(provider_name=provider_name)
+    # Initialize Brevitas client if doing a real run
+    brevitas_client = None
+    if provider_name == "deepseek":
+        if not brevitas_api_key:
+            print("❌ ERROR: BREVITAS_API_KEY not set for DeepSeek run")
+            print("Set BREVITAS_API_KEY=<key> and try again")
+            sys.exit(1)
+
+        try:
+            import brevitas
+            from openai import OpenAI
+
+            # Configure Brevitas
+            brevitas.configure(api_key=brevitas_api_key, base_url=brevitas_base_url)
+
+            # Create OpenAI client pointed at DeepSeek, wrap with Brevitas
+            deepseek_client = OpenAI(
+                api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+                base_url="https://api.deepseek.com/v1",
+            )
+            brevitas_client = brevitas.wrap(deepseek_client)
+            print(f"✓ Brevitas configured (api_key={brevitas_api_key[:8]}...)")
+            print(f"✓ DeepSeek client configured (base_url=https://api.deepseek.com/v1)\n")
+
+        except Exception as e:
+            print(f"❌ Failed to configure Brevitas: {e}")
+            sys.exit(1)
+
+    # Create the agency with Brevitas client
+    agency = MarketingAgency(provider_name=provider_name, brevitas_client=brevitas_client)
 
     # Start a run with pipeline label
     run_id = start_run(pipeline="campaign-launch")
+    print(f"Pipeline: campaign-launch")
     print(f"Run ID: {run_id}\n")
 
     # Execute the full campaign
@@ -110,80 +143,51 @@ def main():
     if final_brief:
         print(final_brief[:500] + "...\n")
 
-    # Fetch and display statistics
-    print("\nFetching per-agent statistics from Brevitas...\n")
+    # Fetch and display statistics from API
+    print("\nFetching per-agent statistics from Brevitas API...\n")
 
-    # Note: In a real scenario, you'd call the Brevitas API:
-    # from brevitas.client import BrevitasClient
-    # client = BrevitasClient()
-    # stats = client.get_stats_by_agent(pipeline="campaign-launch")
-    #
-    # For now, demonstrate with a mock stats structure:
-    mock_stats = {
-        "by_agent": [
-            {
-                "agent": "intake",
-                "calls": 1,
-                "tokens_saved": 150,
-                "savings_pct": 12.5,
-                "cost_saved_usd": 0.45,
-            },
-            {
-                "agent": "researcher",
-                "calls": 1,
-                "tokens_saved": 2400,
-                "savings_pct": 35.2,
-                "cost_saved_usd": 7.20,
-            },
-            {
-                "agent": "strategist",
-                "calls": 1,
-                "tokens_saved": 1800,
-                "savings_pct": 28.9,
-                "cost_saved_usd": 5.40,
-            },
-            {
-                "agent": "copywriter",
-                "calls": 1,
-                "tokens_saved": 900,
-                "savings_pct": 15.3,
-                "cost_saved_usd": 2.70,
-            },
-            {
-                "agent": "seo_optimizer",
-                "calls": 1,
-                "tokens_saved": 1100,
-                "savings_pct": 22.1,
-                "cost_saved_usd": 3.30,
-            },
-            {
-                "agent": "editor",
-                "calls": 1,
-                "tokens_saved": 650,
-                "savings_pct": 18.7,
-                "cost_saved_usd": 1.95,
-            },
-            {
-                "agent": "reporter",
-                "calls": 1,
-                "tokens_saved": 1450,
-                "savings_pct": 26.8,
-                "cost_saved_usd": 4.35,
-            },
-        ],
-        "pipeline_total": {
-            "calls": 7,
-            "tokens_saved": 8450,
-            "savings_pct": 22.3,
-            "cost_saved_usd": 25.35,
-        },
-    }
+    if provider_name == "mock":
+        print("(Mock provider — statistics not persisted to API)\n")
+        return
 
-    print_stats_table(mock_stats)
+    # For real DeepSeek run, query the API
+    try:
+        time.sleep(1)  # Allow server to process
+        stats_url = f"{brevitas_base_url}/v1/stats/agents?pipeline=campaign-launch"
+        headers = {"X-API-Key": brevitas_api_key}
 
-    print("✓ Campaign complete! All 7 agents tracked and attributed to pipeline='campaign-launch'")
-    print(f"✓ Total savings: ${mock_stats['pipeline_total']['cost_saved_usd']:.2f}")
-    print(f"✓ Total tokens saved: {mock_stats['pipeline_total']['tokens_saved']:,}")
+        response = requests.get(stats_url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        stats = response.json()
+
+        if not stats or "by_agent" not in stats or len(stats.get("by_agent", [])) == 0:
+            print("⚠️  No agent statistics recorded in database")
+            print("Possible causes:")
+            print("  - Brevitas server not running (start with: uvicorn api.server:app)")
+            print("  - API key not set in provider_config")
+            print("  - Calls did not route through /v1/compress")
+            sys.exit(1)
+
+        print_stats_table(stats)
+
+        print("✓ Campaign complete! All agents tracked and attributed to pipeline='campaign-launch'")
+        if "pipeline_total" in stats:
+            total = stats["pipeline_total"]
+            print(f"✓ Total savings: ${total.get('cost_saved_usd', 0):.2f}")
+            print(f"✓ Total tokens saved: {total.get('tokens_saved', 0):,}")
+
+    except requests.exceptions.ConnectionError:
+        print("❌ ERROR: Cannot connect to Brevitas API")
+        print(f"Is the server running? (Expected at {brevitas_base_url})")
+        print("Start with: uvicorn api.server:app --host 127.0.0.1 --port 8000")
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ API Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error fetching statistics: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
