@@ -116,6 +116,38 @@ export default function Billing({ apiKey }) {
         </div>
       )}
 
+      {/* Invoice line items (by pipeline/agent) */}
+      {thisMonth && stats?.by_pipeline && stats.by_pipeline.length > 0 && (
+        <div>
+          <p className="annotation tracking-widest uppercase mb-4">// invoice line items — {thisMonth.month}</p>
+          <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-hidden">
+            <div className="grid grid-cols-4 gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
+              {['Pipeline / Agent', 'Cost saved', 'Fee (10%)', 'Savings %'].map(h => (
+                <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
+              ))}
+            </div>
+            {stats.by_pipeline.map(p => (
+              <div key={p.pipeline}>
+                {/* Pipeline row */}
+                <div className="grid grid-cols-4 gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg">
+                  <span className="font-mono text-xs font-medium text-brand-navy dark:text-brand-dark-navy">{p.pipeline || '(untagged)'}</span>
+                  <span className="font-mono text-xs text-brand-teal">${fmt(p.cost_saved_usd, 4)}</span>
+                  <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(p.brevitas_fee_usd, 4)}</span>
+                  <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmt(p.avg_savings_pct, 1)}%</span>
+                </div>
+              </div>
+            ))}
+            {/* Total row */}
+            <div className="grid grid-cols-4 gap-0 px-5 py-3.5 border-t-2 border-brand-border dark:border-brand-dark-border bg-brand-blue-dim dark:bg-brand-dark-blue-dim">
+              <span className="font-mono text-xs font-medium text-brand-blue">Total invoice</span>
+              <span className="font-mono text-xs font-medium text-brand-teal">${fmt(thisMonth.cost_saved_usd, 4)}</span>
+              <span className="font-mono text-xs font-medium text-brand-blue">${fmt(thisMonth.brevitas_fee_usd, 4)}</span>
+              <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">10% of cost</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Monthly history table */}
       {months.length > 1 && (
         <div>
