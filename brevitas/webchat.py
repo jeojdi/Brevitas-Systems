@@ -34,70 +34,99 @@ class Session:
 _SESSIONS: Dict[str, Session] = {}
 
 
-def create_app(provider: str = "deepseek", api_key: str = "") -> FastAPI:
+_CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rb", ".java", ".rs", ".c", ".cpp",
+             ".h", ".css", ".html", ".json", ".md", ".txt", ".sh", ".yml", ".yaml", ".vue", ".php"}
+
+
+def _raw_chat(provider, model, key, messages, max_tokens=500):
+    """Direct provider call (NO Brevitas) — same usage shape, so we can compare honestly."""
+    import json, urllib.request
+    url = _base_url(provider).rstrip("/") + "/chat/completions"
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    d = json.loads(urllib.request.urlopen(req, timeout=120).read())
+    u = d.get("usage", {})
+    prompt = int(u.get("prompt_tokens", 0))
+    cached = int(u.get("prompt_tokens_details", {}).get("cached_tokens", 0) or u.get("prompt_cache_hit_tokens", 0))
+    disc = 0.1 if provider in ("deepseek", "anthropic") else 0.5
+    uncached_cost = prompt * 1.0
+    actual_cost = (prompt - cached) * 1.0 + cached * disc
+    saved = round(100 * (1 - actual_cost / uncached_cost), 2) if uncached_cost else 0.0
+    return d["choices"][0]["message"]["content"], cached, uncached_cost, actual_cost, saved
+
+
+def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: bool = True) -> FastAPI:
     from brevitas import BrevitasClient
     from token_efficiency_model.lossless.provider_cache import count_tokens
 
     app = FastAPI(title="Brevitas Chat", docs_url=None, redoc_url=None)
     key = _load_key(provider, api_key)
     model = {"deepseek": "deepseek-chat", "openai": "gpt-4o-mini"}.get(provider, "gpt-4o-mini")
+    mode = "ON" if brevitas_enabled else "OFF"
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return _HTML.replace("__PROVIDER__", f"{provider} / {model}")
+        return _HTML.replace("__PROVIDER__", f"{provider} / {model}").replace("__MODE__", mode)
 
     @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...), session: str = Form("default")):
-        suffix = os.path.splitext(file.filename or "doc")[1] or ".txt"
-        with tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False) as tmp:
-            tmp.write(await file.read())
-            path = tmp.name
-        try:
-            text = read_document(path)
-        except SystemExit as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+    async def upload(files: List[UploadFile] = File(...), session: str = Form("default")):
+        # build one big context from all uploaded files (a codebase or a single doc)
+        parts, names = [], []
+        for f in files:
+            raw = await f.read()
+            ext = os.path.splitext(f.filename or "")[1].lower()
+            if ext == ".pdf":
+                with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+                    tmp.write(raw); p = tmp.name
+                try:
+                    txt = read_document(p)
+                finally:
+                    os.unlink(p)
+            elif ext in _CODE_EXT or not ext:
+                txt = raw.decode("utf-8", "ignore")
+            else:
+                continue
+            parts.append(f"// ===== FILE: {f.filename} =====\n{txt}")
+            names.append(f.filename)
+        if not parts:
+            return JSONResponse({"error": "No readable code/text/PDF files found."}, status_code=400)
         if not key:
             return JSONResponse({"error": f"No API key for {provider}. Set its env var."}, status_code=400)
-        s = Session(doc=text, doc_tokens=count_tokens(text), name=file.filename or "document",
-                    client=BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider)),
-                    model=model)
+        doc = "\n\n".join(parts)
+        label = names[0] if len(names) == 1 else f"{len(names)} files"
+        s = Session(doc=doc, doc_tokens=count_tokens(doc), name=label, model=model,
+                    client=BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider)))
         _SESSIONS[session] = s
-        return {"name": s.name, "tokens": s.doc_tokens}
+        return {"name": s.name, "tokens": s.doc_tokens, "files": len(names)}
 
     @app.post("/api/ask")
     async def ask(question: str = Form(...), session: str = Form("default")):
         s = _SESSIONS.get(session)
         if not s or not s.doc:
-            return JSONResponse({"error": "Upload a document first."}, status_code=400)
-        system = ("Answer using the document below as the source of truth.\n\n=== DOCUMENT ===\n"
-                  + s.doc + "\n=== END DOCUMENT ===")
+            return JSONResponse({"error": "Upload a codebase or document first."}, status_code=400)
+        system = ("You are a senior engineer. Answer using the codebase/document below as the "
+                  "source of truth.\n\n=== CONTEXT ===\n" + s.doc + "\n=== END CONTEXT ===")
         messages = [{"role": "system", "content": system}] + s.history + [
             {"role": "user", "content": question}]
         try:
-            resp, sav = s.client.chat(messages=messages, model=s.model,
-                                      session_id=session, max_tokens=500)
-            answer = resp.choices[0].message.content
+            if brevitas_enabled:
+                resp, sav = s.client.chat(messages=messages, model=s.model, session_id=session, max_tokens=500)
+                answer = resp.choices[0].message.content
+                cached, unc, act, saved = sav.cached_tokens, sav.uncached_cost, sav.actual_cost, sav.savings_pct
+            else:
+                answer, cached, unc, act, saved = _raw_chat(provider, s.model, key, messages)
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         s.history += [{"role": "user", "content": question},
                       {"role": "assistant", "content": answer}]
-        s.cum_uncached += sav.uncached_cost
-        s.cum_actual += sav.actual_cost
-        s.cached_total += sav.cached_tokens
+        s.cum_uncached += unc
+        s.cum_actual += act
+        s.cached_total += cached
         total = round(100 * (1 - s.cum_actual / s.cum_uncached), 1) if s.cum_uncached else 0.0
-        return {
-            "answer": answer,
-            "cached_tokens": sav.cached_tokens,
-            "turn_saved_pct": sav.savings_pct,
-            "cumulative_saved_pct": total,
-            "cached_total": s.cached_total,
-            "turns": len(s.history) // 2,
-        }
+        return {"answer": answer, "cached_tokens": cached, "turn_saved_pct": saved,
+                "cumulative_saved_pct": total, "cached_total": s.cached_total,
+                "turns": len(s.history) // 2, "brevitas": brevitas_enabled}
 
     return app
 
@@ -128,9 +157,10 @@ button:disabled{opacity:.5;cursor:default}
 .pill{font-size:12px;background:#0e1422;border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--accent)}
 </style></head><body>
 <div class="side">
-  <div><h1>⚡ Brevitas</h1><div class="sub">Chat with your PDF · __PROVIDER__</div></div>
-  <label class="drop"><input type="file" id="file" accept=".pdf,.txt,.md">
-    <div id="dropText">📄 Drop a PDF / text file<br><span class="sub">or click to upload</span></div>
+  <div><h1>⚡ Brevitas</h1><div class="sub">Chat with a codebase · __PROVIDER__</div>
+    <div class="pill" style="margin-top:6px;display:inline-block">Brevitas: __MODE__</div></div>
+  <label class="drop"><input type="file" id="file" multiple webkitdirectory>
+    <div id="dropText">📁 Upload a codebase folder<br><span class="sub">(or pick files)</span></div>
   </label>
   <div class="meter">
     <div class="sub">Total input-cost saved</div>
@@ -138,10 +168,10 @@ button:disabled{opacity:.5;cursor:default}
     <div class="row"><span>This turn</span><b id="turn">—</b></div>
     <div class="row"><span>Tokens from cache</span><b id="cached">0</b></div>
     <div class="row"><span>Turns</span><b id="turns">0</b></div>
-    <div class="row"><span>Doc size</span><b id="dtok">—</b></div>
+    <div class="row"><span>Context size</span><b id="dtok">—</b></div>
   </div>
-  <div class="sub">The document is re-sent each turn, but the provider caches it — so every
-  question after the first is much cheaper. The more you ask, the more you save.</div>
+  <div class="sub">The codebase is re-sent each turn, but the provider caches it — so every
+  question after the first is cheaper. The more you ask, the more you save.</div>
 </div>
 <div class="main">
   <div id="msgs"><div class="tag">Upload a document to begin.</div></div>
@@ -154,9 +184,14 @@ button:disabled{opacity:.5;cursor:default}
 const $=id=>document.getElementById(id); let ready=false;
 function add(cls,txt){const d=document.createElement('div');d.className='m '+cls;d.textContent=txt;$('msgs').appendChild(d);$('msgs').scrollTop=1e9;return d;}
 $('file').onchange=async e=>{
-  const f=e.target.files[0]; if(!f)return;
-  $('dropText').innerHTML='⏳ Reading '+f.name+'…';
-  const fd=new FormData();fd.append('file',f);fd.append('session','default');
+  const files=[...e.target.files]; if(!files.length)return;
+  $('dropText').innerHTML='⏳ Reading '+files.length+' files…';
+  const fd=new FormData();
+  // skip junk dirs to keep the context lean
+  const skip=/(^|\/)(node_modules|\.git|dist|build|__pycache__|\.venv|venv)(\/|$)/;
+  let n=0;
+  for(const f of files){ if(skip.test(f.webkitRelativePath||f.name))continue; fd.append('files',f); n++; if(n>=400)break; }
+  fd.append('session','default');
   const r=await fetch('/api/upload',{method:'POST',body:fd}); const j=await r.json();
   if(j.error){$('dropText').innerHTML='⚠️ '+j.error;return;}
   $('dropText').innerHTML='✅ '+j.name+'<br><span class="sub">'+j.tokens.toLocaleString()+' tokens</span>';
