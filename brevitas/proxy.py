@@ -39,6 +39,18 @@ _GROQ_API      = "https://api.groq.com/openai"
 # Allowlist of valid upstream URLs for SSRF protection
 _ALLOWED_UPSTREAMS = {_OPENAI_API, _DEEPSEEK_API, _GROQ_API}
 
+
+def parse_brevitas_headers(headers: dict) -> dict[str, str]:
+    """
+    Extract brevitas tracking labels from request headers.
+    Returns dict with 'pipeline', 'agent', 'run_id' keys (empty strings if not present).
+    """
+    return {
+        "pipeline": headers.get("x-brevitas-pipeline", ""),
+        "agent": headers.get("x-brevitas-agent", ""),
+        "run_id": headers.get("x-brevitas-run-id", ""),
+    }
+
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
 
 

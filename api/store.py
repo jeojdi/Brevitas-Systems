@@ -86,6 +86,9 @@ class UsageStore:
                 ("cost_saved_usd",   "REAL NOT NULL DEFAULT 0.0"),
                 ("brevitas_fee_usd", "REAL NOT NULL DEFAULT 0.0"),
                 ("session_id",       "TEXT NOT NULL DEFAULT ''"),
+                ("pipeline",         "TEXT NOT NULL DEFAULT ''"),
+                ("agent",            "TEXT NOT NULL DEFAULT ''"),
+                ("run_id",           "TEXT NOT NULL DEFAULT ''"),
             ]:
                 if col not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {defn}")
@@ -122,13 +125,16 @@ class UsageStore:
         cost_saved_usd: float = 0.0,
         brevitas_fee_usd: float = 0.0,
         session_id: str = "",
+        pipeline: str = "",
+        agent: str = "",
+        run_id: str = "",
     ) -> None:
         with self._conn() as db:
             db.execute(
                 "INSERT INTO usage_log "
                 "(key_hash, ts, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, "
-                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, run_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key_hash,
                     datetime.now(timezone.utc).isoformat(),
@@ -141,6 +147,9 @@ class UsageStore:
                     round(cost_saved_usd, 8),
                     round(brevitas_fee_usd, 8),
                     session_id,
+                    pipeline,
+                    agent,
+                    run_id,
                 ),
             )
 

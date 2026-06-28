@@ -39,6 +39,9 @@ def compress_messages(
     complexity: float = 0.5,
     compression_level: int = 2,
     prune_budget: int = 5,
+    pipeline: str = "",
+    agent: str = "",
+    run_id: str = "",
 ) -> tuple[list[dict], int, int]:
     """
     Compress a messages list via the Brevitas API, preserving prefix stability.
@@ -89,6 +92,9 @@ def compress_messages(
                 "complexity": complexity,
                 "compression_level": compression_level,
                 "prune_budget": prune_budget,
+                "pipeline": pipeline,
+                "agent": agent,
+                "run_id": run_id,
             },
             timeout=cfg.get("timeout", 30),
         )
@@ -124,6 +130,9 @@ def report_usage(
     baseline_tokens: int,
     compressed_tokens: int,
     session: BrevitasSession,
+    pipeline: str = "",
+    agent: str = "",
+    run_id: str = "",
 ) -> None:
     """Report usage to Brevitas for billing. Fire-and-forget."""
     cfg = _cfg()
@@ -139,6 +148,9 @@ def report_usage(
                 "baseline_tokens": baseline_tokens,
                 "compressed_tokens": compressed_tokens,
                 "session_id": session.session_id,
+                "pipeline": pipeline,
+                "agent": agent,
+                "run_id": run_id,
             },
             timeout=5,
         )
