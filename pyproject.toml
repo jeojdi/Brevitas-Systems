@@ -1,17 +1,19 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "brevitas-systems"
-version = "0.1.0"
-description = "Drop Brevitas between your agents — compress context, cut costs, keep quality."
+version = "0.2.0"
+description = "Lossless token savings + per-pipeline/agent tracking between your agents and the model."
 readme = "README.md"
 license = { text = "Proprietary" }
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
+    "requests>=2.31.0",
     "tiktoken>=0.7.0",
+    "numpy>=1.24.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.0.0",
@@ -20,13 +22,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# the retrieval lever's embedding model (heavy: pulls torch). Core install works without it —
+# retrieval fail-safes to full context / caching when the encoder is unavailable.
+retrieval = ["sentence-transformers>=2.2.0"]
 anthropic = ["anthropic>=0.28.0"]
 openai    = ["openai>=1.30.0"]
-all       = ["anthropic>=0.28.0", "openai>=1.30.0"]
+all       = ["sentence-transformers>=2.2.0", "anthropic>=0.28.0", "openai>=1.30.0"]
 
 [project.scripts]
 brevitas = "brevitas.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["brevitas*"]
+include = ["brevitas*", "token_efficiency_model*"]
+exclude = ["*.tests", "*.tests.*", "tests*", "benchmarks*", "examples*", "archive*"]
