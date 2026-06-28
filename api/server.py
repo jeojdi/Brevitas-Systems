@@ -20,8 +20,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from typing import List, Optional
 
-from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
-from token_efficiency_model.common.metrics import estimate_tokens_many
+from token_efficiency_model.lossless.api_adapter import retrieval_select
+from token_efficiency_model.lossless.provider_cache import count_tokens
+
+
+def estimate_tokens_many(chunks) -> int:
+    return sum(count_tokens(c) for c in chunks)
+
+
 from .auth import generate_api_key, hash_key
 from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M
 
@@ -188,18 +194,6 @@ async def _check_body_size(request: Request, call_next):
 
 
 _store = UsageStore()
-_pipelines: dict = {}
-
-
-def _get_pipeline(key_hash: str) -> TokenEfficientPipeline:
-    if key_hash not in _pipelines:
-        config = _store.get_provider_config(key_hash)
-        _pipelines[key_hash] = TokenEfficientPipeline(
-            model_backend=_build_backend(config),
-            savings_target=60.0,
-            quality_floor=0.99,
-        )
-    return _pipelines[key_hash]
 
 
 def _authenticated(x_api_key: Optional[str] = Header(None)) -> str:
@@ -319,47 +313,37 @@ class CompressRequest(BaseModel):
 @app.post("/v1/compress")
 @limiter.limit("60/minute")
 def compress(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
-    pipeline = _get_pipeline(kh)
+    """Lossless context reduction (Lever 4 retrieval) with accuracy-first fail-safe.
 
-    result = pipeline.process_task(
-        task_text=body.task or (body.messages[0][:120] if body.messages else ""),
-        incoming_messages=body.messages,
-        prior_context=body.prior_context,
-        complexity=body.complexity,
-        urgency=body.urgency,
-        compression_level=body.compression_level,
-        prune_budget=body.prune_budget,
-        delta_mode=body.delta_mode,
-        wire_mode=body.wire_mode,
-    )
+    Messages pass through unchanged (the volatile content is never lossily rewritten);
+    prior_context is reduced to the chunks relevant to `task`. If retrieval is unavailable
+    or low-confidence, the FULL context is returned. Savings use the real tokenizer; no
+    quality proxy is recorded.
+    """
+    task = body.task or (body.messages[0][:200] if body.messages else "")
+    sel = retrieval_select(task, body.prior_context, k=body.prune_budget)
 
-    compressed_msgs = result.debug.get("compressed_messages", [])
-    pruned_ctx      = result.debug.get("pruned_context", [])
-
-    # Report savings based on what actually gets passed to the next agent,
-    # not the internal wire-protocol payload.
-    baseline_tokens  = result.baseline_tokens
-    output_tokens    = estimate_tokens_many(compressed_msgs) + estimate_tokens_many(pruned_ctx)
-    actual_savings   = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+    msg_tokens = estimate_tokens_many(body.messages)
+    baseline_tokens = msg_tokens + sel["baseline_tokens"]
+    output_tokens = msg_tokens + sel["optimized_tokens"]
+    actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
     _store.record_usage(
         key_hash=kh,
         baseline_tokens=baseline_tokens,
         optimized_tokens=output_tokens,
         savings_pct=actual_savings,
-        quality_proxy=result.quality_proxy,
+        quality_proxy=None,
     )
 
     return {
-        "compressed_messages": compressed_msgs,
-        "pruned_context":      pruned_ctx,
+        "compressed_messages": body.messages,            # lossless: messages unchanged
+        "pruned_context":      sel["selected_context"],
         "baseline_tokens":     baseline_tokens,
         "optimized_tokens":    output_tokens,
         "savings_pct":         actual_savings,
-        "quality_proxy":       round(result.quality_proxy, 4),
-        "routed_model_hint":   result.routed_model,
-        "model_response":      result.model_response,
-        "state_id":            result.debug.get("state_id", ""),
+        "fallback_applied":    sel["fallback_applied"],
+        "reason":              sel["reason"],
     }
 
 
@@ -398,61 +382,45 @@ class _ClientGone(Exception):
 @app.post("/v1/compress/stream")
 @limiter.limit("60/minute")
 async def compress_stream(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
-    pipeline = _get_pipeline(kh)
     event_queue: queue.Queue = queue.Queue()
     SENTINEL = object()
     cancel_event = threading.Event()
 
     def _run():
-        def callback(stage: str, data: dict):
-            # Abort the pipeline as soon as the client goes away. Raising here
-            # unwinds process_task — before the model call if we haven't reached
-            # it yet — and prevents usage being recorded for an abandoned request.
-            if cancel_event.is_set():
-                raise _ClientGone()
-            event_queue.put({"stage": stage, **data})
-
         try:
-            result = pipeline.process_task(
-                task_text=body.task or (body.messages[0][:120] if body.messages else ""),
-                incoming_messages=body.messages,
-                prior_context=body.prior_context,
-                complexity=body.complexity,
-                urgency=body.urgency,
-                compression_level=body.compression_level,
-                prune_budget=body.prune_budget,
-                delta_mode=body.delta_mode,
-                wire_mode=body.wire_mode,
-                progress_callback=callback,
-            )
-
+            task = body.task or (body.messages[0][:200] if body.messages else "")
+            event_queue.put({"stage": "retrieving", "task": task[:120]})
             if cancel_event.is_set():
                 return
 
-            compressed_msgs = result.debug.get("compressed_messages", [])
-            pruned_ctx      = result.debug.get("pruned_context", [])
-            baseline_tokens  = result.baseline_tokens
-            output_tokens    = estimate_tokens_many(compressed_msgs) + estimate_tokens_many(pruned_ctx)
-            actual_savings   = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+            sel = retrieval_select(task, body.prior_context, k=body.prune_budget)
+            if cancel_event.is_set():
+                return
+
+            msg_tokens = estimate_tokens_many(body.messages)
+            baseline_tokens = msg_tokens + sel["baseline_tokens"]
+            output_tokens = msg_tokens + sel["optimized_tokens"]
+            actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+
+            event_queue.put({"stage": "compressed", "selected": len(sel["selected_context"]),
+                             "savings_pct": actual_savings, "fallback": sel["fallback_applied"]})
 
             _store.record_usage(
                 key_hash=kh,
                 baseline_tokens=baseline_tokens,
                 optimized_tokens=output_tokens,
                 savings_pct=actual_savings,
-                quality_proxy=result.quality_proxy,
+                quality_proxy=None,
             )
 
             event_queue.put({"stage": "done", "result": {
-                "compressed_messages": compressed_msgs,
-                "pruned_context":      pruned_ctx,
+                "compressed_messages": body.messages,
+                "pruned_context":      sel["selected_context"],
                 "baseline_tokens":     baseline_tokens,
                 "optimized_tokens":    output_tokens,
                 "savings_pct":         actual_savings,
-                "quality_proxy":       round(result.quality_proxy, 4),
-                "routed_model_hint":   result.routed_model,
-                "model_response":      result.model_response,
-                "state_id":            result.debug.get("state_id", ""),
+                "fallback_applied":    sel["fallback_applied"],
+                "reason":              sel["reason"],
             }})
         except _ClientGone:
             pass

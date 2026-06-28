@@ -27,9 +27,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ._compress import compress_messages, count_messages_tokens, report_usage
+from ._compress import count_messages_tokens, report_usage
 from .session import BrevitasSession
-from token_efficiency_model.optimizers.provider_cache.anthropic import apply_anthropic_cache
+from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache, savings_from_usage
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
@@ -105,13 +105,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     api_key = request.headers.get("x-api-key", "")
     session = _session_for(f"ant:{api_key}")
 
-    compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=body.get("system", "")
-    )
-    body["messages"] = compressed
-
-    # Apply Anthropic-specific cache_control breakpoints for ephemeral caching
-    body = apply_anthropic_cache(body)
+    # Lossless: never rewrite message content. Apply cache_control breakpoints on the
+    # stable prefix (>=1024 tok) so Anthropic bills repeated prefix at ~10% of input price.
+    apply_anthropic_cache(body)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -125,7 +121,6 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
-            report_usage("anthropic", model, baseline, compressed_tok, session)
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
@@ -133,13 +128,16 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 f"{_ANTHROPIC_API}/v1/messages", headers=headers, json=body
             )
             data = resp.json()
-            # Record response for cross-hop context
             try:
                 text = data["content"][0]["text"]
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            report_usage("anthropic", model, baseline, compressed_tok, session)
+            # Honest savings from REAL provider usage (cache_read vs full price).
+            usage = data.get("usage", {})
+            if usage:
+                s = savings_from_usage(usage, "anthropic")
+                report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
@@ -155,13 +153,8 @@ async def proxy_openai_chat(request: Request) -> Any:
     auth = request.headers.get("authorization", "")
     session = _session_for(f"oai:{auth}")
 
-    system_msgs = [m["content"] for m in messages if m.get("role") == "system"]
-    task = system_msgs[0] if system_msgs else ""
-    compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=task
-    )
-    body["messages"] = compressed
-
+    # Lossless: forward messages unchanged. OpenAI/DeepSeek auto-cache the repeated prefix
+    # (>=1024 tok) at ~50% off — preserved precisely because we don't mutate the prefix.
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
 
@@ -178,7 +171,6 @@ async def proxy_openai_chat(request: Request) -> Any:
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
-            report_usage("openai", model, baseline, compressed_tok, session)
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
@@ -191,7 +183,11 @@ async def proxy_openai_chat(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
-            report_usage("openai", model, baseline, compressed_tok, session)
+            # Honest savings from REAL provider usage (cached_tokens vs full price).
+            usage = data.get("usage", {})
+            if usage:
+                s = savings_from_usage(usage, "openai")
+                report_usage("openai", model, int(s.uncached_cost), int(s.actual_cost), session)
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
