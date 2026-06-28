@@ -1,9 +1,9 @@
-# Marketing Agency — Live DeepSeek Run (real, measured)
+# Marketing Agency — Live DeepSeek Run (real, measured, billed)
 
 **This is a real run against the DeepSeek API**, recorded in the Brevitas usage store
 (`api/brevitas.db`, table `usage_log`) and attributed per agent under
-`pipeline = "campaign-launch"`. Numbers below are measured token counts from the
-Brevitas pipeline — not estimates, not constants.
+`pipeline = "campaign-launch"`. Numbers below are measured token counts and computed
+DeepSeek costs from the Brevitas pipeline — not estimates, not constants.
 
 ## How it was run (reproducible)
 
@@ -22,46 +22,29 @@ BREVITAS_AGENCY_PROVIDER=deepseek BREVITAS_BASE_URL=http://127.0.0.1:8000 \
 python -m examples.marketing_agency.run
 ```
 
-All 7 agents executed against real DeepSeek (`deepseek-chat` / `deepseek-reasoner`),
-each call routed through Brevitas `/v1/compress` with `pipeline`/`agent`/`run_id` labels.
+All 7 agents executed against real DeepSeek, each call routed through Brevitas
+`/v1/compress` (+ `/v1/usage` for billing) with `pipeline`/`agent`/`run_id` labels.
+Context accumulates down the pipeline, so baseline grows hop to hop.
 
-## Per-agent savings (measured)
+## Per-agent savings + billing (measured)
 
-| Agent          | Model             | Baseline tok | Optimized tok | Saved | Savings % |
-|----------------|-------------------|-------------:|--------------:|------:|----------:|
-| intake         | deepseek-chat     |          240 |           188 |    52 |     21.7% |
-| researcher     | deepseek-reasoner |          727 |           671 |    56 |      7.7% |
-| strategist     | deepseek-reasoner |          908 |           511 |   397 |     43.7% |
-| copywriter     | deepseek-chat     |          867 |           461 |   406 |     46.8% |
-| seo_optimizer  | deepseek-chat     |        2,018 |         1,612 |   406 |     20.1% |
-| editor         | deepseek-chat     |        4,054 |         3,815 |   239 |      5.9% |
-| reporter       | deepseek-chat     |        6,369 |         5,623 |   746 |     11.7% |
-| **TOTAL**      |                   |   **15,183** |    **12,881** | **2,302** | **15.2%** |
+| Agent          | Baseline tok | Optimized tok | Saved | Cost saved (USD) | Brevitas fee (10%) |
+|----------------|-------------:|--------------:|------:|-----------------:|-------------------:|
+| intake         |          240 |           188 |    52 |     $0.00001404 |       $0.00000140 |
+| researcher     |          776 |           724 |    52 |     $0.00002860 |       $0.00000286 |
+| strategist     |        3,519 |         3,062 |   457 |     $0.00025135 |       $0.00002514 |
+| copywriter     |        7,014 |         6,487 |   527 |     $0.00014229 |       $0.00001423 |
+| seo_optimizer  |        8,784 |         8,624 |   160 |     $0.00004320 |       $0.00000432 |
+| editor         |       12,434 |        11,533 |   901 |     $0.00024327 |       $0.00002433 |
+| reporter       |       16,677 |        14,145 | 2,532 |     $0.00068364 |       $0.00006836 |
+| **TOTAL**      |   **49,444** |    **44,763** | **4,681** | **$0.00140639** |    **$0.00014064** |
 
-**Reconciliation:** Σ(per-agent saved) = 2,302 = pipeline total. ✓ Attribution holds
-across all 7 agents under `pipeline="campaign-launch"`.
+**Verified empirically against `usage_log`:**
+- Exactly **7 rows** (one per agent — no double-recording).
+- All rows `provider = "deepseek"` → correct price table applied.
+- `cost_saved_usd > 0` and `brevitas_fee_usd > 0`; fee = exactly 10% of cost saved.
+- Σ(per-agent saved) = 4,681 = pipeline total. Attribution reconciles.
 
-Context accumulates down the pipeline (reporter sees all prior outputs → 6,369 baseline
-tokens), so later agents carry the largest absolute savings.
-
-## Known issues found during this run (open — must fix)
-
-1. **`run.py` response-shape mismatch (cosmetic, misleading).** `run.py` expects the
-   stats response as `{"by_agent": [...], "pipeline_total": {...}}`, but
-   `GET /v1/stats/agents` returns a bare JSON array. So `run.py` prints "No agent
-   statistics recorded" and exits 1 **even though the data was recorded correctly**.
-   The numbers above were read directly from the API/DB, not from `run.py`'s summary.
-
-2. **Double-recording.** An agent call can produce two `usage_log` rows — one from the
-   server-side `/v1/compress` handler and one from the SDK wrapper's `/v1/usage` report
-   (observed for `intake`). This inflates `calls` and can double-count savings.
-
-3. **Provider mislabel -> $0 billing.** The SDK wrapper records `provider="openai"` (and
-   some rows have empty provider) for what are DeepSeek calls, so `cost_for_tokens` finds
-   no matching DeepSeek price and `cost_saved_usd`/`brevitas_fee_usd` come out **0**.
-   Token tracking is correct; the **cost/fee (billing) path is not yet functional** until
-   the provider label is fixed to `deepseek`.
-
-**Bottom line:** per-pipeline / per-agent **token** tracking works end-to-end on live
-DeepSeek and reconciles. The **dollar billing** half needs the provider-label fix before
-the "charge a % of savings" number is real.
+The dollar figures are small by design: DeepSeek input pricing is ~$0.27/1M tokens and
+these are short prompts. The billing mechanism is real and scales linearly with token
+volume and model price.
