@@ -357,6 +357,39 @@ class RetrievalCompressRequest(BaseModel):
     min_top_score:     float     = Field(default=0.2, ge=0.0, le=1.0)
 
 
+class OptimizePromptRequest(BaseModel):
+    prompt: str   = Field(max_length=200_000)
+    rate:   float = Field(default=1.0, ge=0.1, le=1.0)  # 1.0=lossless; <1.0=LLMLingua-2 (lossy)
+
+
+@app.post("/v1/optimize-prompt")
+@limiter.limit("120/minute")
+def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
+                             kh: str = Depends(_authenticated)):
+    """Shrink a SINGLE prompt's token count. rate=1.0 -> lossless whitespace/format
+    normalization (safe). rate<1.0 -> LLMLingua-2 compression (lossy; arXiv:2403.12968;
+    needs the [promptopt] extra, else fail-safe to lossless). Tokens measured with tiktoken."""
+    from token_efficiency_model.lossless.prompt_optimizer import optimize_prompt as _opt
+
+    r = _opt(body.prompt, rate=body.rate)
+    _store.record_usage(
+        key_hash=kh,
+        baseline_tokens=r.tokens_before,
+        optimized_tokens=r.tokens_after,
+        savings_pct=r.saved_pct,
+        quality_proxy=None,
+    )
+    return {
+        "optimized_prompt": r.optimized,
+        "tokens_before": r.tokens_before,
+        "tokens_after": r.tokens_after,
+        "saved_pct": r.saved_pct,
+        "method": r.method,
+        "lossy": r.lossy,
+        "note": r.note,
+    }
+
+
 @app.post("/v1/compress/retrieval")
 @limiter.limit("60/minute")
 def compress_retrieval(request: Request, body: RetrievalCompressRequest,

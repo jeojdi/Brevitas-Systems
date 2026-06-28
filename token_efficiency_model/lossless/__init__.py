@@ -13,9 +13,11 @@ each provider's real cache behavior and picks the cheapest lossless strategy per
 from .content_store import ContentStore, RabinChunker, cid
 from .dropin import BrevitasClient, BrevitasDropIn, SavingsReport
 from .router import BrevitasRouter, RouteDecision
+from .prompt_optimizer import optimize_prompt, normalize_prompt, PromptOptimization
 
 __all__ = [
     "BrevitasClient", "BrevitasDropIn", "SavingsReport",
     "BrevitasRouter", "RouteDecision",
     "ContentStore", "RabinChunker", "cid",
+    "optimize_prompt", "normalize_prompt", "PromptOptimization",
 ]
