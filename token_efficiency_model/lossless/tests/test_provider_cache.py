@@ -93,11 +93,24 @@ def test_no_cache_means_no_savings():
     assert savings_from_usage({"prompt_tokens": 500, "prompt_tokens_details": {}}, "openai").savings_pct == 0.0
 
 
-def test_deepseek_uses_90pct_cache_discount_not_openai_50():
-    """Regression: DeepSeek caches at ~10% of input price (90% off), not OpenAI's 50%."""
+def test_deepseek_cache_discount_is_real_rate_not_90pct():
+    """Regression: DeepSeek cache-hit input is ~26% of fresh ($0.07 vs $0.27 = ~74% off),
+    NOT 90%. 80% cached -> ~59.3% total saving (no output)."""
     usage = {"prompt_tokens": 10000, "prompt_tokens_details": {"cached_tokens": 8000}}
     ds = savings_from_usage(usage, "deepseek").savings_pct
     oa = savings_from_usage(usage, "openai").savings_pct
-    assert abs(ds - 72.0) < 0.5    # 2000*1 + 8000*0.1 = 2800 -> 72% saved
-    assert abs(oa - 40.0) < 0.5    # 2000*1 + 8000*0.5 = 6000 -> 40% saved
+    assert abs(ds - 59.3) < 0.5    # 2000*1 + 8000*0.259 = 4072 -> 59.3% saved
+    assert abs(oa - 40.0) < 0.5    # 2000*1 + 8000*0.5   = 6000 -> 40% saved
     assert ds > oa
+
+
+def test_output_tokens_dilute_savings():
+    """Output is NEVER cached, so adding output lowers TOTAL savings vs input-only."""
+    base = savings_from_usage(
+        {"prompt_tokens": 10000, "prompt_tokens_details": {"cached_tokens": 8000}}, "deepseek")
+    without = savings_from_usage(
+        {"prompt_tokens": 10000, "prompt_tokens_details": {"cached_tokens": 8000},
+         "completion_tokens": 1000}, "deepseek")
+    assert without.output_tokens == 1000
+    assert without.savings_pct < base.savings_pct               # output dilutes the total
+    assert without.input_savings_pct == base.input_savings_pct  # input-only unchanged

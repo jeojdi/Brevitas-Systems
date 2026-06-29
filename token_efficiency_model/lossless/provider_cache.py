@@ -155,44 +155,70 @@ def _mark_tools(body: dict) -> bool:
 # --------------------------------------------------------------------------- #
 # 2. Honest savings from real provider usage
 # --------------------------------------------------------------------------- #
-# relative input-token prices (cost units); output excluded (savings is input-side)
-_ANTHROPIC = {"input": 1.0, "cache_write": 1.25, "cache_read": 0.10}
-_OPENAI = {"input": 1.0, "cache_read": 0.50}
-# cached-token discount as a fraction of fresh input price, per provider (from provider docs).
-# DeepSeek caches at ~10% of input price (90% off); OpenAI ~50%.
-_CACHE_READ = {"openai": 0.50, "deepseek": 0.10, "groq": 1.00}
+# Per-provider price ratios, RELATIVE to the fresh-input price (= 1.0), from provider pricing.
+# This keeps cost numbers in token-magnitude (so usage reporting stays sane) while accounting for
+# the real cache discount AND output (output is NEVER cached and is often pricier than input).
+#   cache_read  = cached-input price / fresh-input price
+#   cache_write = (anthropic only) cache-creation surcharge
+#   output      = output price / fresh-input price
+# DeepSeek deepseek-chat: in $0.27, cache-hit $0.07, out $1.10/1M -> cache_read .259, output 4.07
+# OpenAI gpt-4o-mini:     in $0.15, cached   $0.075, out $0.60/1M -> cache_read .50,  output 4.0
+# Anthropic Sonnet:       in $3.00, cache-rd $0.30,  out $15.0/1M -> cache_read .10,  output 5.0
+_RATES = {
+    "deepseek":  {"cache_read": 0.259, "cache_write": 1.0, "output": 4.07},
+    "openai":    {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0},
+    "anthropic": {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0},
+    "groq":      {"cache_read": 1.00,  "cache_write": 1.0, "output": 4.0},
+}
+_DEFAULT_RATES = {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}
 
 
 @dataclass
 class Savings:
-    uncached_cost: float
-    actual_cost: float
-    savings_pct: float
+    uncached_cost: float          # cost-units if NOTHING were cached (incl. output)
+    actual_cost: float            # real cost-units (incl. output)
+    savings_pct: float            # TOTAL savings incl. output (this is your real bill cut)
     cached_tokens: int
-    detail: Dict[str, Any]
+    input_fresh: int = 0
+    input_cached: int = 0
+    output_tokens: int = 0
+    input_savings_pct: float = 0.0  # input-only savings (ignores output) — for reference
+    detail: Dict[str, Any] = None
 
 
 def savings_from_usage(usage: dict, provider: str) -> Savings:
-    """Compute honest input-side savings from a provider response `usage` object."""
+    """Honest savings from a provider `usage` object, including OUTPUT tokens.
+
+    Output is never cached and is billed at full price, so the headline savings_pct reflects the
+    real total-bill cut (input + output), not just the input side."""
     provider = provider.lower()
+    r = _RATES.get(provider, _DEFAULT_RATES)
     if provider == "anthropic":
         fresh = int(usage.get("input_tokens", 0))
         write = int(usage.get("cache_creation_input_tokens", 0))
         read = int(usage.get("cache_read_input_tokens", 0))
-        total_in = fresh + write + read
-        uncached = total_in * _ANTHROPIC["input"]
-        actual = (fresh * _ANTHROPIC["input"] + write * _ANTHROPIC["cache_write"]
-                  + read * _ANTHROPIC["cache_read"])
+        output = int(usage.get("output_tokens", 0))
+        in_uncached = (fresh + write + read) * 1.0
+        in_actual = fresh * 1.0 + write * r["cache_write"] + read * r["cache_read"]
         cached = read
-        detail = {"input": fresh, "cache_write": write, "cache_read": read}
-    else:  # openai / deepseek style — use the PROVIDER'S real cache discount
+        detail = {"input": fresh, "cache_write": write, "cache_read": read, "output": output}
+    else:  # openai / deepseek style
         prompt = int(usage.get("prompt_tokens", 0))
         details = usage.get("prompt_tokens_details", {}) or {}
         cached = int(details.get("cached_tokens", 0) or usage.get("prompt_cache_hit_tokens", 0))
         fresh = prompt - cached
-        cache_read = _CACHE_READ.get(provider.lower(), 0.50)
-        uncached = prompt * 1.0
-        actual = fresh * 1.0 + cached * cache_read
-        detail = {"prompt": prompt, "cached": cached, "cache_read_rate": cache_read}
+        write = 0
+        output = int(usage.get("completion_tokens", 0))
+        in_uncached = prompt * 1.0
+        in_actual = fresh * 1.0 + cached * r["cache_read"]
+        detail = {"prompt": prompt, "cached": cached, "output": output,
+                  "cache_read_rate": r["cache_read"]}
+
+    out_cost = output * r["output"]
+    uncached = in_uncached + out_cost          # total cost if nothing cached
+    actual = in_actual + out_cost              # real total cost
     savings_pct = round(100 * (1 - actual / uncached), 2) if uncached > 0 else 0.0
-    return Savings(round(uncached, 2), round(actual, 2), savings_pct, cached, detail)
+    input_savings = round(100 * (1 - in_actual / in_uncached), 2) if in_uncached > 0 else 0.0
+    return Savings(round(uncached, 2), round(actual, 2), savings_pct, cached,
+                   input_fresh=fresh + write, input_cached=cached, output_tokens=output,
+                   input_savings_pct=input_savings, detail=detail)

@@ -32,7 +32,11 @@ class SavingsReport:
     cached_tokens: int
     uncached_cost: float
     actual_cost: float
-    savings_pct: float
+    savings_pct: float                 # TOTAL incl. output (your real bill cut)
+    input_fresh: int = 0               # input tokens billed at full price
+    input_cached: int = 0              # input tokens served from cache
+    output_tokens: int = 0             # output tokens (never cached, full price)
+    input_savings_pct: float = 0.0     # input-only savings (ignores output), for reference
     cache_placement: Optional[Dict[str, Any]] = None  # Anthropic: CachePlan details
     retrieval_applied: bool = False
     retrieval_baseline_tokens: Optional[int] = None
@@ -161,6 +165,10 @@ class BrevitasDropIn:
             uncached_cost=savings.uncached_cost,
             actual_cost=savings.actual_cost,
             savings_pct=savings.savings_pct,
+            input_fresh=savings.input_fresh,
+            input_cached=savings.input_cached,
+            output_tokens=savings.output_tokens,
+            input_savings_pct=savings.input_savings_pct,
             cache_placement={"strategy": decision.get("strategy"),
                              "reason": decision.get("reason"),
                              **{k: v for k, v in decision.items()
