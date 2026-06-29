@@ -9,20 +9,35 @@ usage returned by the LLM provider.
 | **Chat with a document** | `3010` | Ask a question about a PDF/codebase. Side-by-side: **Without Brevitas** re-sends the whole document; **With Brevitas** routes per question (retrieve a slice, or keep the full doc + provider cache for broad questions). |
 | **Coding agent on a repo** | `3011` | Runs a live 8-turn Claude-Code-style agent over this repo's own files. Each turn shows the before/after input tokens and the running token + cost savings. |
 
-## Run it
+## Run it (no install — just clone & run)
 
 ```bash
-# 1. install (from the repo root)
-pip install -e ".[all]"
+# 1. clone and enter the repo
+git clone https://github.com/jeojdi/Brevitas-Systems.git
+cd Brevitas-Systems
 
-# 2. provide a DeepSeek API key (either export it or put it in .env.local)
-export DEEPSEEK_API_KEY=sk-...          # or: echo 'DEEPSEEK_API_KEY=sk-...' >> .env.local
+# 2. install the demo dependencies (no editable install needed)
+pip install -r requirements-demo.txt
 
-# 3. launch both demo pages
-python -m brevitas.demos
+# 3. add a DeepSeek API key
+echo 'DEEPSEEK_API_KEY=sk-your-own-key' >> .env.local
+
+# 4. launch both demo pages
+python run_demo.py
 ```
 
 Then open **http://127.0.0.1:3010** (textbook) and **http://127.0.0.1:3011** (coding agent).
+
+> Already have the repo? Just `git pull` and run steps 2–4. `run_demo.py` imports straight from the
+> clone, so there's no `pip install -e` and no `*.egg-info` to cause merge conflicts on pull.
+
+<details><summary>Alternative: full editable install</summary>
+
+```bash
+pip install -e ".[all]"
+python -m brevitas.demos
+```
+</details>
 
 - On :3010, click **“use the sample textbook”** to load the bundled, license-clean
   *Algorithms Handbook*, or drag in your own PDF / codebase folder.

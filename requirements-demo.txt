@@ -1,0 +1,15 @@
+# Minimal dependencies to run the Brevitas demos (run_demo.py) without an editable install.
+#   pip install -r requirements-demo.txt
+#   python run_demo.py
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9        # FastAPI form/file uploads
+tiktoken>=0.7.0                # token counting
+numpy>=1.24.0
+requests>=2.31.0
+httpx>=0.27.0
+pydantic>=2.0.0
+openai>=1.30.0                 # provider client (DeepSeek/OpenAI compatible API)
+sentence-transformers>=2.2.0   # retrieval embedding model (heavy: pulls torch). Without it,
+                               # retrieval fail-safes to full context, so the demo shows less.
+pymupdf>=1.23.0                # PDF reading for uploaded documents
