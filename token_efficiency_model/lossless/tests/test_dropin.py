@@ -129,9 +129,10 @@ def test_savings_report_anthropic_with_cache():
     assert isinstance(report, SavingsReport)
     assert report.provider == "anthropic"
     assert report.cached_tokens == 5000
-    # uncached = 6000; actual = 1000 + 5000*0.1 = 1500 -> ~75% savings
-    assert report.savings_pct > 70
-    assert report.savings_pct < 80
+    # TOTAL savings now includes output (100 tok @ 5x input, never cached):
+    # input uncached 6000, actual 1500; output cost 500 both sides -> 1-(2000/6500) = ~69.2%
+    # (output dilutes the ~75% input-only figure — this is the honest total-bill number)
+    assert 66 < report.savings_pct < 73
 
 
 def test_savings_report_openai_with_cache():

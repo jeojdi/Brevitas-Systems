@@ -39,21 +39,18 @@ _CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rb", ".java", ".rs", 
 
 
 def _raw_chat(provider, model, key, messages, max_tokens=500):
-    """Direct provider call (NO Brevitas) — same usage shape, so we can compare honestly."""
+    """Direct provider call (NO Brevitas). Uses the same honest cost math (correct per-provider
+    rates + output) so the A/B comparison is apples-to-apples."""
     import json, urllib.request
+    from token_efficiency_model.lossless.provider_cache import savings_from_usage
     url = _base_url(provider).rstrip("/") + "/chat/completions"
     body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     d = json.loads(urllib.request.urlopen(req, timeout=120).read())
-    u = d.get("usage", {})
-    prompt = int(u.get("prompt_tokens", 0))
-    cached = int(u.get("prompt_tokens_details", {}).get("cached_tokens", 0) or u.get("prompt_cache_hit_tokens", 0))
-    disc = 0.1 if provider in ("deepseek", "anthropic") else 0.5
-    uncached_cost = prompt * 1.0
-    actual_cost = (prompt - cached) * 1.0 + cached * disc
-    saved = round(100 * (1 - actual_cost / uncached_cost), 2) if uncached_cost else 0.0
-    return d["choices"][0]["message"]["content"], cached, uncached_cost, actual_cost, saved
+    s = savings_from_usage(d.get("usage", {}), provider)
+    return (d["choices"][0]["message"]["content"], s.cached_tokens, s.uncached_cost,
+            s.actual_cost, s.savings_pct, s.output_tokens)
 
 
 def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: bool = True) -> FastAPI:
@@ -114,8 +111,10 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
                 resp, sav = s.client.chat(messages=messages, model=s.model, session_id=session, max_tokens=500)
                 answer = resp.choices[0].message.content
                 cached, unc, act, saved = sav.cached_tokens, sav.uncached_cost, sav.actual_cost, sav.savings_pct
+                fresh, output = sav.input_fresh, sav.output_tokens
             else:
-                answer, cached, unc, act, saved = _raw_chat(provider, s.model, key, messages)
+                answer, cached, unc, act, saved, output = _raw_chat(provider, s.model, key, messages)
+                fresh = 0
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         s.history += [{"role": "user", "content": question},
@@ -123,10 +122,13 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
         s.cum_uncached += unc
         s.cum_actual += act
         s.cached_total += cached
+        s.output_total = getattr(s, "output_total", 0) + output
         total = round(100 * (1 - s.cum_actual / s.cum_uncached), 1) if s.cum_uncached else 0.0
-        return {"answer": answer, "cached_tokens": cached, "turn_saved_pct": saved,
-                "cumulative_saved_pct": total, "cached_total": s.cached_total,
-                "turns": len(s.history) // 2, "brevitas": brevitas_enabled}
+        return {"answer": answer, "cached_tokens": cached, "input_fresh": fresh,
+                "output_tokens": output, "output_total": s.output_total,
+                "turn_saved_pct": saved, "cumulative_saved_pct": total,
+                "cached_total": s.cached_total, "turns": len(s.history) // 2,
+                "brevitas": brevitas_enabled}
 
     return app
 
@@ -166,7 +168,8 @@ button:disabled{opacity:.5;cursor:default}
     <div class="sub">Total input-cost saved</div>
     <div class="big" id="saved">—</div>
     <div class="row"><span>This turn</span><b id="turn">—</b></div>
-    <div class="row"><span>Tokens from cache</span><b id="cached">0</b></div>
+    <div class="row"><span>Input tokens from cache</span><b id="cached">0</b></div>
+    <div class="row"><span>Output tokens (never cached)</span><b id="output">0</b></div>
     <div class="row"><span>Turns</span><b id="turns">0</b></div>
     <div class="row"><span>Context size</span><b id="dtok">—</b></div>
   </div>
@@ -212,6 +215,7 @@ async function ask(){
       $('saved').textContent=j.cumulative_saved_pct+'%';
       $('turn').textContent=Math.round(j.turn_saved_pct)+'% · '+j.cached_tokens.toLocaleString()+' cached';
       $('cached').textContent=j.cached_total.toLocaleString();
+      $('output').textContent=(j.output_total||0).toLocaleString();
       $('turns').textContent=j.turns;
     }
   }catch(e){tag.remove();add('bot','⚠️ '+e);}
