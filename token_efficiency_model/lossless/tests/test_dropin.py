@@ -232,11 +232,13 @@ def test_retrieval_reports_metadata():
     mock_response.usage.prompt_tokens_details = {}
     mock_response.choices = [MagicMock(message=MagicMock(content="response"))]
 
-    # large UNIQUE per-call context so the router auto-selects "retrieve"
-    c1 = " ".join(["alpha"] * 1500)
-    c3 = " ".join(["gamma"] * 1500)
+    # Several MEDIUM unique context messages (each below the chunk threshold) so the engine's
+    # message-level retrieval path fires (patched below) and the router auto-selects "retrieve".
+    c1 = " ".join(["alpha"] * 400)
+    c2 = " ".join(["beta"] * 400)
+    c3 = " ".join(["gamma"] * 400)
     mock_retrieval_result = {
-        "selected_context": [c1, c3],
+        "selected_context": [c1, c3],   # drop c2
         "baseline_tokens": 600,
         "optimized_tokens": 300,
         "savings_pct": 50.0,
@@ -255,7 +257,8 @@ def test_retrieval_reports_metadata():
         response, report = client.chat(
             messages=[
                 {"role": "user", "content": c1},
-                {"role": "assistant", "content": "response"},
+                {"role": "assistant", "content": c2},
+                {"role": "user", "content": c3},
                 {"role": "user", "content": "the new question " + " ".join(["q"] * 50)},
             ],
             model="gpt-4",

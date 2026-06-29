@@ -48,9 +48,11 @@ def _raw_chat(provider, model, key, messages, max_tokens=500):
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
     d = json.loads(urllib.request.urlopen(req, timeout=120).read())
-    s = savings_from_usage(d.get("usage", {}), provider)
+    usage = d.get("usage", {})
+    s = savings_from_usage(usage, provider)
     return (d["choices"][0]["message"]["content"], s.cached_tokens, s.uncached_cost,
-            s.actual_cost, s.savings_pct, s.output_tokens)
+            s.actual_cost, s.savings_pct, s.output_tokens,
+            int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0)))
 
 
 def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: bool = True) -> FastAPI:
@@ -102,18 +104,29 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
         s = _SESSIONS.get(session)
         if not s or not s.doc:
             return JSONResponse({"error": "Upload a codebase or document first."}, status_code=400)
-        system = ("You are a senior engineer. Answer using the codebase/document below as the "
-                  "source of truth.\n\n=== CONTEXT ===\n" + s.doc + "\n=== END CONTEXT ===")
-        messages = [{"role": "system", "content": system}] + s.history + [
+        # Small system instruction (kept intact); the big document is a separate message the
+        # router can slice into via retrieval. Rebuilt from the FULL doc every turn.
+        instruction = ("You are a senior engineer. Answer using the provided document as the "
+                       "source of truth.")
+        doc_msg = {"role": "user",
+                   "content": "=== DOCUMENT ===\n" + s.doc + "\n=== END DOCUMENT ==="}
+        messages = [{"role": "system", "content": instruction}, doc_msg] + s.history + [
             {"role": "user", "content": question}]
+        strategy, retr_base, retr_opt = "none", None, None
         try:
             if brevitas_enabled:
                 resp, sav = s.client.chat(messages=messages, model=s.model, session_id=session, max_tokens=500)
                 answer = resp.choices[0].message.content
                 cached, unc, act, saved = sav.cached_tokens, sav.uncached_cost, sav.actual_cost, sav.savings_pct
                 fresh, output = sav.input_fresh, sav.output_tokens
+                strategy = (sav.cache_placement or {}).get("strategy", "cache_only")
+                if sav.retrieval_applied:
+                    retr_base, retr_opt = sav.retrieval_baseline_tokens, sav.retrieval_optimized_tokens
+                prompt_tokens = int(getattr(resp.usage, "prompt_tokens", 0) or 0)
+                completion_tokens = int(getattr(resp.usage, "completion_tokens", 0) or 0)
             else:
-                answer, cached, unc, act, saved, output = _raw_chat(provider, s.model, key, messages)
+                (answer, cached, unc, act, saved, output,
+                 prompt_tokens, completion_tokens) = _raw_chat(provider, s.model, key, messages)
                 fresh = 0
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -128,6 +141,8 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
                 "output_tokens": output, "output_total": s.output_total,
                 "turn_saved_pct": saved, "cumulative_saved_pct": total,
                 "cached_total": s.cached_total, "turns": len(s.history) // 2,
+                "strategy": strategy, "retr_baseline": retr_base, "retr_optimized": retr_opt,
+                "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                 "brevitas": brevitas_enabled}
 
     return app
@@ -168,6 +183,7 @@ button:disabled{opacity:.5;cursor:default}
     <div class="sub">Total input-cost saved</div>
     <div class="big" id="saved">—</div>
     <div class="row"><span>This turn</span><b id="turn">—</b></div>
+    <div class="row"><span>Lever this turn</span><b id="lever">—</b></div>
     <div class="row"><span>Input tokens from cache</span><b id="cached">0</b></div>
     <div class="row"><span>Output tokens (never cached)</span><b id="output">0</b></div>
     <div class="row"><span>Turns</span><b id="turns">0</b></div>
@@ -214,6 +230,9 @@ async function ask(){
       add('bot',j.answer);
       $('saved').textContent=j.cumulative_saved_pct+'%';
       $('turn').textContent=Math.round(j.turn_saved_pct)+'% · '+j.cached_tokens.toLocaleString()+' cached';
+      let lev=j.strategy||'none';
+      if(j.strategy==='retrieve'&&j.retr_baseline){lev='retrieve · '+j.retr_optimized.toLocaleString()+'/'+j.retr_baseline.toLocaleString()+' tok';}
+      $('lever').textContent=lev;
       $('cached').textContent=j.cached_total.toLocaleString();
       $('output').textContent=(j.output_total||0).toLocaleString();
       $('turns').textContent=j.turns;
