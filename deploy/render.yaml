@@ -3,6 +3,7 @@ services:
     name: brevitas-compress
     runtime: docker
     dockerfilePath: ./services/compress/Dockerfile
+    # build context = repo root (Render default); Dockerfile COPYs use services/compress/ paths
     autoDeploy: false
     healthCheckPath: /health
     envVars:
