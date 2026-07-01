@@ -258,5 +258,103 @@ def analyze(path: str, as_json: bool) -> None:
            f"(compress) · [green]{len(rep.lossless)} LOSSLESS[/green] (keep + cache)")
 
 
+_PROVIDER_KEY_ENVS = {
+    "openai": ["OPENAI_API_KEY"],
+    "anthropic": ["ANTHROPIC_API_KEY"],
+    "deepseek": ["Deepseek_api_key", "DEEPSEEK_API_KEY"],
+    "groq": ["GROQ_API_KEY"],
+}
+
+
+@main.command()
+@click.argument("path", default=".", required=False)
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Write the suggested wrap() changes (asks for confirmation).")
+@click.option("--ai", "use_ai", is_flag=True,
+              help="AI-assisted pass over files the static scanner can't classify "
+                   "(uses YOUR local provider key; nothing is sent to Brevitas).")
+def init(path: str, do_apply: bool, use_ai: bool) -> None:
+    """One-command onboarding: find your LLM call sites, wire Brevitas in, start saving.
+
+    Scans the workspace (static analysis; add --ai for tricky codebases), reports every
+    call site and provider, checks which API keys are configured locally, and shows the
+    two integration paths. Keys never leave your machine.
+    """
+    from .scanner import plan_changes, scan_path, write_changes
+    from .scanner.broad import analyze_path
+    from .scanner.report import render_diff, render_report
+
+    _print(f"\n[bold]Brevitas onboarding[/bold] — scanning [cyan]{path}[/cyan] …")
+    report = scan_path(path)
+    broad = analyze_path(path)
+
+    # 1) what we found
+    render_report(report)
+    providers = sorted({c.provider for c in broad.calls if c.provider and c.provider != "unknown"})
+    raw_calls = [c for c in broad.calls if c.transport != "sdk"]
+    if raw_calls:
+        _print(f"\n[bold]{len(raw_calls)}[/bold] raw-HTTP LLM call(s) (proxy integration recommended):")
+        for c in raw_calls[:10]:
+            _print(f"  [cyan]{c.location}[/cyan]  {c.provider}  [dim]{c.reason}[/dim]")
+
+    # 1b) optional AI fallback on unresolved files
+    if use_ai:
+        from pathlib import Path as _P
+        known = {f.path for f in report.findings} | {c.location.split(":")[0] for c in broad.calls}
+        candidates = [p for p in _P(path).rglob("*.py")
+                      if str(p) not in known and p.stat().st_size > 200][:20]
+        from .scanner.ai_assist import ai_classify_files
+        ai_hits = ai_classify_files(candidates)
+        if ai_hits:
+            _print(f"\n[bold]AI-assisted pass[/bold] found {len(ai_hits)} more call site(s):")
+            for h in ai_hits:
+                _print(f"  [cyan]{h['file']}:{h['line']}[/cyan]  {h.get('provider','?')} "
+                       f"[dim]{h.get('snippet','')}[/dim]")
+        else:
+            _print("\n[dim]AI-assisted pass: nothing additional found "
+                   "(or no local provider key configured).[/dim]")
+
+    # 2) local key checklist — keys stay in YOUR environment
+    _print("\n[bold]API keys (read from your local env/.env — never sent to Brevitas):[/bold]")
+    for prov in providers or ["openai", "anthropic", "deepseek"]:
+        envs = _PROVIDER_KEY_ENVS.get(prov, [])
+        found = next((e for e in envs if os.environ.get(e)), None)
+        if found:
+            _print(f"  [green]✓ {prov}[/green]  ({found} set)")
+        elif envs:
+            _print(f"  [yellow]○ {prov}[/yellow]  set {envs[0]} in your environment or .env")
+
+    # 3) integration menu
+    _print("\n[bold]Pick an integration (both are drop-in):[/bold]")
+    _print("  [bold]A. Zero-code proxy[/bold] — no code changes:")
+    _print("     [yellow]brevitas start[/yellow]   then in your app's environment:")
+    _print("     [yellow]export ANTHROPIC_BASE_URL=http://localhost:4242[/yellow]")
+    _print("     [yellow]export OPENAI_BASE_URL=http://localhost:4242/openai[/yellow]  "
+           "[dim](also routes DeepSeek/Groq by model name)[/dim]")
+    _print("  [bold]B. One-line wrap[/bold] — per client object:")
+    _print("     [yellow]client = brevitas.wrap(openai.OpenAI())[/yellow]  "
+           f"[dim](run [yellow]brevitas apply{' --write' if not do_apply else ''}[/yellow] "
+           "to do this automatically)[/dim]")
+
+    # 4) optional apply
+    if do_apply:
+        changes = plan_changes(report)
+        if not changes:
+            _print("\n[dim]No wrappable clients found for --apply.[/dim]")
+            return
+        _print("")
+        render_diff(changes)
+        if click.confirm("\nApply these changes?", default=False):
+            written = write_changes(changes)
+            _print(f"[green]✓ Wrapped {sum(c.wrapped for c in changes)} client(s) "
+                   f"in {written} file(s).[/green]")
+        else:
+            _print("[dim]Skipped. Re-run with --apply when ready.[/dim]")
+
+    _print("\n[bold green]Savings start on your very next call[/bold green] — caching, "
+           "retrieval and routing are automatic and fail-safe (worst case: your request "
+           "passes through untouched). Check [yellow]brevitas status[/yellow] for numbers.\n")
+
+
 if __name__ == "__main__":
     main()
