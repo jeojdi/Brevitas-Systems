@@ -41,8 +41,16 @@ def _block_text(block: Any) -> str:
     if isinstance(block, str):
         return block
     if isinstance(block, dict):
-        return block.get("text", "") or block.get("content", "") if isinstance(
-            block.get("text", ""), str) else ""
+        text = block.get("text", "")
+        # Only return text if it's a string (not empty string, but still str type)
+        if isinstance(text, str):
+            return text
+        # If text is not a str, try content as fallback, but only if it's str
+        content = block.get("content", "")
+        if isinstance(content, str):
+            return content
+        # If content is a list or other non-str, return empty string (not the list)
+        return ""
     return ""
 
 

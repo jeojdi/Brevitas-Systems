@@ -53,10 +53,27 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     strategy = decision.strategy
     if strategy == "retrieve":
         # reduce the prior context to the relevant chunks (fail-safe to full inside)
-        sel = retrieval_select(query[:200], stable, k=8)
+        sel = retrieval_select(query[:200], stable, k=8, use_adaptive=True)
         if not sel["fallback_applied"] and sel["selected_context"]:
             keep = set(sel["selected_context"])
-            new_msgs = [m for m in messages[:-1] if _msg_text(m.get("content", "")) in keep]
+            # Build new message list: keep all assistant/tool turns; prune user/context text
+            new_msgs = []
+            for m in messages[:-1]:
+                role = m.get("role", "")
+                # Always keep assistant and tool roles (maintain conversation structure)
+                if role == "assistant":
+                    new_msgs.append(m)
+                elif role == "tool":
+                    new_msgs.append(m)
+                elif role == "user":
+                    # For user messages, only keep if content is in retrieved set
+                    content_text = _msg_text(m.get("content", ""))
+                    if content_text in keep:
+                        new_msgs.append(m)
+                else:
+                    # Unknown role: preserve for safety
+                    new_msgs.append(m)
+
             new_msgs.append(messages[-1])
             body["messages"] = new_msgs
             return {"strategy": "retrieve", "reason": decision.reason,

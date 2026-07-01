@@ -324,7 +324,7 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     quality proxy is recorded.
     """
     task = body.task or (body.messages[0][:200] if body.messages else "")
-    sel = retrieval_select(task, body.prior_context, k=body.prune_budget)
+    sel = retrieval_select(task, body.prior_context, k=body.prune_budget, use_adaptive=True)
 
     msg_tokens = estimate_tokens_many(body.messages)
     baseline_tokens = msg_tokens + sel["baseline_tokens"]
@@ -415,7 +415,7 @@ def compress_retrieval(request: Request, body: RetrievalCompressRequest,
     from token_efficiency_model.lossless.api_adapter import retrieval_select
 
     out = retrieval_select(body.task, body.prior_context, k=body.k,
-                           min_top_score=body.min_top_score)
+                           min_top_score=body.min_top_score, use_adaptive=True)
     _store.record_usage(
         key_hash=kh,
         baseline_tokens=out["baseline_tokens"],
@@ -444,7 +444,7 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             if cancel_event.is_set():
                 return
 
-            sel = retrieval_select(task, body.prior_context, k=body.prune_budget)
+            sel = retrieval_select(task, body.prior_context, k=body.prune_budget, use_adaptive=True)
             if cancel_event.is_set():
                 return
 

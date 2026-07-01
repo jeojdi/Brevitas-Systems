@@ -92,7 +92,10 @@ class BrevitasDropIn:
 
     def _route_client(self, provider: str) -> Any:
         """Return or create the appropriate client for the provider."""
-        if self._client is not None and hasattr(self._client, "__provider__"):
+        # Check if we have a cached client for this specific provider
+        if (self._client is not None and
+            hasattr(self._client, "__provider__") and
+            self._client.__provider__ == provider):
             return self._client
 
         if provider == "anthropic":
@@ -245,20 +248,42 @@ class BrevitasDropIn:
         """Rebuild messages, replacing prior context with retrieved chunks.
 
         Keeps the latest user message intact; replaces earlier context blocks.
+        Never drops assistant or tool turns; only prunes user/context text content.
         """
         if not selected_chunks or len(selected_chunks) == len(original_chunks):
             return original_messages  # No actual reduction
 
-        # Simple approach: if a message's content appears in original_chunks,
-        # only keep it if it's in selected_chunks
+        # Build new message list: preserve all assistant/tool turns;
+        # only filter user messages by retrieved content
         kept = []
         for msg in original_messages[:-1]:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                if content in selected_chunks:
+            role = msg.get("role", "")
+
+            # Always keep assistant and tool messages (structure integrity)
+            if role == "assistant" or role == "tool":
+                kept.append(msg)
+            elif role == "user":
+                # For user messages, check if content is in retrieved chunks
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    if content in selected_chunks:
+                        kept.append(msg)
+                elif isinstance(content, list):
+                    # For content lists (mixed text/tool_result), check text blocks
+                    has_retrieved_text = False
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            if block.get("text", "") in selected_chunks:
+                                has_retrieved_text = True
+                                break
+                    if has_retrieved_text:
+                        kept.append(msg)
+                else:
+                    # Non-string, non-list content: preserve for safety
                     kept.append(msg)
             else:
-                kept.append(msg)  # Keep non-string content for safety
+                # Unknown role: preserve for safety
+                kept.append(msg)
 
         # Always keep the latest message
         kept.append(original_messages[-1])

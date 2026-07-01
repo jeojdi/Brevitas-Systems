@@ -112,11 +112,29 @@ def compress_messages(
     out_messages: list[dict] = []
     for i, m in enumerate(messages):
         if i == last_user_idx and compressed_texts:
-            # Replace only the last user message with its compressed version
+            # Replace only the last user message's TEXT content with compressed version
+            # Preserve any non-text blocks (tool_result, images, etc.)
             new_m = dict(m)
             if isinstance(m.get("content"), list):
-                new_m["content"] = [{"type": "text", "text": compressed_texts[0]}]
+                # Mixed content: replace text blocks, preserve others
+                new_content = []
+                text_replaced = False
+                for block in m.get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        # Replace the first text block with compressed text
+                        if not text_replaced:
+                            new_content.append({"type": "text", "text": compressed_texts[0]})
+                            text_replaced = True
+                        # Skip other text blocks (already included in compression)
+                    else:
+                        # Preserve non-text blocks (tool_result, images, etc.)
+                        new_content.append(block)
+                # If no text block was found, add the compressed text
+                if not text_replaced:
+                    new_content.insert(0, {"type": "text", "text": compressed_texts[0]})
+                new_m["content"] = new_content
             else:
+                # String content: replace with compressed text
                 new_m["content"] = compressed_texts[0]
             out_messages.append(new_m)
         else:

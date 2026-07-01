@@ -17,6 +17,7 @@ sends everything; retrieve fails safe to full context on low confidence.
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -54,13 +55,51 @@ class _SessionState:
     obs_count: int = 0
 
 
+class _BoundedSessionDict:
+    """LRU-bounded session dict to prevent unbounded memory growth."""
+
+    def __init__(self, max_sessions: int = 1024):
+        self.max_sessions = max_sessions
+        self._sessions: OrderedDict[str, _SessionState] = OrderedDict()
+
+    def setdefault(self, session_id: str, default: _SessionState) -> _SessionState:
+        """Get or create a session state, evicting LRU if needed."""
+        if session_id in self._sessions:
+            # Move to end (most recent)
+            self._sessions.move_to_end(session_id)
+            return self._sessions[session_id]
+
+        # New session: evict oldest if at capacity
+        if len(self._sessions) >= self.max_sessions:
+            self._sessions.popitem(last=False)
+
+        self._sessions[session_id] = default
+        return default
+
+    def __getitem__(self, session_id: str) -> _SessionState:
+        if session_id in self._sessions:
+            self._sessions.move_to_end(session_id)
+            return self._sessions[session_id]
+        raise KeyError(session_id)
+
+    def __contains__(self, session_id: str) -> bool:
+        return session_id in self._sessions
+
+
 @dataclass
 class BrevitasRouter:
     provider: str = "openai"
     # fraction of a large context that retrieval typically keeps (from benchmarks ~0.6)
     retrieve_keep_frac: float = 0.6
+    # max concurrent sessions (LRU eviction when exceeded)
+    max_sessions: int = 1024
 
-    _sessions: Dict[str, _SessionState] = field(default_factory=dict)
+    _sessions: _BoundedSessionDict = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Initialize _sessions with the configured max_sessions limit."""
+        if isinstance(self._sessions, dict):
+            self._sessions = _BoundedSessionDict(self.max_sessions)
 
     def _discount(self) -> float:
         return CACHE_DISCOUNT.get(self.provider.lower(), CACHE_DISCOUNT["default"])
