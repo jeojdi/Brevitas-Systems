@@ -1,0 +1,90 @@
+{
+  "provider": "deepseek",
+  "workload": "marketing",
+  "baseline": {
+    "usd": 0.0026707000000000002,
+    "prompt_tokens": 5410,
+    "cached_tokens": 0,
+    "transcript": [
+      {
+        "agent": "Lead Market Analyst",
+        "usd": 0.000402,
+        "prompt": 591,
+        "cached": 0,
+        "head": "Here is the concise competitor and audience positioning report for the"
+      },
+      {
+        "agent": "Chief Marketing Strategist",
+        "usd": 0.000468,
+        "prompt": 836,
+        "cached": 0,
+        "head": "Here is the complete marketing strategy for the **NorthPeak Outdoor Su"
+      },
+      {
+        "agent": "Creative Content Creator",
+        "usd": 0.000535,
+        "prompt": 1084,
+        "cached": 0,
+        "head": "Here are **5 campaign ideas** for the NorthPeak Outdoor Summit 1L laun"
+      },
+      {
+        "agent": "Creative Content Creator",
+        "usd": 0.0006,
+        "prompt": 1326,
+        "cached": 0,
+        "head": "Here are 3 short ad copies tailored to the target audience, aligned wi"
+      },
+      {
+        "agent": "Chief Creative Director",
+        "usd": 0.000667,
+        "prompt": 1573,
+        "cached": 0,
+        "head": "## Approval Verdict: **CONDITIONALLY APPROVED**  The team has delivere"
+      }
+    ]
+  },
+  "brevitas": {
+    "usd": 0.0025463800000000004,
+    "prompt_tokens": 5394,
+    "cached_tokens": 512,
+    "transcript": [
+      {
+        "agent": "Lead Market Analyst",
+        "usd": 0.000299,
+        "prompt": 591,
+        "cached": 512,
+        "head": "**COMPETITOR + AUDIENCE POSITIONING REPORT: NorthPeak Outdoor \u2013 Summit"
+      },
+      {
+        "agent": "Chief Marketing Strategist",
+        "usd": 0.000468,
+        "prompt": 836,
+        "cached": 0,
+        "head": "**STRATEGY BLUEPRINT: Summit 1L Launch \u2013 Q3 North America**  ---  ## 1"
+      },
+      {
+        "agent": "Creative Content Creator",
+        "usd": 0.000535,
+        "prompt": 1084,
+        "cached": 0,
+        "head": "Here are **5 campaign ideas** for the Summit 1L launch, each with a on"
+      },
+      {
+        "agent": "Creative Content Creator",
+        "usd": 0.000582,
+        "prompt": 1326,
+        "cached": 0,
+        "head": "Here are **3 short ad copies** tailored to the target audience, aligne"
+      },
+      {
+        "agent": "Chief Creative Director",
+        "usd": 0.000662,
+        "prompt": 1557,
+        "cached": 0,
+        "head": "## APPROVAL VERDICT: CONDITIONALLY APPROVED  The team's collective out"
+      }
+    ]
+  },
+  "cost_saved_usd": 0.000124,
+  "cost_saved_pct": 4.7
+}

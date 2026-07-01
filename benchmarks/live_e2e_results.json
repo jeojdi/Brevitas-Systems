@@ -1,0 +1,77 @@
+{
+  "scenario": "agent",
+  "anthropic": {
+    "result": {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "turns": [
+        {
+          "turn": 1,
+          "correct": true,
+          "expect_any": [
+            "cache_only"
+          ],
+          "input_fresh": 7243,
+          "input_cached": 0,
+          "output_tokens": 89,
+          "cached_tokens": 0,
+          "input_savings_pct": -24.92,
+          "savings_pct": -23.48,
+          "retrieval_applied": false,
+          "answer_head": "Based on the `BrevitasRouter.decide()` method in `router.py`, the strategy strings that can be retur"
+        },
+        {
+          "turn": 2,
+          "correct": true,
+          "expect_any": [
+            "1024"
+          ],
+          "input_fresh": 136,
+          "input_cached": 7220,
+          "output_tokens": 99,
+          "cached_tokens": 7220,
+          "input_savings_pct": 87.96,
+          "savings_pct": 82.42,
+          "retrieval_applied": true,
+          "answer_head": "According to `router.py`, the value of `MIN_CACHEABLE` is:  ```python MIN_CACHEABLE = 1024     # pro"
+        },
+        {
+          "turn": 3,
+          "correct": true,
+          "expect_any": [
+            "cache_read_input_tokens"
+          ],
+          "input_fresh": 148,
+          "input_cached": 7330,
+          "output_tokens": 74,
+          "cached_tokens": 7330,
+          "input_savings_pct": 87.81,
+          "savings_pct": 83.67,
+          "retrieval_applied": false,
+          "answer_head": "According to `provider_cache.py`, in the `savings_from_usage()` function, Anthropic's cached-read to"
+        },
+        {
+          "turn": 4,
+          "correct": true,
+          "expect_any": [
+            "encoder_unavailable",
+            "full context",
+            "fallback",
+            "falls back",
+            "fail-safe"
+          ],
+          "input_fresh": 126,
+          "input_cached": 7453,
+          "output_tokens": 124,
+          "cached_tokens": 7453,
+          "input_savings_pct": 88.18,
+          "savings_pct": 81.52,
+          "retrieval_applied": false,
+          "answer_head": "If the sentence-transformer encoder fails to load, `retrieval_select()` returns the full context wit"
+        }
+      ],
+      "errors": []
+    },
+    "fails": []
+  }
+}

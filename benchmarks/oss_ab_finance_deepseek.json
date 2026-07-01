@@ -1,0 +1,104 @@
+{
+  "provider": "deepseek",
+  "workload": "finance",
+  "baseline": {
+    "usd": 0.00347876,
+    "prompt_tokens": 7588,
+    "cached_tokens": 0,
+    "transcript": [
+      {
+        "agent": "Warren Buffett",
+        "usd": 0.000409,
+        "prompt": 661,
+        "cached": 0,
+        "head": "**Verdict: Neutral**  **Reasons:** - **Circle of competence:** Underst"
+      },
+      {
+        "agent": "Cathie Wood",
+        "usd": 0.000484,
+        "prompt": 895,
+        "cached": 0,
+        "head": "**Verdict: Bullish**  **Why:** - **Disruptive platform, not just a bra"
+      },
+      {
+        "agent": "Charlie Munger",
+        "usd": 0.00055,
+        "prompt": 1142,
+        "cached": 0,
+        "head": "**Verdict: Neutral**  **Why I'm not buying (and not shorting):**  1. *"
+      },
+      {
+        "agent": "Michael Burry",
+        "usd": 0.000617,
+        "prompt": 1388,
+        "cached": 0,
+        "head": "**Verdict: Bearish**  **Hidden risks the market is ignoring:**  - **Ba"
+      },
+      {
+        "agent": "Bill Ackman",
+        "usd": 0.000671,
+        "prompt": 1630,
+        "cached": 0,
+        "head": "Based on the fact sheet and prior analyses:  **Verdict: Neutral**  **K"
+      },
+      {
+        "agent": "Portfolio Manager",
+        "usd": 0.000747,
+        "prompt": 1872,
+        "cached": 0,
+        "head": "**Verdict: Buy**  **Why:** - **Undisputed market leader** with a 47% D"
+      }
+    ]
+  },
+  "brevitas": {
+    "usd": 0.0024311899999999997,
+    "prompt_tokens": 6317,
+    "cached_tokens": 640,
+    "transcript": [
+      {
+        "agent": "Warren Buffett",
+        "usd": 0.000155,
+        "prompt": 661,
+        "cached": 640,
+        "head": "Bearish. The business is fine\u2014strong returns, good management, founder"
+      },
+      {
+        "agent": "Cathie Wood",
+        "usd": 0.000369,
+        "prompt": 780,
+        "cached": 0,
+        "head": "Bullish.  NorthPeak Outdoor has all the hallmarks of a disruptive comp"
+      },
+      {
+        "agent": "Charlie Munger",
+        "usd": 0.000484,
+        "prompt": 951,
+        "cached": 0,
+        "head": "Neutral.  The business quality is undeniable: 54% gross margins, 19% R"
+      },
+      {
+        "agent": "Michael Burry",
+        "usd": 0.000413,
+        "prompt": 1184,
+        "cached": 0,
+        "head": "Neutral.  The business is sound\u2014high returns, good management, no dilu"
+      },
+      {
+        "agent": "Bill Ackman",
+        "usd": 0.000488,
+        "prompt": 1291,
+        "cached": 0,
+        "head": "**Bullish.**  NorthPeak Outdoor is a high-quality compounder trading a"
+      },
+      {
+        "agent": "Portfolio Manager",
+        "usd": 0.000521,
+        "prompt": 1450,
+        "cached": 0,
+        "head": "**Buy.**  Strong fundamentals\u201454% gross margins, 19% ROIC, 22% ROE, 47"
+      }
+    ]
+  },
+  "cost_saved_usd": 0.001048,
+  "cost_saved_pct": 30.1
+}
