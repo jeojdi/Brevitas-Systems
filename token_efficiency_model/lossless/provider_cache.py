@@ -110,9 +110,16 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
     question" first turn) and are markable. Up to `max_breakpoints` are placed, preferring
     the blocks closest to the tail (maximum cached coverage).
 
-    Haiku-family models have a 2048-token cache minimum (Anthropic docs); others 1024."""
+    Haiku-family models have a 2048-token cache minimum (Anthropic docs); others 1024.
+
+    Idempotent under reuse: callers (real customer code included) reuse message dicts
+    across turns, so markers from previous calls persist in the history. Anthropic
+    rejects requests with >4 cache_control blocks, so ALL existing markers are stripped
+    first and at most `max_breakpoints` fresh ones are placed at the latest stable
+    positions (server-side cache persistence is keyed by content, not by old markers)."""
     if not isinstance(body, dict):
         return CachePlan(0, 0, [])
+    _strip_cache_control(body)
     if "haiku" in str(body.get("model", "")).lower():
         min_tokens = max(min_tokens, 2048)
     messages = body.get("messages", [])
@@ -165,6 +172,20 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
         if segments[idx][0]():
             placed.append(label)
     return CachePlan(len(placed), chosen[-1][1] if chosen else 0, placed)
+
+
+def _strip_cache_control(body: dict) -> None:
+    """Remove every cache_control marker from tools/system/messages (see docstring)."""
+    def _strip(blocks) -> None:
+        if isinstance(blocks, list):
+            for b in blocks:
+                if isinstance(b, dict) and "cache_control" in b:
+                    del b["cache_control"]
+    _strip(body.get("tools"))
+    _strip(body.get("system"))
+    for m in body.get("messages", []) or []:
+        if isinstance(m, dict):
+            _strip(m.get("content"))
 
 
 def _mark_block(block: dict) -> bool:

@@ -116,6 +116,46 @@ def test_engine_marks_anthropic_on_passthrough_with_big_last_message():
     assert _any_marker(body)
 
 
+def _count_markers(body: dict) -> int:
+    n = 0
+    for blocks in [body.get("tools"), body.get("system")] + \
+                  [m.get("content") for m in body.get("messages", []) if isinstance(m, dict)]:
+        if isinstance(blocks, list):
+            n += sum(1 for b in blocks if isinstance(b, dict) and "cache_control" in b)
+    return n
+
+
+def test_repeated_application_never_exceeds_four_markers():
+    # Real customer pattern: message dicts are REUSED across turns (append-only history),
+    # so markers from previous calls persist. Anthropic 400s above 4 cache_control blocks.
+    history = [{"role": "user", "content": [{"type": "text", "text": _huge_text()}]},
+               {"role": "assistant", "content": "noted"}]
+    for turn in range(2, 8):
+        body = {"model": "claude-sonnet-4-6",
+                "messages": [dict(m) for m in history] + [
+                    {"role": "user", "content": f"question {turn}?"}]}
+        # dict(m) copies the message dict but NOT the content list — like real reuse
+        plan = apply_anthropic_cache(body)
+        assert _count_markers(body) <= 4, f"turn {turn}: {_count_markers(body)} markers"
+        assert plan.breakpoints >= 1
+        history = body["messages"] + [{"role": "assistant", "content": f"answer {turn}"}]
+
+
+def test_strip_then_place_keeps_marks_at_latest_stable_positions():
+    msgs = [{"role": "user", "content": [{"type": "text", "text": _huge_text()}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            {"role": "user", "content": "q1"}]
+    body = {"model": "claude-sonnet-4-6", "messages": msgs}
+    apply_anthropic_cache(body)
+    first_total = _count_markers(body)
+    # grow the conversation; old dicts (with old markers) are reused
+    body2 = {"model": "claude-sonnet-4-6",
+             "messages": msgs + [{"role": "assistant", "content": [{"type": "text", "text": _big_text()}]},
+                                 {"role": "user", "content": "q2"}]}
+    apply_anthropic_cache(body2)
+    assert first_total <= 4 and _count_markers(body2) <= 4
+
+
 def test_engine_never_marks_non_anthropic():
     body = {"model": "gpt-4o-mini",
             "messages": [{"role": "user",
