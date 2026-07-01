@@ -166,11 +166,20 @@ def report_usage(
     pipeline: str = "",
     agent: str = "",
     run_id: str = "",
+    usage_raw: dict | None = None,
+    strategy: str = "",
 ) -> None:
-    """Report usage to Brevitas for billing. Fire-and-forget."""
+    """Report usage to Brevitas for billing. Fire-and-forget.
+
+    Reports EVERY call — wins, break-evens and losses alike (brief b4): the billing
+    log must be a complete auditable record, not a wins-only sample. Each report
+    carries a fresh idempotency key so a network retry can never double-bill, plus
+    the provider's verbatim usage object as the receipt anchor when available.
+    """
     cfg = _cfg()
-    if not cfg.get("api_key") or baseline_tokens <= compressed_tokens:
+    if not cfg.get("api_key"):
         return
+    import uuid
     try:
         httpx.post(
             f"{cfg['base_url']}/v1/usage",
@@ -185,6 +194,9 @@ def report_usage(
                 "agent": agent,
                 "run_id": run_id,
                 "quality_score": session.last_quality,
+                "request_id": uuid.uuid4().hex,
+                "usage_raw": usage_raw,
+                "strategy": strategy,
             },
             timeout=5,
         )

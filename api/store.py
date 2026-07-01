@@ -115,9 +115,26 @@ class UsageStore:
                 ("pipeline",         "TEXT NOT NULL DEFAULT ''"),
                 ("agent",            "TEXT NOT NULL DEFAULT ''"),
                 ("run_id",           "TEXT NOT NULL DEFAULT ''"),
+                # billing-audit columns (brief b4): idempotency + provider receipts
+                ("request_id",       "TEXT NOT NULL DEFAULT ''"),
+                ("usage_raw",        "TEXT NOT NULL DEFAULT ''"),
+                ("quality_status",   "TEXT NOT NULL DEFAULT ''"),
+                ("strategy",         "TEXT NOT NULL DEFAULT ''"),
             ]:
                 if col not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {defn}")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_usage_request "
+                       "ON usage_log(key_hash, request_id)")
+
+    def has_request(self, key_hash: str, request_id: str) -> bool:
+        """Idempotency check: has this request_id already been billed for this key?"""
+        if not request_id:
+            return False
+        with self._conn() as db:
+            return db.execute(
+                "SELECT 1 FROM usage_log WHERE key_hash = ? AND request_id = ? LIMIT 1",
+                (key_hash, request_id),
+            ).fetchone() is not None
 
     def create_key(self, key_hash: str, name: str) -> None:
         with self._conn() as db:
@@ -154,13 +171,18 @@ class UsageStore:
         pipeline: str = "",
         agent: str = "",
         run_id: str = "",
+        request_id: str = "",
+        usage_raw: str = "",
+        quality_status: str = "",
+        strategy: str = "",
     ) -> None:
         with self._conn() as db:
             db.execute(
                 "INSERT INTO usage_log "
                 "(key_hash, ts, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, "
-                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, run_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, "
+                " run_id, request_id, usage_raw, quality_status, strategy) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key_hash,
                     datetime.now(timezone.utc).isoformat(),
@@ -176,6 +198,10 @@ class UsageStore:
                     pipeline,
                     agent,
                     run_id,
+                    request_id,
+                    usage_raw,
+                    quality_status,
+                    strategy,
                 ),
             )
 

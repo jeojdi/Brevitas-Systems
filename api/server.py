@@ -515,6 +515,9 @@ class UsageReportRequest(BaseModel):
     baseline_tokens:  int   = Field(ge=0)
     compressed_tokens: int  = Field(ge=0)
     quality_score:    Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Real quality from gate
+    request_id:       str   = Field(default="", max_length=64)   # idempotency key
+    usage_raw:        Optional[dict] = None                       # provider receipt (verbatim usage object)
+    strategy:         str   = Field(default="", max_length=32)    # lever that produced the savings
     session_id:       str   = Field(default="", max_length=128)
     pipeline:         str   = Field(default="", max_length=100)
     agent:            str   = Field(default="", max_length=100)
@@ -524,34 +527,50 @@ class UsageReportRequest(BaseModel):
 @app.post("/v1/usage")
 @limiter.limit("300/minute")
 def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
+    # Idempotency (brief b4): a retried post with the same request_id must not
+    # double-bill. First-writer wins; duplicates are acknowledged but not recorded.
+    if body.request_id and _store.has_request(kh, body.request_id):
+        return {"duplicate": True, "request_id": body.request_id,
+                "tokens_saved": 0, "cost_saved_usd": 0.0, "brevitas_fee_usd": 0.0,
+                "quality_status": "duplicate"}
+
     tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
     savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
 
-    # Phase 3: Only bill savings if quality passes gate
+    # Only bill savings if quality passes the gate (unverified ⇒ $0, always)
     quality_floor = 0.8  # Default floor; configurable per customer
     quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
 
-    if quality_verified:
-        # Quality gate passed: bill the full savings
+    # Sequential stream gate (brief b4, always-valid mSPRT): every scored call
+    # updates the per-customer stream; once the stream trips, billing stops for
+    # ALL subsequent calls until the stream is reset — even individually-"verified"
+    # ones (the stream evidence says the lever is degrading).
+    stream = _seq_stream(kh)
+    if body.quality_score is not None:
+        stream.update(body.quality_score >= quality_floor)
+    stream_tripped = stream.state.tripped
+
+    if quality_verified and not stream_tripped:
         cost_saved = cost_for_tokens(body.provider, body.model, tokens_saved)
         fee = round(cost_saved * 0.10, 8)
         quality_status = "verified"
     else:
-        # Quality not verified or below floor: don't bill savings
         cost_saved = 0.0
         fee = 0.0
-        quality_status = "unverified" if body.quality_score is None else "failed"
-        tokens_saved = 0  # Don't report token savings if quality fails
+        if stream_tripped:
+            quality_status = "stream_tripped"
+        else:
+            quality_status = "unverified" if body.quality_score is None else "failed"
 
-    # Use real quality score if provided, else fallback to 1.0 for legacy compatibility
-    actual_quality = body.quality_score if body.quality_score is not None else 1.0
-
+    # Record EVERY call verbatim (auditable log — no more wins-only records):
+    # quality_proxy stays None when nothing was verified (never fake 1.0),
+    # token/savings figures are stored as reported with billing decided above.
     _store.record_usage(
         key_hash=kh,
         baseline_tokens=body.baseline_tokens,
         optimized_tokens=body.compressed_tokens,
         savings_pct=savings_pct,
-        quality_proxy=actual_quality,
+        quality_proxy=body.quality_score,
         provider=body.provider,
         model=body.model,
         cost_saved_usd=cost_saved,
@@ -560,15 +579,48 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
         pipeline=body.pipeline,
         agent=body.agent,
         run_id=body.run_id,
+        request_id=body.request_id,
+        usage_raw=json.dumps(body.usage_raw) if body.usage_raw else "",
+        quality_status=quality_status,
+        strategy=body.strategy,
     )
     return {
-        "tokens_saved": tokens_saved,
-        "savings_pct": savings_pct if quality_verified else 0.0,
+        "tokens_saved": tokens_saved if quality_status == "verified" else 0,
+        "savings_pct": savings_pct if quality_status == "verified" else 0.0,
         "cost_saved_usd": round(cost_saved, 6),
         "brevitas_fee_usd": round(fee, 6),
-        "quality_score": actual_quality,
+        "quality_score": body.quality_score,
         "quality_status": quality_status,
+        "stream": stream.to_dict(),
     }
+
+
+# ── Sequential quality streams (brief b4) ─────────────────────────────────────
+# One always-valid mSPRT stream per customer key. In-memory for now (process
+# lifetime); serialized state is exposed via /v1/quality/stream for auditability.
+_seq_streams: dict = {}
+
+
+def _seq_stream(kh: str):
+    from token_efficiency_model.quality.sequential import SequentialQualityGate
+    if kh not in _seq_streams:
+        _seq_streams[kh] = SequentialQualityGate(
+            p0=float(os.environ.get("BREVITAS_QUALITY_P0", "0.9")),
+            alpha=float(os.environ.get("BREVITAS_QUALITY_ALPHA", "0.05")))
+    return _seq_streams[kh]
+
+
+@app.get("/v1/quality/stream")
+def quality_stream(request: Request, kh: str = Depends(_authenticated)):
+    """Auditable state of this customer's sequential quality stream."""
+    return _seq_stream(kh).to_dict()
+
+
+@app.post("/v1/quality/stream/reset")
+def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
+    """Reset a tripped stream (after investigation). Deliberately explicit."""
+    _seq_streams.pop(kh, None)
+    return {"reset": True}
 
 
 @app.get("/v1/provider-costs")
