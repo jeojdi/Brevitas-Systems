@@ -105,10 +105,16 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
 
     A breakpoint is only placed where the cumulative prefix (tools + system + prior turns,
     up to that block) is >= min_tokens, so the provider will actually cache it. The volatile
-    last user message is never marked. Up to `max_breakpoints` are placed, preferring the
-    blocks closest to the tail (maximum cached coverage)."""
+    TAIL (the final content block of the last user message) is never marked — but earlier
+    blocks INSIDE the last user message are stable context (the classic "big document +
+    question" first turn) and are markable. Up to `max_breakpoints` are placed, preferring
+    the blocks closest to the tail (maximum cached coverage).
+
+    Haiku-family models have a 2048-token cache minimum (Anthropic docs); others 1024."""
     if not isinstance(body, dict):
         return CachePlan(0, 0, [])
+    if "haiku" in str(body.get("model", "")).lower():
+        min_tokens = max(min_tokens, 2048)
     messages = body.get("messages", [])
     if not isinstance(messages, list) or not messages:
         return CachePlan(0, 0, [])
@@ -131,6 +137,16 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
         msg = messages[i]
         segments.append((lambda m=msg: _mark_content(m), _content_tokens(msg.get("content")),
                          f"message[{i}]"))
+    # Non-final blocks INSIDE the last user message are stable context too (the "big
+    # document + question in one turn" pattern). Only the FINAL block is the volatile tail.
+    if last_user_idx >= 0:
+        last_content = messages[last_user_idx].get("content")
+        if isinstance(last_content, list) and len(last_content) >= 2:
+            for j, block in enumerate(last_content[:-1]):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    segments.append((lambda b=block: _mark_block(b),
+                                     count_tokens(block.get("text", "")),
+                                     f"last_msg_block[{j}]"))
 
     # cumulative tokens; candidate breakpoints are segments whose prefix >= min_tokens
     cum = 0
@@ -149,6 +165,15 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
         if segments[idx][0]():
             placed.append(label)
     return CachePlan(len(placed), chosen[-1][1] if chosen else 0, placed)
+
+
+def _mark_block(block: dict) -> bool:
+    """Attach cache_control to a specific content block (stable blocks inside the last
+    user message). Never called on the final (volatile) block."""
+    if isinstance(block, dict) and "cache_control" not in block:
+        block["cache_control"] = {"type": "ephemeral"}
+        return True
+    return False
 
 
 def _mark_tools(body: dict) -> bool:

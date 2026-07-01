@@ -1,0 +1,126 @@
+"""Anthropic cache_control placement across ALL engine paths.
+
+Regression tests for the live-E2E finding (2026-07-01): Anthropic showed ZERO cached
+tokens on a realistic agent session because (a) the retrieve path returned before
+marker placement and (b) the turn-1 "big context + question in one message" pattern
+had no stable prefix to mark. OpenAI/DeepSeek cache byte-identical prefixes
+automatically; Anthropic caches nothing without explicit markers.
+"""
+from __future__ import annotations
+
+import pytest
+
+from token_efficiency_model.lossless import engine as eng
+from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache
+from token_efficiency_model.lossless.router import BrevitasRouter
+
+
+def _big_text(n_words: int = 650) -> str:
+    # ~1300 tokens (each "wordN" ≈ 2 tokens): above the 1024 default minimum,
+    # below haiku's 2048 documented minimum.
+    return " ".join(f"word{i}" for i in range(n_words))
+
+
+def _huge_text(n_words: int = 2600) -> str:
+    return " ".join(f"tok{i}" for i in range(n_words))
+
+
+# --------------------------------------------------------------------------- #
+# apply_anthropic_cache: last-user-message stable blocks
+# --------------------------------------------------------------------------- #
+def test_last_message_context_block_marked():
+    body = {"model": "claude-sonnet-4-6",
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": _big_text()},
+                                      {"type": "text", "text": "What is X?"}]}]}
+    plan = apply_anthropic_cache(body)
+    blocks = body["messages"][0]["content"]
+    assert plan.breakpoints >= 1
+    assert "cache_control" in blocks[0], "stable context block must be marked"
+    assert "cache_control" not in blocks[1], "volatile final block must NEVER be marked"
+
+
+def test_final_block_never_marked_even_when_huge():
+    body = {"model": "claude-sonnet-4-6",
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": "context intro"},
+                                      {"type": "text", "text": _big_text()}]}]}
+    apply_anthropic_cache(body)
+    assert "cache_control" not in body["messages"][0]["content"][-1]
+
+
+def test_haiku_requires_2048_minimum():
+    # ~1300 tokens: above the 1024 default, below haiku's 2048 documented minimum
+    mk = lambda model: {"model": model,
+                        "messages": [{"role": "user",
+                                      "content": [{"type": "text", "text": _big_text()},
+                                                  {"type": "text", "text": "Q?"}]}]}
+    haiku = mk("claude-haiku-4-5-20251001")
+    sonnet = mk("claude-sonnet-4-6")
+    assert apply_anthropic_cache(haiku).breakpoints == 0
+    assert apply_anthropic_cache(sonnet).breakpoints >= 1
+    # and haiku DOES mark once above 2048
+    haiku2 = {"model": "claude-haiku-4-5-20251001",
+              "messages": [{"role": "user",
+                            "content": [{"type": "text", "text": _huge_text()},
+                                        {"type": "text", "text": "Q?"}]}]}
+    assert apply_anthropic_cache(haiku2).breakpoints >= 1
+
+
+def _any_marker(body: dict) -> bool:
+    sysv = body.get("system")
+    if isinstance(sysv, list) and any(isinstance(b, dict) and "cache_control" in b for b in sysv):
+        return True
+    for m in body.get("messages", []):
+        c = m.get("content")
+        if isinstance(c, list) and any(isinstance(b, dict) and "cache_control" in b for b in c):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
+# engine.optimize_request: markers on EVERY path
+# --------------------------------------------------------------------------- #
+def test_engine_marks_anthropic_on_retrieve_path(monkeypatch):
+    ctx1, ctx2 = _huge_text(1400), _huge_text(1500)
+
+    def fake_select(task, prior_context, k=8, min_top_score=0.2, use_adaptive=False):
+        keep = list(prior_context[:1])
+        return {"selected_context": keep, "baseline_tokens": 4000, "optimized_tokens": 1500,
+                "savings_pct": 60.0, "fallback_applied": False, "reason": "retrieved"}
+
+    monkeypatch.setattr(eng, "retrieval_select", fake_select)
+    body = {"model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": ctx1},
+                         {"role": "assistant", "content": "noted"},
+                         {"role": "user", "content": ctx2},
+                         {"role": "user", "content": "final question?"}]}
+    router = BrevitasRouter(provider="anthropic", retrieve_keep_frac=0.6)
+    meta = eng.optimize_request(body, "anthropic", router, "s1")
+    assert meta["strategy"] == "retrieve"
+    assert "cache_breakpoints" in meta
+    assert _any_marker(body), "retrieve path must still place Anthropic cache markers"
+
+
+def test_engine_marks_anthropic_on_passthrough_with_big_last_message():
+    # Stable prefix (system+prior msgs) is tiny -> router says passthrough; the big
+    # context block rides INSIDE the last message and must still get marked.
+    body = {"model": "claude-sonnet-4-6",
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": _huge_text()},
+                                      {"type": "text", "text": "What is X?"}]}]}
+    router = BrevitasRouter(provider="anthropic")
+    meta = eng.optimize_request(body, "anthropic", router, "s2")
+    assert meta["strategy"] == "passthrough"
+    assert meta.get("cache_breakpoints", 0) >= 1
+    assert _any_marker(body)
+
+
+def test_engine_never_marks_non_anthropic():
+    body = {"model": "gpt-4o-mini",
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": _huge_text()},
+                                      {"type": "text", "text": "Q?"}]}]}
+    router = BrevitasRouter(provider="openai")
+    eng.optimize_request(body, "openai", router, "s3")
+    assert not _any_marker(body), "OpenAI/DeepSeek bodies must never be mutated with markers"

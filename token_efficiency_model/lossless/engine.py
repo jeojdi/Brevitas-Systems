@@ -76,20 +76,29 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
 
             new_msgs.append(messages[-1])
             body["messages"] = new_msgs
-            return {"strategy": "retrieve", "reason": decision.reason,
+            meta = {"strategy": "retrieve", "reason": decision.reason,
                     "kept": len(new_msgs), "of": len(messages),
                     "baseline_tokens": sel["baseline_tokens"],
                     "optimized_tokens": sel["optimized_tokens"]}
-        strategy = "cache_only"  # retrieval bailed -> safe fall-through to caching
+        else:
+            strategy = "cache_only"  # retrieval bailed -> safe fall-through to caching
+            meta = None
+    else:
+        meta = None
+    if meta is None:
+        meta = {"strategy": strategy, "reason": decision.reason}
 
-    # cache_only / passthrough
-    if provider == "anthropic" and strategy != "passthrough":
-        plan = apply_anthropic_cache(body)   # inject cache_control breakpoints
-        return {"strategy": "cache_only", "reason": decision.reason,
-                "cache_breakpoints": plan.breakpoints,
-                "cached_prefix_tokens": plan.cached_prefix_tokens}
+    # Anthropic requires EXPLICIT cache_control markers (OpenAI/DeepSeek cache byte-identical
+    # prefixes automatically). Apply on EVERY path — including after a retrieval rebuild and
+    # on passthrough (the router's verdict is about the STABLE prefix; a huge context block
+    # inside the last message is still cacheable). apply_anthropic_cache's own >=min_tokens
+    # guard makes this a no-op when nothing is worth caching.
+    if provider == "anthropic":
+        plan = apply_anthropic_cache(body)
+        meta["cache_breakpoints"] = plan.breakpoints
+        meta["cached_prefix_tokens"] = plan.cached_prefix_tokens
     # OpenAI/DeepSeek: caching is automatic if prefix is byte-identical — we DON'T mutate it.
-    return {"strategy": strategy, "reason": decision.reason}
+    return meta
 
 
 def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id: str):
