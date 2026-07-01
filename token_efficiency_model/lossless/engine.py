@@ -66,11 +66,20 @@ def _stable_context(messages: List[dict], system: Any = None) -> List[str]:
 
 
 def optimize_request(body: dict, provider: str, router: BrevitasRouter,
-                     session_id: str) -> dict:
-    """Apply the router-chosen lossless strategy to `body` in place. Returns decision meta."""
+                     session_id: str, pipeline: str = "", agent: str = "") -> dict:
+    """Apply the router-chosen lossless strategy to `body` in place. Returns decision meta.
+
+    When a multi-agent `pipeline` label is present, shared context is first promoted to a
+    byte-identical leading prefix (brief b9) so it caches across agents whose system
+    prompts differ — lossless (reorder only, proven-shared content only)."""
     messages = body.get("messages", []) or []
     if not messages:
         return {"strategy": "passthrough", "reason": "no messages"}
+
+    # b9: promote shared context to a cacheable leading prefix for multi-agent pipelines
+    if pipeline:
+        from .shared_prefix import layout as _shared_layout
+        body["messages"] = messages = _shared_layout(pipeline, agent or session_id, messages)
 
     system = body.get("system")
     stable = _stable_context(messages, system)

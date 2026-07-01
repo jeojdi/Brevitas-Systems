@@ -162,7 +162,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     # volatile message lossily; fails safe to full context.
     optimized = not _passthrough_mode()
     if optimized:
-        optimize_request(body, "anthropic", router, session.session_id)
+        optimize_request(body, "anthropic", router, session.session_id,
+                         pipeline=labels["pipeline"], agent=labels["agent"])
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -219,7 +220,8 @@ async def proxy_openai_chat(request: Request) -> Any:
     # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
     optimized = not _passthrough_mode()
     if optimized:
-        optimize_request(body, provider, router, session.session_id)
+        optimize_request(body, provider, router, session.session_id,
+                         pipeline=labels["pipeline"], agent=labels["agent"])
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
