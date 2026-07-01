@@ -22,10 +22,11 @@ from typing import Dict, List, Optional, Sequence
 
 from .provider_cache import count_tokens
 
-# cached-token price as a fraction of fresh input price (from provider docs)
+# cached-token price as a fraction of fresh input price. MUST stay in sync with
+# provider_cache._RATES cache_read (deepseek-chat: $0.07 cache-hit / $0.27 input = 0.259).
 CACHE_DISCOUNT = {
     "anthropic": 0.10,   # cache read ~10% of input
-    "deepseek": 0.10,    # disk cache ~10%
+    "deepseek": 0.259,   # cache-hit $0.07 vs $0.27/M input
     "openai": 0.50,      # cached input ~50%
     "groq": 1.00,        # no caching
     "default": 0.50,
