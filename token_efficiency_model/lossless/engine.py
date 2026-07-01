@@ -54,6 +54,11 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     if strategy == "retrieve":
         # reduce the prior context to the relevant chunks (fail-safe to full inside)
         sel = retrieval_select(query[:200], stable, k=8, use_adaptive=True)
+        if not sel["fallback_applied"] and sel.get("baseline_tokens", 0) > 0:
+            # feed the MEASURED keep fraction back so the router's retrieve arm is
+            # priced from data, not the 0.6 prior
+            router.observe_retrieval(session_id, sel["baseline_tokens"],
+                                     sel["optimized_tokens"])
         if not sel["fallback_applied"] and sel["selected_context"]:
             keep = set(sel["selected_context"])
             # Build new message list: keep all assistant/tool turns; prune user/context text
