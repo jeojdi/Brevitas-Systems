@@ -9,11 +9,39 @@ real cache-hit rate back to the router so it adapts per provider/session.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from .api_adapter import retrieval_select
 from .provider_cache import apply_anthropic_cache, savings_from_usage
 from .router import BrevitasRouter
+
+# Cache-stable retrieval layout (brief b1): per session, the set of retrieved context
+# messages is APPEND-ONLY. Once a chunk has been sent to the provider it stays sent, in
+# first-seen order, so the retrieved prefix is byte-identical turn-over-turn and the
+# provider prefix cache HITS it — retrieval then composes with caching instead of
+# busting it (the token-savings-≠-dollar-savings root cause). Strictly lossless vs pure
+# per-turn retrieval: we only ever ADD context, never drop what retrieval already chose.
+_RETRIEVED_MAX_SESSIONS = 1024
+_retrieved_blocks: "OrderedDict[str, List[str]]" = OrderedDict()
+
+
+def _accumulate_retrieved(session_id: str, selected: List[str]) -> List[str]:
+    """Union `selected` into the session's append-only retrieved set (stable order)."""
+    acc = _retrieved_blocks.get(session_id)
+    if acc is None:
+        if len(_retrieved_blocks) >= _RETRIEVED_MAX_SESSIONS:
+            _retrieved_blocks.popitem(last=False)
+        acc = []
+        _retrieved_blocks[session_id] = acc
+    else:
+        _retrieved_blocks.move_to_end(session_id)
+    seen = set(acc)
+    for chunk in selected:
+        if chunk not in seen:
+            acc.append(chunk)
+            seen.add(chunk)
+    return list(acc)  # copy — never hand out the live internal list
 
 
 def _msg_text(content: Any) -> str:
@@ -60,7 +88,10 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             router.observe_retrieval(session_id, sel["baseline_tokens"],
                                      sel["optimized_tokens"])
         if not sel["fallback_applied"] and sel["selected_context"]:
-            keep = set(sel["selected_context"])
+            # Cache-stable layout (b1): union this turn's picks into the session's
+            # APPEND-ONLY retrieved set so the sent prefix stays byte-identical and
+            # the provider cache hits it. `keep` only ever grows across turns.
+            keep = set(_accumulate_retrieved(session_id, list(sel["selected_context"])))
             # Build new message list: keep all assistant/tool turns; prune user/context text
             new_msgs = []
             for m in messages[:-1]:
@@ -71,7 +102,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                 elif role == "tool":
                     new_msgs.append(m)
                 elif role == "user":
-                    # For user messages, only keep if content is in retrieved set
+                    # For user messages, only keep if content is in the accumulated set
                     content_text = _msg_text(m.get("content", ""))
                     if content_text in keep:
                         new_msgs.append(m)
