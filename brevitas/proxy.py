@@ -21,6 +21,7 @@ The proxy:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -103,6 +104,30 @@ def parse_brevitas_headers(headers: dict) -> dict[str, str]:
     }
 
 
+def _passthrough_mode() -> bool:
+    """A/B measurement mode: BREVITAS_PASSTHROUGH=1 forwards requests completely
+    untouched (no optimization) while still metering usage — the honest baseline arm
+    for with/without-Brevitas comparisons."""
+    return os.environ.get("BREVITAS_PASSTHROUGH", "") in ("1", "true", "yes")
+
+
+def _meter(provider: str, model: str, usage: dict, labels: dict, optimized: bool) -> None:
+    """Append one JSONL usage record per call when BREVITAS_METER_FILE is set.
+    Works identically in passthrough and optimized modes so A/B runs are compared
+    on the same instrument."""
+    path = os.environ.get("BREVITAS_METER_FILE", "")
+    if not path:
+        return
+    try:
+        import time as _time
+        rec = {"ts": _time.time(), "provider": provider, "model": model,
+               "optimized": optimized, "usage": usage, **labels}
+        with open(path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass  # metering must never break the proxy
+
+
 def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
     """Extract provider auth headers from the incoming request."""
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -135,7 +160,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
     # per request, based on context repetition + observed cache behavior. Never rewrites the
     # volatile message lossily; fails safe to full context.
-    optimize_request(body, "anthropic", router, session.session_id)
+    optimized = not _passthrough_mode()
+    if optimized:
+        optimize_request(body, "anthropic", router, session.session_id)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -164,9 +191,11 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
-                s = record_usage(usage, "anthropic", router, session.session_id)
-                report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
-                             pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
+                _meter("anthropic", model, usage, labels, optimized)
+                if optimized:
+                    s = record_usage(usage, "anthropic", router, session.session_id)
+                    report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
+                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
@@ -188,7 +217,9 @@ async def proxy_openai_chat(request: Request) -> Any:
     # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
     # byte-identical (auto-cached server-side); retrieve reduces context when the router
     # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
-    optimize_request(body, provider, router, session.session_id)
+    optimized = not _passthrough_mode()
+    if optimized:
+        optimize_request(body, provider, router, session.session_id)
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
@@ -221,9 +252,11 @@ async def proxy_openai_chat(request: Request) -> Any:
             # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
-                s = record_usage(usage, provider, router, session.session_id)
-                report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
-                             pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
+                _meter(provider, model, usage, labels, optimized)
+                if optimized:
+                    s = record_usage(usage, provider, router, session.session_id)
+                    report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
+                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
