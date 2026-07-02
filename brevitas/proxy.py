@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import httpx
@@ -30,6 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ._compress import count_messages_tokens, report_usage
 from .session import BrevitasSession
+from token_efficiency_model.lossless import state_store
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
 
@@ -41,6 +43,32 @@ def _router_for(key: str, provider: str) -> BrevitasRouter:
     if key not in _routers:
         _routers[key] = BrevitasRouter(provider=provider)
     return _routers[key]
+
+
+# ── cross-run state persistence (lossless — decision state only, content-free) ──
+# BREVITAS_STATE_FILE=<path> makes learned routing state (LCP fingerprints, observed
+# cache rates, b9 promotion/locks, tokenizer ratios) survive proxy restarts, so run
+# N+1 of the same pipeline is recognized instead of relearned. Debounced writes off
+# the request path; corrupt/missing files fail safe to a cold start.
+_STATE_FILE = os.environ.get("BREVITAS_STATE_FILE", "")
+_STATE_EVERY_S = 5.0
+_state_last_save = 0.0
+
+if _STATE_FILE:
+    _restored = state_store.load(_STATE_FILE, _routers,
+                                 lambda prov: BrevitasRouter(provider=prov))
+    if _restored:
+        print(f"[brevitas] cross-run state: restored {_restored} sessions from {_STATE_FILE}")
+
+
+def _state_save() -> None:
+    global _state_last_save
+    if not _STATE_FILE:
+        return
+    now = time.time()
+    if now - _state_last_save >= _STATE_EVERY_S:
+        _state_last_save = now
+        state_store.save(_STATE_FILE, _routers)
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
@@ -247,6 +275,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 if optimized:
                     s = record_usage(usage, "anthropic", router, session.session_id,
                                      pipeline=fleet_pipe, model=model)
+                    _state_save()
                     report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
                                  pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
@@ -313,6 +342,7 @@ async def proxy_openai_chat(request: Request) -> Any:
                 if optimized:
                     s = record_usage(usage, provider, router, session.session_id,
                                      pipeline=fleet_pipe, model=model)
+                    _state_save()
                     report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
                                  pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
