@@ -1,78 +1,78 @@
 {
   "provider": "anthropic",
   "model": "claude-haiku-4-5-20251001",
-  "n": 15,
+  "n": 8,
   "benchmarks": {
     "bbh": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.5333,
-        "usd": 0.033938,
-        "prompt_tokens": 15518,
+        "n": 8,
+        "accuracy": 0.375,
+        "usd": 0.019071,
+        "prompt_tokens": 8339,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.4667,
-        "usd": 0.034342,
-        "prompt_tokens": 15518,
+        "n": 8,
+        "accuracy": 0.25,
+        "usd": 0.019347,
+        "prompt_tokens": 8339,
         "cached_tokens": 0
       },
-      "accuracy_delta": -0.0666,
-      "cost_saved_pct": -1.2,
+      "accuracy_delta": -0.125,
+      "cost_saved_pct": -1.4,
       "lossless": false
     },
     "mmlu": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.5333,
-        "usd": 0.031529,
-        "prompt_tokens": 13836,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.016646,
+        "prompt_tokens": 7367,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.6,
-        "usd": 0.031229,
-        "prompt_tokens": 13836,
-        "cached_tokens": 0
-      },
-      "accuracy_delta": 0.0667,
-      "cost_saved_pct": 1.0,
-      "lossless": false
-    },
-    "arc": {
-      "baseline": {
-        "n": 15,
-        "accuracy": 0.9333,
-        "usd": 0.023112,
-        "prompt_tokens": 9180,
-        "cached_tokens": 0
-      },
-      "brevitas": {
-        "n": 15,
-        "accuracy": 0.9333,
-        "usd": 0.022792,
-        "prompt_tokens": 9180,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.016638,
+        "prompt_tokens": 7367,
         "cached_tokens": 0
       },
       "accuracy_delta": 0.0,
-      "cost_saved_pct": 1.4,
+      "cost_saved_pct": 0.0,
+      "lossless": true
+    },
+    "arc": {
+      "baseline": {
+        "n": 8,
+        "accuracy": 0.875,
+        "usd": 0.013396,
+        "prompt_tokens": 4930,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 8,
+        "accuracy": 0.875,
+        "usd": 0.013788,
+        "prompt_tokens": 4930,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": -2.9,
       "lossless": true
     },
     "code": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.2,
-        "usd": 0.012546,
-        "prompt_tokens": 2118,
+        "n": 8,
+        "accuracy": 0.125,
+        "usd": 0.006642,
+        "prompt_tokens": 1182,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.2,
-        "usd": 0.012546,
-        "prompt_tokens": 2118,
+        "n": 8,
+        "accuracy": 0.125,
+        "usd": 0.006642,
+        "prompt_tokens": 1182,
         "cached_tokens": 0
       },
       "accuracy_delta": 0.0,

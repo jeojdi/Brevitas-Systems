@@ -1,82 +1,82 @@
 {
   "provider": "openai",
   "model": "gpt-4o-mini",
-  "n": 15,
+  "n": 8,
   "benchmarks": {
     "bbh": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.7333,
-        "usd": 0.004672,
-        "prompt_tokens": 14095,
+        "n": 8,
+        "accuracy": 0.75,
+        "usd": 0.002598,
+        "prompt_tokens": 7577,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.8,
-        "usd": 0.004691,
-        "prompt_tokens": 14095,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.0025,
+        "prompt_tokens": 7577,
         "cached_tokens": 0
       },
-      "accuracy_delta": 0.0667,
-      "cost_saved_pct": -0.4,
+      "accuracy_delta": -0.125,
+      "cost_saved_pct": 3.8,
       "lossless": false
     },
     "mmlu": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.6667,
-        "usd": 0.003368,
-        "prompt_tokens": 11657,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.001968,
+        "prompt_tokens": 6210,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.5333,
-        "usd": 0.003386,
-        "prompt_tokens": 11657,
-        "cached_tokens": 0
-      },
-      "accuracy_delta": -0.1334,
-      "cost_saved_pct": -0.5,
-      "lossless": false
-    },
-    "arc": {
-      "baseline": {
-        "n": 15,
-        "accuracy": 0.9333,
-        "usd": 0.001355,
-        "prompt_tokens": 8116,
-        "cached_tokens": 0
-      },
-      "brevitas": {
-        "n": 15,
-        "accuracy": 0.9333,
-        "usd": 0.001363,
-        "prompt_tokens": 8116,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.002004,
+        "prompt_tokens": 6210,
         "cached_tokens": 0
       },
       "accuracy_delta": 0.0,
-      "cost_saved_pct": -0.6,
+      "cost_saved_pct": -1.8,
+      "lossless": true
+    },
+    "arc": {
+      "baseline": {
+        "n": 8,
+        "accuracy": 0.875,
+        "usd": 0.000722,
+        "prompt_tokens": 4365,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 8,
+        "accuracy": 0.875,
+        "usd": 0.000722,
+        "prompt_tokens": 4365,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 0.0,
       "lossless": true
     },
     "code": {
       "baseline": {
-        "n": 15,
-        "accuracy": 0.6667,
-        "usd": 0.001353,
-        "prompt_tokens": 1943,
+        "n": 8,
+        "accuracy": 0.625,
+        "usd": 0.000776,
+        "prompt_tokens": 1086,
         "cached_tokens": 0
       },
       "brevitas": {
-        "n": 15,
-        "accuracy": 0.6,
-        "usd": 0.001348,
-        "prompt_tokens": 1943,
+        "n": 8,
+        "accuracy": 0.75,
+        "usd": 0.00078,
+        "prompt_tokens": 1086,
         "cached_tokens": 0
       },
-      "accuracy_delta": -0.0667,
-      "cost_saved_pct": 0.4,
+      "accuracy_delta": 0.125,
+      "cost_saved_pct": -0.5,
       "lossless": false
     }
   }

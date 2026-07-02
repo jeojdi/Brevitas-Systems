@@ -62,17 +62,22 @@ def raw_client(p):
 
 
 def call(p, client, optimized, system, user, sid, max_tokens):
+    # temperature=0: deterministic decoding so the lossless proof is CLEAN — identical
+    # content in => identical tokens out => identical accuracy. Any accuracy delta at
+    # temp>0 would be sampling noise, not Brevitas. (Anthropic omits an explicit temp
+    # to keep it at its deterministic default of 0 for haiku with no sampling knobs set.)
     c = PROV[p]
     if optimized:
         resp, _ = client.chat(messages=[{"role": "system", "content": system},
                                         {"role": "user", "content": user}],
-                              model=c["model"], session_id=sid, max_tokens=max_tokens)
+                              model=c["model"], session_id=sid, max_tokens=max_tokens,
+                              temperature=0)
     elif p == "anthropic":
         resp = client.messages.create(model=c["model"], max_tokens=max_tokens,
-                    system=system, messages=[{"role": "user", "content": user}])
+                    temperature=0, system=system, messages=[{"role": "user", "content": user}])
     else:
         resp = client.chat.completions.create(model=c["model"], max_tokens=max_tokens,
-                    messages=[{"role": "system", "content": system},
+                    temperature=0, messages=[{"role": "system", "content": system},
                               {"role": "user", "content": user}])
     return resp
 
