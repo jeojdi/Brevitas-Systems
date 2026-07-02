@@ -194,9 +194,34 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # inside the last message is still cacheable). apply_anthropic_cache's own >=min_tokens
     # guard makes this a no-op when nothing is worth caching.
     if provider == "anthropic":
-        plan = apply_anthropic_cache(body)
+        # Cross-run template mining (CR2): learn where the system prompt goes volatile
+        # across recurring runs, and split the block at that boundary so the stable
+        # prefix carries its own breakpoint. Byte-lossless: Anthropic joins text blocks
+        # with NO separator (verified live via /v1/messages/count_tokens — identical
+        # token counts single vs split), so the model sees identical input.
+        # BREVITAS_TEMPLATE_SPLIT=0 is the kill-switch.
+        import os as _os
+        sysv = body.get("system")
+        if isinstance(sysv, str) and sysv:
+            from .template_miner import default_miner
+            b9boundary = default_miner.observe_boundary(f"tm:{session_id}", sysv)
+            if 0 < b9boundary < len(sysv):
+                meta["template_volatile_at"] = b9boundary
+                if _os.environ.get("BREVITAS_TEMPLATE_SPLIT", "1") not in ("0", "false", "no"):
+                    body["system"] = [{"type": "text", "text": sysv[:b9boundary]},
+                                      {"type": "text", "text": sysv[b9boundary:]}]
+        # TTL tier by observed run spacing (cross-run lever): calls spaced past the
+        # 5-minute TTL but within ~an hour re-pay the 1.25x write EVERY run on the 5m
+        # tier; the 1h tier writes once at 2x, then each spaced run reads at 0.1x and
+        # refreshes the hour for free (provider docs). Persisted gap_ewma makes this
+        # survive restarts.
+        gap = router.session_gap(session_id)
+        ttl = "1h" if 300.0 < gap <= 3600.0 else ""
+        plan = apply_anthropic_cache(body, ttl=ttl)
         meta["cache_breakpoints"] = plan.breakpoints
         meta["cached_prefix_tokens"] = plan.cached_prefix_tokens
+        if plan.ttl:
+            meta["cache_ttl"] = plan.ttl
     # OpenAI/DeepSeek: caching is automatic if prefix is byte-identical — we DON'T mutate it.
     return meta
 

@@ -123,3 +123,16 @@ def test_exploration_only_on_near_ties_and_cold_sessions():
 def test_cache_discount_export_synced_with_rates():
     assert CACHE_DISCOUNT["deepseek"] == _RATES["deepseek"]["cache_read"] == 0.259
     assert CACHE_DISCOUNT["anthropic"] == _RATES["anthropic"]["cache_read"]
+
+
+# --------------------------------------------------------------------------- #
+# inter-run gap tracking (drives the Anthropic TTL-tier choice, cross-run lever)
+# --------------------------------------------------------------------------- #
+def test_session_gap_tracks_spacing():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("g", [A, B], "q1")
+    r._sessions["g"].last_ts -= 600            # pretend last call was 10 min ago
+    r.decide("g", [A, B], "q2")
+    gap = r.session_gap("g")
+    assert 590 <= gap <= 620, f"gap EWMA should be ~600s, got {gap}"
+    assert r.session_gap("unknown-session") == -1.0

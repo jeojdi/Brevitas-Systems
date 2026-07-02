@@ -65,29 +65,35 @@ def _content_tokens(content: Any) -> int:
 # --------------------------------------------------------------------------- #
 # 1. Anthropic cache_control placement (with real 1024-token guard)
 # --------------------------------------------------------------------------- #
-def _mark(obj_holder: dict, key: str) -> bool:
+def _cc(ttl: str = "") -> dict:
+    """Build a cache_control marker; ttl='1h' selects Anthropic's long-TTL tier
+    (2x write instead of 1.25x, refreshed free on every use — docs-verified)."""
+    return {"type": "ephemeral", "ttl": "1h"} if ttl == "1h" else {"type": "ephemeral"}
+
+
+def _mark(obj_holder: dict, key: str, ttl: str = "") -> bool:
     """Attach cache_control to the last text block of body[key] (system) or a message
     content. Converts a string to a one-element block list. Returns True if marked."""
     val = obj_holder.get(key)
     if isinstance(val, str):
-        obj_holder[key] = [{"type": "text", "text": val, "cache_control": {"type": "ephemeral"}}]
+        obj_holder[key] = [{"type": "text", "text": val, "cache_control": _cc(ttl)}]
         return True
     if isinstance(val, list) and val:
         if isinstance(val[-1], dict) and "cache_control" not in val[-1]:
-            val[-1]["cache_control"] = {"type": "ephemeral"}
+            val[-1]["cache_control"] = _cc(ttl)
             return True
     return False
 
 
-def _mark_content(msg: dict) -> bool:
+def _mark_content(msg: dict, ttl: str = "") -> bool:
     content = msg.get("content")
     if isinstance(content, str):
         msg["content"] = [{"type": "text", "text": content,
-                           "cache_control": {"type": "ephemeral"}}]
+                           "cache_control": _cc(ttl)}]
         return True
     if isinstance(content, list) and content:
         if isinstance(content[-1], dict) and "cache_control" not in content[-1]:
-            content[-1]["cache_control"] = {"type": "ephemeral"}
+            content[-1]["cache_control"] = _cc(ttl)
             return True
     return False
 
@@ -97,10 +103,37 @@ class CachePlan:
     breakpoints: int
     cached_prefix_tokens: int
     positions: List[str]
+    ttl: str = ""                 # "" = default 5m tier; "1h" = long-TTL tier
+
+
+# Anthropic per-model minimum cacheable prompt length (tokens), from the prompt-caching
+# docs (platform.claude.com/docs/.../prompt-caching, verified 2026-07-01). Prompts below
+# the minimum are silently not cached, so markers there are inert — but the ROUTER's
+# expectations must use the real threshold. Longest-prefix match; default 1024.
+_ANTHROPIC_MIN = [
+    ("claude-mythos-preview", 2048),
+    ("claude-fable", 512),
+    ("claude-mythos", 512),
+    ("claude-haiku-4-5", 4096),
+    ("claude-opus-4-6", 4096),
+    ("claude-opus-4-5", 4096),
+    ("claude-opus-4-7", 2048),
+    ("claude-haiku-3-5", 2048),
+    ("claude-3-5-haiku", 2048),
+    ("claude-haiku", 2048),
+]
+
+
+def anthropic_min_tokens(model: str, default: int = 1024) -> int:
+    m = (model or "").lower()
+    for prefix, n in _ANTHROPIC_MIN:
+        if m.startswith(prefix):
+            return n
+    return default
 
 
 def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
-                          max_breakpoints: int = 4) -> CachePlan:
+                          max_breakpoints: int = 4, ttl: str = "") -> CachePlan:
     """Insert cache_control breakpoints on the stable prefix in-place; return a CachePlan.
 
     A breakpoint is only placed where the cumulative prefix (tools + system + prior turns,
@@ -120,8 +153,9 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
     if not isinstance(body, dict):
         return CachePlan(0, 0, [])
     _strip_cache_control(body)
-    if "haiku" in str(body.get("model", "")).lower():
-        min_tokens = max(min_tokens, 2048)
+    # per-model minimum from the provider docs (Haiku 4.5 / Opus 4.5-4.6 need 4096;
+    # Fable/Mythos 512; default 1024) — markers below it are silently inert
+    min_tokens = max(min_tokens, anthropic_min_tokens(str(body.get("model", ""))))
     messages = body.get("messages", [])
     if not isinstance(messages, list) or not messages:
         return CachePlan(0, 0, [])
@@ -136,13 +170,24 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
     segments: List[tuple] = []
     if body.get("tools"):
         tt = sum(count_tokens(str(t)) for t in body["tools"])
-        segments.append((lambda: _mark_tools(body), tt, "tools"))
+        segments.append((lambda: _mark_tools(body, ttl), tt, "tools"))
     if body.get("system"):
-        segments.append((lambda: _mark(body, "system"), _content_tokens(body["system"]), "system"))
+        sysv = body["system"]
+        if isinstance(sysv, list):
+            # per-BLOCK segments so a stable block ahead of a volatile block (the CR2
+            # template split) can carry its own breakpoint — a single whole-system
+            # marker would cache THROUGH the volatile tail and miss every run
+            for j, blk in enumerate(sysv):
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    segments.append((lambda b=blk: _mark_block(b, ttl),
+                                     count_tokens(blk.get("text", "")),
+                                     f"system_block[{j}]"))
+        else:
+            segments.append((lambda: _mark(body, "system", ttl), _content_tokens(sysv), "system"))
     stable_end = last_user_idx if last_user_idx >= 0 else len(messages)
     for i in range(stable_end):
         msg = messages[i]
-        segments.append((lambda m=msg: _mark_content(m), _content_tokens(msg.get("content")),
+        segments.append((lambda m=msg: _mark_content(m, ttl), _content_tokens(msg.get("content")),
                          f"message[{i}]"))
     # Non-final blocks INSIDE the last user message are stable context too (the "big
     # document + question in one turn" pattern). Only the FINAL block is the volatile tail.
@@ -151,7 +196,7 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
         if isinstance(last_content, list) and len(last_content) >= 2:
             for j, block in enumerate(last_content[:-1]):
                 if isinstance(block, dict) and block.get("type") == "text":
-                    segments.append((lambda b=block: _mark_block(b),
+                    segments.append((lambda b=block: _mark_block(b, ttl),
                                      count_tokens(block.get("text", "")),
                                      f"last_msg_block[{j}]"))
 
@@ -164,14 +209,14 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
             candidates.append((idx, cum, label))
 
     if not candidates:
-        return CachePlan(0, cum, [])
+        return CachePlan(0, cum, [], ttl)
 
     chosen = candidates[-max_breakpoints:]  # closest to the tail = most coverage
     placed = []
     for idx, cum_after, label in chosen:
         if segments[idx][0]():
             placed.append(label)
-    return CachePlan(len(placed), chosen[-1][1] if chosen else 0, placed)
+    return CachePlan(len(placed), chosen[-1][1] if chosen else 0, placed, ttl)
 
 
 def _strip_cache_control(body: dict) -> None:
@@ -188,20 +233,20 @@ def _strip_cache_control(body: dict) -> None:
             _strip(m.get("content"))
 
 
-def _mark_block(block: dict) -> bool:
+def _mark_block(block: dict, ttl: str = "") -> bool:
     """Attach cache_control to a specific content block (stable blocks inside the last
     user message). Never called on the final (volatile) block."""
     if isinstance(block, dict) and "cache_control" not in block:
-        block["cache_control"] = {"type": "ephemeral"}
+        block["cache_control"] = _cc(ttl)
         return True
     return False
 
 
-def _mark_tools(body: dict) -> bool:
+def _mark_tools(body: dict, ttl: str = "") -> bool:
     tools = body.get("tools")
     if isinstance(tools, list) and tools and isinstance(tools[-1], dict) \
             and "cache_control" not in tools[-1]:
-        tools[-1]["cache_control"] = {"type": "ephemeral"}
+        tools[-1]["cache_control"] = _cc(ttl)
         return True
     return False
 
@@ -281,9 +326,19 @@ def savings_from_usage(usage: dict, provider: str, model: str = "") -> Savings:
         read = int(usage.get("cache_read_input_tokens", 0))
         output = int(usage.get("output_tokens", 0))
         in_uncached = (fresh + write + read) * 1.0
-        in_actual = fresh * 1.0 + write * r["cache_write"] + read * r["cache_read"]
+        # tier-accurate write premium when the response breaks it down: 5m writes bill
+        # 1.25x, 1h writes 2x (provider docs). Falls back to the flat premium.
+        bd = usage.get("cache_creation") or {}
+        w5 = int(bd.get("ephemeral_5m_input_tokens", 0) or 0)
+        w1h = int(bd.get("ephemeral_1h_input_tokens", 0) or 0)
+        if write > 0 and (w5 + w1h) == write:
+            write_cost = w5 * 1.25 + w1h * 2.0
+        else:
+            write_cost = write * r["cache_write"]
+        in_actual = fresh * 1.0 + write_cost + read * r["cache_read"]
         cached = read
-        detail = {"input": fresh, "cache_write": write, "cache_read": read, "output": output}
+        detail = {"input": fresh, "cache_write": write, "cache_write_5m": w5,
+                  "cache_write_1h": w1h, "cache_read": read, "output": output}
     else:  # openai / deepseek style
         prompt = int(usage.get("prompt_tokens", 0))
         details = usage.get("prompt_tokens_details", {}) or {}

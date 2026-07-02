@@ -28,7 +28,7 @@ import time
 from typing import Dict, Optional
 
 _SESSION_FIELDS = ("msg_hashes", "msg_tokens", "last_ts", "obs_hit", "obs_count",
-                   "keep_frac", "last_est", "tok_ratio", "last_strategy")
+                   "keep_frac", "last_est", "tok_ratio", "last_strategy", "gap_ewma")
 _MAX_AGE_S = 7 * 24 * 3600      # snapshots older than a week: cold-start instead
 
 

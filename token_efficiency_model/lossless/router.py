@@ -86,6 +86,9 @@ class _SessionState:
     # layout actually sent last turn ("cache_only"/"retrieve"/...) — switching layouts
     # busts the provider prefix cache once, so the arms are priced layout-sticky
     last_strategy: str = ""
+    # observed inter-arrival gap between calls (seconds, EWMA) — drives the Anthropic
+    # cache-TTL tier choice for spaced/repeated runs (cross-run lever)
+    gap_ewma: float = -1.0
 
 
 class _BoundedSessionDict:
@@ -205,6 +208,9 @@ class BrevitasRouter:
 
         now = time.time()
         expired = st.last_ts > 0 and (now - st.last_ts) > self._ttl()
+        if st.last_ts > 0:
+            gap = now - st.last_ts
+            st.gap_ewma = gap if st.gap_ewma < 0 else 0.5 * st.gap_ewma + 0.5 * gap
         st.msg_hashes, st.msg_tokens, st.last_ts = hashes, tokens, now
         return 0.0 if expired else lcp_frac
 
@@ -276,6 +282,14 @@ class BrevitasRouter:
         st.last_strategy = strat   # incumbent layout for next turn's sticky pricing
         return RouteDecision(strat, why, round(cache_only, 1), round(retrieve, 1),
                              round(lcp_frac, 3), read, round(p, 3), explored)
+
+    def session_gap(self, session_id: str) -> float:
+        """Observed inter-arrival gap (s, EWMA) for a session; -1 if unknown. Used to
+        choose the Anthropic cache-TTL tier: runs spaced past the 5-minute TTL but
+        within an hour are cheaper on the 1h tier (2x write once, then 0.1x reads
+        that refresh the hour for free — provider docs)."""
+        st = self._sessions._sessions.get(session_id) if session_id in self._sessions else None
+        return st.gap_ewma if st is not None else -1.0
 
     def note_strategy(self, session_id: str, strategy: str) -> None:
         """Correct the incumbent layout when the engine falls back (e.g. retrieval

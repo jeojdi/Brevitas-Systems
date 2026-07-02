@@ -136,3 +136,56 @@ def test_savings_from_usage_uses_model_rates():
     s41 = savings_from_usage(usage, "openai", model="gpt-4.1")
     s4o = savings_from_usage(usage, "openai", model="gpt-4o")
     assert s41.actual_cost < s4o.actual_cost      # 25% vs 50% cached price
+
+
+# --------------------------------------------------------------------------- #
+# per-model cache minimums + TTL tier (cross-run lever, provider-docs-verified)
+# --------------------------------------------------------------------------- #
+def test_anthropic_min_tokens_per_model():
+    from token_efficiency_model.lossless.provider_cache import anthropic_min_tokens
+    assert anthropic_min_tokens("claude-haiku-4-5-20251001") == 4096
+    assert anthropic_min_tokens("claude-opus-4-5") == 4096
+    assert anthropic_min_tokens("claude-haiku-3-5") == 2048
+    assert anthropic_min_tokens("claude-fable-5") == 512
+    assert anthropic_min_tokens("claude-sonnet-4-5") == 1024   # default tier
+
+
+def test_haiku45_prompt_below_4096_not_marked():
+    from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache
+    body = {"model": "claude-haiku-4-5-20251001",
+            "messages": [{"role": "user", "content": "word " * 3000},   # ~3000 tok < 4096
+                         {"role": "user", "content": "q"}]}
+    plan = apply_anthropic_cache(body)
+    assert plan.breakpoints == 0, "below the model's real minimum: markers are inert"
+
+
+def test_ttl_1h_markers_and_plan():
+    from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache
+    body = {"model": "claude-sonnet-4-5",
+            "system": "s " * 2000,
+            "messages": [{"role": "user", "content": "context " * 2000},
+                         {"role": "user", "content": "q"}]}
+    plan = apply_anthropic_cache(body, ttl="1h")
+    assert plan.ttl == "1h" and plan.breakpoints > 0
+    marks = []
+    for blk in body["system"]:
+        if "cache_control" in blk:
+            marks.append(blk["cache_control"])
+    for m in body["messages"]:
+        for blk in (m["content"] if isinstance(m["content"], list) else []):
+            if isinstance(blk, dict) and "cache_control" in blk:
+                marks.append(blk["cache_control"])
+    assert marks and all(cc.get("ttl") == "1h" for cc in marks)
+
+
+def test_savings_tier_accurate_1h_write_premium():
+    from token_efficiency_model.lossless.provider_cache import savings_from_usage
+    base = {"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0,
+            "cache_creation_input_tokens": 1000}
+    u5 = dict(base, cache_creation={"ephemeral_5m_input_tokens": 1000,
+                                    "ephemeral_1h_input_tokens": 0})
+    u1h = dict(base, cache_creation={"ephemeral_5m_input_tokens": 0,
+                                     "ephemeral_1h_input_tokens": 1000})
+    s5 = savings_from_usage(u5, "anthropic")
+    s1h = savings_from_usage(u1h, "anthropic")
+    assert s1h.actual_cost > s5.actual_cost, "1h writes bill 2x vs 5m 1.25x"
