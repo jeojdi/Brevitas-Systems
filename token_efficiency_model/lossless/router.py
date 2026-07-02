@@ -24,10 +24,12 @@ What grounds the model (no hand-rolled guesses):
     arrive) prevents the trap where a mis-modeled cache_only arm is never tried and
     therefore never corrected (standard bandit practice; S6 routing literature).
 
-Known v1 approximation (brief b1 owns the fix): the retrieve arm prices retrieved
-context as never-cached, and does not yet model that a changing retrieved set also
-busts FUTURE turns' prefixes. Layout work (stable-prefix + append-only retrieved
-block) will let retrieval compose with caching; the router then just re-prices.
+The retrieve arm is priced cache-aware: the b1 append-only retrieved layout keeps the
+kept subset byte-stable turn-over-turn, so it caches like any stable prefix and is
+priced with the same predicted cached fraction as cache_only (v1 priced it as
+never-cached, which made the router avoid retrieval exactly where it composes with
+caching). Token estimates are corrected per-session by the observed
+actual/estimated ratio from provider usage (cl100k ≠ other providers' tokenizers).
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from .provider_cache import _DEFAULT_RATES, _RATES, count_tokens
+from .provider_cache import _DEFAULT_RATES, _RATES, count_tokens, rates_for
 
 MIN_CACHEABLE = 1024     # provider minimum cacheable prefix (tokens)
 
@@ -76,6 +78,14 @@ class _SessionState:
     obs_count: int = 0
     # observed retrieval keep fraction (optimized/baseline), EWMA; -1 = none yet
     keep_frac: float = -1.0
+    # token-count correction: EWMA of (actual provider prompt_tokens / our estimate).
+    # cl100k over/under-counts other providers' tokenizers by 10-25%; the provider's
+    # own usage field is ground truth, so we learn the ratio instead of guessing.
+    last_est: int = 0
+    tok_ratio: float = -1.0        # -1 = no observation yet
+    # layout actually sent last turn ("cache_only"/"retrieve"/...) — switching layouts
+    # busts the provider prefix cache once, so the arms are priced layout-sticky
+    last_strategy: str = ""
 
 
 class _BoundedSessionDict:
@@ -108,6 +118,9 @@ class _BoundedSessionDict:
 @dataclass
 class BrevitasRouter:
     provider: str = "openai"
+    # model actually being called (set per-request by the engine); rates are per-MODEL
+    # where known (gpt-4.1 caches at 25%, gpt-4o at 50%...), else per-provider fallback
+    model: str = ""
     # PRIOR for the retrieval keep fraction, used until real observations arrive
     retrieve_keep_frac: float = 0.6
     # max concurrent sessions (LRU eviction when exceeded)
@@ -128,7 +141,7 @@ class BrevitasRouter:
 
     # ------------------------------------------------------------------ rates
     def _rates(self) -> Dict[str, float]:
-        return _RATES.get(self.provider.lower(), _DEFAULT_RATES)
+        return rates_for(self.provider, self.model)
 
     def _discount(self) -> float:
         return self._rates()["cache_read"]
@@ -147,6 +160,11 @@ class BrevitasRouter:
         hit = max(0.0, min(1.0, cached_tokens / prompt_tokens))
         st.obs_hit = hit if st.obs_hit < 0 else 0.5 * st.obs_hit + 0.5 * hit
         st.obs_count += 1
+        # learn the tokenizer correction from ground truth (provider's own count)
+        if st.last_est > 0:
+            ratio = prompt_tokens / st.last_est
+            if 0.25 <= ratio <= 4.0:   # ignore wild mismatches (request was transformed)
+                st.tok_ratio = ratio if st.tok_ratio < 0 else 0.5 * st.tok_ratio + 0.5 * ratio
 
     def observed_cache(self, session_id: str) -> tuple[float, int]:
         """Return (observed cache-hit fraction, observation count) for a session.
@@ -200,11 +218,18 @@ class BrevitasRouter:
         rates = self._rates()
         read, write = rates["cache_read"], rates["cache_write"]
 
+        st = self._sessions[session_id]
+        # tokenizer correction: scale our cl100k estimate by the learned actual/estimate
+        # ratio for this session (ground truth = provider usage), so threshold decisions
+        # near MIN_CACHEABLE use real token counts, not another tokenizer's.
+        st.last_est = ctx_tokens + q_tokens
+        if st.tok_ratio > 0:
+            ctx_tokens = int(ctx_tokens * st.tok_ratio)
+            q_tokens = int(q_tokens * st.tok_ratio)
+
         if ctx_tokens < MIN_CACHEABLE:
             return RouteDecision("passthrough", "context below cacheable minimum",
                                  0.0, 0.0, round(lcp_frac, 3), read)
-
-        st = self._sessions[session_id]
         # Predicted cached fraction: LCP prediction, blended 50/50 with the observed
         # hit rate once real observations exist (observation corrects both optimistic
         # and pessimistic predictions).
@@ -217,10 +242,20 @@ class BrevitasRouter:
 
         # cache_only: cached prefix at read rate; the rest is (re)written at the
         # provider's write rate (1.25x on Anthropic); volatile tail is fresh input.
+        # Always gets the predicted discount — provider caches persist (DeepSeek's disk
+        # cache for hours), so the full prefix stays warm even across a retrieve turn.
         cache_only = ctx_tokens * (p * read + (1 - p) * write) + q_tokens
-        # retrieve: kept subset at fresh price (changing subset ⇒ uncached, v1 model)
+        # retrieve: kept subset. The b1 append-only layout makes the kept subset cache
+        # like any stable prefix, so it EARNS the same discount — but only once it is
+        # the incumbent layout (switching layouts re-bills the prefix as a write) AND
+        # its keep fraction is MEASURED from real retrievals. A discount is never
+        # awarded to the 0.6 prior: guesses compete at full write price (v1 behavior),
+        # measured composition gets credit. This is the honest, lossless-biased middle
+        # between v1 (retrieval never cached ⇒ router avoids it where it composes) and
+        # symmetric pricing (retrieve strictly dominant ⇒ cache-busting flapping).
         keep = st.keep_frac if st.keep_frac >= 0 else self.retrieve_keep_frac
-        retrieve = ctx_tokens * keep + q_tokens
+        p_retr = p if (st.last_strategy == "retrieve" and st.keep_frac >= 0) else 0.0
+        retrieve = ctx_tokens * keep * (p_retr * read + (1 - p_retr) * write) + q_tokens
 
         if retrieve < cache_only:
             strat, why = "retrieve", f"retrieval cheaper ({why_basis})"
@@ -238,5 +273,13 @@ class BrevitasRouter:
             why += " +explore"
             explored = True
 
+        st.last_strategy = strat   # incumbent layout for next turn's sticky pricing
         return RouteDecision(strat, why, round(cache_only, 1), round(retrieve, 1),
                              round(lcp_frac, 3), read, round(p, 3), explored)
+
+    def note_strategy(self, session_id: str, strategy: str) -> None:
+        """Correct the incumbent layout when the engine falls back (e.g. retrieval
+        bailed and the FULL context was sent) so sticky pricing tracks what was
+        actually transmitted, not what was decided."""
+        if session_id in self._sessions:
+            self._sessions[session_id].last_strategy = strategy

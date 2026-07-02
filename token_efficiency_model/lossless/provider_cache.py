@@ -226,6 +226,33 @@ _RATES = {
 }
 _DEFAULT_RATES = {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}
 
+# Per-MODEL overrides (longest-prefix match on the lowercased model id). The provider
+# rows above are the fallback, but ratios genuinely differ per model — e.g. the gpt-4.1
+# family caches at 25% of input price where gpt-4o caches at 50% — and %-of-savings
+# billing must use the ratios of the model that was actually called.
+#   deepseek-chat:     in $0.27,  hit $0.07,  out $1.10 /1M
+#   deepseek-reasoner: in $0.55,  hit $0.14,  out $2.19 /1M
+#   gpt-4o(-mini):     cached = 50% of input; out = 4x input
+#   gpt-4.1(-mini/nano): cached = 25% of input; out = 4x input
+#   claude (all):      cache read 10%, write 1.25x, out = 5x input
+_MODEL_RATES = [
+    ("deepseek-reasoner", {"cache_read": 0.255, "cache_write": 1.0, "output": 3.98}),
+    ("deepseek-chat",     {"cache_read": 0.259, "cache_write": 1.0, "output": 4.07}),
+    ("gpt-4.1",           {"cache_read": 0.25,  "cache_write": 1.0, "output": 4.0}),
+    ("gpt-4o",            {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0}),
+    ("claude",            {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0}),
+]
+
+
+def rates_for(provider: str, model: str = "") -> Dict[str, float]:
+    """Rate ratios for a specific model, falling back to the provider row."""
+    m = (model or "").lower()
+    if m:
+        for prefix, r in _MODEL_RATES:
+            if m.startswith(prefix):
+                return r
+    return _RATES.get((provider or "").lower(), _DEFAULT_RATES)
+
 
 @dataclass
 class Savings:
@@ -240,13 +267,14 @@ class Savings:
     detail: Dict[str, Any] = None
 
 
-def savings_from_usage(usage: dict, provider: str) -> Savings:
+def savings_from_usage(usage: dict, provider: str, model: str = "") -> Savings:
     """Honest savings from a provider `usage` object, including OUTPUT tokens.
 
     Output is never cached and is billed at full price, so the headline savings_pct reflects the
-    real total-bill cut (input + output), not just the input side."""
+    real total-bill cut (input + output), not just the input side. Pass `model` so the
+    ratios match the model actually called (billing-grade accuracy)."""
     provider = provider.lower()
-    r = _RATES.get(provider, _DEFAULT_RATES)
+    r = rates_for(provider, model)
     if provider == "anthropic":
         fresh = int(usage.get("input_tokens", 0))
         write = int(usage.get("cache_creation_input_tokens", 0))

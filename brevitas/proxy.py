@@ -104,6 +104,32 @@ def parse_brevitas_headers(headers: dict) -> dict[str, str]:
     }
 
 
+def _agent_label(explicit: dict, body: dict) -> str:
+    """Stable per-agent label: the explicit x-brevitas-agent header, else a hash of the
+    system prompt (an agent's identity in every framework we've measured). Used to key
+    router SESSIONS per agent — a fleet shares one API key, and mixing agents in one
+    session corrupts the LCP repeat-detection and observed-cache stats that the router
+    and the b9 gate consume (agent B's request never prefix-matches agent A's).
+    Single-agent flows produce one constant label, so their behavior is unchanged."""
+    import hashlib
+    if explicit.get("agent"):
+        return explicit["agent"]
+    sys_txt = ""
+    sysv = body.get("system")
+    if isinstance(sysv, str):
+        sys_txt = sysv
+    elif isinstance(sysv, list):
+        sys_txt = " ".join(b.get("text", "") for b in sysv if isinstance(b, dict))
+    else:
+        for m in body.get("messages", []):
+            if isinstance(m, dict) and m.get("role") == "system":
+                c = m.get("content", "")
+                sys_txt = c if isinstance(c, str) else " ".join(
+                    b.get("text", "") for b in c if isinstance(b, dict))
+                break
+    return f"auto:{hashlib.sha256(sys_txt.encode()).hexdigest()[:12]}" if sys_txt else "auto:default"
+
+
 def _auto_fleet_labels(explicit: dict, auth_key: str, body: dict) -> tuple[str, str]:
     """Auto-engage shared-prefix promotion (b9) for multi-agent fleets that DON'T send
     x-brevitas labels. OFF BY DEFAULT (BREVITAS_AUTO_SHARED_PREFIX=1 to enable).
@@ -123,23 +149,7 @@ def _auto_fleet_labels(explicit: dict, auth_key: str, body: dict) -> tuple[str, 
         return "", ""   # default: no auto b9 — never risk breaking the provider's own cache
     pipeline = (f"auto:{hashlib.sha256(auth_key.encode()).hexdigest()[:12]}"
                 if auth_key else "")
-    agent = explicit.get("agent")
-    if not agent:
-        sys_txt = ""
-        sysv = body.get("system")
-        if isinstance(sysv, str):
-            sys_txt = sysv
-        elif isinstance(sysv, list):
-            sys_txt = " ".join(b.get("text", "") for b in sysv if isinstance(b, dict))
-        else:
-            for m in body.get("messages", []):
-                if isinstance(m, dict) and m.get("role") == "system":
-                    c = m.get("content", "")
-                    sys_txt = c if isinstance(c, str) else " ".join(
-                        b.get("text", "") for b in c if isinstance(b, dict))
-                    break
-        agent = f"auto:{hashlib.sha256(sys_txt.encode()).hexdigest()[:12]}" if sys_txt else "auto:default"
-    return pipeline, agent
+    return pipeline, _agent_label(explicit, body)
 
 
 def _passthrough_mode() -> bool:
@@ -191,16 +201,18 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     messages: list[dict] = body.get("messages", [])
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
-    session = _session_for(f"ant:{api_key}")
-    router = _router_for(f"ant:{api_key}", "anthropic")
     labels = parse_brevitas_headers(request.headers)
+    # per-AGENT sessions: fleets share one API key; see _agent_label
+    sess_key = f"ant:{api_key}:{_agent_label(labels, body)}"
+    session = _session_for(sess_key)
+    router = _router_for(sess_key, "anthropic")
 
     # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
     # per request, based on context repetition + observed cache behavior. Never rewrites the
     # volatile message lossily; fails safe to full context.
     optimized = not _passthrough_mode()
+    fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
     if optimized:
-        fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
         optimize_request(body, "anthropic", router, session.session_id,
                          pipeline=fleet_pipe, agent=fleet_agent)
 
@@ -233,7 +245,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             if usage:
                 _meter("anthropic", model, usage, labels, optimized)
                 if optimized:
-                    s = record_usage(usage, "anthropic", router, session.session_id)
+                    s = record_usage(usage, "anthropic", router, session.session_id,
+                                     pipeline=fleet_pipe, model=model)
                     report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
                                  pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()
@@ -250,16 +263,18 @@ async def proxy_openai_chat(request: Request) -> Any:
     model: str = body.get("model", "")
     auth = request.headers.get("authorization", "")
     provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
-    session = _session_for(f"oai:{auth}")
-    router = _router_for(f"oai:{auth}", provider)
     labels = parse_brevitas_headers(request.headers)
+    # per-AGENT sessions: fleets share one API key; see _agent_label
+    sess_key = f"oai:{auth}:{_agent_label(labels, body)}"
+    session = _session_for(sess_key)
+    router = _router_for(sess_key, provider)
 
     # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
     # byte-identical (auto-cached server-side); retrieve reduces context when the router
     # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
     optimized = not _passthrough_mode()
+    fleet_pipe, fleet_agent = _auto_fleet_labels(labels, auth, body)
     if optimized:
-        fleet_pipe, fleet_agent = _auto_fleet_labels(labels, auth, body)
         optimize_request(body, provider, router, session.session_id,
                          pipeline=fleet_pipe, agent=fleet_agent)
 
@@ -296,7 +311,8 @@ async def proxy_openai_chat(request: Request) -> Any:
             if usage:
                 _meter(provider, model, usage, labels, optimized)
                 if optimized:
-                    s = record_usage(usage, provider, router, session.session_id)
+                    s = record_usage(usage, provider, router, session.session_id,
+                                     pipeline=fleet_pipe, model=model)
                     report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
                                  pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
             session.advance()

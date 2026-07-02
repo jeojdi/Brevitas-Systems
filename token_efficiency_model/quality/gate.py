@@ -63,6 +63,11 @@ class QualityGateConfig:
     # combiner(embedding_sim, judge_score) -> combined score. Default is a simple
     # mean; brief b5 replaces this with an isotonic-calibrated combiner.
     combiner: Optional[Callable[[float, float], float]] = None
+    # b5 calibration: a fitted quality.calibration.Calibrator mapping the raw combined
+    # score to empirical P(correct). When set, the floor is a TARGET RISK
+    # (pass iff P(correct) >= floor) instead of a raw-score threshold — raw 0.8 cosine
+    # means different things per model/task family. None/unfitted ⇒ raw-score behavior.
+    calibrator: Optional[object] = None
 
 
 _JUDGE_PROMPT = """You are a strict semantic-equivalence judge. Compare the two answers
@@ -107,6 +112,9 @@ class QualityGate:
 
         combine = self.config.combiner or (lambda e, j: 0.5 * e + 0.5 * j)
         score = max(0.0, min(1.0, combine(emb, judge)))
+        cal = self.config.calibrator
+        if cal is not None and getattr(cal, "fitted", False):
+            score = max(0.0, min(1.0, float(cal.p_correct(score))))
         return QualityAssessment(score=score, passed=score >= self.config.floor,
                                  embedding_similarity=emb, judge_score=judge,
                                  judge_reasoning=reasoning)

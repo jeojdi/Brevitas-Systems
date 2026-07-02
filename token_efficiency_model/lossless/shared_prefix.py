@@ -53,6 +53,11 @@ class _PipelineState:
     canonical: Dict[str, dict] = field(default_factory=dict)
     # explicitly-registered shared hashes (always promoted)
     explicit: Set[str] = field(default_factory=set)
+    # FROZEN promotion order: hash -> position at first promotion. The promoted block
+    # must be PREFIX-STABLE turn-over-turn — providers match the cache from token 0, so
+    # re-sorting the block (the v2 bug) busts the cache every time new content becomes
+    # shared. New shared content only ever APPENDS after the existing promoted prefix.
+    promo_order: Dict[str, int] = field(default_factory=dict)
 
 
 class SharedPrefixLayer:
@@ -84,6 +89,15 @@ class SharedPrefixLayer:
     def layout(self, pipeline_id: str, agent: str, messages: List[dict],
                natural_cached_tokens: float = 0.0, min_gain_tokens: int = 500,
                min_gain_frac: float = 0.02, count_tokens=None) -> List[dict]:
+        return self.layout_ex(pipeline_id, agent, messages,
+                              natural_cached_tokens=natural_cached_tokens,
+                              min_gain_tokens=min_gain_tokens,
+                              min_gain_frac=min_gain_frac,
+                              count_tokens=count_tokens)[0]
+
+    def layout_ex(self, pipeline_id: str, agent: str, messages: List[dict],
+                  natural_cached_tokens: float = 0.0, min_gain_tokens: int = 500,
+                  min_gain_frac: float = 0.02, count_tokens=None):
         """Return messages with shared context hoisted to a stable leading prefix —
         CACHE-AWARE (b9 v2). Only reorders when promoting the shared block would cache
         MORE tokens than the provider already caches in the natural order:
@@ -98,9 +112,9 @@ class SharedPrefixLayer:
 
         Lossless either way: same message set, only reordered, only proven-shared content
         moved, volatile last message never moved. `count_tokens` defaults to a cheap
-        word estimate if not supplied."""
+        word estimate if not supplied. Returns (messages, reordered)."""
         if not messages:
-            return messages
+            return messages, False
         st = self._state(pipeline_id)
         if count_tokens is None:
             count_tokens = lambda t: max(1, int(len((t or "").split()) * 1.3))
@@ -121,11 +135,17 @@ class SharedPrefixLayer:
             (shared_idx if self._is_shared(st, h) else rest_idx).append((i, m, h))
 
         if not shared_idx:
-            return messages  # nothing proven shared yet → don't reorder
+            return messages, False  # nothing proven shared yet → don't reorder
 
-        # stable order for the shared prefix: by content hash (identical across agents),
-        # so every agent emits the SAME leading bytes and the provider caches them.
-        shared_sorted = sorted(shared_idx, key=lambda t: t[2])
+        # stable order for the shared prefix: FIRST-PROMOTION order, frozen per pipeline.
+        # Every agent emits the same leading bytes (promotion order is pipeline-global),
+        # and — critically — the order never changes once assigned, so the previous
+        # turn's promoted block stays a byte-identical leading prefix and the provider
+        # cache HITS it; newly-shared content appends AFTER it (LCP preserved).
+        for i, _m, h in shared_idx:  # shared_idx is in message order → deterministic
+            if h not in st.promo_order:
+                st.promo_order[h] = len(st.promo_order)
+        shared_sorted = sorted(shared_idx, key=lambda t: (st.promo_order[t[2]], t[0]))
         promoted = [m for _, m, _ in shared_sorted]
 
         # CACHE-AWARE GATE: only reorder if the promoted shared block would be a LARGER
@@ -134,10 +154,11 @@ class SharedPrefixLayer:
         total = sum(count_tokens(_norm(m.get("content"))) for m in messages)
         threshold = natural_cached_tokens + max(min_gain_tokens, int(min_gain_frac * total))
         if l_reorder <= threshold:
-            return messages  # reorder would not beat the existing/likely cache → leave it
+            return messages, False  # reorder would not beat the existing/likely cache → leave it
 
         remainder = [m for _, m, _ in rest_idx]
-        return promoted + remainder + [messages[-1]]
+        out = promoted + remainder + [messages[-1]]
+        return out, out != messages
 
 
 # process-wide default layer (bounded); apps may create their own
@@ -149,6 +170,13 @@ def layout(pipeline_id: str, agent: str, messages: List[dict],
     return _default.layout(pipeline_id, agent, messages,
                            natural_cached_tokens=natural_cached_tokens,
                            count_tokens=count_tokens)
+
+
+def layout_ex(pipeline_id: str, agent: str, messages: List[dict],
+              natural_cached_tokens: float = 0.0, count_tokens=None):
+    return _default.layout_ex(pipeline_id, agent, messages,
+                              natural_cached_tokens=natural_cached_tokens,
+                              count_tokens=count_tokens)
 
 
 def register_shared(pipeline_id: str, text: str) -> None:

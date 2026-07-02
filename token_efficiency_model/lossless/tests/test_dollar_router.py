@@ -42,11 +42,13 @@ def test_append_only_on_anthropic_accounts_for_write_premium():
     r = BrevitasRouter(provider="anthropic", epsilon=0.0)
     r.decide("s", [A], "q1")
     d2 = r.decide("s", [A, B], "q2")
-    # lcp=0.5: cache_only = 0.5*0.10 + 0.5*1.25 = 0.675 > retrieve 0.6 — the 1.25x
-    # write premium on the new suffix makes retrieval genuinely cheaper here.
-    assert d2.strategy == "retrieve", d2.reason
+    # BOTH arms pay the 1.25x write premium on fresh content (the engine marks the
+    # retrieve layout for caching too, so its unmeasured price is 0.6*1.25 = 0.75).
+    # lcp=0.5: cache_only = 0.5*0.10 + 0.5*1.25 = 0.675 < 0.75 → caching wins.
+    assert d2.strategy == "cache_only", d2.reason
+    assert d2.est_cost_cache_only < d2.est_cost_retrieve
     d3 = r.decide("s", [A, B, C], "q3")
-    # lcp≈2/3: 0.667*0.10 + 0.333*1.25 ≈ 0.48 < 0.6 → caching wins from here on.
+    # lcp≈2/3: 0.667*0.10 + 0.333*1.25 ≈ 0.48 → caching keeps winning.
     assert d3.strategy == "cache_only", d3.reason
 
 
@@ -92,8 +94,12 @@ def test_observed_keep_fraction_reprices_retrieve_arm():
 def test_observed_hit_rate_blends_into_prediction():
     r = BrevitasRouter(provider="openai", epsilon=0.0)
     r.decide("s", [A, B], "q1")
-    r.observe_usage("s", 1000, 0)           # provider cached NOTHING
-    r.observe_usage("s", 1000, 0)
+    # report usage CONSISTENT with the router's estimate — prompt_tokens is also the
+    # ground truth for the learned tokenizer correction; a fake low count would
+    # (correctly!) shrink the estimated context below the cacheable minimum.
+    est = r._sessions["s"].last_est
+    r.observe_usage("s", est, 0)            # provider cached NOTHING
+    r.observe_usage("s", est, 0)
     d = r.decide("s", [A, B], "q2")         # identical context: lcp=1.0, obs=0.0
     assert abs(d.cache_hit_prob - 0.5) < 0.05
 

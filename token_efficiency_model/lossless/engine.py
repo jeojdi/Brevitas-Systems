@@ -23,7 +23,32 @@ from .router import BrevitasRouter
 # busting it (the token-savings-≠-dollar-savings root cause). Strictly lossless vs pure
 # per-turn retrieval: we only ever ADD context, never drop what retrieval already chose.
 _RETRIEVED_MAX_SESSIONS = 1024
+_RETRIEVED_MAX_CHUNKS = 256    # per-session cap; past it, fail safe to full context
 _retrieved_blocks: "OrderedDict[str, List[str]]" = OrderedDict()
+
+# b9 counterfactual "do no harm" state, per pipeline. The v2 gate had a death spiral:
+# reordering busts the cache -> observed hit rate falls -> the gate reads "provider isn't
+# caching well" -> keeps reordering. The fix is a COUNTERFACTUAL baseline: snapshot the
+# hit rate observed BEFORE the first reorder; if the post-reorder hit rate (EWMA over
+# >= _B9_MIN_POST observations) drops below that snapshot minus a margin, b9 locks OFF
+# for the whole pipeline — sticky, so a reorder that broke a working cache never repeats.
+_B9_MAX_PIPES = 1024
+_B9_MIN_POST = 3
+_B9_MARGIN = 0.05
+_b9_pipes: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _b9_state(pipeline: str) -> dict:
+    st = _b9_pipes.get(pipeline)
+    if st is None:
+        if len(_b9_pipes) >= _B9_MAX_PIPES:
+            _b9_pipes.popitem(last=False)
+        st = {"reordered": False, "locked": False,
+              "pre_hit": 0.0, "post_hit": -1.0, "post_n": 0}
+        _b9_pipes[pipeline] = st
+    else:
+        _b9_pipes.move_to_end(pipeline)
+    return st
 
 
 def _accumulate_retrieved(session_id: str, selected: List[str]) -> List[str]:
@@ -75,6 +100,8 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     messages = body.get("messages", []) or []
     if not messages:
         return {"strategy": "passthrough", "reason": "no messages"}
+    if body.get("model"):
+        router.model = str(body["model"])   # per-model rates in the router's cost model
 
     # b9 (cache-aware): promote shared context to a cacheable leading prefix for
     # multi-agent pipelines — but ONLY once we've OBSERVED that the provider is NOT
@@ -83,17 +110,24 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # a blind reorder breaks a cache the provider was already serving (Don't Break the
     # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
     if pipeline:
-        from .provider_cache import count_tokens as _ct
-        from .shared_prefix import layout as _shared_layout
-        obs_hit, obs_count = router.observed_cache(session_id)
-        total_tok = sum(_ct(_msg_text(m.get("content", ""))) for m in messages)
-        if obs_count >= 2:
-            natural_cached = obs_hit * total_tok           # provider already caches this much
-        else:
-            natural_cached = float(total_tok)              # unknown → assume well-cached (don't reorder)
-        body["messages"] = messages = _shared_layout(
-            pipeline, agent or session_id, messages,
-            natural_cached_tokens=natural_cached, count_tokens=_ct)
+        st9 = _b9_state(pipeline)
+        if not st9["locked"]:
+            from .provider_cache import count_tokens as _ct
+            from .shared_prefix import layout_ex as _shared_layout_ex
+            obs_hit, obs_count = router.observed_cache(session_id)
+            total_tok = sum(_ct(_msg_text(m.get("content", ""))) for m in messages)
+            if obs_count >= 2:
+                natural_cached = obs_hit * total_tok       # provider already caches this much
+            else:
+                natural_cached = float(total_tok)          # unknown → assume well-cached (don't reorder)
+            new_msgs, reordered = _shared_layout_ex(
+                pipeline, agent or session_id, messages,
+                natural_cached_tokens=natural_cached, count_tokens=_ct)
+            body["messages"] = messages = new_msgs
+            if reordered and not st9["reordered"]:
+                # counterfactual baseline: the natural hit rate BEFORE we touched anything
+                st9["reordered"] = True
+                st9["pre_hit"] = obs_hit if obs_count >= 1 else 0.0
 
     system = body.get("system")
     stable = _stable_context(messages, system)
@@ -110,11 +144,17 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             # priced from data, not the 0.6 prior
             router.observe_retrieval(session_id, sel["baseline_tokens"],
                                      sel["optimized_tokens"])
+        acc: List[str] = []
         if not sel["fallback_applied"] and sel["selected_context"]:
             # Cache-stable layout (b1): union this turn's picks into the session's
             # APPEND-ONLY retrieved set so the sent prefix stays byte-identical and
             # the provider cache hits it. `keep` only ever grows across turns.
-            keep = set(_accumulate_retrieved(session_id, list(sel["selected_context"])))
+            acc = _accumulate_retrieved(session_id, list(sel["selected_context"]))
+        if acc and len(acc) <= _RETRIEVED_MAX_CHUNKS:
+            # (an unbounded append-only set eventually re-approaches full context AND
+            # dropping accumulated chunks would bust the prefix — past the cap the only
+            # lossless move is to stop pruning and send everything: cache_only)
+            keep = set(acc)
             # Build new message list: keep all assistant/tool turns; prune user/context text
             new_msgs = []
             for m in messages[:-1]:
@@ -141,6 +181,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                     "optimized_tokens": sel["optimized_tokens"]}
         else:
             strategy = "cache_only"  # retrieval bailed -> safe fall-through to caching
+            router.note_strategy(session_id, "cache_only")  # full context actually sent
             meta = None
     else:
         meta = None
@@ -160,13 +201,25 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     return meta
 
 
-def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id: str):
-    """Honest savings from real usage + feed cache-hit feedback to the router."""
-    s = savings_from_usage(usage, provider)
+def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id: str,
+                 pipeline: str = "", model: str = ""):
+    """Honest savings from real usage + feed cache-hit feedback to the router (and, when a
+    pipeline label is present, to the b9 do-no-harm lock)."""
+    s = savings_from_usage(usage, provider, model=model)
     if provider == "anthropic":
         prompt = usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0) \
                  + usage.get("cache_read_input_tokens", 0)
     else:
         prompt = usage.get("prompt_tokens", 0)
     router.observe_usage(session_id, prompt, s.cached_tokens)
+
+    # b9 counterfactual check: is the pipeline caching WORSE since we reordered?
+    if pipeline and prompt > 0:
+        st9 = _b9_pipes.get(pipeline)
+        if st9 is not None and st9["reordered"] and not st9["locked"]:
+            hit = max(0.0, min(1.0, s.cached_tokens / prompt))
+            st9["post_hit"] = hit if st9["post_hit"] < 0 else 0.5 * st9["post_hit"] + 0.5 * hit
+            st9["post_n"] += 1
+            if st9["post_n"] >= _B9_MIN_POST and st9["post_hit"] < st9["pre_hit"] - _B9_MARGIN:
+                st9["locked"] = True   # sticky: we did harm once; never reorder this pipeline again
     return s

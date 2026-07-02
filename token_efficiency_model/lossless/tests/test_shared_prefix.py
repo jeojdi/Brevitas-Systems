@@ -94,6 +94,37 @@ def test_reorder_when_natural_cache_low_and_block_large():
     assert out[0]["content"] == BIG, "reorder when provider caches poorly and block is big"
 
 
+def test_promotion_order_frozen_prefix_stable():
+    # THE v2 REGRESSION FIX: when NEW content becomes shared later, the previously
+    # promoted block must stay a byte-identical LEADING prefix (providers match the
+    # cache from token 0) — new shared content may only APPEND after it.
+    BIG2 = "second shared corpus block. " * 400
+    L = SharedPrefixLayer(min_agents=2)
+    for a in ("a", "b"):
+        L.layout("p", a, _msgs(f"You are {a}.", BIG, "q"), natural_cached_tokens=0)
+    out1 = L.layout("p", "c", _msgs("You are c.", BIG, "q"), natural_cached_tokens=0)
+    assert out1[0]["content"] == BIG
+    # now a SECOND block becomes shared; regardless of how its hash sorts vs BIG's,
+    # BIG must remain the first message (frozen first-promotion order)
+    for a in ("a", "b", "c"):
+        out = L.layout("p", a, [{"role": "system", "content": f"You are {a}."},
+                                {"role": "user", "content": BIG},
+                                {"role": "user", "content": BIG2},
+                                {"role": "user", "content": "q2"}],
+                       natural_cached_tokens=0)
+    assert out[0]["content"] == BIG, "existing promoted prefix must never move"
+    assert out[1]["content"] == BIG2, "newly shared content appends AFTER the frozen prefix"
+    assert out[-1]["content"] == "q2"
+
+
+def test_layout_ex_reports_reorder():
+    L = SharedPrefixLayer(min_agents=2)
+    _, r1 = L.layout_ex("p", "a", _msgs("You are a.", BIG, "q"), natural_cached_tokens=0)
+    assert r1 is False
+    _, r2 = L.layout_ex("p", "b", _msgs("You are b.", BIG, "q"), natural_cached_tokens=0)
+    assert r2 is True
+
+
 def test_gate_uses_real_token_counter():
     # pass a real-ish counter; a big shared block with zero natural cache must reorder
     # (BIG promoted into the leading block; volatile Q stays last)

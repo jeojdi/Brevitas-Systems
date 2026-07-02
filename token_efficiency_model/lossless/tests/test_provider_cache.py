@@ -114,3 +114,25 @@ def test_output_tokens_dilute_savings():
     assert without.output_tokens == 1000
     assert without.savings_pct < base.savings_pct               # output dilutes the total
     assert without.input_savings_pct == base.input_savings_pct  # input-only unchanged
+
+
+# --------------------------------------------------------------------------- #
+# per-model rates (billing-grade): the model actually called sets the ratios
+# --------------------------------------------------------------------------- #
+def test_rates_for_model_overrides_provider_row():
+    from token_efficiency_model.lossless.provider_cache import rates_for
+    assert rates_for("openai", "gpt-4.1-mini")["cache_read"] == 0.25   # 4.1 family: 25%
+    assert rates_for("openai", "gpt-4o-mini")["cache_read"] == 0.50    # 4o family: 50%
+    assert rates_for("openai", "")["cache_read"] == 0.50               # provider fallback
+    assert rates_for("deepseek", "deepseek-chat")["cache_read"] == 0.259
+    assert rates_for("anthropic", "claude-sonnet-4-5")["cache_write"] == 1.25
+    assert rates_for("unknown", "mystery-model")["cache_read"] == 0.50  # safe default
+
+
+def test_savings_from_usage_uses_model_rates():
+    from token_efficiency_model.lossless.provider_cache import savings_from_usage
+    usage = {"prompt_tokens": 1000, "completion_tokens": 0,
+             "prompt_tokens_details": {"cached_tokens": 1000}}
+    s41 = savings_from_usage(usage, "openai", model="gpt-4.1")
+    s4o = savings_from_usage(usage, "openai", model="gpt-4o")
+    assert s41.actual_cost < s4o.actual_cost      # 25% vs 50% cached price
