@@ -104,6 +104,34 @@ def parse_brevitas_headers(headers: dict) -> dict[str, str]:
     }
 
 
+def _auto_fleet_labels(explicit: dict, auth_key: str, body: dict) -> tuple[str, str]:
+    """Auto-engage shared-prefix promotion (b9) for multi-agent fleets that DON'T send
+    x-brevitas labels (MetaGPT, AutoGen, CrewAI, …). Treats one API key as a pipeline and
+    each distinct system prompt as an agent, so the shared context common across differing
+    per-agent system prompts gets promoted to a cacheable leading prefix — automatically,
+    no code changes in the customer's fleet. Explicit headers win when present."""
+    import hashlib
+    pipeline = explicit.get("pipeline") or (f"auto:{hashlib.sha256(auth_key.encode()).hexdigest()[:12]}"
+                                            if auth_key else "")
+    agent = explicit.get("agent")
+    if not agent:
+        sys_txt = ""
+        sysv = body.get("system")
+        if isinstance(sysv, str):
+            sys_txt = sysv
+        elif isinstance(sysv, list):
+            sys_txt = " ".join(b.get("text", "") for b in sysv if isinstance(b, dict))
+        else:
+            for m in body.get("messages", []):
+                if isinstance(m, dict) and m.get("role") == "system":
+                    c = m.get("content", "")
+                    sys_txt = c if isinstance(c, str) else " ".join(
+                        b.get("text", "") for b in c if isinstance(b, dict))
+                    break
+        agent = f"auto:{hashlib.sha256(sys_txt.encode()).hexdigest()[:12]}" if sys_txt else "auto:default"
+    return pipeline, agent
+
+
 def _passthrough_mode() -> bool:
     """A/B measurement mode: BREVITAS_PASSTHROUGH=1 forwards requests completely
     untouched (no optimization) while still metering usage — the honest baseline arm
@@ -162,8 +190,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     # volatile message lossily; fails safe to full context.
     optimized = not _passthrough_mode()
     if optimized:
+        fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
         optimize_request(body, "anthropic", router, session.session_id,
-                         pipeline=labels["pipeline"], agent=labels["agent"])
+                         pipeline=fleet_pipe, agent=fleet_agent)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -220,8 +249,9 @@ async def proxy_openai_chat(request: Request) -> Any:
     # estimates it's cheaper. Volatile message never lossily rewritten; fail-safe to full.
     optimized = not _passthrough_mode()
     if optimized:
+        fleet_pipe, fleet_agent = _auto_fleet_labels(labels, auth, body)
         optimize_request(body, provider, router, session.session_id,
-                         pipeline=labels["pipeline"], agent=labels["agent"])
+                         pipeline=fleet_pipe, agent=fleet_agent)
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
