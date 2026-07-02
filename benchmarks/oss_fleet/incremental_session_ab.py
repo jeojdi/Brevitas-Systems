@@ -116,9 +116,10 @@ def main():
     ap.add_argument("--arm", required=True)
     ap.add_argument("--nonce", default=os.environ.get("AB_NONCE", ""))
     ap.add_argument("--providers", default="anthropic,openai,deepseek")
+    ap.add_argument("--cycles", type=int, default=5)
     args = ap.parse_args()
     _load_env()
-    chunks = data_chunks(5)
+    chunks = data_chunks(args.cycles)
     for prov in args.providers.split(","):
         run_provider(prov.strip(), args.arm, args.nonce, chunks)
     print(f"[{args.arm}] all providers done", flush=True)
