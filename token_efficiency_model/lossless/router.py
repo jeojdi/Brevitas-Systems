@@ -148,6 +148,15 @@ class BrevitasRouter:
         st.obs_hit = hit if st.obs_hit < 0 else 0.5 * st.obs_hit + 0.5 * hit
         st.obs_count += 1
 
+    def observed_cache(self, session_id: str) -> tuple[float, int]:
+        """Return (observed cache-hit fraction, observation count) for a session.
+        Used by the cache-aware b9 gate to estimate the currently-cached prefix so it
+        never reorders in a way that shrinks an already-good provider cache."""
+        st = self._sessions._sessions.get(session_id) if session_id in self._sessions else None
+        if st is None or st.obs_hit < 0:
+            return 0.0, 0
+        return st.obs_hit, st.obs_count
+
     def observe_retrieval(self, session_id: str, baseline_tokens: int,
                           optimized_tokens: int) -> None:
         """Feed back a real retrieval result so the retrieve arm's keep fraction is

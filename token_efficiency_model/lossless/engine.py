@@ -76,10 +76,24 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     if not messages:
         return {"strategy": "passthrough", "reason": "no messages"}
 
-    # b9: promote shared context to a cacheable leading prefix for multi-agent pipelines
+    # b9 (cache-aware): promote shared context to a cacheable leading prefix for
+    # multi-agent pipelines — but ONLY once we've OBSERVED that the provider is NOT
+    # already caching the natural prefix well, and only if the promoted shared block
+    # would cache MORE tokens than it already does. This prevents the regression where
+    # a blind reorder breaks a cache the provider was already serving (Don't Break the
+    # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
     if pipeline:
+        from .provider_cache import count_tokens as _ct
         from .shared_prefix import layout as _shared_layout
-        body["messages"] = messages = _shared_layout(pipeline, agent or session_id, messages)
+        obs_hit, obs_count = router.observed_cache(session_id)
+        total_tok = sum(_ct(_msg_text(m.get("content", ""))) for m in messages)
+        if obs_count >= 2:
+            natural_cached = obs_hit * total_tok           # provider already caches this much
+        else:
+            natural_cached = float(total_tok)              # unknown → assume well-cached (don't reorder)
+        body["messages"] = messages = _shared_layout(
+            pipeline, agent or session_id, messages,
+            natural_cached_tokens=natural_cached, count_tokens=_ct)
 
     system = body.get("system")
     stable = _stable_context(messages, system)
