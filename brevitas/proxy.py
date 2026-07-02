@@ -106,13 +106,23 @@ def parse_brevitas_headers(headers: dict) -> dict[str, str]:
 
 def _auto_fleet_labels(explicit: dict, auth_key: str, body: dict) -> tuple[str, str]:
     """Auto-engage shared-prefix promotion (b9) for multi-agent fleets that DON'T send
-    x-brevitas labels (MetaGPT, AutoGen, CrewAI, …). Treats one API key as a pipeline and
-    each distinct system prompt as an agent, so the shared context common across differing
-    per-agent system prompts gets promoted to a cacheable leading prefix — automatically,
-    no code changes in the customer's fleet. Explicit headers win when present."""
+    x-brevitas labels. OFF BY DEFAULT (BREVITAS_AUTO_SHARED_PREFIX=1 to enable).
+
+    Why off by default: b9 REORDERS messages to hoist shared context to the front. If the
+    provider is ALREADY caching the request's natural byte-identical prefix (common when a
+    fleet's agents have growing-but-stable prefixes turn-over-turn), reordering CHANGES the
+    prefix and DESTROYS that cache — measured on a 20-round AutoGen debate: it dropped
+    DeepSeek's auto-cache from 63% to 2% and made the run 45% MORE expensive. b9 only helps
+    the narrow case (a big shared block sitting behind differing prefixes with LOW natural
+    repetition); applying it blindly is net-negative. So it's explicit opt-in only — the
+    safe default preserves the provider's own prefix cache (cache_only passthrough)."""
     import hashlib
-    pipeline = explicit.get("pipeline") or (f"auto:{hashlib.sha256(auth_key.encode()).hexdigest()[:12]}"
-                                            if auth_key else "")
+    if explicit.get("pipeline"):
+        return explicit["pipeline"], explicit.get("agent", "")
+    if os.environ.get("BREVITAS_AUTO_SHARED_PREFIX", "") not in ("1", "true", "yes"):
+        return "", ""   # default: no auto b9 — never risk breaking the provider's own cache
+    pipeline = (f"auto:{hashlib.sha256(auth_key.encode()).hexdigest()[:12]}"
+                if auth_key else "")
     agent = explicit.get("agent")
     if not agent:
         sys_txt = ""
