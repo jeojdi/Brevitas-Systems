@@ -8,6 +8,7 @@ proxy. The heavy embedding model is lazy-loaded once per process.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from .provider_cache import count_tokens
@@ -112,3 +113,74 @@ def retrieval_select(task: str, prior_context: List[str], k: int = 5,
             "optimized_tokens": optimized, "savings_pct": savings,
             "fallback_applied": meta.get("fallback_applied", False),
             "reason": meta.get("reason", "retrieved")}
+
+
+# --------------------------------------------------------------------------- #
+# Chunk-level retrieval — lets retrieval slice INTO a large single document
+# (e.g. a whole PDF/textbook in one message), not just keep/drop whole messages.
+# --------------------------------------------------------------------------- #
+_PARA = re.compile(r"\n\s*\n")
+_SENT = re.compile(r"(?<=[.!?])\s+")
+
+
+def chunk_text(text: str, target_tokens: int = 256) -> List[str]:
+    """Split text into ~target_tokens chunks on paragraph (then sentence) boundaries.
+
+    Greedy packing: paragraphs are packed until the budget is hit; paragraphs that are
+    themselves larger than the budget are first broken on sentence boundaries. Lossless —
+    concatenating the chunks back reproduces the same content (modulo separator whitespace)."""
+    if not text or not text.strip():
+        return []
+    units: List[str] = []
+    for para in _PARA.split(text):
+        para = para.strip()
+        if not para:
+            continue
+        if count_tokens(para) > target_tokens * 1.5:
+            units.extend(s.strip() for s in _SENT.split(para) if s.strip())
+        else:
+            units.append(para)
+
+    chunks: List[str] = []
+    cur: List[str] = []
+    cur_tok = 0
+    for u in units:
+        ut = count_tokens(u)
+        if cur and cur_tok + ut > target_tokens:
+            chunks.append("\n\n".join(cur))
+            cur, cur_tok = [], 0
+        cur.append(u)
+        cur_tok += ut
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return chunks
+
+
+def select_chunk_indices(task: str, chunks: List[str], k: int = 12,
+                         min_top_score: float = 0.2) -> dict:
+    """Return the indices of the chunks relevant to `task`, in original order.
+
+    Fail-safe: if the encoder is unavailable, the index is empty, or top score is below
+    confidence, returns ALL indices with fallback_applied=True (never silently thins)."""
+    n = len(chunks)
+    if n == 0:
+        return {"indices": [], "fallback_applied": False, "reason": "empty"}
+    enc = _get_encoder()
+    if enc is None:
+        return {"indices": list(range(n)), "fallback_applied": True,
+                "reason": "encoder_unavailable"}
+    try:
+        r = DenseRetriever(enc)
+        r.index(chunks)  # ids default to range(n) -> hit[0] is the chunk index
+        hits = r.retrieve(task or chunks[0], k=min(k, n))
+    except Exception as e:
+        return {"indices": list(range(n)), "fallback_applied": True,
+                "reason": f"error:{type(e).__name__}"}
+    if not hits:
+        return {"indices": list(range(n)), "fallback_applied": True, "reason": "empty_index"}
+    if hits[0][2] < min_top_score:
+        return {"indices": list(range(n)), "fallback_applied": True,
+                "reason": "low_confidence", "top_score": float(hits[0][2])}
+    idx = sorted(int(h[0]) for h in hits)
+    return {"indices": idx, "fallback_applied": False, "k": len(idx),
+            "top_score": float(hits[0][2])}

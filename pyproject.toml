@@ -38,3 +38,6 @@ brevitas = "brevitas.cli:main"
 where = ["."]
 include = ["brevitas*", "token_efficiency_model*"]
 exclude = ["*.tests", "*.tests.*", "tests*", "benchmarks*", "examples*", "archive*"]
+
+[tool.setuptools.package-data]
+brevitas = ["samples/*.md"]
