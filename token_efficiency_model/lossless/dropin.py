@@ -148,7 +148,29 @@ class BrevitasDropIn:
         provider = self._detect_provider(model)
         client = self._route_client(provider)
 
-        body = {"messages": messages, "model": model, **kwargs}
+        body = {"messages": list(messages), "model": model, **kwargs}
+
+        # Anthropic requires `system` as a TOP-LEVEL field, not a role in messages.
+        # Customers writing OpenAI-style messages (system role in the list) must not 400
+        # when wrapped for Anthropic — hoist leading system-role messages into `system`,
+        # losslessly (same content, correct field). Merge with any explicit system kwarg.
+        if provider == "anthropic":
+            sys_texts, rest = [], []
+            for m in body["messages"]:
+                if m.get("role") == "system":
+                    c = m.get("content", "")
+                    sys_texts.append(c if isinstance(c, str)
+                                     else " ".join(b.get("text", "") for b in c
+                                                   if isinstance(b, dict)))
+                else:
+                    rest.append(m)
+            if sys_texts:
+                existing = body.get("system")
+                existing = [existing] if isinstance(existing, str) else (existing or [])
+                if isinstance(existing, list):
+                    existing = [e if isinstance(e, str) else str(e) for e in existing]
+                body["system"] = "\n\n".join([*sys_texts, *existing]) if existing else "\n\n".join(sys_texts)
+                body["messages"] = rest
 
         # Router-driven, automatic, lossless optimization (cache_only | retrieve | passthrough)
         decision = optimize_request(body, provider, self._router, session_id)
