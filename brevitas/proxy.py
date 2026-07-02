@@ -54,11 +54,19 @@ _STATE_FILE = os.environ.get("BREVITAS_STATE_FILE", "")
 _STATE_EVERY_S = 5.0
 _state_last_save = 0.0
 
+def _key_id(secret: str) -> str:
+    """Registry/session identity for an auth secret: a short hash, NEVER the raw key —
+    these identities are persisted to the cross-run state file."""
+    import hashlib
+    return hashlib.sha256((secret or "").encode()).hexdigest()[:16]
+
+
 if _STATE_FILE:
     _restored = state_store.load(_STATE_FILE, _routers,
                                  lambda prov: BrevitasRouter(provider=prov))
     if _restored:
-        print(f"[brevitas] cross-run state: restored {_restored} sessions from {_STATE_FILE}")
+        print(f"[brevitas] cross-run state: restored {_restored} sessions from {_STATE_FILE}",
+              flush=True)
 
 
 def _state_save() -> None:
@@ -230,8 +238,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
     labels = parse_brevitas_headers(request.headers)
-    # per-AGENT sessions: fleets share one API key; see _agent_label
-    sess_key = f"ant:{api_key}:{_agent_label(labels, body)}"
+    # per-AGENT sessions: fleets share one API key; see _agent_label. The key is
+    # HASHED — session ids end up in the persisted state file.
+    sess_key = f"ant:{_key_id(api_key)}:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
@@ -293,8 +302,9 @@ async def proxy_openai_chat(request: Request) -> Any:
     auth = request.headers.get("authorization", "")
     provider = "deepseek" if "deepseek" in (model or "").lower() else "openai"
     labels = parse_brevitas_headers(request.headers)
-    # per-AGENT sessions: fleets share one API key; see _agent_label
-    sess_key = f"oai:{auth}:{_agent_label(labels, body)}"
+    # per-AGENT sessions: fleets share one API key; see _agent_label. The key is
+    # HASHED — session ids end up in the persisted state file.
+    sess_key = f"oai:{_key_id(auth)}:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
 

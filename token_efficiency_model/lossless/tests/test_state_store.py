@@ -76,3 +76,18 @@ def test_corrupt_or_missing_file_fails_safe(tmp_path):
     old = tmp_path / "old.json"
     old.write_text(json.dumps({"v": 1, "ts": 0, "routers": {}}))  # week-old snapshot
     assert state_store.load(str(old), {}, None) == 0
+
+
+def test_snapshot_never_contains_raw_secrets(tmp_path):
+    # registry keys are part of the snapshot — proxy must hash auth material into them
+    # (regression: an early build persisted "ant:sk-ant-api03-...:agent" verbatim)
+    from brevitas.proxy import _key_id
+    secret = "sk-ant-api03-" + "x" * 40
+    kid = _key_id(secret)
+    assert secret not in kid and len(kid) == 16
+    path = str(tmp_path / "state.json")
+    routers = {f"ant:{kid}:auto:abc": BrevitasRouter(provider="anthropic")}
+    routers[f"ant:{kid}:auto:abc"].decide("sid", CTX, "q")
+    state_store.save(path, routers)
+    raw = open(path).read()
+    assert "sk-ant" not in raw and secret not in raw
