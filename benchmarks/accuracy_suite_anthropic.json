@@ -1,0 +1,83 @@
+{
+  "provider": "anthropic",
+  "model": "claude-haiku-4-5-20251001",
+  "n": 15,
+  "benchmarks": {
+    "bbh": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.5333,
+        "usd": 0.033938,
+        "prompt_tokens": 15518,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.4667,
+        "usd": 0.034342,
+        "prompt_tokens": 15518,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": -0.0666,
+      "cost_saved_pct": -1.2,
+      "lossless": false
+    },
+    "mmlu": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.5333,
+        "usd": 0.031529,
+        "prompt_tokens": 13836,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.6,
+        "usd": 0.031229,
+        "prompt_tokens": 13836,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0667,
+      "cost_saved_pct": 1.0,
+      "lossless": false
+    },
+    "arc": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.9333,
+        "usd": 0.023112,
+        "prompt_tokens": 9180,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.9333,
+        "usd": 0.022792,
+        "prompt_tokens": 9180,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 1.4,
+      "lossless": true
+    },
+    "code": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.2,
+        "usd": 0.012546,
+        "prompt_tokens": 2118,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.2,
+        "usd": 0.012546,
+        "prompt_tokens": 2118,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 0.0,
+      "lossless": true
+    }
+  }
+}

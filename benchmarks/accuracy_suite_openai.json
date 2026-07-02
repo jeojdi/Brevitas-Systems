@@ -1,0 +1,83 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "n": 15,
+  "benchmarks": {
+    "bbh": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.7333,
+        "usd": 0.004672,
+        "prompt_tokens": 14095,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.8,
+        "usd": 0.004691,
+        "prompt_tokens": 14095,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0667,
+      "cost_saved_pct": -0.4,
+      "lossless": false
+    },
+    "mmlu": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.6667,
+        "usd": 0.003368,
+        "prompt_tokens": 11657,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.5333,
+        "usd": 0.003386,
+        "prompt_tokens": 11657,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": -0.1334,
+      "cost_saved_pct": -0.5,
+      "lossless": false
+    },
+    "arc": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.9333,
+        "usd": 0.001355,
+        "prompt_tokens": 8116,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.9333,
+        "usd": 0.001363,
+        "prompt_tokens": 8116,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": -0.6,
+      "lossless": true
+    },
+    "code": {
+      "baseline": {
+        "n": 15,
+        "accuracy": 0.6667,
+        "usd": 0.001353,
+        "prompt_tokens": 1943,
+        "cached_tokens": 0
+      },
+      "brevitas": {
+        "n": 15,
+        "accuracy": 0.6,
+        "usd": 0.001348,
+        "prompt_tokens": 1943,
+        "cached_tokens": 0
+      },
+      "accuracy_delta": -0.0667,
+      "cost_saved_pct": 0.4,
+      "lossless": false
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "n": 25,
+  "benchmarks": {
+    "bbh": {
+      "baseline": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.006646,
+        "prompt_tokens": 23615,
+        "cached_tokens": 22400
+      },
+      "brevitas": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.006452,
+        "prompt_tokens": 23615,
+        "cached_tokens": 22400
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 2.9,
+      "lossless": true
+    },
+    "mmlu": {
+      "baseline": {
+        "n": 25,
+        "accuracy": 0.88,
+        "usd": 0.004241,
+        "prompt_tokens": 19153,
+        "cached_tokens": 17536
+      },
+      "brevitas": {
+        "n": 25,
+        "accuracy": 0.88,
+        "usd": 0.004215,
+        "prompt_tokens": 19153,
+        "cached_tokens": 17536
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 0.6,
+      "lossless": true
+    },
+    "arc": {
+      "baseline": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.002602,
+        "prompt_tokens": 13070,
+        "cached_tokens": 11520
+      },
+      "brevitas": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.002544,
+        "prompt_tokens": 13070,
+        "cached_tokens": 11520
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 2.2,
+      "lossless": true
+    },
+    "code": {
+      "baseline": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.004422,
+        "prompt_tokens": 3079,
+        "cached_tokens": 1280
+      },
+      "brevitas": {
+        "n": 25,
+        "accuracy": 1.0,
+        "usd": 0.004415,
+        "prompt_tokens": 3079,
+        "cached_tokens": 1280
+      },
+      "accuracy_delta": 0.0,
+      "cost_saved_pct": 0.2,
+      "lossless": true
+    }
+  }
+}
