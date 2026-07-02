@@ -1,0 +1,342 @@
+{
+  "baseline": {
+    "total_usd": 0.00557403,
+    "by_provider": {
+      "anthropic": {
+        "usd": 0.0042088,
+        "calls": 4,
+        "prompt": 2411,
+        "cached": 0
+      },
+      "openai": {
+        "usd": 0.00035985,
+        "calls": 4,
+        "prompt": 2043,
+        "cached": 0
+      },
+      "deepseek": {
+        "usd": 0.0010053800000000002,
+        "calls": 10,
+        "prompt": 5074,
+        "cached": 3968
+      }
+    },
+    "rows": [
+      {
+        "mgr": "Warren Buffett",
+        "prov": "anthropic",
+        "usd": 0.001122,
+        "prompt": 602,
+        "cached": 0,
+        "verdict": "**Neutral, leaning bearish.**  Strong moat (brand, 47% DTC r"
+      },
+      {
+        "mgr": "Charlie Munger",
+        "prov": "anthropic",
+        "usd": 0.001023,
+        "prompt": 599,
+        "cached": 0,
+        "verdict": "**Bullish, 72.**  Strong compounder (21% rev CAGR, 24% EPS C"
+      },
+      {
+        "mgr": "Bill Ackman",
+        "prov": "openai",
+        "usd": 9e-05,
+        "prompt": 509,
+        "cached": 0,
+        "verdict": "Bullish, strong growth, solid margins, and good cash flow wi"
+      },
+      {
+        "mgr": "Cathie Wood",
+        "prov": "anthropic",
+        "usd": 0.000937,
+        "prompt": 601,
+        "cached": 0,
+        "verdict": "**Bullish.** 24% EPS CAGR, 47% DTC repeat (sticky cohort), i"
+      },
+      {
+        "mgr": "Michael Burry",
+        "prov": "openai",
+        "usd": 9e-05,
+        "prompt": 513,
+        "cached": 0,
+        "verdict": "Bearish; high valuation metrics coupled with discretionary d"
+      },
+      {
+        "mgr": "Ben Graham",
+        "prov": "deepseek",
+        "usd": 0.000101,
+        "prompt": 511,
+        "cached": 384,
+        "verdict": "BEARISH. P/E 30, P/B 6.1 \u2013 no net-net, no hard asset margin."
+      },
+      {
+        "mgr": "Peter Lynch",
+        "prov": "deepseek",
+        "usd": 0.000124,
+        "prompt": 509,
+        "cached": 384,
+        "verdict": "Bullish. PEG ~1.25, near your 1.0 limit, but 5-yr 24% EPS gr"
+      },
+      {
+        "mgr": "Phil Fisher",
+        "prov": "deepseek",
+        "usd": 9.2e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bullish. Superior management, durable brand moat, high repea"
+      },
+      {
+        "mgr": "Stanley Druckenmiller",
+        "prov": "openai",
+        "usd": 8.9e-05,
+        "prompt": 513,
+        "cached": 0,
+        "verdict": "Bullish; strong growth metrics and disciplined management su"
+      },
+      {
+        "mgr": "Aswath Damodaran",
+        "prov": "deepseek",
+        "usd": 9.9e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bearish. P/E 30 priced for perfection; 12-15% growth guidanc"
+      },
+      {
+        "mgr": "Mohnish Pabrai",
+        "prov": "deepseek",
+        "usd": 9e-05,
+        "prompt": 514,
+        "cached": 512,
+        "verdict": "Bearish. P/E 30 and P/FCF 24 are too rich for a discretionar"
+      },
+      {
+        "mgr": "Nassim Taleb",
+        "prov": "anthropic",
+        "usd": 0.001127,
+        "prompt": 609,
+        "cached": 0,
+        "verdict": "**NEUTRAL, leaning BEARISH. Confidence: 72.**  Strong fundam"
+      },
+      {
+        "mgr": "Rakesh Jhunjhunwala",
+        "prov": "deepseek",
+        "usd": 9e-05,
+        "prompt": 508,
+        "cached": 384,
+        "verdict": "BULLISH. Strong domestic brand franchise, consistent double-"
+      },
+      {
+        "mgr": "Fundamentals Analyst",
+        "prov": "deepseek",
+        "usd": 9.9e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "**Bullish.** High ROE/ROIC, strong margins, solid FCF, net c"
+      },
+      {
+        "mgr": "Valuation Analyst",
+        "prov": "deepseek",
+        "usd": 9.6e-05,
+        "prompt": 505,
+        "cached": 384,
+        "verdict": "NPO: Bearish. P/E 30 with 12-15% growth guidance and discret"
+      },
+      {
+        "mgr": "Growth Analyst",
+        "prov": "deepseek",
+        "usd": 9.1e-05,
+        "prompt": 503,
+        "cached": 384,
+        "verdict": "BULLISH. 90. Revenue/EPS accelerating 5yr CAGRs, high ROIC/u"
+      },
+      {
+        "mgr": "Sentiment Analyst",
+        "prov": "openai",
+        "usd": 9.1e-05,
+        "prompt": 508,
+        "cached": 0,
+        "verdict": "Bullish; strong revenue growth, solid margins, disciplined b"
+      },
+      {
+        "mgr": "Technical Analyst",
+        "prov": "deepseek",
+        "usd": 0.000123,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bullish. Strong uptrend confirmed by 5yr revenue/EPS CAGR; R"
+      }
+    ]
+  },
+  "brevitas": {
+    "total_usd": 0.005475229999999999,
+    "by_provider": {
+      "anthropic": {
+        "usd": 0.0041448,
+        "calls": 4,
+        "prompt": 2411,
+        "cached": 0
+      },
+      "openai": {
+        "usd": 0.00036465,
+        "calls": 4,
+        "prompt": 2043,
+        "cached": 0
+      },
+      "deepseek": {
+        "usd": 0.00096578,
+        "calls": 10,
+        "prompt": 5074,
+        "cached": 3968
+      }
+    },
+    "rows": [
+      {
+        "mgr": "Warren Buffett",
+        "prov": "anthropic",
+        "usd": 0.001086,
+        "prompt": 602,
+        "cached": 0,
+        "verdict": "**Bullish, 72.**  Strong moat (brand + 47% DTC repeat), exce"
+      },
+      {
+        "mgr": "Charlie Munger",
+        "prov": "anthropic",
+        "usd": 0.001047,
+        "prompt": 599,
+        "cached": 0,
+        "verdict": "**Bearish. 68.**  Valuation has run ahead of fundamentals. P"
+      },
+      {
+        "mgr": "Bill Ackman",
+        "prov": "openai",
+        "usd": 8.9e-05,
+        "prompt": 509,
+        "cached": 0,
+        "verdict": "Bullish; strong growth, solid margins, insider ownership, an"
+      },
+      {
+        "mgr": "Cathie Wood",
+        "prov": "anthropic",
+        "usd": 0.000949,
+        "prompt": 601,
+        "cached": 0,
+        "verdict": "**Bullish.** Strong 21% revenue CAGR, 24% EPS CAGR, fortress"
+      },
+      {
+        "mgr": "Michael Burry",
+        "prov": "openai",
+        "usd": 9.1e-05,
+        "prompt": 513,
+        "cached": 0,
+        "verdict": "Bearish; high valuation metrics paired with discretionary de"
+      },
+      {
+        "mgr": "Ben Graham",
+        "prov": "deepseek",
+        "usd": 0.0001,
+        "prompt": 511,
+        "cached": 384,
+        "verdict": "Bearish. P/E 30, P/B 6.1 \u2014 no margin of safety, not a net-ne"
+      },
+      {
+        "mgr": "Peter Lynch",
+        "prov": "deepseek",
+        "usd": 0.000101,
+        "prompt": 509,
+        "cached": 384,
+        "verdict": "Bullish. PEG 1.25\u2014close to my 1x target\u2014plus 24% EPS growth,"
+      },
+      {
+        "mgr": "Phil Fisher",
+        "prov": "deepseek",
+        "usd": 9.2e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bullish. Superior founder-led management, durable brand with"
+      },
+      {
+        "mgr": "Stanley Druckenmiller",
+        "prov": "openai",
+        "usd": 9.5e-05,
+        "prompt": 513,
+        "cached": 0,
+        "verdict": "Bullish. Strong growth metrics, solid margins, disciplined c"
+      },
+      {
+        "mgr": "Aswath Damodaran",
+        "prov": "deepseek",
+        "usd": 0.00013,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bearish. At 30x P/E and 24x P/FCF, you're paying for premium"
+      },
+      {
+        "mgr": "Mohnish Pabrai",
+        "prov": "deepseek",
+        "usd": 7.8e-05,
+        "prompt": 514,
+        "cached": 512,
+        "verdict": "Bearish. P/E 30 and P/FCF 24 on a cyclical discretionary wit"
+      },
+      {
+        "mgr": "Nassim Taleb",
+        "prov": "anthropic",
+        "usd": 0.001063,
+        "prompt": 609,
+        "cached": 0,
+        "verdict": "**BULLISH \u2014 but overpriced; buy on 15%+ pullback.** Strong m"
+      },
+      {
+        "mgr": "Rakesh Jhunjhunwala",
+        "prov": "deepseek",
+        "usd": 0.000102,
+        "prompt": 508,
+        "cached": 384,
+        "verdict": "Bullish. Strong domestic brand with 47% DTC repeat rate, fou"
+      },
+      {
+        "mgr": "Fundamentals Analyst",
+        "prov": "deepseek",
+        "usd": 6.8e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bullish. 90 confidence."
+      },
+      {
+        "mgr": "Valuation Analyst",
+        "prov": "deepseek",
+        "usd": 0.0001,
+        "prompt": 505,
+        "cached": 384,
+        "verdict": "Bearish. P/E 30x and P/FCF 24x are stretched vs. discretiona"
+      },
+      {
+        "mgr": "Growth Analyst",
+        "prov": "deepseek",
+        "usd": 0.000102,
+        "prompt": 503,
+        "cached": 384,
+        "verdict": "BULLISH 85 (strong revenue/EPS acceleration, high ROIC/ROE, "
+      },
+      {
+        "mgr": "Sentiment Analyst",
+        "prov": "openai",
+        "usd": 9e-05,
+        "prompt": 508,
+        "cached": 0,
+        "verdict": "Bullish - strong growth metrics, disciplined management, and"
+      },
+      {
+        "mgr": "Technical Analyst",
+        "prov": "deepseek",
+        "usd": 9.3e-05,
+        "prompt": 506,
+        "cached": 384,
+        "verdict": "Bullish. Strong trend, high ROIC/ROE, consistent growth, cle"
+      }
+    ]
+  },
+  "saved_usd": 9.9e-05,
+  "saved_pct": 1.8
+}
