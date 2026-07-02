@@ -14,8 +14,9 @@ House rules: unverified savings are NEVER billed; every layer fails safe (gate
 unavailable ⇒ status "unverified" ⇒ $0 fee, requests untouched).
 """
 from .audit import AuditPolicy
+from .calibration import CalibrationStore, Calibrator
 from .gate import QualityAssessment, QualityGate, QualityGateConfig
 from .sequential import SequentialQualityGate
 
-__all__ = ["AuditPolicy", "QualityAssessment", "QualityGate", "QualityGateConfig",
-           "SequentialQualityGate"]
+__all__ = ["AuditPolicy", "CalibrationStore", "Calibrator", "QualityAssessment",
+           "QualityGate", "QualityGateConfig", "SequentialQualityGate"]
