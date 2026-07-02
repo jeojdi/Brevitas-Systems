@@ -86,3 +86,18 @@ def test_release_idempotent():
         g.release(sig)
         g.release(sig)                                 # double release: harmless
     asyncio.run(scenario())
+
+
+def test_signature_covers_stable_blocks_in_final_message():
+    # Anthropic alternating-role constraint: big doc + question live in ONE message
+    g = BatchGroupGate()
+    def body(q):
+        return {"messages": [{"role": "user",
+                              "content": [{"type": "text", "text": BIG},
+                                          {"type": "text", "text": q}]}]}
+    s1, s2 = g.signature(body("q1")), g.signature(body("q2 different"))
+    assert s1 and s1 == s2, "shared doc block must define the signature"
+    other = {"messages": [{"role": "user",
+                           "content": [{"type": "text", "text": BIG + "y"},
+                                       {"type": "text", "text": "q"}]}]}
+    assert g.signature(other) != s1

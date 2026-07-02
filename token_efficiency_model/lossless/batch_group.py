@@ -68,6 +68,15 @@ class BatchGroupGate:
         for m in msgs[:-1]:
             if isinstance(m, dict):
                 parts.append(f"{m.get('role', '')}\x00{_text(m.get('content'))}")
+        # non-final blocks INSIDE the final message are stable context too (the
+        # "big document + question in one turn" pattern, incl. Anthropic's
+        # alternating-role constraint) — same rule as apply_anthropic_cache
+        last = msgs[-1] if isinstance(msgs[-1], dict) else {}
+        lc = last.get("content")
+        if isinstance(lc, list) and len(lc) >= 2:
+            for blk in lc[:-1]:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(f"lastblk\x00{blk.get('text', '')}")
         stable = "\x1e".join(parts)
         if len(stable) < self.min_chars:
             return None
