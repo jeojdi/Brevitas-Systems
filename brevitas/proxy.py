@@ -32,8 +32,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ._compress import count_messages_tokens, report_usage
 from .session import BrevitasSession
 from token_efficiency_model.lossless import state_store
+from token_efficiency_model.lossless.batch_group import BatchGroupGate
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
+
+# Batch prefix grouping (pathfinder gate, CR1): concurrent same-prefix requests wait
+# for the first one's prefill to write the provider cache, then read it instead of all
+# re-writing the same bytes. Only ever holds a request whose identical-prefix sibling
+# is ALREADY in flight (bounded by max_wait), so interactive traffic is never touched.
+# On by default; BREVITAS_BATCH_GROUP=0 is the kill-switch.
+_BG_ON = os.environ.get("BREVITAS_BATCH_GROUP", "1") not in ("0", "false", "no")
+_bg = BatchGroupGate(max_wait=float(os.environ.get("BREVITAS_BATCH_GROUP_MAX_WAIT", "15")))
+_BG_WARM = {"deepseek": 2880.0, "anthropic": 240.0, "openai": 240.0}  # ~0.8x cache TTL
 
 # one router per (provider, key) — learns each session's repeat + real cache behavior
 _routers: dict[str, BrevitasRouter] = {}
@@ -253,24 +263,43 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         optimize_request(body, "anthropic", router, session.session_id,
                          pipeline=fleet_pipe, agent=fleet_agent)
 
+    # pathfinder gate — signature computed AFTER optimization (the bytes actually sent)
+    bg_sig, bg_role = None, "free"
+    if optimized and _BG_ON:
+        bg_sig = _bg.signature(body)
+        if bg_sig:
+            bg_role, _bg_waited = await _bg.acquire(bg_sig)
+
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
 
     async with httpx.AsyncClient(timeout=120) as client:
         if is_stream:
             async def stream_gen():
-                async with client.stream(
-                    "POST", f"{_ANTHROPIC_API}/v1/messages",
-                    headers=headers, json=body
-                ) as resp:
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
+                released = False
+                try:
+                    async with client.stream(
+                        "POST", f"{_ANTHROPIC_API}/v1/messages",
+                        headers=headers, json=body
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if not released and bg_role == "pathfinder":
+                                _bg.release(bg_sig, _BG_WARM["anthropic"])  # prefill done
+                                released = True
+                            yield chunk
+                finally:
+                    if bg_role == "pathfinder" and not released:
+                        _bg.release(bg_sig, _BG_WARM["anthropic"])
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
-            resp = await client.post(
-                f"{_ANTHROPIC_API}/v1/messages", headers=headers, json=body
-            )
+            try:
+                resp = await client.post(
+                    f"{_ANTHROPIC_API}/v1/messages", headers=headers, json=body
+                )
+            finally:
+                if bg_role == "pathfinder":
+                    _bg.release(bg_sig, _BG_WARM["anthropic"])
             data = resp.json()
             try:
                 text = data["content"][0]["text"]
@@ -317,6 +346,14 @@ async def proxy_openai_chat(request: Request) -> Any:
         optimize_request(body, provider, router, session.session_id,
                          pipeline=fleet_pipe, agent=fleet_agent)
 
+    # pathfinder gate — signature computed AFTER optimization (the bytes actually sent)
+    bg_sig, bg_role = None, "free"
+    if optimized and _BG_ON:
+        bg_sig = _bg.signature(body)
+        if bg_sig:
+            bg_role, _bg_waited = await _bg.acquire(bg_sig)
+    bg_warm = _BG_WARM.get(provider, 240.0)
+
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
 
@@ -327,18 +364,30 @@ async def proxy_openai_chat(request: Request) -> Any:
     async with httpx.AsyncClient(timeout=120) as client:
         if is_stream:
             async def stream_gen():
-                async with client.stream(
-                    "POST", f"{upstream_url}/v1/chat/completions",
-                    headers=headers, json=body
-                ) as resp:
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
+                released = False
+                try:
+                    async with client.stream(
+                        "POST", f"{upstream_url}/v1/chat/completions",
+                        headers=headers, json=body
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if not released and bg_role == "pathfinder":
+                                _bg.release(bg_sig, bg_warm)   # prefill done
+                                released = True
+                            yield chunk
+                finally:
+                    if bg_role == "pathfinder" and not released:
+                        _bg.release(bg_sig, bg_warm)
             session.advance()
             return StreamingResponse(stream_gen(), media_type="text/event-stream")
         else:
-            resp = await client.post(
-                f"{upstream_url}/v1/chat/completions", headers=headers, json=body
-            )
+            try:
+                resp = await client.post(
+                    f"{upstream_url}/v1/chat/completions", headers=headers, json=body
+                )
+            finally:
+                if bg_role == "pathfinder":
+                    _bg.release(bg_sig, bg_warm)
             data = resp.json()
             try:
                 text = data["choices"][0]["message"]["content"]
