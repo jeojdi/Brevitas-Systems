@@ -26,6 +26,7 @@ all       = ["anthropic>=0.28.0", "openai>=1.30.0"]
 
 [project.scripts]
 brevitas = "brevitas.cli:main"
+bvx      = "brevitas.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
