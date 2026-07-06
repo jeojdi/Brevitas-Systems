@@ -124,7 +124,8 @@ def start(port: int, api_key: str, base_url: str, host: str, engine: bool) -> No
 @main.command(name="scan")
 @click.argument("path", default=".")
 @click.option("--target", default="http://localhost:4242", show_default=True, help="Brevitas proxy URL")
-def scan_cmd(path: str, target: str) -> None:
+@click.option("--popup/--no-popup", default=True, help="Open a visual popup of the API calls found")
+def scan_cmd(path: str, target: str, popup: bool) -> None:
     """Find every AI API call site in PATH and show the routing plan."""
     from collections import Counter
     from .scan import scan, call_sites, providers_found, routing, hardcoded_sites
@@ -156,6 +157,10 @@ def scan_cmd(path: str, target: str) -> None:
         if len(hard) > 10:
             _print(f"  [dim]… +{len(hard) - 10} more[/dim]")
         _print("  [dim]Run `brevitas install --auto` to rewrite them.[/dim]")
+
+    if popup:
+        out = _render_and_open(path, findings, plan)
+        _print(f"\n[green]✓ Popup:[/green] {out}  [dim](--no-popup to skip)[/dim]")
     _print("")
 
 
@@ -225,13 +230,42 @@ h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:#7c87
 pre { background:#0f151d; border:1px solid #1f2a37; border-radius:8px; padding:12px 14px;
       overflow-x:auto; color:#9fd0ff; }
 code.f { color:#7c8794; }
+.file { margin:10px 0 14px; }
+.fp { color:#fff; font-weight:600; margin-bottom:2px; word-break:break-all; }
 .hard { color:#f87171; }
 .empty { color:#7c8794; font-style:italic; }
 a { color:#60a5fa; }
 """
 
 
-def _dash_html(path, counts, plan, hard, stats):
+def _group_by_file(calls):
+    """[(path, [(line, provider, snippet), …]), …] ordered by call count desc."""
+    from collections import defaultdict
+    d = defaultdict(list)
+    for f in calls:
+        d[f.path].append((f.line, f.provider, f.snippet))
+    for v in d.values():
+        v.sort()
+    return sorted(d.items(), key=lambda kv: len(kv[1]), reverse=True)
+
+
+def _render_and_open(path, findings, plan, stats=None):
+    """Write the visual report to a temp HTML file and open it. Returns the path."""
+    import tempfile, webbrowser
+    from collections import Counter
+    from pathlib import Path
+    from .scan import call_sites, hardcoded_sites
+    calls = call_sites(findings)
+    counts = Counter(f.provider for f in calls)
+    html = _dash_html(path, counts, plan, hardcoded_sites(findings), stats,
+                      by_file=_group_by_file(calls))
+    out = Path(tempfile.gettempdir()) / "brevitas_scan.html"
+    out.write_text(html, encoding="utf-8")
+    webbrowser.open(f"file://{out}")
+    return out
+
+
+def _dash_html(path, counts, plan, hard, stats, by_file=None):
     import html as _html
     mx = max(counts.values()) if counts else 1
     rows = ""
@@ -241,6 +275,17 @@ def _dash_html(path, counts, plan, hard, stats):
                  f'<span class="bar {"" if auto else "manual"}" style="width:{int(n/mx*300)}px"></span>'
                  f'<span class="c">{n}</span>'
                  f'<span class="tag {"auto" if auto else "manual"}">{"routed" if auto else "manual"}</span></div>')
+
+    # Which files make API calls, and where (file:line + the calling line).
+    files_html = ""
+    for fpath, items in (by_file or {}):
+        lines = "".join(
+            f'<div class="row"><span class="c" style="width:52px">L{ln}</span>'
+            f'<span class="tag {"auto" if pid in plan["auto"] else "manual"}">{_html.escape(pid)}</span> '
+            f'<code class="f">{_html.escape(snip[:100])}</code></div>'
+            for ln, pid, snip in items)
+        files_html += f'<div class="file"><div class="fp">{_html.escape(fpath)}</div>{lines}</div>'
+    files_html = files_html or '<div class="empty">no AI calls found</div>'
     env_block = "\n".join(f"export {k}={v}" for k, v in plan["env"].items()) or "# no OpenAI/Anthropic-compatible calls found"
     hard_html = ("".join(
         f'<div class="row"><span class="hard">{_html.escape(h.path)}:{h.line}</span> '
@@ -269,6 +314,7 @@ def _dash_html(path, counts, plan, hard, stats):
 </div>
 {savings_section}
 <h2>Providers found</h2>{rows or '<div class="empty">no AI calls found</div>'}
+<h2>Which files make API calls (and where)</h2>{files_html}
 <h2>Routing — set these to send calls through Brevitas</h2><pre>{_html.escape(env_block)}</pre>
 <h2>Hardcoded URLs (need --auto or a manual edit)</h2>{hard_html}
 </div></body></html>"""
@@ -303,7 +349,8 @@ def dash_cmd(path: str, target: str, api: str, api_key: str, open_: bool) -> Non
             pass  # backend not running → scan-only view
 
     out = Path(tempfile.gettempdir()) / "brevitas_dashboard.html"
-    out.write_text(_dash_html(path, counts, plan, hard, stats), encoding="utf-8")
+    out.write_text(_dash_html(path, counts, plan, hard, stats,
+                              by_file=_group_by_file(call_sites(findings))), encoding="utf-8")
     _print(f"[green]✓ Dashboard:[/green] {out}")
     if not stats:
         _print("[dim](no live savings — pass --api-key and start the backend to include them)[/dim]")
