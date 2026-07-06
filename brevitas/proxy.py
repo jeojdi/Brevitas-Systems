@@ -29,7 +29,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ._compress import compress_messages, count_messages_tokens, report_usage
 from .session import BrevitasSession
-from token_efficiency_model.optimizers.provider_cache.anthropic import apply_anthropic_cache
+# Token-aware cache placement: only marks a prefix that actually clears the model's
+# minimum cacheable length (Haiku 4.5 = 4096, Opus 4.5 = 4096, default 1024), with a
+# safety margin for tokenizer drift. The legacy optimizers/provider_cache/anthropic.py
+# placed breakpoints without ever counting tokens, so sub-minimum markers were inert.
+from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _OPENAI_API    = "https://api.openai.com"
@@ -118,12 +122,14 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     session = _session_for(f"ant:{api_key}")
 
     compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=body.get("system", "")
+        messages, session, task=body.get("system", ""), lossless=True
     )
     body["messages"] = compressed
 
-    # Apply Anthropic-specific cache_control breakpoints for ephemeral caching
-    body = apply_anthropic_cache(body)
+    # Apply Anthropic-specific cache_control breakpoints for ephemeral caching.
+    # Mutates `body` in place and returns a CachePlan (which prefix/how many
+    # breakpoints actually cleared the model minimum) — keep it for observability.
+    cache_plan = apply_anthropic_cache(body)
 
     headers = _passthrough_headers(request, "anthropic")
     is_stream = body.get("stream", False)
@@ -158,8 +164,14 @@ async def proxy_anthropic_messages(request: Request) -> Any:
 
 # ── OpenAI: POST /v1/chat/completions ────────────────────────────────────────
 
+# The OpenAI SDK appends `/chat/completions` to its base_url. So base_url
+# `…/openai` → `/openai/chat/completions` and bare `…` → `/chat/completions`.
+# Register all suffix variants so any documented OPENAI_BASE_URL value routes
+# here instead of silently 404-ing (a call that bypasses Brevitas = lost savings).
 @proxy_app.post("/openai/v1/chat/completions")
+@proxy_app.post("/openai/chat/completions")
 @proxy_app.post("/v1/chat/completions")
+@proxy_app.post("/chat/completions")
 async def proxy_openai_chat(request: Request) -> Any:
     body = await request.json()
     messages: list[dict] = body.get("messages", [])
@@ -170,7 +182,7 @@ async def proxy_openai_chat(request: Request) -> Any:
     system_msgs = [m["content"] for m in messages if m.get("role") == "system"]
     task = system_msgs[0] if system_msgs else ""
     compressed, baseline, compressed_tok = compress_messages(
-        messages, session, task=task
+        messages, session, task=task, lossless=True
     )
     body["messages"] = compressed
 

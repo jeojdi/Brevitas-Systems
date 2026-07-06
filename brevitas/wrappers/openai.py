@@ -34,6 +34,7 @@ class _BrevitasCompletions:
             pipeline=labels["pipeline"],
             agent=labels["agent"],
             run_id=labels["run_id"],
+            lossless=True,
         )
         response = self._orig.create(messages=compressed, model=model, **kwargs)
         response_text = ""

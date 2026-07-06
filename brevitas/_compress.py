@@ -8,6 +8,7 @@ import httpx
 
 from .config import get as _cfg
 from .session import BrevitasSession
+from token_efficiency_model.agent_communication_compression.compressor import CommunicationCompressor
 
 try:
     import tiktoken
@@ -42,6 +43,7 @@ def compress_messages(
     pipeline: str = "",
     agent: str = "",
     run_id: str = "",
+    lossless: bool = False,  # every shipped caller (proxy + wrappers) passes lossless=True
 ) -> tuple[list[dict], int, int]:
     """
     Compress a messages list via the Brevitas API, preserving prefix stability.
@@ -78,6 +80,25 @@ def compress_messages(
         last_text = " ".join(parts)
     else:
         return messages, baseline_tokens, baseline_tokens
+
+    # Lossless mode: drop only exact-duplicate sentences in the volatile tail.
+    # No server call, no clustering, no context pruning — no unique fact can be
+    # lost. Savings are small (only real repeats), which is the honest ceiling of
+    # lossless text trimming; the big lossless lever is provider caching (applied
+    # separately in the proxy), not this.
+    if lossless:
+        deduped, _ = CommunicationCompressor(level=0).compress_messages([last_text])
+        new_text = " ".join(deduped) if deduped else last_text
+        out_messages = []
+        for i, m in enumerate(messages):
+            if i == last_user_idx:
+                nm = dict(m)
+                nm["content"] = ([{"type": "text", "text": new_text}]
+                                 if isinstance(m.get("content"), list) else new_text)
+                out_messages.append(nm)
+            else:
+                out_messages.append(m)
+        return out_messages, baseline_tokens, count_messages_tokens(out_messages)
 
     prior = session.prior_context()
 
@@ -172,3 +193,26 @@ def report_usage(
         )
     except Exception:
         pass  # billing reporting is best-effort; never break the user's pipeline
+
+
+def _demo() -> None:
+    """Lossless proxy path must never drop a fact. Run: python -m brevitas._compress"""
+    from . import configure
+    configure(api_key="local", base_url="http://localhost:8000")
+    msgs = [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content":
+            "The Q3 budget is 47000 dollars. The Q3 budget deadline is March 3. "
+            "The Q3 budget owner is Alice Chen. The Q3 budget region is EMEA. "
+            "The Q3 budget region is EMEA."},  # one exact repeat, safe to drop
+    ]
+    out, base, comp = compress_messages(msgs, BrevitasSession(), lossless=True)
+    text = out[-1]["content"]
+    for fact in ("47000", "March 3", "Alice Chen", "EMEA"):
+        assert fact in text, f"LOSSY: dropped {fact!r}"
+    assert comp <= base, (base, comp)
+    print(f"lossless proxy path ok: {base}->{comp} tok, all facts preserved")
+
+
+if __name__ == "__main__":
+    _demo()

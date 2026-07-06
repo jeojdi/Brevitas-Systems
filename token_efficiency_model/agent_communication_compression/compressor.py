@@ -16,11 +16,32 @@ class CompressionStats:
 
 class CommunicationCompressor:
     def __init__(self, level: int = 1):
-        self.level = max(1, min(level, 3))
+        # level 0 = lossless (whitespace + exact-duplicate sentence removal only).
+        # levels 1-3 cluster near-duplicate sentences and keep one per cluster,
+        # which can DROP distinct facts that share vocabulary — that is lossy.
+        self.level = max(0, min(level, 3))
 
     def compress_messages(self, messages: List[str]) -> Tuple[List[str], CompressionStats]:
         cleaned = [normalize_whitespace(msg) for msg in messages if msg and msg.strip()]
         original_tokens = estimate_tokens_many(cleaned)
+
+        # Lossless path: keep every sentence, drop only exact (case-insensitive)
+        # repeats. No clustering, so no unique fact can be lost.
+        if self.level == 0:
+            out, seen, removed = [], set(), 0
+            for msg in cleaned:
+                for s in split_sentences(msg):
+                    key = s.lower().strip()
+                    if key in seen:
+                        removed += 1
+                        continue
+                    seen.add(key)
+                    out.append(s)
+            return out, CompressionStats(
+                original_tokens=original_tokens,
+                compressed_tokens=estimate_tokens_many(out),
+                removed_redundant_sentences=removed,
+            )
         # Group similar sentences across all messages to remove redundancy while preserving unique facts
         all_sentences = []
         for msg in cleaned:

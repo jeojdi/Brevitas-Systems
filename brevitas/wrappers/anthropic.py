@@ -34,6 +34,7 @@ class _BrevitasMessages:
             pipeline=labels["pipeline"],
             agent=labels["agent"],
             run_id=labels["run_id"],
+            lossless=True,
         )
         response = self._orig.create(messages=compressed, model=model, **kwargs)
         # Record session context and report billing
@@ -59,6 +60,7 @@ class _BrevitasMessages:
             pipeline=labels["pipeline"],
             agent=labels["agent"],
             run_id=labels["run_id"],
+            lossless=True,
         )
         ctx = self._orig.messages.stream(messages=compressed, model=model, **kwargs)
         report_usage(_PROVIDER, model, baseline, compressed_tok, self._session,
