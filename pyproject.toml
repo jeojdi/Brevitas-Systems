@@ -25,6 +25,9 @@ dependencies = [
 # the retrieval lever's embedding model (heavy: pulls torch). Core install works without it —
 # retrieval fail-safes to full context / caching when the encoder is unavailable.
 retrieval = ["sentence-transformers>=2.2.0"]
+# semantic response cache: local embeddings for reworded-match hits (numpy already core).
+# Absent → the cache still runs exact-hash-only, no reworded matching.
+semanticcache = ["sentence-transformers>=2.2.0"]
 promptopt = ["llmlingua>=0.2.1"]
 pdf = ["pymupdf>=1.23.0"]
 anthropic = ["anthropic>=0.28.0"]
