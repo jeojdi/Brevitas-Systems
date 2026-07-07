@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "brevitas-systems"
-version = "0.1.0"
+version = "0.9.5"
 description = "Drop Brevitas between your agents — compress context, cut costs, keep quality."
 readme = "README.md"
 license = { text = "Proprietary" }
@@ -20,9 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.28.0"]
-openai    = ["openai>=1.30.0"]
-all       = ["anthropic>=0.28.0", "openai>=1.30.0"]
+anthropic     = ["anthropic>=0.28.0"]
+openai        = ["openai>=1.30.0"]
+semanticcache = ["sentence-transformers>=3", "numpy>=1.24"]
+all           = ["anthropic>=0.28.0", "openai>=1.30.0", "sentence-transformers>=3", "numpy>=1.24"]
 
 [project.scripts]
 brevitas = "brevitas.cli:main"

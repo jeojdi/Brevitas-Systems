@@ -54,4 +54,4 @@ def wrap(client, session: BrevitasSession | None = None):
 
 
 __all__ = ["configure", "get_config", "wrap", "BrevitasSession"]
-__version__ = "0.1.0"
+__version__ = "0.9.5"

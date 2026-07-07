@@ -169,10 +169,17 @@ def report_usage(
     pipeline: str = "",
     agent: str = "",
     run_id: str = "",
+    cached_tokens: int = 0,
 ) -> None:
-    """Report usage to Brevitas for billing. Fire-and-forget."""
+    """Report usage to Brevitas for billing. Fire-and-forget.
+
+    cached_tokens = provider-native prompt-cache read tokens for this call; their
+    (lossless) saving is billed even when there's no compression delta, so this
+    reports whenever there are compression savings OR cached tokens."""
     cfg = _cfg()
-    if not cfg.get("api_key") or baseline_tokens <= compressed_tokens:
+    if not cfg.get("api_key"):
+        return
+    if baseline_tokens <= compressed_tokens and cached_tokens <= 0:
         return
     try:
         httpx.post(
@@ -188,6 +195,7 @@ def report_usage(
                 "agent": agent,
                 "run_id": run_id,
                 "quality_score": session.last_quality,
+                "cached_tokens": cached_tokens,
             },
             timeout=5,
         )

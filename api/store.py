@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +16,27 @@ PROVIDER_COSTS_PER_1M: dict = {
         "o3-mini":     {"input": 1.10,  "output": 4.40},
     },
     "grok": {
-        "grok-3":      {"input": 3.00,  "output": 15.00},
-        "grok-3-mini": {"input": 0.30,  "output": 0.50},
+        # xAI Grok (api.x.ai). Figures from public pricing trackers, mid-2026 —
+        # confirm against docs.x.ai/developers/models before relying on the billed fee.
+        "grok-4":       {"input": 3.00,  "output": 15.00},
+        "grok-4-fast":  {"input": 0.20,  "output": 0.50},
+        "grok-4.1-fast":{"input": 0.20,  "output": 0.50},
+        "grok-3":       {"input": 2.00,  "output": 10.00},
+        "grok-3-mini":  {"input": 0.30,  "output": 0.50},
+    },
+    "mistral": {
+        # api.mistral.ai. Public-tracker figures, mid-2026 — confirm at mistral.ai/pricing.
+        "mistral-large-latest": {"input": 2.00, "output": 6.00},
+        "mistral-small-latest": {"input": 0.20, "output": 0.60},
+        "codestral-latest":     {"input": 0.30, "output": 0.90},
+    },
+    "google": {
+        # Gemini via Google's OpenAI-compat endpoint. Public-tracker figures, mid-2026 —
+        # confirm at ai.google.dev/pricing. (This endpoint does not report cached_tokens,
+        # so provider-cache savings aren't itemized here; our semantic cache still applies.)
+        "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+        "gemini-2.5-pro":   {"input": 1.25, "output": 10.00},
+        "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
     },
     "deepseek": {
         "deepseek-chat":     {"input": 0.27, "output": 1.10},
@@ -38,6 +58,10 @@ def infer_provider(model: str, given: str = "") -> str:
         return "deepseek"
     if m.startswith("grok") or m.startswith("groq"):
         return "grok"
+    if m.startswith(("mistral", "magistral", "ministral", "codestral", "devstral", "pixtral")):
+        return "mistral"
+    if m.startswith(("gemini", "gemma")):
+        return "google"
     if m.startswith("claude"):
         return "anthropic"
     if m.startswith("gpt") or m.startswith("o1") or m.startswith("o3"):
@@ -92,7 +116,8 @@ class UsageStore:
                     model            TEXT NOT NULL DEFAULT '',
                     cost_saved_usd   REAL NOT NULL DEFAULT 0.0,
                     brevitas_fee_usd REAL NOT NULL DEFAULT 0.0,
-                    session_id       TEXT NOT NULL DEFAULT ''
+                    session_id       TEXT NOT NULL DEFAULT '',
+                    cached_tokens    INTEGER NOT NULL DEFAULT 0
                 )
             """)
             db.execute("""
@@ -114,6 +139,7 @@ class UsageStore:
                 ("pipeline",         "TEXT NOT NULL DEFAULT ''"),
                 ("agent",            "TEXT NOT NULL DEFAULT ''"),
                 ("run_id",           "TEXT NOT NULL DEFAULT ''"),
+                ("cached_tokens",    "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 if col not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {defn}")
@@ -153,13 +179,15 @@ class UsageStore:
         pipeline: str = "",
         agent: str = "",
         run_id: str = "",
+        cached_tokens: int = 0,
     ) -> None:
         with self._conn() as db:
             db.execute(
                 "INSERT INTO usage_log "
                 "(key_hash, ts, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, "
-                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, run_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, run_id, "
+                " cached_tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key_hash,
                     datetime.now(timezone.utc).isoformat(),
@@ -175,6 +203,7 @@ class UsageStore:
                     pipeline,
                     agent,
                     run_id,
+                    int(cached_tokens),
                 ),
             )
 
@@ -417,3 +446,171 @@ class UsageStore:
             }
             for r in rows
         ]
+
+
+# ---------------------------------------------------------------------------
+# Supabase-backed store — persists keys + usage so a backend redeploy does NOT
+# wipe them (the SQLite store lives on Railway's ephemeral filesystem). Selected
+# automatically when the Supabase service-role env vars are present; otherwise the
+# SQLite UsageStore is used (local/dev). Same method surface as UsageStore.
+# ---------------------------------------------------------------------------
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class SupabaseUsageStore:
+    """UsageStore backed by Supabase Postgres via the service-role client.
+
+    Aggregations are done in Python (PostgREST has no GROUP BY), which is fine at
+    dashboard volumes and keeps the code dependency-free beyond `supabase` (already
+    used by api/mirror.py). Method signatures/return shapes match UsageStore exactly.
+    """
+
+    def __init__(self, url: str, service_key: str):
+        from supabase import create_client
+        self._c = create_client(url, service_key)
+
+    # -- keys ---------------------------------------------------------------
+    def create_key(self, key_hash: str, name: str) -> None:
+        self._c.table("api_keys").upsert(
+            {"key_hash": key_hash, "name": name, "created": _now_iso()},
+            on_conflict="key_hash",
+        ).execute()
+
+    def key_exists(self, key_hash: str) -> bool:
+        r = self._c.table("api_keys").select("key_hash").eq("key_hash", key_hash).limit(1).execute()
+        return bool(r.data)
+
+    def list_keys(self) -> list:
+        r = self._c.table("api_keys").select("name, created").order("created", desc=True).execute()
+        return [{"name": x["name"], "created": x["created"]} for x in (r.data or [])]
+
+    # -- provider config ----------------------------------------------------
+    def set_provider_config(self, key_hash: str, provider: str, provider_api_key: str, model: str) -> None:
+        self._c.table("provider_config").upsert(
+            {"key_hash": key_hash, "provider": provider,
+             "provider_api_key": provider_api_key, "model": model},
+            on_conflict="key_hash",
+        ).execute()
+
+    def get_provider_config(self, key_hash: str) -> dict | None:
+        r = self._c.table("provider_config").select(
+            "provider, provider_api_key, model").eq("key_hash", key_hash).limit(1).execute()
+        if not r.data:
+            return None
+        row = r.data[0]
+        return {"provider": row["provider"], "provider_api_key": row["provider_api_key"],
+                "model": row["model"]}
+
+    # -- usage --------------------------------------------------------------
+    def record_usage(self, key_hash: str, baseline_tokens: int, optimized_tokens: int,
+                     savings_pct: float, quality_proxy: float, provider: str = "",
+                     model: str = "", cost_saved_usd: float = 0.0, brevitas_fee_usd: float = 0.0,
+                     session_id: str = "", pipeline: str = "", agent: str = "", run_id: str = "",
+                     cached_tokens: int = 0) -> None:
+        self._c.table("usage_log").insert({
+            "key_hash": key_hash, "ts": _now_iso(),
+            "baseline_tokens": baseline_tokens, "optimized_tokens": optimized_tokens,
+            "savings_pct": round(savings_pct, 4), "quality_proxy": round(quality_proxy, 6),
+            "provider": provider, "model": model,
+            "cost_saved_usd": round(cost_saved_usd, 8), "brevitas_fee_usd": round(brevitas_fee_usd, 8),
+            "session_id": session_id, "pipeline": pipeline, "agent": agent, "run_id": run_id,
+            "cached_tokens": int(cached_tokens),
+        }).execute()
+
+    def _rows(self, key_hash: str) -> list:
+        r = self._c.table("usage_log").select("*").eq("key_hash", key_hash).execute()
+        return r.data or []
+
+    def get_stats(self, key_hash: str) -> dict:
+        rows = self._rows(key_hash)
+        n = len(rows)
+        saved = sum(x["baseline_tokens"] - x["optimized_tokens"] for x in rows)
+        base = sum(x["baseline_tokens"] for x in rows)
+        opt = sum(x["optimized_tokens"] for x in rows)
+        cost = sum(x.get("cost_saved_usd", 0) for x in rows)
+        fee = sum(x.get("brevitas_fee_usd", 0) for x in rows)
+        avg_sav = (sum(x["savings_pct"] for x in rows) / n) if n else 0
+        avg_q = (sum(x.get("quality_proxy", 0) for x in rows) / n) if n else 0
+
+        history = sorted(rows, key=lambda x: x["ts"], reverse=True)[:50]
+        by_month: dict = {}
+        for x in rows:
+            m = (x["ts"] or "")[:7]
+            b = by_month.setdefault(m, {"calls": 0, "tokens_saved": 0, "cost_saved_usd": 0.0,
+                                        "brevitas_fee_usd": 0.0})
+            b["calls"] += 1
+            b["tokens_saved"] += x["baseline_tokens"] - x["optimized_tokens"]
+            b["cost_saved_usd"] += x.get("cost_saved_usd", 0)
+            b["brevitas_fee_usd"] += x.get("brevitas_fee_usd", 0)
+
+        return {
+            "total_calls": n,
+            "total_tokens_saved": saved,
+            "avg_savings_pct": round(avg_sav, 2),
+            "avg_quality_proxy": round(avg_q, 4),
+            "total_baseline_tokens": base,
+            "total_optimized_tokens": opt,
+            "total_cost_saved_usd": round(cost, 6),
+            "total_brevitas_fee_usd": round(fee, 6),
+            "history": [
+                {"timestamp": h["ts"], "baseline_tokens": h["baseline_tokens"],
+                 "optimized_tokens": h["optimized_tokens"], "savings_pct": h["savings_pct"],
+                 "quality_proxy": h.get("quality_proxy", 0), "provider": h.get("provider", ""),
+                 "model": h.get("model", ""), "cost_saved_usd": h.get("cost_saved_usd", 0),
+                 "brevitas_fee_usd": h.get("brevitas_fee_usd", 0)}
+                for h in history
+            ],
+            "billing_by_month": [
+                {"month": m, "calls": v["calls"], "tokens_saved": v["tokens_saved"],
+                 "cost_saved_usd": round(v["cost_saved_usd"], 6),
+                 "brevitas_fee_usd": round(v["brevitas_fee_usd"], 6)}
+                for m, v in sorted(by_month.items(), reverse=True)[:12]
+            ],
+            "by_pipeline": self.get_stats_by_pipeline(key_hash),
+            "by_agent": self.get_stats_by_agent(key_hash),
+        }
+
+    def _group(self, rows: list, field: str) -> list:
+        groups: dict = {}
+        for x in rows:
+            k = x.get(field) or ""
+            g = groups.setdefault(k, {"calls": 0, "tokens_saved": 0, "sav": 0.0, "q": 0.0,
+                                      "cost": 0.0, "fee": 0.0})
+            g["calls"] += 1
+            g["tokens_saved"] += x["baseline_tokens"] - x["optimized_tokens"]
+            g["sav"] += x["savings_pct"]
+            g["q"] += x.get("quality_proxy", 0)
+            g["cost"] += x.get("cost_saved_usd", 0)
+            g["fee"] += x.get("brevitas_fee_usd", 0)
+        out = []
+        for k, g in groups.items():
+            c = g["calls"] or 1
+            out.append({field: k, "calls": g["calls"], "tokens_saved": g["tokens_saved"],
+                        "avg_savings_pct": round(g["sav"] / c, 2), "avg_quality": round(g["q"] / c, 4),
+                        "cost_saved_usd": round(g["cost"], 6), "brevitas_fee_usd": round(g["fee"], 6)})
+        return sorted(out, key=lambda r: r["tokens_saved"], reverse=True)
+
+    def get_stats_by_pipeline(self, key_hash: str, start: str = "", end: str = "") -> list:
+        return self._group(self._rows(key_hash), "pipeline")
+
+    def get_stats_by_agent(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        rows = [x for x in self._rows(key_hash) if not pipeline or x.get("pipeline") == pipeline]
+        return self._group(rows, "agent")
+
+    def get_stats_by_run(self, key_hash: str, pipeline: str = "", start: str = "", end: str = "") -> list:
+        rows = [x for x in self._rows(key_hash) if not pipeline or x.get("pipeline") == pipeline]
+        return self._group(rows, "run_id")
+
+
+def make_store():
+    """Return a persistent Supabase store when service-role creds are configured,
+    else the local SQLite UsageStore. Falls back to SQLite if the client can't init."""
+    url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if url and key:
+        try:
+            return SupabaseUsageStore(url, key)
+        except Exception:
+            pass
+    return UsageStore()

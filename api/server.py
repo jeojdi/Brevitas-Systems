@@ -22,8 +22,9 @@ from typing import List, Optional
 
 from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
 from token_efficiency_model.common.metrics import estimate_tokens_many
+from token_efficiency_model.lossless.provider_cache import rates_for
 from .auth import generate_api_key, hash_key
-from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M, infer_provider
+from .store import UsageStore, make_store, cost_for_tokens, PROVIDER_COSTS_PER_1M, infer_provider
 from .mirror import mirror_to_supabase
 
 # ── Supabase Mirror ──────────────────────────────────────────────────────────
@@ -205,7 +206,7 @@ async def _check_body_size(request: Request, call_next):
     return await call_next(request)
 
 
-_store = UsageStore()
+_store = make_store()  # Supabase-backed when service-role env is set; SQLite otherwise
 _pipelines: dict = {}
 
 
@@ -527,6 +528,10 @@ class UsageReportRequest(BaseModel):
     pipeline:         str   = Field(default="", max_length=100)
     agent:            str   = Field(default="", max_length=100)
     run_id:           str   = Field(default="", max_length=128)
+    # Provider-native prompt-cache read tokens for this call (input tokens the provider
+    # served from its own cache at a discount). Their saving is LOSSLESS — same tokens,
+    # cheaper — so it is billed ungated, independent of the compression quality gate.
+    cached_tokens:    int   = Field(default=0, ge=0)
 
 
 @app.post("/v1/usage")
@@ -545,16 +550,26 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
     quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
 
     if quality_verified:
-        # Quality gate passed: bill the full savings
+        # Quality gate passed: bill the full compression savings
         cost_saved = cost_for_tokens(eff_provider, body.model, tokens_saved)
-        fee = round(cost_saved * 0.10, 8)
         quality_status = "verified"
     else:
-        # Quality not verified or below floor: don't bill savings
+        # Quality not verified or below floor: don't bill compression savings
         cost_saved = 0.0
-        fee = 0.0
         quality_status = "unverified" if body.quality_score is None else "failed"
         tokens_saved = 0  # Don't report token savings if quality fails
+
+    # Provider-native prompt-cache savings are LOSSLESS (the provider served identical
+    # tokens from its cache at a discount), so they are billed regardless of the
+    # compression quality gate. cached_tokens were billed at cache_read × input price
+    # instead of 1× → the saving is cached_tokens × (1 − cache_read_ratio), priced at
+    # the model's input rate.
+    if body.cached_tokens > 0:
+        read_ratio = rates_for(eff_provider, body.model).get("cache_read", 0.5)
+        cache_saved_tokens = round(body.cached_tokens * (1.0 - read_ratio))
+        cost_saved += cost_for_tokens(eff_provider, body.model, cache_saved_tokens)
+
+    fee = round(cost_saved * 0.10, 8)
 
     # Use real quality score if provided, else fallback to 1.0 for legacy compatibility
     actual_quality = body.quality_score if body.quality_score is not None else 1.0
@@ -573,12 +588,14 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
         pipeline=body.pipeline,
         agent=body.agent,
         run_id=body.run_id,
+        cached_tokens=body.cached_tokens,
     )
     return {
         "tokens_saved": tokens_saved,
         "savings_pct": savings_pct if quality_verified else 0.0,
         "cost_saved_usd": round(cost_saved, 6),
         "brevitas_fee_usd": round(fee, 6),
+        "cached_tokens": body.cached_tokens,
         "quality_score": actual_quality,
         "quality_status": quality_status,
     }

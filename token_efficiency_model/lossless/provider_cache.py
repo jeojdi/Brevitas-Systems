@@ -302,7 +302,11 @@ _RATES = {
     "deepseek":  {"cache_read": 0.259, "cache_write": 1.0, "output": 4.07},
     "openai":    {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0},
     "anthropic": {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0},
-    "groq":      {"cache_read": 1.00,  "cache_write": 1.0, "output": 4.0},
+    "groq":      {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0},   # 50% cache-hit discount (docs)
+    # Mistral cache reads bill at 10% of base input (docs-verified). output ratio is a
+    # generic 4x placeholder (per-model output price not itemized here); only cache_read
+    # feeds billing, so the placeholder doesn't affect billed savings.
+    "mistral":   {"cache_read": 0.10,  "cache_write": 1.0, "output": 4.0},
 }
 _DEFAULT_RATES = {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}
 
