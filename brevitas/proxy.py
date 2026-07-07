@@ -398,7 +398,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                                      pipeline=fleet_pipe, model=model)
                     _state_save()
                     report_usage("anthropic", model, int(s.uncached_cost), int(s.actual_cost), session,
-                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
+                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
+                                 usage_raw=usage, strategy="native_cache")
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 
@@ -498,7 +499,8 @@ async def proxy_openai_chat(request: Request) -> Any:
                                      pipeline=fleet_pipe, model=model)
                     _state_save()
                     report_usage(provider, model, int(s.uncached_cost), int(s.actual_cost), session,
-                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"])
+                                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
+                                 usage_raw=usage, strategy="native_cache")
             session.advance()
             return JSONResponse(content=data, status_code=resp.status_code)
 

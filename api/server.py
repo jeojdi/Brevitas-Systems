@@ -21,7 +21,7 @@ from slowapi.errors import RateLimitExceeded
 from typing import List, Optional
 
 from token_efficiency_model.lossless.api_adapter import retrieval_select
-from token_efficiency_model.lossless.provider_cache import count_tokens
+from token_efficiency_model.lossless.provider_cache import count_tokens, savings_from_usage
 
 
 def estimate_tokens_many(chunks) -> int:
@@ -453,8 +453,15 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             output_tokens = msg_tokens + sel["optimized_tokens"]
             actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
+            # Carry the same fields the dashboard's compression card reads, so the token
+            # bar + savings + messages/context all populate live (not just on `done`).
+            # quality_proxy stays None on this lossless path — never fake a quality number.
             event_queue.put({"stage": "compressed", "selected": len(sel["selected_context"]),
-                             "savings_pct": actual_savings, "fallback": sel["fallback_applied"]})
+                             "baseline_tokens": baseline_tokens, "optimized_tokens": output_tokens,
+                             "savings_pct": actual_savings, "quality_proxy": None,
+                             "compressed_messages": body.messages,
+                             "pruned_context": sel["selected_context"],
+                             "fallback": sel["fallback_applied"]})
 
             _store.record_usage(
                 key_hash=kh,
@@ -537,6 +544,16 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
     tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
     savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
 
+    # Lever 2 visibility: pull the provider's real prompt-cache read count out of the
+    # verbatim usage receipt so it lands in the cached_tokens column (else it's 0 and
+    # native caching looks like it never fired). Best-effort — never break reporting.
+    cached_tokens = 0
+    if body.usage_raw:
+        try:
+            cached_tokens = int(savings_from_usage(body.usage_raw, body.provider, body.model).cached_tokens)
+        except Exception:
+            cached_tokens = 0
+
     # Only bill savings if quality passes the gate (unverified ⇒ $0, always)
     quality_floor = 0.8  # Default floor; configurable per customer
     quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
@@ -583,6 +600,7 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
         usage_raw=json.dumps(body.usage_raw) if body.usage_raw else "",
         quality_status=quality_status,
         strategy=body.strategy,
+        cached_tokens=cached_tokens,
     )
     return {
         "tokens_saved": tokens_saved if quality_status == "verified" else 0,

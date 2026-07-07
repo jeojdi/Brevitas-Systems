@@ -363,7 +363,9 @@ def compress(messages, prior_context, task=""):
                 </div>
                 <div>
                   <p className="font-mono text-3xl font-medium text-brand-teal tabular-nums">
-                    {(compressed.quality_proxy * 100).toFixed(1)}%
+                    {compressed.quality_proxy != null
+                      ? `${(compressed.quality_proxy * 100).toFixed(1)}%`
+                      : 'lossless'}
                   </p>
                   <p className="annotation mt-0.5">// context retained</p>
                 </div>

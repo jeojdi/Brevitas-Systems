@@ -120,6 +120,8 @@ class UsageStore:
                 ("usage_raw",        "TEXT NOT NULL DEFAULT ''"),
                 ("quality_status",   "TEXT NOT NULL DEFAULT ''"),
                 ("strategy",         "TEXT NOT NULL DEFAULT ''"),
+                # provider-native prompt-cache reads (lever 2); parsed from usage_raw
+                ("cached_tokens",    "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 if col not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {defn}")
@@ -175,14 +177,15 @@ class UsageStore:
         usage_raw: str = "",
         quality_status: str = "",
         strategy: str = "",
+        cached_tokens: int = 0,
     ) -> None:
         with self._conn() as db:
             db.execute(
                 "INSERT INTO usage_log "
                 "(key_hash, ts, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, "
                 " provider, model, cost_saved_usd, brevitas_fee_usd, session_id, pipeline, agent, "
-                " run_id, request_id, usage_raw, quality_status, strategy) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " run_id, request_id, usage_raw, quality_status, strategy, cached_tokens) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     key_hash,
                     datetime.now(timezone.utc).isoformat(),
@@ -202,6 +205,7 @@ class UsageStore:
                     usage_raw,
                     quality_status,
                     strategy,
+                    int(cached_tokens or 0),
                 ),
             )
 

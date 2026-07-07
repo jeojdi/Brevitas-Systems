@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brevitas-systems"
-version = "0.9.6"
+version = "0.9.7"
 description = "Lossless token savings + per-pipeline/agent tracking between your agents and the model."
 readme = "README.md"
 license = { text = "Proprietary" }
@@ -22,9 +22,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# the retrieval lever's embedding model (heavy: pulls torch). Core install works without it —
-# retrieval fail-safes to full context / caching when the encoder is unavailable.
-retrieval = ["sentence-transformers>=2.2.0"]
+# the retrieval lever's embedding model (ONNX MiniLM via fastembed — no torch). Core install
+# works without it — retrieval fail-safes to full context / caching when the encoder is absent.
+retrieval = ["fastembed>=0.3.0"]
 # semantic response cache: local embeddings for reworded-match hits (numpy already core).
 # Absent → the cache still runs exact-hash-only, no reworded matching.
 semanticcache = ["sentence-transformers>=2.2.0"]
