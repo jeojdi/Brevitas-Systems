@@ -39,14 +39,21 @@ def _get_encoder():
 
     _ENCODER_LAST_TRIED = now
     try:
-        from sentence_transformers import SentenceTransformer
+        import numpy as np
+        from fastembed import TextEmbedding
 
-        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        # ONNX MiniLM — same 384-dim embeddings as sentence-transformers, without torch
+        # (keeps the API image light enough to run on a standard container).
+        model = TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")
 
         class _Enc:
             def encode(self, texts, normalize_embeddings=True):
-                return model.encode(texts, normalize_embeddings=normalize_embeddings,
-                                    show_progress_bar=False, batch_size=64)
+                single = isinstance(texts, str)
+                docs = [texts] if single else list(texts)
+                vecs = np.asarray(list(model.embed(docs)), dtype=np.float32)
+                if normalize_embeddings:
+                    vecs = vecs / np.clip(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12, None)
+                return vecs[0] if single else vecs
 
         _ENCODER = _Enc()
     except Exception:

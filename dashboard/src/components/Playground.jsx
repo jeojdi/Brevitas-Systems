@@ -86,7 +86,7 @@ function StageCard({ children, fade = true }) {
 }
 
 export default function Playground({ apiKey }) {
-  const [task, setTask]                    = usePersisted('task', 'Write a Python sort utility function')
+  const [task, setTask]                    = usePersisted('task', 'Implement a Redis-backed rate limiter for the API gateway')
   const [messages, setMessages]            = usePersisted('messages', DEMO_MESSAGES)
   const [context, setContext]              = usePersisted('context', DEMO_CONTEXT)
   const [complexity, setComplexity]        = usePersisted('complexity', 0.5)
