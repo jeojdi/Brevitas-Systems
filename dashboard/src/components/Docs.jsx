@@ -71,12 +71,13 @@ function CodeBlock({ lang, code }) {
 const SDK_NAV = [
   { id: 'sdk-install',     label: 'Install' },
   { id: 'sdk-auth',        label: 'Authentication' },
-  { id: 'sdk-basic',       label: 'Basic usage' },
-  { id: 'sdk-optimize',    label: 'optimize() params' },
-  { id: 'sdk-run',         label: 'pipeline.run() params' },
-  { id: 'sdk-result',      label: 'PipelineResult' },
-  { id: 'sdk-multiturn',   label: 'Multi-turn' },
-  { id: 'sdk-langchain',   label: 'LangChain / custom' },
+  { id: 'sdk-basic',       label: 'Wrap a client' },
+  { id: 'sdk-proxy',       label: 'Zero-code proxy' },
+  { id: 'sdk-configure',   label: 'configure() params' },
+  { id: 'sdk-wrap',        label: 'wrap() params' },
+  { id: 'sdk-cli',         label: 'CLI' },
+  { id: 'sdk-multiturn',   label: 'Multi-turn sessions' },
+  { id: 'sdk-frameworks',  label: 'Frameworks' },
 ]
 
 const API_NAV = [
@@ -111,19 +112,20 @@ function PythonSDKDocs() {
             brevitas-systems
           </h2>
           <p className="text-brand-muted dark:text-brand-dark-muted text-base leading-relaxed max-w-xl">
-            Optimize multi-agent pipelines by reducing token usage across every turn — without changing your agents or prompts.
-            Wrap your pipeline with <code className="font-mono text-brand-blue text-sm">optimize()</code> and Brevitas handles the rest.
+            Cut token cost on every model call — without changing your prompts. Wrap your existing
+            OpenAI or Anthropic client with <code className="font-mono text-brand-blue text-sm">brevitas.wrap()</code>,
+            or route through the zero-code proxy and change nothing at all.
           </p>
         </div>
 
         <Section id="sdk-install" title="Install">
-          <CodeBlock lang="bash" code={`pip install brevitas-systems`} />
+          <CodeBlock lang="bash" code={`pip install brevitas-systems==0.9.5`} />
         </Section>
 
         <Section id="sdk-auth" title="Authentication">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             Set your API key as an environment variable (recommended), or pass it directly in code.
-            To get an API key, <a href="mailto:contact@brevitas.systems" className="text-brand-blue hover:underline">contact us</a>.
+            To get an API key, <a href="mailto:contact@brevitassystems.com" className="text-brand-blue hover:underline">contact us</a>.
           </p>
           <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here`} />
           <CodeBlock lang="python" code={`# or configure in code
@@ -131,89 +133,131 @@ from brevitas import configure
 configure(api_key="bvt_your_key_here")`} />
         </Section>
 
-        <Section id="sdk-basic" title="Basic usage">
+        <Section id="sdk-basic" title="Wrap a client">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Pass a list of agent callables to <code className="font-mono text-brand-blue text-xs">optimize()</code>.
-            Each agent receives the previous agent's output as its input. Brevitas compresses, prunes,
-            and routes between turns — your agent code is unchanged.
+            Pass your existing <code className="font-mono text-brand-blue text-xs">openai.OpenAI</code> or{' '}
+            <code className="font-mono text-brand-blue text-xs">anthropic.Anthropic</code> client to{' '}
+            <code className="font-mono text-brand-blue text-xs">brevitas.wrap()</code>. You get a drop-in
+            replacement that compresses + tracks every call. Your prompts and provider are unchanged.
           </p>
-          <CodeBlock lang="python" code={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
+          <CodeBlock lang="python" code={`import openai, brevitas
 
-pipeline = optimize([architect, builder, reviewer])
-result = pipeline.run("Build a REST API with auth and rate limiting")
+brevitas.configure(api_key="bvt_your_key_here")
+client = brevitas.wrap(openai.OpenAI())   # reads OPENAI_API_KEY from env
 
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.
-print(result.model_response)
-print(f"{result.savings_pct:.0f}% tokens saved")`} />
+resp = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Summarize the Q3 report"}],
+)
+print(resp.choices[0].message.content)`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Anthropic works the same way:
+          </p>
+          <CodeBlock lang="python" code={`import anthropic, brevitas
+
+brevitas.configure(api_key="bvt_your_key_here")
+client = brevitas.wrap(anthropic.Anthropic())
+
+resp = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Summarize the Q3 report"}],
+)
+print(resp.content[0].text)`} />
         </Section>
 
-        <Section id="sdk-optimize" title="optimize() parameters">
+        <Section id="sdk-proxy" title="Zero-code proxy">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Don't want to touch code at all? Start the local proxy and point your provider's base URL at it.
+            Your existing code runs unchanged — every call is routed through Brevitas.
+          </p>
+          <CodeBlock lang="bash" code={`brevitas start --api-key bvt_your_key_here --port 4242
+
+export OPENAI_BASE_URL=http://localhost:4242
+export ANTHROPIC_BASE_URL=http://localhost:4242
+# now run your app as usual`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Or let <code className="font-mono text-brand-blue text-xs">brevitas init</code> find your call
+            sites and wire either path in for you.
+          </p>
+        </Section>
+
+        <Section id="sdk-configure" title="configure() parameters">
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <FieldHead />
               <tbody>
-                <Field name="agents"            type="list"   defaultVal="required">Agent callables. Each receives the prior agent's output.</Field>
-                <Field name="api_key"           type="str"    defaultVal="env var">Your <code className="font-mono text-brand-blue text-xs">bvt_</code> prefixed Brevitas key.</Field>
-                <Field name="quality_floor"     type="float"  defaultVal="0.98">Minimum quality score (0–1) before compression stops.</Field>
-                <Field name="savings_target"    type="float"  defaultVal="59.0">Token savings % to target per turn.</Field>
-                <Field name="compression_level" type="int"    defaultVal="2">Message compression aggressiveness (1–3).</Field>
-                <Field name="prune_budget"      type="int"    defaultVal="5">Max context chunks retained per turn.</Field>
-                <Field name="protocol_mode"     type="str"    defaultVal='"compact"'>Wire format: <code className="font-mono text-xs">"compact"</code> or <code className="font-mono text-xs">"verbose"</code>.</Field>
-                <Field name="delta_mode"        type="str"    defaultVal='"on"'>Send only changes between turns: <code className="font-mono text-xs">"on"</code> or <code className="font-mono text-xs">"off"</code>.</Field>
+                <Field name="api_key"  type="str"  defaultVal="env var">Your <code className="font-mono text-brand-blue text-xs">bvt_</code> prefixed Brevitas key. Falls back to <code className="font-mono text-xs">BREVITAS_API_KEY</code>.</Field>
+                <Field name="base_url" type="str"  defaultVal='"api.brevitassystems.com"'>Compression engine URL. Point at a local engine for self-hosting.</Field>
+                <Field name="enabled"  type="bool" defaultVal="True">Toggle compression off without removing <code className="font-mono text-xs">wrap()</code> from your code.</Field>
+                <Field name="timeout"  type="int"  defaultVal="30">Per-request timeout in seconds.</Field>
               </tbody>
             </table>
           </div>
         </Section>
 
-        <Section id="sdk-run" title="pipeline.run() parameters">
+        <Section id="sdk-wrap" title="wrap() parameters">
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <FieldHead />
               <tbody>
-                <Field name="task"               type="str"        defaultVal="required">Task description / prompt.</Field>
-                <Field name="incoming_messages"  type="list[str]"  defaultVal="[]">Additional messages to include in this turn.</Field>
-                <Field name="complexity"         type="float"      defaultVal="0.5">Task complexity hint (0–1). Higher values retain more context.</Field>
-                <Field name="urgency"            type="float"      defaultVal="0.5">Urgency hint (0–1). Higher values favor recency over breadth.</Field>
-                <Field name="task_id"            type="str"        defaultVal='"brevitas-task"'>Stable ID for delta caching across turns.</Field>
+                <Field name="client"  type="OpenAI | Anthropic" defaultVal="required">An <code className="font-mono text-xs">openai.OpenAI</code> or <code className="font-mono text-xs">anthropic.Anthropic</code> instance. The type is auto-detected.</Field>
+                <Field name="session" type="BrevitasSession"    defaultVal="None">Reuse a session to track multi-hop context across calls. A new one is created if omitted.</Field>
               </tbody>
             </table>
           </div>
         </Section>
 
-        <Section id="sdk-result" title="PipelineResult fields">
-          <CodeBlock lang="python" code={`result.model_response      # str   — concatenated agent outputs
-result.savings_pct         # float — % tokens saved vs. baseline
-result.baseline_tokens     # int   — unoptimized token count
-result.optimized_tokens    # int   — actual token count sent
-result.quality_proxy       # float — estimated quality retention (0–1)
-result.routed_model        # str   — model the router selected
-result.debug               # dict  — compression, sampling, pruning internals`} />
+        <Section id="sdk-cli" title="CLI">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            The <code className="font-mono text-brand-blue text-xs">pip install</code> puts a{' '}
+            <code className="font-mono text-brand-blue text-xs">brevitas</code> command on your PATH.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <FieldHead />
+              <tbody>
+                <Field name="brevitas init"        type="cmd" defaultVal="—">Find your LLM call sites, wire Brevitas in, and start saving.</Field>
+                <Field name="brevitas scan [path]"  type="cmd" defaultVal="—">List every LLM API call in a codebase. Add <code className="font-mono text-xs">--json</code> for machine output.</Field>
+                <Field name="brevitas apply [path]" type="cmd" defaultVal="—">Rewrite detected clients to use <code className="font-mono text-xs">brevitas.wrap()</code>. Dry-run unless <code className="font-mono text-xs">-w/--write</code>.</Field>
+                <Field name="brevitas start"        type="cmd" defaultVal="—">Start the local zero-code proxy.</Field>
+                <Field name="brevitas config KEY VALUE" type="cmd" defaultVal="—">Set <code className="font-mono text-xs">api-key</code> or <code className="font-mono text-xs">base-url</code> locally.</Field>
+                <Field name="brevitas status"       type="cmd" defaultVal="—">Check connectivity to the Brevitas API.</Field>
+              </tbody>
+            </table>
+          </div>
         </Section>
 
-        <Section id="sdk-multiturn" title="Multi-turn example">
+        <Section id="sdk-multiturn" title="Multi-turn sessions">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            <code className="font-mono text-brand-blue text-xs">pipeline.run()</code> is stateful — context from each call
-            is automatically retained and pruned for the next.
+            A wrapped client is stateful across calls — pass a shared{' '}
+            <code className="font-mono text-brand-blue text-xs">BrevitasSession</code> so context from
+            earlier hops is tracked and pruned for later ones.
           </p>
-          <CodeBlock lang="python" code={`pipeline = optimize([architect, builder, reviewer])
+          <CodeBlock lang="python" code={`import openai
+from brevitas import wrap, configure, BrevitasSession
 
-r1 = pipeline.run("Design the database schema")
-r2 = pipeline.run("Now implement the API endpoints")
-r3 = pipeline.run("Write tests for the auth layer")
-# Each turn reuses compressed context from the previous turns.`} />
+configure(api_key="bvt_your_key_here")
+session = BrevitasSession()
+client = wrap(openai.OpenAI(), session=session)
+
+# reuse the same client across turns
+client.chat.completions.create(model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Design the database schema"}])
+client.chat.completions.create(model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Now implement the API endpoints"}])
+# each turn reuses compressed context from the previous turns`} />
         </Section>
 
-        <Section id="sdk-langchain" title="LangChain / custom agent objects">
+        <Section id="sdk-frameworks" title="Frameworks (LangChain, CrewAI, …)">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Any object with a <code className="font-mono text-brand-blue text-xs">run()</code> or{' '}
-            <code className="font-mono text-brand-blue text-xs">invoke()</code> method works as an agent.
+            Frameworks build their own provider clients internally, so the cleanest integration is the
+            zero-code proxy — start it, point the base URL at it, and every framework call routes through
+            Brevitas with no code change.
           </p>
-          <CodeBlock lang="python" code={`from langchain.agents import AgentExecutor
-from brevitas import optimize
-
-pipeline = optimize([agent_executor_1, agent_executor_2])
-result = pipeline.run("Summarize Q3 earnings and flag risks")`} />
+          <CodeBlock lang="bash" code={`brevitas start --api-key bvt_your_key_here
+export OPENAI_BASE_URL=http://localhost:4242
+# LangChain / CrewAI / LlamaIndex now route through Brevitas`} />
         </Section>
       </div>
     </div>
@@ -221,7 +265,7 @@ result = pipeline.run("Summarize Q3 earnings and flag risks")`} />
 }
 
 function RestAPIDocs() {
-  const BASE = 'https://api.brevitas.systems'
+  const BASE = 'https://api.brevitassystems.com'
 
   return (
     <div className="flex gap-12">
@@ -277,7 +321,7 @@ new_task        ─┘                            pruned_context
             <code className="font-mono text-brand-blue text-xs">/v1/providers</code> require a Brevitas API key
             in the <code className="font-mono text-brand-blue text-xs">X-API-Key</code> header.
           </p>
-          <CodeBlock lang="bash" code={`curl https://api.brevitas.systems/v1/health \\
+          <CodeBlock lang="bash" code={`curl https://api.brevitassystems.com/v1/health \\
   -H "X-API-Key: bvt_your_key_here"`} />
         </Section>
 
@@ -320,7 +364,7 @@ new_task        ─┘                            pruned_context
 }`} />
 
           <p className="annotation mt-4 mb-2">// example</p>
-          <CodeBlock lang="bash" code={`curl -X POST https://api.brevitas.systems/v1/compress \\
+          <CodeBlock lang="bash" code={`curl -X POST https://api.brevitassystems.com/v1/compress \\
   -H "X-API-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -392,7 +436,7 @@ new_task        ─┘                            pruned_context
                 </table>
               </div>
 
-              <CodeBlock lang="bash" code={`curl -X PUT https://api.brevitas.systems/v1/provider \\
+              <CodeBlock lang="bash" code={`curl -X PUT https://api.brevitassystems.com/v1/provider \\
   -H "X-API-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{"provider": "openai", "provider_api_key": "sk-...", "model": "gpt-4o-mini"}'`} />
@@ -438,51 +482,33 @@ new_task        ─┘                            pruned_context
 
         <Section id="api-example" title="End-to-end example">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            A full three-agent pipeline using the Python SDK with an Anthropic backend configured via the API.
+            Wrap an Anthropic client with the SDK, make a call, then read cumulative savings over the REST API.
           </p>
-          <CodeBlock lang="python" code={`import os
-import requests
-from brevitas import optimize
+          <CodeBlock lang="python" code={`import os, requests
+import anthropic, brevitas
 
 BREVITAS_KEY = os.environ["BREVITAS_API_KEY"]
 
-# 1. Configure your model provider once (or via dashboard)
-requests.put(
-    "https://api.brevitas.systems/v1/provider",
-    headers={"X-API-Key": BREVITAS_KEY},
-    json={
-        "provider":         "anthropic",
-        "provider_api_key": os.environ["ANTHROPIC_API_KEY"],
-        "model":            "claude-sonnet-4-6",
-    },
+# 1. Point the SDK at Brevitas
+brevitas.configure(
+    api_key=BREVITAS_KEY,
+    base_url="https://api.brevitassystems.com",
 )
 
-# 2. Define your agents (plain callables)
-def architect(task: str) -> str:
-    return f"Architecture plan for: {task}"
+# 2. Wrap your existing provider client — nothing else changes
+client = brevitas.wrap(anthropic.Anthropic())   # reads ANTHROPIC_API_KEY
 
-def builder(plan: str) -> str:
-    return f"Implementation of: {plan}"
-
-def reviewer(code: str) -> str:
-    return f"Review complete. Issues found: none. {code[:40]}..."
-
-# 3. Wrap with Brevitas
-pipeline = optimize([architect, builder, reviewer])
-
-# 4. Run
-result = pipeline.run(
-    "Build a rate-limited REST API with JWT auth",
-    complexity=0.8,
-    urgency=0.4,
+# 3. Call as usual; the request is compressed + tracked automatically
+resp = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Build a rate-limited REST API with JWT auth"}],
 )
+print(resp.content[0].text)
 
-print(result.model_response)
-print(f"Saved {result.savings_pct:.0f}% of tokens this turn")
-
-# 5. Check cumulative usage
+# 4. Check cumulative usage over the REST API
 stats = requests.get(
-    "https://api.brevitas.systems/v1/stats",
+    "https://api.brevitassystems.com/v1/stats",
     headers={"X-API-Key": BREVITAS_KEY},
 ).json()
 print(f"Total tokens saved: {stats['total_tokens_saved']:,}")`} />

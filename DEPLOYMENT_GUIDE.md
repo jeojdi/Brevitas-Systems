@@ -62,7 +62,7 @@ git push origin main
    Click "Environment Variables" and add:
 
    ```
-   NEXT_PUBLIC_SUPABASE_URL = https://ctlhawahnwcfzdikrcxr.supabase.co
+   NEXT_PUBLIC_SUPABASE_URL = https://wyfzmfnswtzyhwbltbpy.supabase.co
    NEXT_PUBLIC_SUPABASE_ANON_KEY = [your anon key]
    SUPABASE_SERVICE_ROLE_KEY = [your service role key - keep secret!]
    ```

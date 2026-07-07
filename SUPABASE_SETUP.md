@@ -6,7 +6,7 @@ Follow these steps to connect your Brevitas Systems website to Supabase:
 
 ### Step 1: Get Your Supabase API Keys 🔑
 
-1. Go to your Supabase dashboard: https://supabase.com/dashboard/project/ctlhawahnwcfzdikrcxr
+1. Go to your Supabase dashboard: https://supabase.com/dashboard/project/wyfzmfnswtzyhwbltbpy
 2. Click on **"API Keys"** (key icon) in the left sidebar
 3. Copy the **"anon public"** key
 4. Open `.env.local` file in your project

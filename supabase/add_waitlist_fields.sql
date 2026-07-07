@@ -1,5 +1,5 @@
 -- Migration: align waitlist table with the current waitlist form fields.
--- Run this in Supabase → SQL Editor on project ctlhawahnwcfzdikrcxr.
+-- Run this in Supabase → SQL Editor on project wyfzmfnswtzyhwbltbpy.
 --
 -- Existing columns (kept): id, email, name, company, role, use_case, source,
 -- created_at, updated_at.
