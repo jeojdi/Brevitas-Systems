@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from copy import deepcopy
 from typing import Any
 
 import httpx
@@ -95,6 +96,74 @@ _GROQ_API      = "https://api.groq.com/openai"
 
 # Allowlist of valid upstream URLs for SSRF protection
 _ALLOWED_UPSTREAMS = {_OPENAI_API, _DEEPSEEK_API, _GROQ_API}
+
+
+# ── Semantic response cache ───────────────────────────────────────────────────
+# On a hit we return the stored provider response verbatim and skip the upstream call
+# (and all optimization) entirely — 100% savings on that call. This is distinct from
+# the router/engine's provider-native prompt caching (which discounts a call that still
+# happens); the semantic cache eliminates the call. Lazy singleton; any failure disables
+# it silently so the cache can NEVER break a customer's pipeline.
+# Toggle: BREVITAS_CACHE_ENABLED=false.
+_cache_singleton: Any = None
+_cache_init_done = False
+
+
+def _get_cache():
+    global _cache_singleton, _cache_init_done
+    if _cache_init_done:
+        return _cache_singleton
+    _cache_init_done = True
+    if os.getenv("BREVITAS_CACHE_ENABLED", "true").lower() == "false":
+        _cache_singleton = None
+        return None
+    try:
+        from .semantic_cache import make_semantic_cache
+        _cache_singleton = make_semantic_cache()
+    except Exception:
+        _cache_singleton = None
+    return _cache_singleton
+
+
+def _usage_tokens(data: dict, provider: str) -> tuple[int, int]:
+    """(prompt_tokens, completion_tokens) from a provider response usage object."""
+    u = (data or {}).get("usage", {}) or {}
+    if provider == "anthropic":
+        prompt = int(u.get("input_tokens", 0)) + int(u.get("cache_read_input_tokens", 0)) \
+            + int(u.get("cache_creation_input_tokens", 0))
+        return prompt, int(u.get("output_tokens", 0))
+    return int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
+
+
+def _cache_lookup(cache, body: dict, provider: str, model: str):
+    try:
+        return cache.lookup(body, provider, model)
+    except Exception:
+        return None
+
+
+def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> None:
+    try:
+        p, c = _usage_tokens(data, provider)
+        cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c)
+    except Exception:
+        pass
+
+
+def _report_cache_hit(provider: str, model: str, hit, session: BrevitasSession,
+                      labels: dict) -> None:
+    """A hit made no upstream call → the whole would-be spend is saved. Report it as
+    baseline=(prompt+completion) vs compressed=0. Priced at the model's input rate
+    server-side, so output (which costs more) is under-counted — a deliberate LOWER
+    bound that never over-bills. Quality = match confidence (1.0 exact / cosine for
+    semantic, both ≥ the 0.97 gate), so the server's quality gate bills it."""
+    baseline = int(hit.prompt_tokens) + int(hit.completion_tokens)
+    if baseline > 0:
+        session.last_quality = float(getattr(hit, "similarity", 1.0))
+        report_usage(provider, model, baseline, 0, session,
+                     pipeline=labels.get("pipeline", ""), agent=labels.get("agent", ""),
+                     run_id=labels.get("run_id", ""), strategy="semantic_cache")
+
 
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
 
@@ -254,6 +323,18 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
+    # Semantic cache: key on the ORIGINAL request (deep-copied, since optimize_request
+    # mutates `body` below and would change the key). On a hit, skip optimization AND
+    # the upstream call entirely.
+    cache = _get_cache()
+    cache_body = deepcopy(body) if cache is not None else None
+    if cache is not None:
+        hit = _cache_lookup(cache, cache_body, "anthropic", model)
+        if hit is not None:
+            _report_cache_hit("anthropic", model, hit, session, labels)
+            session.advance()
+            return JSONResponse(content=hit.response, status_code=200)
+
     # Lossless auto-route: the router picks cache_only (cache_control breakpoints) vs retrieve
     # per request, based on context repetition + observed cache behavior. Never rewrites the
     # volatile message lossily; fails safe to full context.
@@ -306,6 +387,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
+            if cache is not None and resp.status_code == 200:
+                _cache_store(cache, cache_body, "anthropic", model, data)
             # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
@@ -336,6 +419,16 @@ async def proxy_openai_chat(request: Request) -> Any:
     sess_key = f"oai:{_key_id(auth)}:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
+
+    # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
+    cache = _get_cache()
+    cache_body = deepcopy(body) if cache is not None else None
+    if cache is not None:
+        hit = _cache_lookup(cache, cache_body, provider, model)
+        if hit is not None:
+            _report_cache_hit(provider, model, hit, session, labels)
+            session.advance()
+            return JSONResponse(content=hit.response, status_code=200)
 
     # Lossless auto-route. For OpenAI/DeepSeek the cache_only path forwards the prefix
     # byte-identical (auto-cached server-side); retrieve reduces context when the router
@@ -394,6 +487,8 @@ async def proxy_openai_chat(request: Request) -> Any:
                 session.record_response(text)
             except (KeyError, IndexError):
                 pass
+            if cache is not None and resp.status_code == 200:
+                _cache_store(cache, cache_body, provider, model, data)
             # Honest savings from REAL usage + feed cache-hit rate back to the router.
             usage = data.get("usage", {})
             if usage:
