@@ -75,6 +75,14 @@ class SemanticCache:
         similarity_threshold: float = 0.97,
         max_temperature: float = 0.5,         # above this, don't cache (intentional randomness)
         default_ttl_s: int = 3600,
+        # Tenant isolation: mixed into BOTH hashes so a response is never served
+        # across identities (e.g. per Brevitas API key on a shared proxy). Empty =
+        # single-tenant local (the default). Costs nothing when unset.
+        namespace: str = "",
+        # When False, only the exact-hash layer runs (byte-identical repeats) —
+        # zero wrong-answer risk, no embedding dependency. Set True to also match
+        # reworded-but-equivalent prompts via the semantic layer.
+        semantic_enabled: bool = True,
     ):
         if db_path is None:
             db_path = os.getenv("BREVITAS_CACHE_DB") or str(
@@ -84,6 +92,8 @@ class SemanticCache:
         self.similarity_threshold = similarity_threshold
         self.max_temperature = max_temperature
         self.default_ttl_s = default_ttl_s
+        self.namespace = namespace
+        self.semantic_enabled = semantic_enabled
         self._init()
 
     # -- storage ------------------------------------------------------------
@@ -107,6 +117,11 @@ class SemanticCache:
                 )
             """)
             db.execute("CREATE INDEX IF NOT EXISTS sc_ctx ON semantic_cache (context_hash, expires_at)")
+        # Cached responses are conversation content at rest — keep the file private.
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass  # best-effort (e.g. non-local FS); never fail cache init over perms
 
     # -- keys ---------------------------------------------------------------
     @staticmethod
@@ -121,6 +136,7 @@ class SemanticCache:
         messages = body.get("messages", []) or []
         msgs = messages if include_last else messages[:-1]
         return {
+            "namespace": self.namespace,   # tenant isolation: part of both hashes
             "provider": provider,
             "model": model,
             "system": body.get("system", ""),      # Anthropic system prompt
@@ -178,8 +194,8 @@ class SemanticCache:
             self._bump(exact)
             return CacheHit("exact", json.loads(row[0]), row[1], row[2])
 
-        # Layer 2 — semantic (only if embeddings + numpy are available)
-        if np is None:
+        # Layer 2 — semantic (only if enabled AND embeddings + numpy are available)
+        if not self.semantic_enabled or np is None:
             return None
         vec = _embed.embed(self._last_user_text(body.get("messages", [])))
         if vec is None:
@@ -364,6 +380,15 @@ def _demo() -> None:
     # model isolation: identical text, different model → miss
     assert c.lookup(body, "anthropic", "claude-opus-4-8") is None, "model isolation broken"
     assert c.lookup(body, "openai", "gpt-4o") is None, "provider isolation broken"
+
+    # namespace isolation: same request under a different tenant → miss (no leak)
+    other = SemanticCache(db, namespace="tenant-B")
+    assert other.lookup(body, "anthropic", "claude-sonnet-4-6") is None, "namespace leak!"
+    other.store(body, "anthropic", "claude-sonnet-4-6", {"x": 2}, prompt_tokens=1, completion_tokens=1)
+    hitB = other.lookup(body, "anthropic", "claude-sonnet-4-6")
+    assert hitB and hitB.response == {"x": 2}, "namespaced store/lookup failed"
+    # the original (empty namespace) still sees ITS answer, not tenant-B's
+    assert c.lookup(body, "anthropic", "claude-sonnet-4-6").response == resp, "namespaces cross-contaminated"
 
     # gate: tools / stream / high temp are never cacheable
     assert not c.cacheable({"tools": [{}], "messages": []}), "tools should not cache"
