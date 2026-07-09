@@ -7,8 +7,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
 import json
+import logging
 import queue
 import threading
+import time as _time
+from contextlib import asynccontextmanager
 
 import requests as _requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -22,10 +25,47 @@ from typing import List, Optional
 
 from token_efficiency_model.lossless.api_adapter import retrieval_select
 from token_efficiency_model.lossless.provider_cache import count_tokens, savings_from_usage
+from token_efficiency_model.lossless.message_optimizer import optimize_message_text
+
+logger = logging.getLogger("brevitas.api")
+# Give the logger its own handler so compression telemetry is emitted even under uvicorn (whose
+# logging config doesn't touch the root logger, so INFO lines would otherwise be dropped).
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(os.getenv("BREVITAS_LOG_LEVEL", "INFO").upper())
+    logger.propagate = False
 
 
 def estimate_tokens_many(chunks) -> int:
     return sum(count_tokens(c) for c in chunks)
+
+
+def _lossy_enabled() -> bool:
+    """Server-side kill-switch: BREVITAS_COMPRESS_LOSSY=0 forces strict-lossless passthrough
+    for every request, regardless of the per-request `lossy` flag."""
+    return os.getenv("BREVITAS_COMPRESS_LOSSY", "1").lower() not in ("0", "false", "no")
+
+
+def _optimize_message_logged(text: str) -> dict:
+    """Compress one message and emit a single structured log line for production analysis:
+    prompt length, task type, compression ratio, semantic similarity, fallback reason, latency.
+    Returns the optimize dict augmented with `latency_ms`."""
+    t0 = _time.perf_counter()
+    mo = optimize_message_text(text)
+    latency_ms = round((_time.perf_counter() - t0) * 1000, 1)
+    before, after = mo["tokens_before"], mo["tokens_after"]
+    ratio = round(after / before, 4) if before else 1.0
+    dens = mo.get("info_density") or {}
+    logger.info(
+        "compress reason=%s roles=%s rate=%s len_tok=%d out_tok=%d ratio=%.3f "
+        "saved_pct=%.1f sim=%s info_ok=%s latency_ms=%.1f",
+        mo["reason"], ",".join(mo.get("roles") or []), mo.get("rate"), before, after, ratio,
+        round((1 - ratio) * 100, 1), mo.get("quality_sim"), dens.get("overall_ok"), latency_ms,
+    )
+    mo["latency_ms"] = latency_ms
+    return mo
 
 
 from .auth import generate_api_key, hash_key
@@ -172,7 +212,15 @@ limiter = Limiter(key_func=_rate_key)
 
 _ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 
-app = FastAPI(title="Brevitas API", version="1.0.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    # loud-once on boot if lossy compression is on but no compressor is reachable
+    _warn_if_compressor_missing()
+    yield
+
+
+app = FastAPI(title="Brevitas API", version="1.0.0", docs_url=None, redoc_url=None,
+              lifespan=_lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -298,6 +346,7 @@ class CompressRequest(BaseModel):
     urgency:           float     = Field(default=0.5, ge=0.0, le=1.0)
     compression_level: int       = Field(default=2, ge=1, le=3)
     prune_budget:      int       = Field(default=5, ge=1, le=50)
+    lossy:             bool       = Field(default=True)   # compress the volatile last message (LLMLingua-2)
     delta_mode:        str       = Field(default="off", pattern="^(off|on)$")
     wire_mode:         str       = Field(default="json", pattern="^(json|msgpack)$")
     pipeline:          str       = Field(default="", max_length=100)
@@ -326,9 +375,33 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     task = body.task or (body.messages[0][:200] if body.messages else "")
     sel = retrieval_select(task, body.prior_context, k=body.prune_budget, use_adaptive=True)
 
-    msg_tokens = estimate_tokens_many(body.messages)
-    baseline_tokens = msg_tokens + sel["baseline_tokens"]
-    output_tokens = msg_tokens + sel["optimized_tokens"]
+    # Baseline is measured against the ORIGINAL messages + full prior context.
+    baseline_msg_tokens = estimate_tokens_many(body.messages)
+
+    # Lossy lever: shrink the volatile LAST message via the remote compressor. Earlier
+    # messages stay byte-identical so the provider cache still hits the stable prefix.
+    out_messages = list(body.messages)
+    message_reason = "lossy_disabled"
+    method = "lossless"
+    quality_sim = None
+    message_rate = None
+    message_roles = None
+    info_density = None
+    message_latency_ms = 0.0
+    if body.lossy and _lossy_enabled() and out_messages:
+        mo = _optimize_message_logged(out_messages[-1])
+        out_messages[-1] = mo["text"]
+        message_reason = mo["reason"]
+        method = mo["method"]
+        quality_sim = mo.get("quality_sim")
+        message_rate = mo.get("rate")
+        message_roles = mo.get("roles")
+        info_density = mo.get("info_density")
+        message_latency_ms = mo.get("latency_ms", 0.0)
+
+    optimized_msg_tokens = estimate_tokens_many(out_messages)
+    baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
+    output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
     actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
     _store.record_usage(
@@ -337,16 +410,24 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
         optimized_tokens=output_tokens,
         savings_pct=actual_savings,
         quality_proxy=None,
+        strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
     )
 
     return {
-        "compressed_messages": body.messages,            # lossless: messages unchanged
+        "compressed_messages": out_messages,             # last message may be compressed (lossy)
         "pruned_context":      sel["selected_context"],
         "baseline_tokens":     baseline_tokens,
         "optimized_tokens":    output_tokens,
         "savings_pct":         actual_savings,
         "fallback_applied":    sel["fallback_applied"],
-        "reason":              sel["reason"],
+        "reason":              sel["reason"],            # prior-context retrieval reason
+        "message_reason":      message_reason,           # last-message optimization reason
+        "method":              method,
+        "quality_sim":         quality_sim,              # embedding cosine sim (None if unmeasured)
+        "message_rate":        message_rate,             # chosen keep-ratio (adaptive), None if n/a
+        "message_roles":       message_roles,            # prompt segment roles seen (task/context/…)
+        "info_density":        info_density,             # per-class retention + overall_ok
+        "message_latency_ms":  message_latency_ms,
     }
 
 
@@ -380,7 +461,8 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
         from token_efficiency_model.lossless.task_router import TaskCompressionRouter
         res = TaskCompressionRouter().route(body.prompt, task_hint=body.task)
         r = res.optimization
-        extra = {"task": res.task, "rate": res.rate, "protected_code_blocks": res.protected_code_blocks}
+        extra = {"task": res.task, "rate": res.rate, "protected_code_blocks": res.protected_code_blocks,
+                 "reason": res.reason, "quality_sim": res.quality_sim}
     else:
         from token_efficiency_model.lossless.prompt_optimizer import optimize_prompt as _opt
         r = _opt(body.prompt, rate=body.rate if body.rate is not None else 1.0)
@@ -448,9 +530,25 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             if cancel_event.is_set():
                 return
 
-            msg_tokens = estimate_tokens_many(body.messages)
-            baseline_tokens = msg_tokens + sel["baseline_tokens"]
-            output_tokens = msg_tokens + sel["optimized_tokens"]
+            baseline_msg_tokens = estimate_tokens_many(body.messages)
+
+            # Lossy lever: shrink only the volatile last message (see /v1/compress).
+            out_messages = list(body.messages)
+            message_reason = "lossy_disabled"
+            method = "lossless"
+            quality_sim = None
+            if body.lossy and _lossy_enabled() and out_messages:
+                mo = _optimize_message_logged(out_messages[-1])
+                out_messages[-1] = mo["text"]
+                message_reason = mo["reason"]
+                method = mo["method"]
+                quality_sim = mo.get("quality_sim")
+            if cancel_event.is_set():
+                return
+
+            optimized_msg_tokens = estimate_tokens_many(out_messages)
+            baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
+            output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
             actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
             # Carry the same fields the dashboard's compression card reads, so the token
@@ -459,8 +557,10 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             event_queue.put({"stage": "compressed", "selected": len(sel["selected_context"]),
                              "baseline_tokens": baseline_tokens, "optimized_tokens": output_tokens,
                              "savings_pct": actual_savings, "quality_proxy": None,
-                             "compressed_messages": body.messages,
+                             "compressed_messages": out_messages,
                              "pruned_context": sel["selected_context"],
+                             "message_reason": message_reason, "method": method,
+                             "quality_sim": quality_sim,
                              "fallback": sel["fallback_applied"]})
 
             _store.record_usage(
@@ -469,16 +569,20 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 optimized_tokens=output_tokens,
                 savings_pct=actual_savings,
                 quality_proxy=None,
+                strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
             )
 
             event_queue.put({"stage": "done", "result": {
-                "compressed_messages": body.messages,
+                "compressed_messages": out_messages,
                 "pruned_context":      sel["selected_context"],
                 "baseline_tokens":     baseline_tokens,
                 "optimized_tokens":    output_tokens,
                 "savings_pct":         actual_savings,
                 "fallback_applied":    sel["fallback_applied"],
                 "reason":              sel["reason"],
+                "message_reason":      message_reason,
+                "method":              method,
+                "quality_sim":         quality_sim,
             }})
         except _ClientGone:
             pass
@@ -654,9 +758,52 @@ def stats(request: Request, kh: str = Depends(_authenticated)):
     return _store.get_stats(kh)
 
 
+_COMPRESSOR_STATUS: dict = {"ts": 0.0, "data": None}
+_COMPRESSOR_TTL = 30.0  # seconds — probe the microservice at most once per window
+
+
+def _compressor_status() -> dict:
+    """Probe the remote LLMLingua-2 microservice so silent lossless-fallback is visible.
+
+    Returns {configured, reachable, model_loaded}. Cached ~30s so /v1/health stays cheap.
+    """
+    now = _time.time()
+    cached = _COMPRESSOR_STATUS["data"]
+    if cached is not None and now - _COMPRESSOR_STATUS["ts"] < _COMPRESSOR_TTL:
+        return cached
+
+    url = os.getenv("BREVITAS_COMPRESS_URL", "").rstrip("/")
+    data = {"configured": bool(url), "reachable": False, "model_loaded": False}
+    if url:
+        try:
+            r = _requests.get(f"{url}/health", timeout=2)
+            if r.ok:
+                data["reachable"] = True
+                data["model_loaded"] = bool(r.json().get("model_loaded"))
+        except Exception:
+            pass  # unreachable -> reachable stays False (fail-safe, never raises)
+    _COMPRESSOR_STATUS.update(ts=now, data=data)
+    return data
+
+
+def _warn_if_compressor_missing():
+    """Loud-once on boot if lossy compression is enabled but no compressor is reachable —
+    otherwise the compress path silently degrades to lossless and nobody notices."""
+    if not _lossy_enabled():
+        logger.info("BREVITAS_COMPRESS_LOSSY disabled — /v1/compress is strict-lossless.")
+        return
+    st = _compressor_status()
+    if not st["configured"]:
+        logger.warning("Lossy compression ON but BREVITAS_COMPRESS_URL is unset — "
+                       "/v1/compress will fall back to lossless (0%% savings on single prompts).")
+    elif not st["reachable"] or not st["model_loaded"]:
+        logger.warning("Lossy compression ON but the compress microservice is "
+                       "unreachable/not-loaded (%s) — falling back to lossless.", st)
+
+
 @app.get("/v1/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "compressor": _compressor_status()}
 
 
 if __name__ == "__main__":

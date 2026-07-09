@@ -70,9 +70,18 @@ def _get_llmlingua():
     _LLMLINGUA_TRIED = True
     try:
         from llmlingua import PromptCompressor
+        # Detect device so CPU-only hosts don't crash (PromptCompressor defaults to "cuda").
+        try:
+            import torch
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            _device = "cpu"
+        # bert-base-multilingual: lighter/faster and loads reliably on small containers;
+        # kept identical to services/compress/app.py so both paths behave the same.
         _LLMLINGUA = PromptCompressor(
-            model_name="microsoft/llmlingua-2-xlm-roberta-large-meetingbank",
+            model_name="microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
             use_llmlingua2=True,
+            device_map=_device,
         )
     except Exception:
         _LLMLINGUA = None

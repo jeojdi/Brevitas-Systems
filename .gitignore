@@ -82,3 +82,5 @@ public/assets/*.gif
 
 # Python build artifacts
 *.egg-info/
+
+ponytail/

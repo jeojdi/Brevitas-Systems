@@ -64,10 +64,18 @@ def load_model():
     global _LLMLINGUA, _MODEL_LOADED
     try:
         from llmlingua import PromptCompressor
-        logger.info("Loading LLMLingua-2 model...")
+        # PromptCompressor defaults device_map to "cuda"; detect so CPU-only hosts (most
+        # containers, Apple Silicon) don't crash with "Torch not compiled with CUDA enabled".
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+        logger.info("Loading LLMLingua-2 model on %s...", device)
         _LLMLINGUA = PromptCompressor(
             model_name="microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
             use_llmlingua2=True,
+            device_map=device,
         )
         _MODEL_LOADED = True
         logger.info("LLMLingua-2 model loaded successfully")
