@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <!-- Primary Meta Tags -->
-<title>Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%</title>
-<meta name="title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
+<title>Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs</title>
+<meta name="title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs">
 <meta name="description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
 <meta name="keywords" content="AI orchestration, multi-agent systems, LLM optimization, token reduction, AI cost optimization, agent pipeline, LangGraph, CrewAI, AutoGen, AI infrastructure, enterprise AI, agent communication, token compression">
 <meta name="author" content="Brevitas Systems">
@@ -19,7 +19,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://brevitassystems.com/">
 <meta property="og:site_name" content="Brevitas Systems">
-<meta property="og:title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs by 60%">
+<meta property="og:title" content="Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs">
 <meta property="og:description" content="Cut multi-agent pipeline costs by 60% with Brevitas Systems. Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK.">
 <meta property="og:image" content="https://brevitassystems.com/og-image.png">
 <meta property="og:image:width" content="1200">
@@ -30,7 +30,7 @@
 <!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://brevitassystems.com/">
-<meta name="twitter:title" content="Brevitas Systems — Reduce Multi-Agent Token Costs by 60%">
+<meta name="twitter:title" content="Brevitas Systems — Reduce Multi-Agent Token Costs">
 <meta name="twitter:description" content="Enterprise AI orchestration platform that optimizes token usage across LLM agents. Drop-in Python SDK for LangGraph, CrewAI, AutoGen.">
 <meta name="twitter:image" content="https://brevitassystems.com/og-image.png">
 <meta name="twitter:image:alt" content="Brevitas Systems - AI Agent Orchestration Platform">
@@ -348,7 +348,7 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
       overflow: 'hidden'
     }}>
       <ParticlesBackground />
-      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 32, position: 'relative', zIndex: 1 }}>
+      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 24, position: 'relative', zIndex: 1 }}>
       <FormField label="Email" required>
         <input
           type="email"
@@ -545,13 +545,13 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 14, marginTop: 4 }}>
         <button
           type="submit"
           disabled={state === 'submitting' || state === 'rate-limited'}
           style={{
-            minWidth: 200,
-            padding: '16px 32px',
+            width: '100%',
+            padding: '17px 32px',
             background: '#8ea6ff',
             border: '1px solid rgba(142, 166, 255, 0.46)',
             borderRadius: '8px',
@@ -597,7 +597,7 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
             <>Join now <span style={{ marginLeft: 4 }}>→</span></>
           )}
         </button>
-        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
+        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12, textAlign: 'center' }}>
           No spam. We respond to every submission.
         </span>
       </div>
@@ -611,7 +611,7 @@ function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
 function LandingPage() {
   useFadeUpReveal();
 
-  useEffect(() => initMatrixCanvas('hero-matrix'), []);
+  useEffect(() => initMatrixCanvas('hero-matrix', { cursor: true }), []);
 
   return (
     <>
@@ -623,20 +623,20 @@ function LandingPage() {
         <img className="hero-bg-dark"  src="/assets/brevitas.jpg"               alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
         <img className="hero-bg-light" src="/assets/light-mode-hero.jpg"    alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
         {/* Layer 1: dual-layer ASCII animation canvas */}
-        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, opacity: 0.75, pointerEvents: 'none' }} />
+        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, opacity: 0.92, pointerEvents: 'none' }} />
         {/* Layer 2: gradient scrim — transparent at top, dark at bottom so stats are legible */}
         <div aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.60) 100%)' }} />
         {/* Layer 3: content — text-shadow lifts every element off the image */}
         <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#8ea6ff' }}>
-          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff' }}>
-            the layer <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> your agents.
+          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff', letterSpacing: '-0.035em' }}>
+            we make your agents spend <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>less</em> tokens.
           </h1>
-          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center' }}>
-            most of what flows between agents is restated context. brevitas removes it before the next model sees it — no changes to your agents, prompts, or provider.
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
+            most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
           </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 64, alignItems: 'center', justifyContent: 'center' }}>
-            <Button variant="primary" href="/login">Get started</Button>
-            <Button variant="ghost" href="/benchmarks">See the benchmarks</Button>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 96, alignItems: 'center', justifyContent: 'center' }}>
+            <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
+            <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
           </div>
           <div className="fade-up delay-3 in" style={{
             display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
@@ -692,68 +692,18 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* S2 — Thesis sequence */}
-      <section className="section" style={{ background: 'var(--ink)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
-        <video preload="metadata" poster="/assets/ascii-magic-1-poster.jpg" autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.52, zIndex: 0, pointerEvents: 'none' }}>
-          <source src="/assets/ascii-magic-1.mp4" type="video/mp4" />
-        </video>
-        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
-          <div style={{ maxWidth: 860, margin: '0 auto', textAlign: 'center' }}>
-            <ThesisSequence />
-          </div>
-        </div>
-      </section>
-
-      {/* Context Retention Highlight */}
-      <section className="section" style={{
-        borderTop: '1px solid var(--line)',
-        borderBottom: '1px solid var(--line)',
-        padding: 'clamp(48px, 8vh, 96px) 0'
-      }}>
-        <div className="container">
-          <div style={{ textAlign: 'center', maxWidth: 900, margin: '0 auto' }}>
-            <div className="fade-up delay-1" style={{
-              fontSize: 'clamp(48px, 8vw, 96px)',
-              fontWeight: 200,
-              fontFamily: 'Newsreader, serif',
-              lineHeight: 1,
-              marginBottom: 20,
-              color: 'var(--bone)'
-            }}>
-              <span style={{ color: 'var(--signal)' }}>99.6%</span>
-            </div>
-            <h3 className="t-h3 fade-up delay-2" style={{
-              marginBottom: 20,
-              fontWeight: 400,
-              color: 'var(--bone)'
-            }}>
-              the savings don't cost you quality
-            </h3>
-            <p className="t-body-lg fade-up delay-3" style={{
-              color: 'var(--stone-2)',
-              maxWidth: 600,
-              margin: '0 auto'
-            }}>
-              59.4% fewer tokens billed. 99.6% of the signal preserved. Measured across 10,000+ real pipeline runs — not made up.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* S3 — Interactive Pipeline Explorer */}
+      {/* S3 — Interactive Pipeline Explorer (moved up, right after the trusted-by logos) */}
       <section className="section">
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 48 }}>
 <h2 className="t-h1" style={{ marginTop: 20, maxWidth: 940 }}>
               Pick a task. See exactly <em style={{ fontStyle: 'italic', color: 'var(--signal)' }}>what you're being billed for.</em>
             </h2>
-            <p className="t-body-lg" style={{ marginTop: 20, maxWidth: 680, color: 'var(--bone-dim)' }}>
-              A three-agent coding pipeline, four real tasks, what each hop actually costs. Hover any word to see why it was billed — or why it won't be anymore.
-            </p>
           </div>
           <PipelineExplorer />
         </div>
       </section>
+
 
       {/* S4 — Compression explainer */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
@@ -766,7 +716,7 @@ function LandingPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'start' }} className="compression-grid">
             <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <p className="t-body-lg">
-                Every agent output is bloated with restated context — things the next agent already knows. You're billed for all of it, every time, on every hop.
+                Every agent output is bloated with restated context, things the next agent already knows. You're billed for all of it, every time, on every hop.
               </p>
               <p className="t-body">
                 Brevitas strips it before the next model sees it. The important tokens survive. The billing filler goes. Your agents don't notice. Your invoice does.
@@ -858,41 +808,6 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* S6 — Integration proof */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'center' }} className="compression-grid">
-            <div>
-              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 24 }}>Two lines. Then stop overpaying.</h2>
-              <p className="t-body-lg" style={{ marginBottom: 16 }}>
-                Your agents, prompts, and providers don't change. Wrap the pipeline in two lines. Start saving in minutes.
-              </p>
-              <p className="t-body">
-                Works with LangGraph, CrewAI, AutoGen, or whatever you've built yourself. Tested against DeepSeek, Groq, and OpenAI running simultaneously in the same pipeline. No lock-in.
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <CodeBlockPy
-                filename="terminal"
-                copyable={false}
-                source={`# Contact us for access`}
-              />
-              <CodeBlockPy
-                filename="pipeline.py"
-                copyable
-                source={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
-
-pipeline = optimize([architect, builder, reviewer])
-result = pipeline.run(task)
-
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* S7 — Benchmarks trust row */}
       <section className="section" style={{ borderTop: '1px solid var(--line)', background: 'var(--ink-2)', position: 'relative', overflow: 'hidden' }}>
         {/* Background glow */}
@@ -909,7 +824,7 @@ result = pipeline.run(task)
                 <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>Measured savings.</em>
               </h2>
               <p className="t-body" style={{ marginBottom: 40, maxWidth: 400 }}>
-                AgentBench, MARBLE, and BattleAgentBench — published, peer-reviewed benchmarks. Not cherry-picked tasks. Not internal evals. The kind your CFO can point to.
+                AgentBench, MARBLE, and BattleAgentBench. Published, peer-reviewed benchmarks. Not cherry-picked tasks. Not internal evals. The kind your CFO can point to.
               </p>
               <a href="/benchmarks" className="btn btn-secondary">See full results →</a>
             </div>
@@ -922,22 +837,12 @@ result = pipeline.run(task)
                 { letter: 'B', name: 'BattleAgentBench', venue: '2024', metric: '99.6%', label: 'context retained', pct: 99.6 },
               ].map(({ letter, name, venue, metric, label, pct }, i) => (
                 <div key={i} style={{
-                  display: 'grid', gridTemplateColumns: '52px 1fr auto',
+                  display: 'grid', gridTemplateColumns: '1fr auto',
                   gap: 20, alignItems: 'center',
                   padding: '28px 0',
                   borderBottom: '1px solid var(--line)',
                   borderTop: i === 0 ? '1px solid var(--line)' : undefined,
                 }}>
-                  {/* Letter icon */}
-                  <div style={{
-                    width: 52, height: 52, flexShrink: 0,
-                    border: '1.5px solid var(--bronze)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontFamily: 'Newsreader, serif', fontWeight: 400, fontSize: 24,
-                    color: 'var(--bronze)',
-                    background: 'rgba(142,166,255,0.06)',
-                  }}>{letter}</div>
-
                   {/* Name + venue + bar */}
                   <div>
                     <div style={{ fontWeight: 500, fontSize: 15, color: 'var(--fg)', marginBottom: 3 }}>{name}</div>
@@ -966,45 +871,15 @@ result = pipeline.run(task)
         </div>
       </section>
 
-      {/* S8 — Why now */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div className="fade-up" style={{ marginBottom: 56 }}>
-            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              Your AI bill is already a problem.
-            </h2>
-          </div>
-          <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {[
-              { n: 'I', h: 'Your agents are live — and expensive.', b: 'Five to fifty inter-agent calls per task is common now. Each one re-bills the same bloated context. The cost compounds with every hop, every run, every day.' },
-              { n: 'II', h: 'Finance is already asking about it.', b: 'Engineering teams have cost OKRs. Your CFO has seen the AWS bill. Nobody is saying "we\'ll optimize later" anymore — because later is now.' },
-              { n: 'III', h: 'Nobody has solved this yet.', b: 'Observability has Langfuse. Routing has LiteLLM. Nobody owns inter-agent cost optimization. We do — and the savings are immediate.' },
-            ].map((x, i) => (
-              <li key={i} className="fade-up why-now-item" style={{
-                display: 'grid', gridTemplateColumns: '80px 1fr', gap: 32,
-                padding: '40px 0',
-                borderBottom: '1px solid var(--line)',
-                borderTop: i === 0 ? '1px solid var(--line)' : undefined,
-              }}>
-                <div className="serif" style={{ fontSize: 40, fontWeight: 300, color: 'var(--stone-2)', letterSpacing: '0.05em' }}>{x.n}</div>
-                <div>
-                  <h3 className="serif" style={{ fontSize: 26, fontWeight: 400, letterSpacing: '-0.01em', margin: '0 0 12px 0', color: 'var(--fg)' }}>{x.h}</h3>
-                  <p className="t-body" style={{ margin: 0, maxWidth: 640 }}>{x.b}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </section>
-
       {/* S9 — Final CTA */}
       <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div className="waitlist-split">
             <div>
-              <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Find out how much you're overpaying.</h2>
-              <p className="t-body-lg" style={{ marginBottom: 0 }}>
-                Drop your pipeline shape in the form. We'll tell you what we'd cut and how much it'd save. We work with a small group of teams — tell us what you're running.
+              <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 12, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 20 }}>Design partner program</div>
+              <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 22 }}>Find out how much you're overpaying.</h2>
+              <p className="t-body-lg" style={{ marginBottom: 0, maxWidth: 460, color: 'var(--bone-dim)' }}>
+                Drop your pipeline shape in the form. We'll tell you what we'd cut and how much it'd save. We work with a small group of teams, so tell us what you're running.
               </p>
             </div>
             <div>

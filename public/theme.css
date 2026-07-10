@@ -356,6 +356,24 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   box-shadow: 0 8px 20px rgba(142, 166, 255, 0.28);
 }
 
+/* Hero buttons — larger, bolder hit area on both CTAs to draw people in */
+.hero-btn {
+  padding: 18px 42px;
+  font-size: 18px;
+  font-weight: 600;
+  gap: 12px;
+}
+/* Primary hero CTA — fully-opaque fill so it reads as the main action over the busy hero */
+.hero-cta {
+  background: #96acff;
+  border-color: rgba(142, 166, 255, 0.84);
+  box-shadow: 0 8px 26px rgba(142, 166, 255, 0.46);
+}
+.hero-cta:hover {
+  background: #a6b9ff;
+  box-shadow: 0 12px 34px rgba(142, 166, 255, 0.58);
+}
+
 .btn-secondary {
   background: rgba(11, 16, 25, 0.52);
   color: var(--fg);
@@ -753,9 +771,9 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 /* Waitlist split layout */
 .waitlist-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 64px;
-  align-items: start;
+  grid-template-columns: 1fr 1.05fr;
+  gap: clamp(48px, 6vw, 88px);
+  align-items: center;
 }
 @media (max-width: 820px) {
   .waitlist-split {

@@ -7,15 +7,33 @@ const { useState, useEffect, useRef, useCallback } = React;
 // ---------------------------------------------------------------------------
 // Matrix canvas animation — shared by hero and footer across all pages
 // ---------------------------------------------------------------------------
-function initMatrixCanvas(canvasId) {
+function initMatrixCanvas(canvasId, opts) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return () => {};
   const ctx = canvas.getContext('2d');
+  const cursorFollow = !!(opts && opts.cursor);   // opt-in: hero enables the comet, footer does not
 
   const CELL = 12;
   const CHAR_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&*<>{}[]|/\\^~±§ΘΛΞΣΩαβγδ';
   const randChar = () => CHAR_POOL[Math.floor(Math.random() * CHAR_POOL.length)];
   const BASE_OP = 0.06;
+
+  // --- cursor comet (hero only) -------------------------------------------
+  // A small DIRECTIONAL glyph set: each lit cell shows the arrow pointing away from the glow center,
+  // so the trail reads as a coherent flow (octant 0..7 = E, SE, S, SW, W, NW, N, NE; canvas y is down).
+  const DIR_GLYPHS = ['>', '\\', 'v', '/', '<', '\\', '^', '/'];
+  function dirGlyph(dx, dy) { let o = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)); if (o < 0) o += 8; return DIR_GLYPHS[o % 8]; }
+  const FLOW_POOL = '.-_·:~';   // calm, sparse base field in cursor mode
+  const baseChar = () => cursorFollow ? FLOW_POOL[Math.floor(Math.random() * FLOW_POOL.length)] : randChar();
+
+  const CURSOR_R = 74; const CURSOR_AMP = 1.0; const CURSOR_EASE = 0.30; const CURSOR_FOCUS = 1.2;
+  const CURSOR_CELL_DECAY = 0.018; const CURSOR_GLOW_UP = 0.18; const CURSOR_GLOW_DOWN = 0.08;
+  const CURSOR_IDLE_MS = 650; const CURSOR_DASH_AT = 0.45;   // hold longer, then fade fast; below this glow glyphs resolve to '-'
+  const FLOW_FREQ = 0.10; const FLOW_SPEED = 0.009; const FLOW_DEPTH = 0.38;
+  const TRAIL_LEN = 34; const TRAIL_TAPER = 0.58; const TRAIL_WOBBLE = 8;   // curving, swaying tail
+  const CLICK_MAXR = 168; const CLICK_LIFE_MS = 1000; const CLICK_GROW_MS = 260; const CLICK_AMP = 1.0;
+  let clickBursts = [];
+  const AMBIENT = cursorFollow ? 0.07 : 1;   // ambient rings dialed down in cursor mode
 
   const WAVE_THICKNESS = 48; const WAVE_AMP_MIN = 0.45; const WAVE_AMP_MAX = 0.68;
   const WAVE_SPEED_MIN = 1.2; const WAVE_SPEED_MAX = 2.8;
@@ -56,25 +74,53 @@ function initMatrixCanvas(canvasId) {
   Object.defineProperty(PointRipple.prototype, 'dead', { get() { return this.radius >= this.maxRadius; } });
 
   let cols, rows, cells, waveRipples, pointRipples, raf, resizeTimer, spawnTimer;
+  let curTX = null, curTY = null, curX = null, curY = null, curActive = false, curGlow = 0, lastMove = 0;
+  let trail = [], frameN = 0;   // recent eased head positions (newest first) -> curving comet tail
 
   function init() {
     canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
     cols = Math.ceil(canvas.width / CELL); rows = Math.ceil(canvas.height / CELL);
     waveRipples = []; pointRipples = [];
-    cells = Array.from({ length: cols * rows }, () => ({ char: randChar(), waveOp: 0, pointOp: 0 }));
-    for (let i = 0; i < 14; i++) { const r = new WaveRipple(); r.radius = Math.random() * r.maxRadius * 0.7; waveRipples.push(r); }
+    cells = Array.from({ length: cols * rows }, () => ({ char: baseChar(), waveOp: 0, pointOp: 0, curOp: 0 }));
+    const nInit = Math.round(14 * AMBIENT);
+    for (let i = 0; i < nInit; i++) { const r = new WaveRipple(); r.radius = Math.random() * r.maxRadius * 0.7; waveRipples.push(r); }
   }
 
   function schedulePointRipple() {
-    const delay = POINT_SPAWN_MS_MIN + Math.random() * (POINT_SPAWN_MS_MAX - POINT_SPAWN_MS_MIN);
+    const delay = (POINT_SPAWN_MS_MIN + Math.random() * (POINT_SPAWN_MS_MAX - POINT_SPAWN_MS_MIN)) / AMBIENT;
     spawnTimer = setTimeout(() => { pointRipples.push(new PointRipple()); schedulePointRipple(); }, delay);
   }
 
   function draw() {
+    frameN++;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (Math.random() < WAVE_SPAWN) waveRipples.push(new WaveRipple());
+    if (Math.random() < WAVE_SPAWN * AMBIENT) waveRipples.push(new WaveRipple());
     for (let i = waveRipples.length - 1; i >= 0; i--) { waveRipples[i].radius += waveRipples[i].speed; if (waveRipples[i].dead) waveRipples.splice(i, 1); }
     for (let i = pointRipples.length - 1; i >= 0; i--) { pointRipples[i].radius += pointRipples[i].speed; if (pointRipples[i].dead) pointRipples.splice(i, 1); }
+    const now = performance.now();
+    if (cursorFollow) {
+      // Ease the head toward the pointer (gentle whip -> curving tail). Lives only while moving:
+      // after CURSOR_IDLE_MS still, the glow fades and the tail retracts, then it clears.
+      const moving = curActive && curTX != null && (now - lastMove) < CURSOR_IDLE_MS;
+      if (moving) {
+        if (curX == null) { curX = curTX; curY = curTY; }
+        curX += (curTX - curX) * CURSOR_EASE; curY += (curTY - curY) * CURSOR_EASE;
+        curGlow = Math.min(1, curGlow + CURSOR_GLOW_UP);
+        trail.unshift({ x: curX, y: curY });
+        if (trail.length > TRAIL_LEN) trail.pop();
+      } else {
+        curGlow = Math.max(0, curGlow - CURSOR_GLOW_DOWN);
+        if (trail.length) { trail.pop(); trail.pop(); }         // retract fast (two per frame) so the fade is short
+        if (curGlow <= 0.01) { trail.length = 0; curX = null; }
+      }
+      for (let i = clickBursts.length - 1; i >= 0; i--) {        // advance click bursts (filled discs)
+        const b = clickBursts[i], age = now - b.t0;
+        if (age >= CLICK_LIFE_MS) { clickBursts.splice(i, 1); continue; }
+        const grow = Math.min(1, age / CLICK_GROW_MS);
+        b.radius = CLICK_MAXR * (1 - Math.pow(1 - grow, 3));
+        b.alpha = (1 - age / CLICK_LIFE_MS) * CLICK_AMP;
+      }
+    }
     ctx.font = `${CELL - 2}px "JetBrains Mono","Courier New",monospace`;
     for (let row = 0; row < rows; row++) {
       const py = row * CELL + CELL;
@@ -89,18 +135,57 @@ function initMatrixCanvas(canvasId) {
         for (const r of pointRipples) { const i = r.intensityAt(px, py); if (i > 0) pTotal = Math.min(1, pTotal + i); }
         if (pTotal > 0.02) { cell.pointOp = Math.max(cell.pointOp, pTotal); if (Math.random() < 0.55) cell.char = randChar(); }
         else { cell.pointOp = Math.max(0, cell.pointOp - POINT_DECAY); }
-        const finalOp = Math.min(1, BASE_OP + cell.waveOp + cell.pointOp);
+        // Cursor comet: decay first (so idle/left-behind cells go dark), then relight along the trail
+        // chain (tapering, swaying), modulated by outward FLOW bands. Arrows while bright; '-' on fade.
+        if (cursorFollow) {
+          if (cell.curOp > 0) cell.curOp = Math.max(0, cell.curOp - CURSOR_CELL_DECAY);
+          if (curGlow > 0.01 && trail.length) {
+            let best = 0, bdx = 0, bdy = 0, bcd = 0;
+            for (let k = 0; k < trail.length; k++) {
+              const tp = trail[k], sway = k / TRAIL_LEN;
+              const wob = Math.sin(now * 0.004 + k * 0.55) * TRAIL_WOBBLE * sway;
+              const dx = px - (tp.x + wob), dy = py - (tp.y - wob * 0.6);
+              const rk = CURSOR_R * (1 - TRAIL_TAPER * sway);
+              if (dx < -rk || dx > rk || dy < -rk || dy > rk) continue;
+              const cd = Math.sqrt(dx * dx + dy * dy);
+              if (cd >= rk) continue;
+              const falloff = 0.5 * (1 + Math.cos(Math.PI * cd / rk));
+              const g = Math.pow(falloff, CURSOR_FOCUS) * (1 - sway * 0.5);
+              if (g > best) { best = g; bdx = dx; bdy = dy; bcd = cd; }
+            }
+            if (best > 0) {
+              const flow = 1 - FLOW_DEPTH * 0.5 * (1 - Math.cos(bcd * FLOW_FREQ - now * FLOW_SPEED));
+              const lit = best * CURSOR_AMP * curGlow * flow;
+              if (lit > cell.curOp) cell.curOp = lit;
+              cell.char = (best > 0.06 && curGlow > CURSOR_DASH_AT) ? dirGlyph(bdx, bdy) : '-';
+            }
+          }
+          if (cell.curOp > 0 && curGlow <= CURSOR_DASH_AT) cell.char = '-';
+        }
+        let clkOp = 0;
+        for (const b of clickBursts) {
+          const bdx = px - b.x, bdy = py - b.y, bd = Math.sqrt(bdx * bdx + bdy * bdy);
+          if (bd < b.radius) {
+            const edge = bd > b.radius * 0.72 ? (b.radius - bd) / (b.radius * 0.28) : 1;
+            const c = edge * b.alpha;
+            if (c > clkOp) clkOp = c;
+            if (c > 0.15) cell.char = dirGlyph(bdx, bdy);
+          }
+        }
+        const glowOp = cell.pointOp + cell.curOp + clkOp;
+        const finalOp = Math.min(1, BASE_OP + cell.waveOp + glowOp);
         if (finalOp < 0.02) continue;
         ctx.fillStyle = `rgba(255,255,255,${finalOp.toFixed(3)})`;
-        if (cell.pointOp > 0.12) { ctx.shadowColor = 'rgba(255,255,255,0.85)'; ctx.shadowBlur = 8; }
+        if (glowOp > 0.10) { ctx.shadowColor = 'rgba(255,255,255,0.95)'; ctx.shadowBlur = 13; }
         ctx.fillText(cell.char, col * CELL, py);
-        if (cell.pointOp > 0.12) ctx.shadowBlur = 0;
+        if (glowOp > 0.10) ctx.shadowBlur = 0;
       }
     }
   }
 
-  // Perf: cap to ~30fps, pause when off-screen or tab hidden, honor reduced-motion.
-  const FRAME_MS = 1000 / 30;
+  // Perf: pause when off-screen or tab hidden, honor reduced-motion. Cursor mode runs at 60fps so
+  // the comet feels immediate; ambient-only canvases (footer) stay at 30fps.
+  const FRAME_MS = 1000 / (cursorFollow ? 60 : 30);
   const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   let lastFrame = 0, inView = true, pageVisible = !document.hidden;
   function loop(ts) {
@@ -117,14 +202,37 @@ function initMatrixCanvas(canvasId) {
   const onVisibility = () => { pageVisible = !document.hidden; sync(); };
   const onResize = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { stop(); init(); reduceMotion ? draw() : start(); }, 150); };
 
+  // Cursor tracking (hero only): canvas is pointer-events:none, so map the window pointer into it.
+  const onMouseMove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) { curActive = false; return; }
+    curTX = x * (canvas.width / rect.width); curTY = y * (canvas.height / rect.height);
+    curActive = true; lastMove = performance.now();
+  };
+  const onMouseOut = (e) => { if (!e.relatedTarget && !e.toElement) { curActive = false; curX = null; } };
+  const onMouseDown = (e) => {
+    if (e.button !== 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+    clickBursts.push({ x: x * (canvas.width / rect.width), y: y * (canvas.height / rect.height), t0: performance.now(), radius: 0, alpha: 1 });
+    if (clickBursts.length > 6) clickBursts.shift();
+  };
+
   window.addEventListener('resize', onResize);
   document.addEventListener('visibilitychange', onVisibility);
+  if (cursorFollow) {
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    document.addEventListener('mouseout', onMouseOut);
+    window.addEventListener('mousedown', onMouseDown, { passive: true });
+  }
   io.observe(canvas);
   init();
-  pointRipples.push(new PointRipple());
+  if (!cursorFollow) pointRipples.push(new PointRipple());   // no big opening ring in cursor mode
   if (!reduceMotion) { schedulePointRipple(); start(); } else { draw(); }
 
-  return () => { stop(); io.disconnect(); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); document.removeEventListener('visibilitychange', onVisibility); };
+  return () => { stop(); io.disconnect(); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); document.removeEventListener('visibilitychange', onVisibility); if (cursorFollow) { window.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseout', onMouseOut); window.removeEventListener('mousedown', onMouseDown); } };
 }
 
 // --- utility hooks ---

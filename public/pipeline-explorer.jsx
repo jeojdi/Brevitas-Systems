@@ -98,9 +98,7 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap }) {
       fontSize: 14.5,
       lineHeight: 1.75,
       color: 'var(--bone)',
-      minHeight: 200,
-      maxHeight: 260,
-      overflowY: 'auto',
+      minHeight: 160,
     }}>
       {shown.map((tok, i) => (
         <React.Fragment key={i}>
@@ -128,62 +126,28 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap }) {
 // ------------------------------------------------------------
 function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCost, outputCost, eatenMap }) {
   const active = phase === 'typing' || phase === 'highlighting' || phase === 'deleting';
-  const done = phase === 'done';
   const pending = phase === 'pending';
-
-  let statusText = 'waiting';
-  let statusColor = 'var(--stone)';
-  if (phase === 'typing')      { statusText = '● writing';  statusColor = 'var(--signal)'; }
-  else if (phase === 'highlighting') { statusText = '◐ reviewing'; statusColor = 'var(--oxblood)'; }
-  else if (phase === 'deleting')     { statusText = '◑ compressing';  statusColor = 'var(--bronze)'; }
-  else if (phase === 'done')         { statusText = '✓ done';  statusColor = 'var(--bone-dim)'; }
 
   return (
     <div style={{
       flex: '1 1 0',
       minWidth: 0,
-      border: active ? '1px solid var(--bronze)' : '1px solid var(--line)',
-      boxShadow: active ? '0 0 0 3px rgba(138,98,66,0.12)' : 'none',
-      background: pending ? 'var(--component-bg-dark-light)' : 'var(--graphite)',
-      borderRadius: 4,
-      padding: '22px 24px 20px',
-      transition: 'border-color 400ms, box-shadow 400ms, background 400ms, opacity 400ms',
-      opacity: pending ? 0.45 : 1,
+      borderTop: active ? '2px solid var(--bronze)' : '2px solid transparent',
+      background: active ? 'var(--graphite)' : 'transparent',
+      padding: '15px 20px 18px',
+      transition: 'border-color 300ms, background 300ms, opacity 300ms',
+      opacity: pending ? 0.4 : 1,
       position: 'relative',
       display: 'flex',
       flexDirection: 'column',
-      gap: 14,
+      gap: 12,
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <div style={{
-            fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 10.5,
-            letterSpacing: '0.14em',
-            textTransform: 'uppercase',
-            color: active ? 'var(--bronze)' : 'var(--stone-2)',
-            marginBottom: 4,
-            transition: 'color 300ms',
-          }}>
-            {role}
-          </div>
-          <div style={{ fontFamily: 'Newsreader, serif', fontSize: 18, color: 'var(--bone)', letterSpacing: '-0.01em' }}>
-            {subtitle}
-          </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 18, color: 'var(--bone)', letterSpacing: '-0.01em' }}>
+          {subtitle}
         </div>
-        <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
-          <div style={{
-            fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 9.5,
-            letterSpacing: '0.1em',
-            color: statusColor,
-            transition: 'color 300ms',
-          }}>
-            {statusText}
-          </div>
-          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: 'var(--stone-2)' }}>
-            in {inputCost} · out {outputCost}
-          </div>
+        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: 'var(--stone-2)', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+          in {inputCost} · out {outputCost}
         </div>
       </div>
 
@@ -223,11 +187,9 @@ function CostReadout({ task, mode, progress }) {
 
   return (
     <div style={{
-      border: '1px solid var(--line)',
       background: 'var(--graphite)',
-      padding: '18px 22px 16px',
-      borderRadius: 4,
-      marginTop: 14,
+      padding: '15px 20px 14px',
+      marginTop: 12,
       display: 'grid',
       gridTemplateColumns: 'auto 1fr auto auto auto auto',
       gap: 28,
@@ -385,7 +347,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
       // Type out word by word
       const total = hopTokens.length;
-      const perTok = Math.max(32, Math.min(65, 5500 / total));
+      const perTok = Math.max(42, Math.min(85, 7500 / total));
       for (let i = 0; i <= total; i++) {
         if (cancelled) return;
         if (skipCurrent) { setReveal(total); break; }
@@ -397,7 +359,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       if (mode === 'optimized') {
         // Highlighting phase — quick flash of red to mark all droppable tokens
         setPhases(p => { const n = [...p]; n[h] = 'highlighting'; return n; });
-        await wait(skipCurrent ? 250 : 700);
+        await wait(skipCurrent ? 250 : 950);
         if (cancelled) return;
 
         // Deleting phase — CHAR-BY-CHAR backspace in a wave, ~1.1s total
@@ -413,12 +375,12 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         if (droppable.length > 0) {
           // Target: finish all deletions in ~1000ms, with a wavy overlap so you
           // see multiple words being backspaced at once.
-          const targetMs = skipCurrent ? 180 : 1000;
+          const targetMs = skipCurrent ? 180 : 1350;
           const maxLen = Math.max(...droppable.map(i => hopTokens[i].t.length));
           // Start-stagger between words: small to make the wave feel dense & urgent
-          const staggerStep = Math.max(18, (targetMs - 200) / Math.max(1, droppable.length));
-          // Char tick: fast backspace
-          const charTick = Math.max(22, Math.min(55, 550 / maxLen));
+          const staggerStep = Math.max(24, (targetMs - 200) / Math.max(1, droppable.length));
+          // Char tick: backspace speed
+          const charTick = Math.max(28, Math.min(72, 720 / maxLen));
 
           // Each word's animation: start at its stagger offset, then tick each char
           const wordPromises = droppable.map((tokIdx, orderI) => new Promise((resolve) => {
@@ -457,12 +419,12 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         }
 
         if (cancelled) return;
-        await wait(skipCurrent ? 80 : 280);
+        await wait(skipCurrent ? 80 : 380);
       }
 
       setPhases(p => { const n = [...p]; n[h] = 'done'; return n; });
       // Small pause between hops — but if user pressed →, skip it
-      await wait(advanceNow ? 0 : (skipCurrent ? 150 : 500));
+      await wait(advanceNow ? 0 : (skipCurrent ? 150 : 650));
     }
 
     (async () => {
@@ -606,8 +568,12 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       <PipelineFieldBg />
       <style>{`
         @keyframes bvCursorBlink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
-        .bv-task-pill { transition: all 200ms; }
-        .bv-task-pill:hover { border-color: var(--bronze); color: var(--bone); }
+        .bv-ctl-btn { transition: border-color 160ms, color 160ms, background 160ms, transform 120ms; }
+        .bv-ctl-btn:hover { border-color: var(--bronze) !important; background: var(--component-bg-dark-light) !important; }
+        .bv-ctl-btn:active { transform: translateY(1px); }
+        .bv-task-pill { transition: color 160ms, background 160ms; }
+        .bv-task-pill:hover { color: var(--bone); background: var(--component-bg-dark-light); }
+        .bv-strip > div + div { border-left: 1px solid var(--line); }
         .bv-strip { scrollbar-width: thin; scrollbar-color: var(--stone) transparent; }
         .bv-strip::-webkit-scrollbar { height: 6px }
         .bv-strip::-webkit-scrollbar-track { background: transparent }
@@ -651,64 +617,49 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
           box-shadow: none;
           animation: none !important;
         }
-        /* Soften the ambient glow */
-        .bv-field-glow { filter: blur(8px); opacity: 0.65 !important; }
+        /* Ambient glow removed — no decorative gradients behind the tool */
+        .bv-field-glow { display: none !important; }
       `}</style>
 
-      {/* Task pills */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 18 }}>
-        <div style={{
-          fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.16em',
-          color: 'var(--stone-2)', marginRight: 4,
-        }}>pick a task →</div>
+
+      {/* Task tabs — active one is a quiet chip with a bronze underline */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', marginBottom: 14 }}>
         {TASKS.map(t => {
           const active = t.id === activeId;
           return (
             <button key={t.id} className="bv-task-pill" onClick={() => pickTask(t.id)}
               style={{
-                background: active ? 'var(--bronze)' : 'transparent',
-                color: active ? 'var(--obsidian)' : 'var(--stone-2)',
-                border: '1px solid ' + (active ? 'var(--bronze)' : 'var(--line)'),
-                padding: '7px 14px', fontFamily: 'JetBrains Mono, monospace',
-                fontSize: 11, letterSpacing: '0.06em', borderRadius: 2, cursor: 'pointer',
+                background: active ? 'var(--component-bg-dark-light)' : 'transparent',
+                color: active ? 'var(--bone)' : 'var(--stone-2)',
+                border: 'none',
+                boxShadow: active ? 'inset 0 -1.5px 0 var(--bronze)' : 'none',
+                padding: '6px 12px', fontFamily: 'JetBrains Mono, monospace',
+                fontSize: 11, letterSpacing: '0.04em', borderRadius: 3, cursor: 'pointer',
+                fontWeight: active ? 600 : 400,
               }}>{t.label}</button>
           );
         })}
       </div>
 
-      {/* User prompt bar */}
+      {/* User prompt — the request everything below is answering; a quiet surface, no outline */}
       <div style={{
-        border: '1px solid var(--line)', background: 'var(--component-bg-dark-light)',
-        padding: '16px 20px', borderRadius: 4, marginBottom: 18,
+        background: 'var(--component-bg-dark-light)',
+        padding: '13px 18px', borderRadius: 6, marginBottom: 14,
         display: 'flex', alignItems: 'center', gap: 16,
       }}>
-        <div style={{
-          fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.14em',
-          color: 'var(--bronze)', flex: '0 0 auto', textTransform: 'uppercase',
-        }}>you →</div>
         <div style={{ fontFamily: 'Newsreader, serif', fontSize: 17, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
           {task.user}
         </div>
         <div style={{ display: 'flex', gap: 8, flex: '0 0 auto', alignItems: 'center' }}>
-          <span style={{
-            fontFamily: 'JetBrains Mono, monospace', fontSize: 9.5, letterSpacing: '0.1em',
-            color: isVisible ? 'var(--bronze)' : 'var(--stone)',
-            textTransform: 'uppercase', marginRight: 4,
-            transition: 'color 200ms',
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-          }} title={isVisible ? 'Arrow keys active' : 'Scroll into view to use arrow keys'}>
-            <kbd style={kbdStyle}>→</kbd>
-            <span style={{ opacity: 0.85 }}>to finish current</span>
-          </span>
-          <button onClick={replay} style={btnStyle}>↻ Replay</button>
-          <button onClick={skipToEnd} style={btnStyle}>⇥ Skip</button>
+          <button onClick={replay} className="bv-ctl-btn" style={btnStyle}>↻ Replay</button>
+          <button onClick={skipToEnd} className="bv-ctl-btn" style={btnStyle}>⇥ Skip</button>
         </div>
       </div>
 
       {/* Main grid — cost readout moved BELOW so three hops can breathe */}
       <div style={{ position: 'relative' }} className="bv-pipe-grid">
         <div ref={stripRef} className="bv-strip" style={{
-          display: 'flex', gap: 10, minWidth: 0, alignItems: 'stretch',
+          display: 'flex', gap: 0, minWidth: 0, alignItems: 'stretch',
         }}>
           {[
             { role: '01 · ARCHITECT', subtitle: 'Chooses the approach', toks: task.a1, out: task.a1Tokens,
@@ -732,46 +683,12 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
       <CostReadout task={task} mode={mode} progress={costProgress} />
 
-      {/* Mode toggle + legend */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--line)',
-        gap: 18, flexWrap: 'wrap',
-      }}>
-        <div style={{ display: 'flex', gap: 0, border: '1px solid var(--line)', borderRadius: 2 }}>
-          {[
-            { k: 'baseline', label: 'without brevitas' },
-            { k: 'optimized', label: 'with brevitas' },
-          ].map(({ k, label }) => {
-            const active = mode === k;
-            return (
-              <button key={k} onClick={() => switchMode(k)} style={{
-                padding: '7px 16px', fontFamily: 'JetBrains Mono, monospace',
-                fontSize: 10.5, letterSpacing: '0.12em', textTransform: 'uppercase',
-                background: active ? 'var(--bronze)' : 'transparent',
-                color: active ? 'var(--obsidian)' : 'var(--stone-2)',
-                border: 'none', cursor: 'pointer', transition: 'all 200ms',
-              }}>{label}</button>
-            );
-          })}
-        </div>
-        <div style={{
-          display: 'flex', gap: 18, fontFamily: 'JetBrains Mono, monospace', fontSize: 10,
-          color: 'var(--stone-2)', letterSpacing: '0.06em',
-          flexWrap: 'wrap',
-        }}>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'var(--bone)', marginRight: 7, verticalAlign: 'middle' }} />Kept</span>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'var(--signal)', marginRight: 7, verticalAlign: 'middle' }} />Identifier</span>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'rgba(143,58,48,0.6)', marginRight: 7, verticalAlign: 'middle' }} />Dropped</span>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'rgba(166,159,147,0.3)', marginRight: 7, verticalAlign: 'middle' }} />Filler</span>
-        </div>
-      </div>
 
       {/* Hover tooltip */}
       {hover && hover.tok && dropReason[hover.tok.k] && (
         <div style={{
-          marginTop: 16, padding: '10px 14px', background: 'var(--component-bg-dark)',
-          border: '1px solid var(--line)', borderRadius: 3,
+          marginTop: 12, padding: '10px 14px', background: 'var(--component-bg-dark)',
+          borderRadius: 6,
           fontFamily: 'Newsreader, serif', fontSize: 13.5, color: 'var(--stone-2)', fontStyle: 'italic',
         }}>
           <span style={{
@@ -786,9 +703,10 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 }
 
 const btnStyle = {
-  background: 'transparent', border: '1px solid var(--line)', color: 'var(--stone-2)',
-  padding: '6px 11px', fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5,
-  letterSpacing: '0.08em', cursor: 'pointer', borderRadius: 2, textTransform: 'uppercase',
+  background: 'var(--graphite)', border: '1px solid var(--stone)', color: 'var(--bone)',
+  padding: '8px 15px', fontFamily: 'JetBrains Mono, monospace', fontSize: 11.5,
+  letterSpacing: '0.08em', cursor: 'pointer', borderRadius: 5, textTransform: 'uppercase',
+  fontWeight: 500,
 };
 
 const kbdStyle = {
