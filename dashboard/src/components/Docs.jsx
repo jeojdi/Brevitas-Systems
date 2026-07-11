@@ -192,7 +192,7 @@ export ANTHROPIC_BASE_URL=http://localhost:4242
               <FieldHead />
               <tbody>
                 <Field name="api_key"  type="str"  defaultVal="env var">Your <code className="font-mono text-brand-blue text-xs">bvt_</code> prefixed Brevitas key. Falls back to <code className="font-mono text-xs">BREVITAS_API_KEY</code>.</Field>
-                <Field name="base_url" type="str"  defaultVal='"api.brevitassystems.com"'>Compression engine URL. Point at a local engine for self-hosting.</Field>
+                <Field name="base_url" type="str"  defaultVal='"brevitassystems.com"'>Compression engine URL. Point at a local engine for self-hosting.</Field>
                 <Field name="enabled"  type="bool" defaultVal="True">Toggle compression off without removing <code className="font-mono text-xs">wrap()</code> from your code.</Field>
                 <Field name="timeout"  type="int"  defaultVal="30">Per-request timeout in seconds.</Field>
               </tbody>
@@ -269,7 +269,7 @@ export OPENAI_BASE_URL=http://localhost:4242/openai
 }
 
 function RestAPIDocs() {
-  const BASE = 'https://api.brevitassystems.com'
+  const BASE = 'https://brevitassystems.com'
 
   return (
     <div className="flex gap-12">
@@ -325,7 +325,7 @@ new_task        ─┘                            pruned_context
             <code className="font-mono text-brand-blue text-xs">/v1/providers</code> require a Brevitas API key
             in the <code className="font-mono text-brand-blue text-xs">X-Brevitas-Key</code> header.
           </p>
-          <CodeBlock lang="bash" code={`curl https://api.brevitassystems.com/v1/health \\
+          <CodeBlock lang="bash" code={`curl https://brevitassystems.com/v1/health \\
   -H "X-Brevitas-Key: bvt_your_key_here"`} />
         </Section>
 
@@ -368,7 +368,7 @@ new_task        ─┘                            pruned_context
 }`} />
 
           <p className="annotation mt-4 mb-2">// example</p>
-          <CodeBlock lang="bash" code={`curl -X POST https://api.brevitassystems.com/v1/compress \\
+          <CodeBlock lang="bash" code={`curl -X POST https://brevitassystems.com/v1/compress \\
   -H "X-Brevitas-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -440,7 +440,7 @@ new_task        ─┘                            pruned_context
                 </table>
               </div>
 
-              <CodeBlock lang="bash" code={`curl -X PUT https://api.brevitassystems.com/v1/provider \\
+              <CodeBlock lang="bash" code={`curl -X PUT https://brevitassystems.com/v1/provider \\
   -H "X-Brevitas-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{"provider": "openai", "provider_api_key": "sk-...", "model": "gpt-4o-mini"}'`} />
@@ -496,7 +496,7 @@ BREVITAS_KEY = os.environ["BREVITAS_API_KEY"]
 # 1. Point the SDK at Brevitas
 brevitas.configure(
     api_key=BREVITAS_KEY,
-    base_url="https://api.brevitassystems.com",
+    base_url="https://brevitassystems.com",
 )
 
 # 2. Wrap your existing provider client — nothing else changes
@@ -512,7 +512,7 @@ print(resp.content[0].text)
 
 # 4. Check cumulative usage over the REST API
 stats = requests.get(
-    "https://api.brevitassystems.com/v1/stats",
+    "https://brevitassystems.com/v1/stats",
     headers={"X-Brevitas-Key": BREVITAS_KEY},
 ).json()
 print(f"Total tokens saved: {stats['total_tokens_saved']:,}")`} />

@@ -130,7 +130,7 @@ model = "YOUR_OPENAI_MODEL"
 
 [model_providers.brevitas]
 name = "Brevitas"
-base_url = "https://api.brevitassystems.com/v1"
+base_url = "https://brevitassystems.com/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 env_http_headers = { "X-Brevitas-Key" = "BREVITAS_API_KEY", "X-Brevitas-Repo" = "BREVITAS_REPO", "X-Brevitas-Client" = "BREVITAS_CLIENT" }
@@ -139,7 +139,7 @@ env_http_headers = { "X-Brevitas-Key" = "BREVITAS_API_KEY", "X-Brevitas-Repo" = 
 For Claude Code:
 
 ```bash
-export ANTHROPIC_BASE_URL="https://api.brevitassystems.com"
+export ANTHROPIC_BASE_URL="https://brevitassystems.com"
 export BREVITAS_CLIENT="claude-code"
 export ANTHROPIC_CUSTOM_HEADERS="X-Brevitas-Key: ${BREVITAS_API_KEY}
 X-Brevitas-Repo: ${BREVITAS_REPO}
