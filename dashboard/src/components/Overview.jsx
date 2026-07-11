@@ -35,13 +35,12 @@ function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-d
   )
 }
 
-export default function Overview({ apiKey, darkMode }) {
+export default function Overview({ apiKey, darkMode, refreshTick }) {
   const [stats, setStats]     = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
 
   const loadStats = useCallback(async () => {
-    setLoading(true)
     setError('')
     try {
       const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
@@ -54,7 +53,7 @@ export default function Overview({ apiKey, darkMode }) {
     }
   }, [apiKey])
 
-  useEffect(() => { loadStats() }, [loadStats])
+  useEffect(() => { loadStats() }, [loadStats, refreshTick])
 
   if (loading) return <p className="annotation pt-8">// loading…</p>
   if (error)   return <p className="font-mono text-xs text-red-500 pt-8">{error}</p>
@@ -85,7 +84,7 @@ export default function Overview({ apiKey, darkMode }) {
             onClick={loadStats}
             className="annotation hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
           >
-            refresh
+            refresh now
           </button>
         </div>
         <div className="h-px bg-brand-border dark:bg-brand-dark-border" />

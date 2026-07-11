@@ -4,14 +4,14 @@ const num = value => Number(value || 0).toLocaleString()
 const usd = value => `$${Number(value || 0).toFixed(4)}`
 const measured = row => row.unpriced_calls === row.calls ? 'Unpriced' : usd(row.measured_savings_usd)
 
-export default function Admin({ accessToken }) {
+export default function Admin({ accessToken, refreshTick }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   useEffect(() => {
     fetch('/v1/admin/stats/breakdown', { headers: { Authorization: `Bearer ${accessToken}` } })
       .then(response => response.ok ? response.json() : Promise.reject(new Error('Admin access denied')))
       .then(setData).catch(error => setError(error.message))
-  }, [accessToken])
+  }, [accessToken, refreshTick])
   if (error) return <p className="font-mono text-xs text-red-500">{error}</p>
   if (!data) return <p className="annotation">// loading admin usage…</p>
   return <div className="space-y-8">

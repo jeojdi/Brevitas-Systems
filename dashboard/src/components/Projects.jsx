@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 const number = n => Number(n || 0).toLocaleString()
 const usd = n => n == null ? 'Unpriced' : `$${Number(n).toFixed(4)}`
 
-export default function Projects({ apiKey }) {
+export default function Projects({ apiKey, refreshTick }) {
   const [rows, setRows] = useState([])
   const [selected, setSelected] = useState('')
   const [error, setError] = useState('')
@@ -13,7 +13,7 @@ export default function Projects({ apiKey }) {
       .then(response => response.ok ? response.json() : Promise.reject(new Error('Failed to load projects')))
       .then(data => setRows(data.rows || []))
       .catch(error => setError(error.message))
-  }, [apiKey])
+  }, [apiKey, refreshTick])
 
   const projects = useMemo(() => Object.values(rows.reduce((all, row) => {
     const name = row.project || 'Unattributed'

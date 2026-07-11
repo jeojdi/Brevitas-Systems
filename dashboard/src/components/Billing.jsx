@@ -20,14 +20,13 @@ function StatCard({ label, value, sub, accent = false }) {
   )
 }
 
-export default function Billing({ apiKey }) {
+export default function Billing({ apiKey, refreshTick }) {
   const [stats, setStats]   = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]   = useState('')
 
   const load = useCallback(async () => {
     if (!apiKey) return
-    setLoading(true)
     setError('')
     try {
       const r = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
@@ -40,7 +39,7 @@ export default function Billing({ apiKey }) {
     }
   }, [apiKey])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, refreshTick])
 
   if (!apiKey) return (
     <div className="pt-12 text-center">

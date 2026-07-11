@@ -125,9 +125,13 @@ function PythonSDKDocs() {
         <Section id="sdk-auth" title="Authentication">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             Set your API key as an environment variable (recommended), or pass it directly in code.
-            To get an API key, <a href="mailto:contact@brevitassystems.com" className="text-brand-blue hover:underline">contact us</a>.
+            Create and copy a key from the <span className="text-brand-blue">API Keys</span> tab.
           </p>
-          <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here`} />
+          <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here
+export BREVITAS_BASE_URL=https://brevitassystems.com
+export BREVITAS_PROJECT=my-app
+export BREVITAS_ENVIRONMENT=production
+export BREVITAS_SOURCE=backend`} />
           <CodeBlock lang="python" code={`# or configure in code
 from brevitas import configure
 configure(api_key="bvt_your_key_here")`} />

@@ -8,8 +8,10 @@ import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
 import Projects from './components/Projects.jsx'
 import Admin from './components/Admin.jsx'
+import ApiKeys from './components/ApiKeys.jsx'
 
-const BASE_TABS = ['Overview', 'Projects', 'Playground', 'Model', 'Docs', 'Billing']
+const BASE_TABS = ['Overview', 'Projects', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
+const LIVE_REFRESH_MS = 10_000
 
 function MoonIcon() {
   return (
@@ -44,6 +46,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Overview')
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
   const [isAdmin, setIsAdmin]     = useState(false)
+  const [refreshTick, setRefreshTick] = useState(0)
 
   const toggleDark = () => {
     const next = !darkMode
@@ -89,6 +92,12 @@ export default function App() {
       .then(response => setIsAdmin(response.ok))
       .catch(() => setIsAdmin(false))
   }, [session?.access_token])
+
+  useEffect(() => {
+    if (!apiKey) return
+    const timer = window.setInterval(() => setRefreshTick(tick => tick + 1), LIVE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [apiKey])
 
   const signOut = () => supabase.auth.signOut()
 
@@ -172,6 +181,9 @@ export default function App() {
 
           {/* Right: dark toggle + user email + sign out */}
           <div className="flex items-center gap-3 shrink-0">
+            <span className="annotation hidden lg:flex items-center gap-1.5" title="Usage refreshes every 10 seconds">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> live
+            </span>
             <button
               onClick={toggleDark}
               className="text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
@@ -194,13 +206,14 @@ export default function App() {
 
       {/* ── Page content ── */}
       <main className="flex-1 px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
-        {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} />}
-        {activeTab === 'Projects'   && <Projects     apiKey={apiKey} />}
+        {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
+        {activeTab === 'Projects'   && <Projects     apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'Billing'    && <Billing apiKey={apiKey} />}
-        {activeTab === 'Admin'      && <Admin accessToken={session.access_token} />}
+        {activeTab === 'Billing'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
       </main>
     </div>
   )
