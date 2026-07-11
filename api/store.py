@@ -195,19 +195,26 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-_BREAKDOWN_FIELDS = ("project", "environment", "source", "client", "agent",
+_BREAKDOWN_FIELDS = ("repo", "environment", "client", "agent",
                      "call_site_id", "framework", "gateway", "provider", "model", "operation")
 
 
 def _breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        groups[tuple(row.get(f) or ("Unattributed" if f in ("project", "environment", "source", "client") else "")
-                     for f in _BREAKDOWN_FIELDS)].append(row)
+        labels = {
+            "repo": row.get("repo") or row.get("project") or "Unattributed",
+            "environment": row.get("environment") or "Unattributed",
+            "client": row.get("client") or row.get("source") or "Unattributed",
+        }
+        groups[tuple(labels.get(f) or row.get(f) or "" for f in _BREAKDOWN_FIELDS)].append(row)
     out = []
     for key, items in groups.items():
         stat = _stats(items)
-        out.append({**dict(zip(_BREAKDOWN_FIELDS, key)),
+        labels = dict(zip(_BREAKDOWN_FIELDS, key))
+        out.append({**labels,
+                    "project": items[0].get("project") or labels["repo"],
+                    "source": items[0].get("source") or labels["client"],
                     "calls": stat["total_calls"],
                     "baseline_tokens": stat["total_baseline_tokens"],
                     "optimized_tokens": stat["total_optimized_tokens"],
@@ -216,7 +223,7 @@ def _breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "measured_savings_usd": stat["total_measured_savings_usd"],
                     "verified_savings_usd": stat["total_verified_savings_usd"],
                     "unpriced_calls": stat["unpriced_calls"]})
-    return sorted(out, key=lambda r: (-r["tokens_saved"], r["project"], r["source"], r["model"]))
+    return sorted(out, key=lambda r: (-r["tokens_saved"], r["repo"], r["client"], r["model"]))
 
 
 def _admin_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

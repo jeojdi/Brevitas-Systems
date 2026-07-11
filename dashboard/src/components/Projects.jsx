@@ -10,13 +10,13 @@ export default function Projects({ apiKey, refreshTick }) {
 
   useEffect(() => {
     fetch('/v1/stats/breakdown', { headers: { 'X-Brevitas-Key': apiKey } })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error('Failed to load projects')))
+      .then(response => response.ok ? response.json() : Promise.reject(new Error('Failed to load repositories')))
       .then(data => setRows(data.rows || []))
       .catch(error => setError(error.message))
   }, [apiKey, refreshTick])
 
   const projects = useMemo(() => Object.values(rows.reduce((all, row) => {
-    const name = row.project || 'Unattributed'
+    const name = row.repo || row.project || 'Unattributed'
     const project = all[name] ||= { name, calls: 0, tokens: 0, measured: 0, verified: 0, unpriced: 0, rows: [] }
     project.calls += Number(row.calls || 0)
     project.tokens += Number(row.tokens_saved || 0)
@@ -28,18 +28,18 @@ export default function Projects({ apiKey, refreshTick }) {
   }, {})), [rows])
 
   if (error) return <p className="font-mono text-xs text-red-500 pt-8">{error}</p>
-  if (!rows.length) return <div className="pt-16 text-center"><p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">No project usage yet.</p><p className="annotation mt-2">// set BREVITAS_PROJECT and make an AI call</p></div>
+  if (!rows.length) return <div className="pt-16 text-center"><p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">No repository usage yet.</p><p className="annotation mt-2">// set BREVITAS_REPO and make an AI call</p></div>
 
   const current = projects.find(project => project.name === selected)
   if (current) return (
     <div className="space-y-8">
-      <button onClick={() => setSelected('')} className="annotation hover:text-brand-blue">← all projects</button>
-      <div><p className="annotation tracking-widest uppercase">Project</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">{current.name}</h2></div>
+      <button onClick={() => setSelected('')} className="annotation hover:text-brand-blue">← all repositories</button>
+      <div><p className="annotation tracking-widest uppercase">Repository</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">{current.name}</h2></div>
       <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
         <table className="w-full text-left">
-          <thead><tr className="border-b border-brand-border dark:border-brand-dark-border">{['Environment / source', 'Provider / model', 'Operation', 'Calls', 'Tokens saved', 'Measured', 'Verified'].map(label => <th key={label} className="annotation px-4 py-3">{label}</th>)}</tr></thead>
-          <tbody>{current.rows.map((row, index) => <tr key={`${row.source}-${row.provider}-${row.model}-${index}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
-            <td className="font-mono text-xs px-4 py-3 text-brand-navy dark:text-brand-dark-navy">{row.environment || 'Unattributed'} / {row.source || 'Unattributed'}{row.agent ? ` / ${row.agent}` : ''}</td>
+          <thead><tr className="border-b border-brand-border dark:border-brand-dark-border">{['Client', 'Provider / model', 'Operation', 'Calls', 'Tokens saved', 'Measured', 'Verified'].map(label => <th key={label} className="annotation px-4 py-3">{label}</th>)}</tr></thead>
+          <tbody>{current.rows.map((row, index) => <tr key={`${row.client}-${row.provider}-${row.model}-${index}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
+            <td className="font-mono text-xs px-4 py-3 text-brand-navy dark:text-brand-dark-navy">{row.client || row.source || 'Unattributed'}{row.environment ? ` / ${row.environment}` : ''}{row.agent ? ` / ${row.agent}` : ''}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-blue">{row.gateway ? `${row.gateway} → ` : ''}{row.provider || 'unknown'} / {row.model || 'unknown'}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-muted">{row.operation}</td>
             <td className="font-mono text-xs px-4 py-3">{number(row.calls)}</td>
@@ -53,7 +53,7 @@ export default function Projects({ apiKey, refreshTick }) {
   )
 
   return <div className="space-y-8">
-    <div><p className="annotation tracking-widest uppercase">Projects</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">Every application and agent.</h2><p className="text-brand-muted mt-3">Runtime usage discovered through AgentMap integrations.</p></div>
+    <div><p className="annotation tracking-widest uppercase">Repositories</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">Every codebase and agent.</h2><p className="text-brand-muted mt-3">Runtime usage discovered through AgentMap integrations.</p></div>
     <div className="grid md:grid-cols-2 gap-4">{projects.map(project => <button key={project.name} onClick={() => setSelected(project.name)} className="text-left bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border hover:border-brand-blue rounded-2xl p-6 transition-colors">
       <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">{project.name}</p>
       <p className="annotation mt-2">{number(project.calls)} calls · {number(project.tokens)} tokens saved</p>

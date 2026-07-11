@@ -11,7 +11,7 @@ import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
 
-const BASE_TABS = ['Overview', 'Projects', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
+const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
 const LIVE_REFRESH_MS = 10_000
 
 function pendingDeviceCode() {
@@ -227,7 +227,7 @@ export default function App() {
       {/* ── Page content ── */}
       <main className="flex-1 px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
-        {activeTab === 'Projects'   && <Projects     apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}

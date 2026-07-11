@@ -74,7 +74,9 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     breakdown = client.get("/v1/stats/breakdown", headers=headers).json()["rows"]
     assert overview["total_calls"] == sum(row["calls"] for row in breakdown) == 1
     assert breakdown[0]["project"] == "backend-app"
+    assert breakdown[0]["repo"] == "backend-app"
     assert breakdown[0]["source"] == "worker"
+    assert breakdown[0]["client"] == "python-sdk"
     assert "must never be stored" not in repr(store._rows(hash_key("bvt_test")))
     assert "/private/work" not in repr(store._rows(hash_key("bvt_test")))
     store.create_key(hash_key("bvt_other"), "other", owner_id="user-2")
@@ -85,6 +87,29 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     admin = client.get("/v1/admin/stats", headers={"X-Brevitas-Admin": "admin-secret"})
     assert admin.status_code == 200
     assert admin.json()["total_calls"] == 2
+
+
+def test_repo_client_model_breakdown_reconciles(tmp_path):
+    store = UsageStore(str(tmp_path / "reconcile.db"))
+    rows = [
+        ("repo-a", "codex", "openai", "gpt-4o-mini", 100, 80, .10),
+        ("repo-a", "codex", "deepseek", "deepseek-chat", 200, 150, .20),
+        ("repo-a", "claude-code", "anthropic", "claude-sonnet-4-6", 300, 250, .30),
+        ("repo-b", "backend", "openai", "gpt-4o", 400, 300, .40),
+    ]
+    for repo, client, provider, model, baseline, optimized, usd in rows:
+        store.record_usage("key", baseline, optimized, repo=repo, project=repo,
+                           client=client, source=client, provider=provider, model=model,
+                           measured_savings_usd=usd, verified_savings_usd=usd)
+
+    breakdown = store.get_breakdown("key")
+    totals = store.get_stats("key")
+    assert sum(row["calls"] for row in breakdown) == totals["total_calls"]
+    assert sum(row["tokens_saved"] for row in breakdown) == totals["total_tokens_saved"]
+    assert round(sum(row["measured_savings_usd"] for row in breakdown), 8) == totals["total_measured_savings_usd"]
+    assert {(row["repo"], row["client"], row["provider"], row["model"]) for row in breakdown} == {
+        (repo, client, provider, model) for repo, client, provider, model, *_ in rows
+    }
 
 
 def _mock_client(monkeypatch, handler):
