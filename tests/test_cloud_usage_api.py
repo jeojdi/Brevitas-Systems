@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -9,6 +10,42 @@ from fastapi.testclient import TestClient
 
 from api.auth import hash_key
 from api.store import UsageStore
+
+BEARER = "Bearer"
+
+
+def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "device.db"))
+    monkeypatch.setattr(server, "_store", store)
+    client = TestClient(server.app)
+
+    started = client.post("/v1/device-auth/start")
+    assert started.status_code == 200
+    device_code = started.json()["device_code"]
+    assert started.json()["verification_uri_complete"].endswith(f"#bvx={device_code}")
+    assert device_code not in repr(store.get_device_request(hash_key(device_code)))
+
+    pending = client.post("/v1/device-auth/token", json={"device_code": device_code})
+    assert pending.status_code == 202
+    monkeypatch.setattr(server, "_dashboard_user", lambda request: "")
+    assert client.post("/v1/device-auth/approve", json={"device_code": device_code}).status_code == 401
+    monkeypatch.setattr(server, "_dashboard_user", lambda request: "user-device")
+    assert client.post("/v1/device-auth/approve", json={"device_code": device_code}).status_code == 200
+    assert client.post("/v1/device-auth/approve", json={"device_code": device_code}).status_code == 200
+
+    token = client.post("/v1/device-auth/token", json={"device_code": device_code})
+    assert token.status_code == 200
+    api_key = token.json()["api_key"]
+    assert api_key.startswith("bvt_")
+    assert store.key_owner(hash_key(api_key)) == "user-device"
+    assert client.post("/v1/device-auth/token", json={"device_code": device_code}).status_code == 410
+
+    expired = "expired_" + "x" * 40
+    store.create_device_request(hash_key(expired),
+                                (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+    assert client.post("/v1/device-auth/token", json={"device_code": expired}).status_code == 410
 
 
 def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
@@ -21,7 +58,7 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
         "provider": "openai", "model": "gpt-4o-mini", "operation": "responses",
         "baseline_tokens": 100, "compressed_tokens": 80,
         "fresh_input_tokens": 60, "cached_input_tokens": 20, "output_tokens": 10,
-        "quality_score": .95, "request_id": "same", "project": "backend-app",
+        "quality_score": .95, "request_id": "same", "project": "/private/work/backend-app",
         "environment": "prod", "source": "worker", "client": "python-sdk",
         "call_site_id": "call_abc", "receipt_source": "sdk",
         "usage_raw": {"prompt": "must never be stored", "response": "also private"},
@@ -39,6 +76,7 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     assert breakdown[0]["project"] == "backend-app"
     assert breakdown[0]["source"] == "worker"
     assert "must never be stored" not in repr(store._rows(hash_key("bvt_test")))
+    assert "/private/work" not in repr(store._rows(hash_key("bvt_test")))
     store.create_key(hash_key("bvt_other"), "other", owner_id="user-2")
     store.record_usage(hash_key("bvt_other"), 50, 40, project="other-app", source="api")
     assert client.get("/v1/stats", headers=headers).json()["total_calls"] == 1
@@ -79,7 +117,7 @@ def test_streaming_chat_and_responses_are_byte_preserving_and_metered(monkeypatc
     proxy.set_usage_reporter(lambda key, payload: events.append((key, payload)))
     monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
     client = TestClient(proxy.proxy_app)
-    headers = {"Authorization": "Bearer provider-key", "X-Brevitas-Key": "bvt_customer",
+    headers = {"Authorization": f"{BEARER} provider-key", "X-Brevitas-Key": "bvt_customer",
                "X-Brevitas-Project": "app", "X-Brevitas-Client": "backend"}
     chat = client.post("/v1/chat/completions", headers=headers,
                        json={"model": "gpt-4o-mini", "stream": True,
@@ -111,7 +149,7 @@ def test_reporting_failure_never_breaks_provider_response(monkeypatch):
     proxy.set_usage_reporter(lambda key, payload: (_ for _ in ()).throw(RuntimeError("db down")))
     monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
     response = TestClient(proxy.proxy_app).post("/v1/chat/completions",
-        headers={"Authorization": "Bearer provider", "X-Brevitas-Key": "bvt"},
+        headers={"Authorization": f"{BEARER} provider", "X-Brevitas-Key": "bvt"},
         json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]})
     assert response.status_code == 200
     assert response.content == raw
@@ -135,7 +173,7 @@ def test_anthropic_and_deepseek_nonstream_receipts(monkeypatch):
     anthropic = client.post("/v1/messages", headers={**common, "X-Api-Key": "ant"},
         json={"model": "claude-sonnet-4-6", "max_tokens": 10,
               "messages": [{"role": "user", "content": "hello"}]})
-    deepseek = client.post("/v1/chat/completions", headers={**common, "Authorization": "Bearer ds"},
+    deepseek = client.post("/v1/chat/completions", headers={**common, "Authorization": f"{BEARER} ds"},
         json={"model": "deepseek-chat", "messages": [{"role": "user", "content": "hello"}]})
     assert anthropic.content == anthropic_raw
     assert deepseek.content == deepseek_raw
@@ -165,7 +203,7 @@ def test_anthropic_stream_and_openai_nonstream_receipts(monkeypatch):
     anthropic = client.post("/v1/messages", headers={"X-Api-Key": "ant"},
         json={"model": "claude-sonnet-4-6", "stream": True, "max_tokens": 10,
               "messages": [{"role": "user", "content": "hello"}]})
-    chat = client.post("/v1/chat/completions", headers={"Authorization": "Bearer openai"},
+    chat = client.post("/v1/chat/completions", headers={"Authorization": f"{BEARER} openai"},
         json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]})
     assert anthropic.content == stream_raw
     assert chat.content == chat_raw
@@ -200,10 +238,10 @@ def test_combined_hosted_proxy_writes_customer_dashboard_row(tmp_path, monkeypat
     server._proxy_active.clear()
 
     client = TestClient(server.app)
-    headers = {"X-Brevitas-Key": raw_key, "Authorization": "Bearer provider-key",
+    headers = {"X-Brevitas-Key": raw_key, "Authorization": f"{BEARER} provider-key",
                "X-Brevitas-Project": "backend-service", "X-Brevitas-Environment": "prod",
                "X-Brevitas-Client": "api-worker", "X-Brevitas-Request-Id": "e2e-1"}
-    assert client.post("/v1/responses", headers={"Authorization": "Bearer provider-key"},
+    assert client.post("/v1/responses", headers={"Authorization": f"{BEARER} provider-key"},
                        json={"model": "gpt-4o-mini", "input": "x"}).status_code == 401
     response = client.post("/v1/responses", headers=headers,
         json={"model": "gpt-4o-mini", "input": "private input"})

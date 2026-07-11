@@ -10,10 +10,12 @@ import hmac
 import json
 import logging
 import queue
+import secrets
 import threading
 import time as _time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import requests as _requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -400,6 +402,83 @@ def _admin_authenticated(request: Request) -> str:
     if metadata.get("brevitas_admin") is True or metadata.get("role") == "brevitas_admin":
         return str(identity.get("id") or "admin")
     raise HTTPException(status_code=403, detail="Admin access required")
+
+
+# ── bvx browser authorization ────────────────────────────────────────────────
+
+class DeviceCodeRequest(BaseModel):
+    device_code: str = Field(min_length=40, max_length=128,
+                             pattern=r"^[A-Za-z0-9_-]+$")
+
+
+def _device_expired(row: dict) -> bool:
+    try:
+        expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+        return expires <= datetime.now(timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+@app.post("/v1/device-auth/start")
+@limiter.limit("10/minute")
+def start_device_auth(request: Request):
+    device_code = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
+    try:
+        _store.create_device_request(hash_key(device_code), expires.isoformat())
+    except Exception as exc:
+        logger.error("device auth start failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Device authorization unavailable") from exc
+    dashboard = os.getenv("BREVITAS_DASHBOARD_URL", "https://brevitassystems.com/dashboard").rstrip("/")
+    return JSONResponse({
+        "device_code": device_code,
+        "verification_uri_complete": f"{dashboard}#bvx={device_code}",
+        "expires_in": 600,
+        "interval": 2,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/v1/device-auth/approve")
+@limiter.limit("20/minute")
+def approve_device_auth(request: Request, body: DeviceCodeRequest):
+    owner_id = _dashboard_user(request)
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="Sign in to approve this device")
+    device_hash = hash_key(body.device_code)
+    row = _store.get_device_request(device_hash)
+    if not row or _device_expired(row):
+        raise HTTPException(status_code=410, detail="Device authorization expired")
+    if row.get("approved_at"):
+        if row.get("owner_id") != owner_id:
+            raise HTTPException(status_code=409, detail="Device already connected")
+        return {"status": "approved"}
+
+    key = generate_api_key()
+    kh = hash_key(key)
+    if not _store.approve_device_request(device_hash, owner_id, kh, _encrypt(key)):
+        raise HTTPException(status_code=409, detail="Device authorization already handled")
+    logger.info("bvx device approved owner=%s", owner_id)
+    return {"status": "approved"}
+
+
+@app.post("/v1/device-auth/token")
+@limiter.limit("120/minute")
+def consume_device_auth(request: Request, body: DeviceCodeRequest):
+    device_hash = hash_key(body.device_code)
+    row = _store.get_device_request(device_hash)
+    if not row or _device_expired(row):
+        raise HTTPException(status_code=410, detail="Device authorization expired or consumed")
+    if not row.get("approved_at"):
+        return JSONResponse({"status": "pending"}, status_code=202,
+                            headers={"Cache-Control": "no-store"})
+    consumed = _store.consume_device_request(device_hash)
+    if not consumed:
+        raise HTTPException(status_code=410, detail="Device authorization already consumed")
+    key = _decrypt(consumed["encrypted_key"])
+    with _valid_key_lock:
+        _valid_key_cache[hash_key(key)] = _time.monotonic() + 30
+    return JSONResponse({"api_key": key},
+                        headers={"Cache-Control": "no-store"})
 
 
 # ── Key management ────────────────────────────────────────────────────────────
@@ -834,6 +913,15 @@ class UsageReportRequest(BaseModel):
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("metadata cannot contain control characters")
         return value
+
+    @field_validator("project", "repo")
+    @classmethod
+    def _repo_name_only(cls, value: str) -> str:
+        """Keep a display name, never a local path or Git remote."""
+        name = value.strip().replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        return name
 
 
 def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:

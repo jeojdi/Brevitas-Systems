@@ -246,6 +246,10 @@ class UsageStore:
             if "owner_id" not in key_cols:
                 db.execute("ALTER TABLE api_keys ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE TABLE IF NOT EXISTS provider_config (key_hash TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'ollama', provider_api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT 'llama3.2')")
+            db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
+            device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
+            if "key_hash" not in device_cols:
+                db.execute("ALTER TABLE bvx_device_auth ADD COLUMN key_hash TEXT NOT NULL DEFAULT ''")
             definitions = ",\n".join(f"{name} {definition}" for name, definition in _USAGE_COLUMNS.items())
             db.execute(f"CREATE TABLE IF NOT EXISTS usage_log (id INTEGER PRIMARY KEY AUTOINCREMENT, key_hash TEXT NOT NULL, ts TEXT NOT NULL, {definitions})")
             existing = {r[1] for r in db.execute("PRAGMA table_info(usage_log)")}
@@ -256,6 +260,36 @@ class UsageStore:
             for column in ("ts", "project", "source", "repo", "client", "provider", "model", "call_site_id"):
                 db.execute(f"CREATE INDEX IF NOT EXISTS usage_{column}_idx ON usage_log(key_hash, {column})")
             db.execute("UPDATE usage_log SET measured_savings_usd=cost_saved_usd, verified_savings_usd=cost_saved_usd WHERE measured_savings_usd IS NULL")
+
+    def create_device_request(self, device_hash: str, expires_at: str) -> None:
+        with self._conn() as db:
+            db.execute("DELETE FROM bvx_device_auth WHERE expires_at<=?", (_now(),))
+            db.execute("INSERT INTO bvx_device_auth(device_hash,expires_at) VALUES (?,?)",
+                       (device_hash, expires_at))
+
+    def get_device_request(self, device_hash: str) -> dict | None:
+        with self._conn() as db:
+            row = db.execute("SELECT device_hash,expires_at,owner_id,key_hash,encrypted_key,approved_at FROM bvx_device_auth WHERE device_hash=?",
+                             (device_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def approve_device_request(self, device_hash: str, owner_id: str, key_hash: str,
+                               encrypted_key: str) -> bool:
+        with self._conn() as db:
+            cur = db.execute("UPDATE bvx_device_auth SET owner_id=?,key_hash=?,encrypted_key=?,approved_at=? WHERE device_hash=? AND approved_at='' AND expires_at>?",
+                             (owner_id, key_hash, encrypted_key, _now(), device_hash, _now()))
+        return bool(cur.rowcount)
+
+    def consume_device_request(self, device_hash: str) -> dict | None:
+        with self._conn() as db:
+            row = db.execute("SELECT owner_id,key_hash,encrypted_key FROM bvx_device_auth WHERE device_hash=? AND approved_at<>'' AND expires_at>?",
+                             (device_hash, _now())).fetchone()
+            if not row:
+                return None
+            db.execute("INSERT INTO api_keys(key_hash,name,created,owner_id) VALUES (?,?,?,?)",
+                       (row["key_hash"], "bvx", _now(), row["owner_id"]))
+            db.execute("DELETE FROM bvx_device_auth WHERE device_hash=?", (device_hash,))
+        return dict(row)
 
     def create_key(self, key_hash: str, name: str, owner_id: str = "") -> None:
         with self._conn() as db:
@@ -392,6 +426,28 @@ class SupabaseUsageStore:
                      "Content-Type": "application/json", "Prefer": prefer}, timeout=10)
         response.raise_for_status()
         return response.json() if response.content else None
+
+    def create_device_request(self, device_hash: str, expires_at: str) -> None:
+        self._request("DELETE", "bvx_device_auth", params={"expires_at": f"lt.{_now()}"})
+        self._request("POST", "bvx_device_auth", data={"device_hash": device_hash,
+                      "expires_at": expires_at})
+
+    def get_device_request(self, device_hash: str) -> dict | None:
+        rows = self._request("GET", "bvx_device_auth", params={"select": "*",
+                             "device_hash": f"eq.{device_hash}", "limit": "1"}) or []
+        return rows[0] if rows else None
+
+    def approve_device_request(self, device_hash: str, owner_id: str, key_hash: str,
+                               encrypted_key: str) -> bool:
+        return bool(self._request("POST", "rpc/approve_bvx_device", data={
+            "p_device_hash": device_hash, "p_owner_id": owner_id,
+            "p_key_hash": key_hash, "p_encrypted_key": encrypted_key,
+        }))
+
+    def consume_device_request(self, device_hash: str) -> dict | None:
+        rows = self._request("POST", "rpc/consume_bvx_device",
+                             data={"p_device_hash": device_hash}) or []
+        return rows[0] if rows else None
 
     def create_key(self, key_hash: str, name: str, owner_id: str = "") -> None:
         self._request("POST", "api_keys", data={"key_hash": key_hash, "name": name,

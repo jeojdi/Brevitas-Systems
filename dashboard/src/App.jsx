@@ -9,9 +9,19 @@ import Billing from './components/Billing.jsx'
 import Projects from './components/Projects.jsx'
 import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
+import DeviceConnect from './components/DeviceConnect.jsx'
 
 const BASE_TABS = ['Overview', 'Projects', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
 const LIVE_REFRESH_MS = 10_000
+
+function pendingDeviceCode() {
+  const match = window.location.hash.match(/^#bvx=([A-Za-z0-9_-]{40,128})$/)
+  if (match) {
+    sessionStorage.setItem('bvx_device_code', match[1])
+    history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+  }
+  return sessionStorage.getItem('bvx_device_code') || ''
+}
 
 function MoonIcon() {
   return (
@@ -47,6 +57,7 @@ export default function App() {
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
   const [isAdmin, setIsAdmin]     = useState(false)
   const [refreshTick, setRefreshTick] = useState(0)
+  const [deviceCode, setDeviceCode] = useState(pendingDeviceCode)
 
   const toggleDark = () => {
     const next = !darkMode
@@ -126,6 +137,15 @@ export default function App() {
 
   if (!session) {
     return <Auth darkMode={darkMode} onToggleDark={toggleDark} />
+  }
+
+  if (deviceCode) {
+    const done = () => {
+      sessionStorage.removeItem('bvx_device_code')
+      setDeviceCode('')
+    }
+    return <DeviceConnect accessToken={session.access_token} deviceCode={deviceCode}
+                          email={session.user.email} onDone={done} />
   }
 
   if (keyLoading) {

@@ -119,7 +119,7 @@ function PythonSDKDocs() {
         </div>
 
         <Section id="sdk-install" title="Install">
-          <CodeBlock lang="bash" code={`pip install brevitas-systems==0.9.9`} />
+          <CodeBlock lang="bash" code={`pip install brevitas-systems==0.9.10`} />
         </Section>
 
         <Section id="sdk-auth" title="Authentication">
