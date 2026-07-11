@@ -136,7 +136,7 @@ class SemanticCache:
         messages = body.get("messages", []) or []
         msgs = messages if include_last else messages[:-1]
         return {
-            "namespace": self.namespace,   # tenant isolation: part of both hashes
+            "namespace": body.get("_brevitas_cache_namespace", self.namespace),
             "provider": provider,
             "model": model,
             "system": body.get("system", ""),      # Anthropic system prompt
@@ -228,7 +228,8 @@ class SemanticCache:
         expires = now + ttl + random.randint(-jitter, jitter)  # jitter avoids herd expiry
         exact = self._hash(self._exact_parts(body, provider, model, include_last=True))
         ctx = self._hash(self._exact_parts(body, provider, model, include_last=False))
-        vec = _embed.embed(self._last_user_text(body.get("messages", []))) if np is not None else None
+        vec = (_embed.embed(self._last_user_text(body.get("messages", [])))
+               if self.semantic_enabled and np is not None else None)
         emb_bytes = vec.tobytes() if vec is not None else None
         with self._conn() as db:
             db.execute(
@@ -263,12 +264,15 @@ class SupabaseSemanticCache(SemanticCache):
     """
 
     def __init__(self, url: str, service_key: str, *, similarity_threshold: float = 0.97,
-                 max_temperature: float = 0.5, default_ttl_s: int = 3600):
+                 max_temperature: float = 0.5, default_ttl_s: int = 3600,
+                 semantic_enabled: bool = False):
         from supabase import create_client
         self._c = create_client(url, service_key)
         self.similarity_threshold = similarity_threshold
         self.max_temperature = max_temperature
         self.default_ttl_s = default_ttl_s
+        self.semantic_enabled = semantic_enabled
+        self.namespace = ""
         # NB: no SQLite init — this backend does not touch the local filesystem.
 
     @staticmethod
@@ -289,7 +293,7 @@ class SupabaseSemanticCache(SemanticCache):
                 self._bump(exact)
                 return CacheHit("exact", row["response_json"],
                                 row["prompt_tokens"], row["completion_tokens"])
-            if np is None:
+            if not self.semantic_enabled or np is None:
                 return None
             vec = _embed.embed(self._last_user_text(body.get("messages", [])))
             if vec is None:
@@ -318,7 +322,8 @@ class SupabaseSemanticCache(SemanticCache):
         jitter = min(60, max(1, ttl // 10))
         exact = self._hash(self._exact_parts(body, provider, model, include_last=True))
         ctx = self._hash(self._exact_parts(body, provider, model, include_last=False))
-        vec = _embed.embed(self._last_user_text(body.get("messages", []))) if np is not None else None
+        vec = (_embed.embed(self._last_user_text(body.get("messages", [])))
+               if self.semantic_enabled and np is not None else None)
         try:
             self._c.table("semantic_cache").upsert({
                 "exact_hash": exact, "context_hash": ctx, "model_id": f"{provider}:{model}",
@@ -348,15 +353,17 @@ def make_semantic_cache():
     """Pick the cache backend. Supabase (shared across machines) only when explicitly
     opted in AND service-role creds are present; otherwise the local SQLite backend.
     Any failure falls back to SQLite so the cache is always available."""
+    semantic_enabled = os.getenv("BREVITAS_SEMANTIC_CACHE", "false").lower() in (
+        "1", "true", "yes")
     if os.getenv("BREVITAS_CACHE_BACKEND", "").lower() == "supabase":
         url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         if url and key:
             try:
-                return SupabaseSemanticCache(url, key)
+                return SupabaseSemanticCache(url, key, semantic_enabled=semantic_enabled)
             except Exception:
                 pass
-    return SemanticCache()
+    return SemanticCache(semantic_enabled=semantic_enabled)
 
 
 def _demo() -> None:

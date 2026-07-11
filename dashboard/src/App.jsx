@@ -6,8 +6,10 @@ import Playground from './components/Playground.jsx'
 import ModelConfig from './components/ModelConfig.jsx'
 import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
+import Projects from './components/Projects.jsx'
+import Admin from './components/Admin.jsx'
 
-const TABS = ['Overview', 'Playground', 'Model', 'Docs', 'Billing']
+const BASE_TABS = ['Overview', 'Projects', 'Playground', 'Model', 'Docs', 'Billing']
 
 function MoonIcon() {
   return (
@@ -41,6 +43,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('Overview')
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
+  const [isAdmin, setIsAdmin]     = useState(false)
 
   const toggleDark = () => {
     const next = !darkMode
@@ -74,11 +77,18 @@ export default function App() {
     if (!session) return
     setKeyLoading(true)
     setKeyError('')
-    getOrCreateApiKey(session.user.id)
+    getOrCreateApiKey(session.user.id, session.access_token)
       .then(key => setApiKey(key))
       .catch(err => setKeyError(err.message))
       .finally(() => setKeyLoading(false))
   }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.access_token) return
+    fetch('/v1/admin/stats', { headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then(response => setIsAdmin(response.ok))
+      .catch(() => setIsAdmin(false))
+  }, [session?.access_token])
 
   const signOut = () => supabase.auth.signOut()
 
@@ -145,7 +155,7 @@ export default function App() {
 
           {/* Tabs */}
           <nav className="flex items-center gap-1">
-            {TABS.map(tab => (
+            {[...BASE_TABS, ...(isAdmin ? ['Admin'] : [])].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -185,10 +195,12 @@ export default function App() {
       {/* ── Page content ── */}
       <main className="flex-1 px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} />}
+        {activeTab === 'Projects'   && <Projects     apiKey={apiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
         {activeTab === 'Billing'    && <Billing apiKey={apiKey} />}
+        {activeTab === 'Admin'      && <Admin accessToken={session.access_token} />}
       </main>
     </div>
   )

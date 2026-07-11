@@ -87,6 +87,72 @@ always-valid sequential quality gate (mSPRT) on an audited sample; if a lever's 
 drops, billing for it stops automatically. Every call is logged with the provider's
 usage receipt and an idempotency key.
 
+## Cloud usage tracking
+
+AgentMap-discovered backend services, workers, Claude Code, Codex, and custom clients all
+write the same content-free receipt:
+
+`account → project → environment → source/agent → provider → model → operation`
+
+```bash
+export BREVITAS_API_KEY=bvt_...
+export BREVITAS_PROJECT=billing-app
+export BREVITAS_ENVIRONMENT=production
+export BREVITAS_SOURCE=api-worker
+```
+
+The hosted gateway accepts `X-Brevitas-Key` plus the equivalent `X-Brevitas-*` metadata
+headers. Provider keys use their normal `Authorization` or `X-Api-Key` header. Unknown
+models retain token totals and are shown as **Unpriced** rather than receiving a guessed
+price.
+
+The gateway meters Anthropic Messages plus OpenAI Responses, Chat Completions, Completions,
+and Embeddings (including AgentMap's OpenAI-compatible providers). Native Gemini/Vertex,
+Bedrock, Cohere, Replicate, Hugging Face, Ollama, LiteLLM, and framework calls submit the
+numeric receipt through the same adapter—no model content is sent:
+
+```python
+import brevitas
+
+brevitas.report_receipt(
+    "google_gemini", "your-model", baseline_tokens=1200,
+    usage=response.usage_metadata,
+    operation="generate_content",
+)
+```
+
+For Codex, export `OPENAI_API_KEY` (the customer's provider key), `BREVITAS_API_KEY`,
+`BREVITAS_REPO`, and `BREVITAS_CLIENT=codex`, then add this to `~/.codex/config.toml`:
+
+```toml
+model_provider = "brevitas"
+model = "YOUR_OPENAI_MODEL"
+
+[model_providers.brevitas]
+name = "Brevitas"
+base_url = "https://api.brevitassystems.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+env_http_headers = { "X-Brevitas-Key" = "BREVITAS_API_KEY", "X-Brevitas-Repo" = "BREVITAS_REPO", "X-Brevitas-Client" = "BREVITAS_CLIENT" }
+```
+
+For Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL="https://api.brevitassystems.com"
+export BREVITAS_CLIENT="claude-code"
+export ANTHROPIC_CUSTOM_HEADERS="X-Brevitas-Key: ${BREVITAS_API_KEY}
+X-Brevitas-Repo: ${BREVITAS_REPO}
+X-Brevitas-Client: ${BREVITAS_CLIENT}"
+```
+
+These follow the supported [Codex custom-provider configuration](https://developers.openai.com/codex/config-advanced/)
+and [Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
+
+The Supabase `usage_log` stores numeric categories and labels only—never prompts, responses,
+code, absolute paths, Git remotes, or raw provider receipts. A hosted proxy necessarily sees
+request and response bytes in transit; use the SDK/direct receipt path when that is not acceptable.
+
 ## Status
 
 Active development on `algo/wave-a`. Core levers (caching, retrieval, cost-aware

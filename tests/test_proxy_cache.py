@@ -76,6 +76,13 @@ def test_repeated_request_hits_cache(monkeypatch):
     assert r2.json()["choices"][0]["message"]["content"] == "42"
     assert _FakeAsyncClient.calls == 1, "repeated call must be served from cache"
 
+    # A hosted proxy may serve many customers. Identical content under a different
+    # credential must never reuse the first customer's response.
+    r3 = client.post("/v1/chat/completions", json=req,
+                     headers={"authorization": "test-auth-other-tenant"})
+    assert r3.status_code == 200
+    assert _FakeAsyncClient.calls == 2, "cache entries must be tenant-isolated"
+
 
 def test_high_temperature_not_cached(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)

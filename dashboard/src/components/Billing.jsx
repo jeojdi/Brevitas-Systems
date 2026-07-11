@@ -30,7 +30,7 @@ export default function Billing({ apiKey }) {
     setLoading(true)
     setError('')
     try {
-      const r = await fetch('/v1/stats', { headers: { 'X-API-Key': apiKey } })
+      const r = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
       if (!r.ok) throw new Error(`${r.status}`)
       setStats(await r.json())
     } catch (e) {
@@ -60,10 +60,12 @@ export default function Billing({ apiKey }) {
     </div>
   )
 
-  const totalCostSaved = Number(stats?.total_cost_saved_usd || 0)
+  const measuredSaved  = Number(stats?.total_measured_savings_usd || 0)
+  const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
   const totalFee       = Number(stats?.total_brevitas_fee_usd || 0)
   const months         = stats?.billing_by_month || []
   const thisMonth      = months[0] || null
+  const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
 
   return (
     <div className="space-y-10">
@@ -86,20 +88,21 @@ export default function Billing({ apiKey }) {
           sub="across all calls"
         />
         <StatCard
-          label="Total cost saved"
-          value={`$${fmt(totalCostSaved, 4)}`}
-          sub="provider spend avoided"
+          label="Measured savings"
+          value={allUnpriced ? 'Unpriced' : `$${fmt(measuredSaved, 4)}`}
+          sub="receipt-based estimate"
+          accent
+        />
+        <StatCard
+          label="Verified savings"
+          value={`$${fmt(verifiedSaved, 4)}`}
+          sub="passed the quality gate"
           accent
         />
         <StatCard
           label="Brevitas fee (total)"
           value={`$${fmt(totalFee, 4)}`}
           sub="10% of cost saved"
-        />
-        <StatCard
-          label="Avg savings"
-          value={`${fmt(stats?.avg_savings_pct)}%`}
-          sub="per compression call"
         />
       </div>
 

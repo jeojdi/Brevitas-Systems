@@ -44,7 +44,7 @@ export default function Overview({ apiKey, darkMode }) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/v1/stats', { headers: { 'X-API-Key': apiKey } })
+      const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
       if (!res.ok) throw new Error('Failed to load stats')
       setStats(await res.json())
     } catch (e) {
@@ -93,24 +93,20 @@ export default function Overview({ apiKey, darkMode }) {
 
       {/* ── Big stats row ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-8 lg:gap-4">
-        <BigStat value={stats.total_calls}              label="// api calls" />
-        <BigStat value={fmt(stats.total_tokens_saved)}  label="// tokens saved"   valueClass="text-brand-blue" />
-        <BigStat value={`${stats.avg_savings_pct.toFixed(1)}%`} label="// avg savings"  valueClass="text-brand-blue" />
-        <BigStat
-          value={`${(stats.avg_quality_proxy * 100).toFixed(1)}%`}
-          label="// context retained"
-          valueClass="text-brand-teal"
-        />
+        <BigStat value={stats.total_calls} label="// ai calls" />
+        <BigStat value={fmt(stats.total_tokens_saved)} label="// tokens saved" valueClass="text-brand-blue" />
+        <BigStat value={`$${Number(stats.total_measured_savings_usd || 0).toFixed(2)}`} label="// measured savings" valueClass="text-brand-blue" />
+        <BigStat value={`$${Number(stats.total_verified_savings_usd || 0).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
       </div>
 
       {/* ── Token flow summary ── */}
       {stats.total_calls > 0 && (
         <div className="text-center space-y-2">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid">
-            {fmt(stats.total_baseline_tokens)} tokens in,{' '}
-            <em className="font-serif italic text-brand-blue">{fmt(stats.total_optimized_tokens)} out.</em>
+            {fmt(stats.total_actual_tokens)} tokens consumed,{' '}
+            <em className="font-serif italic text-brand-blue">{fmt(stats.total_tokens_saved)} saved.</em>
           </p>
-          <p className="annotation">// first-run benchmark · real api calls</p>
+          <p className="annotation">// provider receipts · {stats.unpriced_calls || 0} unpriced calls</p>
         </div>
       )}
 

@@ -1,0 +1,3 @@
+[deploy]
+healthcheckPath = "/v1/health"
+healthcheckTimeout = 300

@@ -49,7 +49,8 @@ REGISTRY: tuple[ClientSpec, ...] = (
         module="openai",
         sync_classes=("OpenAI", "AzureOpenAI"),
         async_classes=("AsyncOpenAI", "AsyncAzureOpenAI"),
-        call_paths=(("chat", "completions", "create"),),
+        call_paths=(("chat", "completions", "create"), ("responses", "create"),
+                    ("embeddings", "create"), ("completions", "create")),
     ),
 )
 

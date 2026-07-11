@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -26,24 +27,43 @@ from .models import Strategy
 # --- what an LLM API call looks like, across languages + transports --------- #
 _PROVIDER_ENDPOINTS = {
     "openai": r"api\.openai\.com",
+    "azure_openai": r"[a-z0-9.-]*\.openai\.azure\.com",
     "anthropic": r"api\.anthropic\.com",
     "deepseek": r"api\.deepseek\.com",
     "groq": r"api\.groq\.com",
-    "google": r"generativelanguage\.googleapis\.com",
+    "xai": r"api\.x\.ai",
+    "google_gemini": r"generativelanguage\.googleapis\.com|[a-z0-9-]*aiplatform\.googleapis\.com",
     "mistral": r"api\.mistral\.ai",
     "cohere": r"api\.cohere\.(ai|com)",
     "openrouter": r"openrouter\.ai",
+    "perplexity": r"api\.perplexity\.ai",
+    "together": r"api\.together\.(xyz|ai)",
+    "fireworks": r"api\.fireworks\.ai",
+    "replicate": r"api\.replicate\.com",
+    "huggingface": r"api-inference\.huggingface\.co|router\.huggingface\.co",
+    "bedrock": r"bedrock[a-z-]*\.[a-z0-9-]+\.amazonaws\.com",
+    "ollama": r"(?:localhost|127\.0\.0\.1):11434",
 }
 # SDK call shapes (provider-agnostic verbs)
 _SDK_PATTERNS = [
     ("openai",    r"\.chat\.completions\.create\b"),
     ("openai",    r"\bclient\.responses\.create\b"),
+    ("openai",    r"\.responses\.create\b|\.completions\.create\b"),
+    ("openai",    r"\.embeddings\.create\b"),
     ("anthropic", r"\.messages\.create\b"),
     ("anthropic", r"\.messages\.stream\b"),
     ("openai",    r"\bnew\s+OpenAI\b|\bOpenAI\("),
     ("anthropic", r"\bnew\s+Anthropic\b|\bAnthropic\("),
-    ("google",    r"\bgenerateContent\b|GenerativeModel\("),
+    ("google_gemini", r"\bgenerateContent\b|\bgenerate_content\b|GenerativeModel\("),
+    ("groq",      r"\bGroq\(|\bAsyncGroq\("),
+    ("mistral",   r"\bMistral\(|\.chat\.(complete|stream)\b"),
+    ("cohere",    r"\bClientV?2?\(|\.chat_stream\b"),
     ("litellm",   r"\blitellm\.(completion|acompletion)\b"),
+    ("langchain", r"\bChat(OpenAI|Anthropic|Google[A-Za-z]*|Mistral[A-Za-z]*|Groq|Cohere)\b"),
+    ("bedrock",   r"\binvoke_model\b|\.converse\("),
+    ("replicate", r"\breplicate\.run\b|\breplicate\.predictions\.create\b"),
+    ("huggingface", r"\bInferenceClient\(|\.chat_completion\b|\.text_generation\b"),
+    ("ollama",    r"\bollama\.(chat|generate)\b"),
     ("openai",    r"\bopenai\.(ChatCompletion|chat)\b"),
     ("any",       r"/v1/chat/completions|/v1/messages|/v1/responses"),
 ]
@@ -80,6 +100,12 @@ class ApiCall:
     @property
     def location(self) -> str:
         return f"{self.path}:{self.line}"
+
+    @property
+    def call_site_id(self) -> str:
+        """Opaque runtime label; the underlying path never needs to leave the machine."""
+        value = f"{self.provider}|{self.path}|{self.line}|{self.matched}"
+        return "call_" + hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
 @dataclass
