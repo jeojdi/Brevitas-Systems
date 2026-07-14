@@ -1,63 +1,28 @@
 import { useState, useEffect, useCallback } from 'react'
+import {
+  compress, fetchOllamaModels, fetchProvider, fetchProviders, saveProvider,
+} from '../lib/api.js'
 
-const PROVIDERS = [
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    description: 'Local models via Ollama — no API key required',
-    needsKey: false,
-    keyLabel: '',
-    keyPlaceholder: '',
-    models: [],        // populated dynamically from Ollama
-    customModel: true,
-  },
-  {
-    id: 'anthropic',
-    label: 'Claude',
-    description: 'Anthropic — Claude Opus, Sonnet, Haiku',
-    needsKey: true,
-    keyLabel: 'Anthropic API key',
-    keyPlaceholder: 'sk-ant-…',
-    models: ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5-20251001'],
-    customModel: false,
-  },
-  {
-    id: 'openai',
-    label: 'ChatGPT',
-    description: 'OpenAI — GPT-4o, o3-mini',
-    needsKey: true,
-    keyLabel: 'OpenAI API key',
-    keyPlaceholder: 'sk-…',
-    models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
-    customModel: false,
-  },
-  {
-    id: 'grok',
-    label: 'Grok',
-    description: 'xAI — Grok 3',
-    needsKey: true,
-    keyLabel: 'xAI API key',
-    keyPlaceholder: 'xai-…',
-    models: ['grok-3', 'grok-3-mini'],
-    customModel: false,
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    description: 'DeepSeek — chat & reasoner',
-    needsKey: true,
-    keyLabel: 'DeepSeek API key',
-    keyPlaceholder: 'sk-…',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
-    customModel: false,
-  },
-]
+const PROVIDER_META = {
+  ollama:    ['Ollama', 'Ollama on the Brevitas server — no API key required', ''],
+  anthropic: ['Claude', 'Anthropic Claude models', 'sk-ant-…'],
+  openai:    ['OpenAI', 'OpenAI models', 'sk-…'],
+  grok:      ['Grok', 'xAI Grok models', 'xai-…'],
+  deepseek:  ['DeepSeek', 'DeepSeek chat and reasoning models', 'sk-…'],
+}
+
+function providerDefinition(id, models) {
+  const meta = PROVIDER_META[id] || [id.replaceAll('_', ' '), `${id.replaceAll('_', ' ')} models`, 'API key']
+  return {
+    id, models, label: meta[0], description: meta[1], keyPlaceholder: meta[2],
+    needsKey: id !== 'ollama',
+  }
+}
 
 export default function ModelConfig({ apiKey }) {
   const [current, setCurrent]           = useState(null)
   const [provider, setProvider]         = useState('ollama')
   const [model, setModel]               = useState('')
-  const [customModel, setCustomModel]   = useState('')
   const [providerKey, setProviderKey]   = useState('')
   const [showKey, setShowKey]           = useState(false)
   const [saving, setSaving]             = useState(false)
@@ -65,41 +30,45 @@ export default function ModelConfig({ apiKey }) {
   const [status, setStatus]             = useState(null)
   const [loading, setLoading]           = useState(true)
   const [ollamaModels, setOllamaModels] = useState([])
+  const [ollamaAvailable, setOllamaAvailable] = useState(false)
+  const [catalog, setCatalog]           = useState({})
 
-  const providerDef = PROVIDERS.find(p => p.id === provider)
-  const displayModels = provider === 'ollama' ? ollamaModels : (providerDef?.models ?? [])
+  const providers = Object.entries({ ...catalog, ollama: ollamaModels })
+    .filter(([, models]) => models.length > 0)
+    .map(([id, models]) => providerDefinition(id, models))
+  const providerDef = providers.find(p => p.id === provider)
+  const displayModels = providerDef?.models ?? []
+  const savedKeyForProvider = current?.provider === provider && current?.has_api_key
+  const editingActive = current?.configured && current.provider === provider && current.model === model
 
   const loadCurrent = useCallback(async () => {
     setLoading(true)
+    setStatus(null)
     try {
-      const [providerRes, ollamaRes] = await Promise.all([
-        fetch('/v1/provider', { headers: { 'X-API-Key': apiKey } }),
-        fetch('/v1/ollama/models', { headers: { 'X-API-Key': apiKey } }),
+      const [data, providerCatalog, ollama] = await Promise.all([
+        fetchProvider(apiKey),
+        fetchProviders(apiKey),
+        fetchOllamaModels(apiKey).catch(() => ({ models: [] })),
       ])
-
-      if (ollamaRes.ok) {
-        const od = await ollamaRes.json()
-        setOllamaModels(od.models ?? [])
-        if (providerRes.ok) {
-          const data = await providerRes.json()
-          setCurrent(data)
-          setProvider(data.provider)
-          const knownModels = data.provider === 'ollama' ? od.models : (PROVIDERS.find(p => p.id === data.provider)?.models ?? [])
-          if (!knownModels.includes(data.model)) {
-            setCustomModel(data.model)
-            setModel('__custom__')
-          } else {
-            setModel(data.model)
-          }
-        } else if (od.models.length > 0) {
-          setModel(od.models[0])
-        }
-      } else if (providerRes.ok) {
-        const data = await providerRes.json()
-        setCurrent(data)
-        setProvider(data.provider)
+      const models = data.provider === 'ollama'
+        ? (ollama.available ? ollama.models ?? [] : [])
+        : (providerCatalog.providers?.[data.provider] ?? [])
+      setCatalog(providerCatalog.providers ?? {})
+      setOllamaAvailable(Boolean(ollama.available))
+      setOllamaModels(ollama.available ? ollama.models ?? [] : [])
+      setCurrent(data)
+      setProvider(data.provider)
+      setProviderKey('')
+      if (models.includes(data.model)) {
         setModel(data.model)
+      } else {
+        setModel('')
+        if (data.provider === 'ollama' && !ollama.available) {
+          setStatus({ ok: false, msg: 'Ollama is not available on the Brevitas server. Choose a cloud provider.' })
+        }
       }
+    } catch (error) {
+      setStatus({ ok: false, msg: error.message })
     } finally {
       setLoading(false)
     }
@@ -107,33 +76,22 @@ export default function ModelConfig({ apiKey }) {
 
   useEffect(() => { loadCurrent() }, [loadCurrent])
 
-  // reset model when provider changes
-  useEffect(() => {
-    const models = provider === 'ollama' ? ollamaModels : (PROVIDERS.find(p => p.id === provider)?.models ?? [])
+  const selectProvider = id => {
+    const models = id === 'ollama' ? ollamaModels : (catalog[id] ?? [])
+    setProvider(id)
     setModel(models[0] ?? '')
-    setCustomModel('')
     setProviderKey('')
     setStatus(null)
-  }, [provider, ollamaModels])
+  }
 
-  const resolvedModel = model === '__custom__' ? customModel : model
+  const resolvedModel = model
 
   const save = async () => {
     setSaving(true); setStatus(null)
     try {
-      const res = await fetch('/v1/provider', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ provider, provider_api_key: providerKey, model: resolvedModel }),
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        setStatus({ ok: false, msg: err.detail ?? 'Save failed' })
-      } else {
-        setStatus({ ok: true, msg: 'Saved.' })
-        await loadCurrent()
-        setProviderKey('')
-      }
+      await saveProvider(apiKey, { provider, provider_api_key: providerKey, model: resolvedModel })
+      await loadCurrent()
+      setStatus({ ok: true, msg: 'Saved.' })
     } catch (e) {
       setStatus({ ok: false, msg: e.message })
     } finally {
@@ -144,22 +102,14 @@ export default function ModelConfig({ apiKey }) {
   const test = async () => {
     setTesting(true); setStatus(null)
     try {
-      const res = await fetch('/v1/compress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({
-          task: 'ping',
-          messages: ['hello'],
-          prior_context: [],
-        }),
+      const data = await compress(apiKey, {
+        task: 'Reply with OK.', messages: ['Reply with OK.'], prior_context: [], meter: false,
       })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
       const resp = data.model_response ?? ''
-      if (resp.startsWith('[') && resp.includes('error')) {
+      if (!resp || (resp.startsWith('[') && resp.includes('error'))) {
         setStatus({ ok: false, msg: `Model error: ${resp}` })
       } else {
-        setStatus({ ok: true, msg: `Connected. Model replied: "${resp.slice(0, 80)}${resp.length > 80 ? '…' : ''}"` })
+        setStatus({ ok: true, msg: `Connected to ${data.provider || current?.provider} / ${data.model || current?.model}.` })
       }
     } catch (e) {
       setStatus({ ok: false, msg: e.message })
@@ -181,18 +131,18 @@ export default function ModelConfig({ apiKey }) {
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-4 leading-relaxed">
           Brevitas compresses your context — the model below receives it.
-          Use a local Ollama model or any cloud provider.
+          Choose one of the providers and models currently supported by the API.
         </p>
       </div>
 
       {/* Current config pill */}
-      {current && (
+      {current?.configured && (
         <div className="flex items-center gap-3 bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-3.5">
           <span className="w-2 h-2 rounded-full bg-brand-teal shrink-0" />
           <span className="annotation">
             active &rarr;{' '}
             <span className="text-brand-navy dark:text-brand-dark-navy">
-              {PROVIDERS.find(p => p.id === current.provider)?.label ?? current.provider}
+              {providers.find(p => p.id === current.provider)?.label ?? current.provider}
             </span>
             {' / '}
             <span className="text-brand-blue font-mono">{current.model}</span>
@@ -202,15 +152,20 @@ export default function ModelConfig({ apiKey }) {
           </span>
         </div>
       )}
+      {current && !current.configured && (
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-3.5">
+          <span className="annotation">// no model provider configured</span>
+        </div>
+      )}
 
       {/* Provider grid */}
       <div className="space-y-3">
         <p className="annotation">// select provider</p>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {PROVIDERS.map(p => (
+          {providers.map(p => (
             <button
               key={p.id}
-              onClick={() => setProvider(p.id)}
+              onClick={() => selectProvider(p.id)}
               className={`text-left rounded-xl border px-4 py-3.5 transition-colors ${
                 provider === p.id
                   ? 'border-brand-blue bg-brand-blue-dim dark:bg-brand-dark-blue-dim'
@@ -232,7 +187,7 @@ export default function ModelConfig({ apiKey }) {
         <div className="flex flex-wrap gap-2">
           {displayModels.length === 0 && provider === 'ollama' && (
             <p className="annotation text-brand-muted dark:text-brand-dark-muted">
-              // no models found — run <span className="text-brand-navy dark:text-brand-dark-navy">ollama pull &lt;model&gt;</span> to add one, or use custom below
+              // Ollama is unavailable on the Brevitas server — choose a cloud provider
             </p>
           )}
           {displayModels.map(m => (
@@ -248,39 +203,19 @@ export default function ModelConfig({ apiKey }) {
               {m}
             </button>
           ))}
-          {providerDef?.customModel && (
-            <button
-              onClick={() => setModel('__custom__')}
-              className={`font-mono text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                model === '__custom__'
-                  ? 'border-brand-blue bg-brand-blue text-white'
-                  : 'border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface text-brand-navy dark:text-brand-dark-navy hover:border-brand-blue'
-              }`}
-            >
-              custom…
-            </button>
-          )}
         </div>
-        {model === '__custom__' && (
-          <input
-            value={customModel}
-            onChange={e => setCustomModel(e.target.value)}
-            placeholder="model name (e.g. llama3.1:70b)"
-            className="w-full bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-4 py-3 text-sm font-mono text-brand-navy dark:text-brand-dark-navy placeholder-brand-muted dark:placeholder-brand-dark-muted focus:outline-none focus:border-brand-blue transition-colors"
-          />
-        )}
       </div>
 
       {/* API key (non-Ollama) */}
       {providerDef?.needsKey && (
         <div className="space-y-2">
-          <p className="annotation">// {providerDef.keyLabel}</p>
+          <p className="annotation">// {providerDef.label} API key</p>
           <div className="relative">
             <input
               type={showKey ? 'text' : 'password'}
               value={providerKey}
               onChange={e => setProviderKey(e.target.value)}
-              placeholder={current?.has_api_key ? '(key saved — enter to replace)' : providerDef.keyPlaceholder}
+              placeholder={savedKeyForProvider ? '(key saved — enter to replace)' : providerDef.keyPlaceholder}
               className="w-full bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-4 py-3 pr-16 text-sm font-mono text-brand-navy dark:text-brand-dark-navy placeholder-brand-muted dark:placeholder-brand-dark-muted focus:outline-none focus:border-brand-blue transition-colors"
             />
             <button
@@ -291,7 +226,7 @@ export default function ModelConfig({ apiKey }) {
             </button>
           </div>
           <p className="annotation text-brand-muted dark:text-brand-dark-muted">
-            // stored locally in SQLite — never sent anywhere except the provider
+            // encrypted at rest — used only for requests to the selected provider
           </p>
         </div>
       )}
@@ -307,14 +242,14 @@ export default function ModelConfig({ apiKey }) {
       <div className="flex gap-3">
         <button
           onClick={save}
-          disabled={saving || !resolvedModel || (providerDef?.needsKey && !providerKey && !current?.has_api_key)}
+          disabled={saving || !resolvedModel || (providerDef?.needsKey && !providerKey && !savedKeyForProvider)}
           className="flex-1 bg-brand-blue hover:bg-brand-navy text-white rounded-xl px-4 py-3.5 text-sm font-medium transition-colors disabled:opacity-40"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
         <button
           onClick={test}
-          disabled={testing}
+          disabled={testing || saving || !editingActive || (current.provider === 'ollama' && !ollamaAvailable)}
           className="px-6 rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface text-brand-navy dark:text-brand-dark-navy text-sm font-medium hover:border-brand-blue transition-colors disabled:opacity-40"
         >
           {testing ? 'Testing…' : 'Test'}

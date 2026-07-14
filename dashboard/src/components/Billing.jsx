@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { fetchStats } from '../lib/api.js'
 
 function fmt(n, decimals = 2) {
   return Number(n || 0).toFixed(decimals)
@@ -24,66 +25,74 @@ export default function Billing({ apiKey, refreshTick }) {
   const [stats, setStats]   = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]   = useState('')
+  const controllerRef = useRef(null)
 
   const load = useCallback(async () => {
     if (!apiKey) return
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
     setError('')
     try {
-      const r = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (!r.ok) {
-        const error = await r.json().catch(() => ({}))
-        throw new Error(error.detail || `Failed to load billing (${r.status})`)
-      }
-      setStats(await r.json())
+      const data = await fetchStats(apiKey, { signal: controller.signal })
+      if (controllerRef.current === controller) setStats(data)
     } catch (e) {
-      setError(e.message)
+      if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
     } finally {
-      setLoading(false)
+      if (controllerRef.current === controller) setLoading(false)
     }
   }, [apiKey])
 
-  useEffect(() => { load() }, [load, refreshTick])
+  useEffect(() => {
+    load()
+    return () => controllerRef.current?.abort()
+  }, [load, refreshTick])
 
   if (!apiKey) return (
     <div className="pt-12 text-center">
-      <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">// no API key — configure one in the Model tab</p>
+      <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">// no active API key</p>
     </div>
   )
 
   if (loading) return (
     <div className="pt-12 text-center">
-      <p className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">Loading billing data…</p>
+      <p className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">Loading savings data…</p>
     </div>
   )
 
-  if (error) return (
+  if (error && !stats) return (
     <div className="pt-12 text-center">
       <p className="font-mono text-xs text-red-500">{error}</p>
+      <button onClick={load} className="annotation mt-3 hover:text-brand-blue">retry</button>
     </div>
   )
 
   const measuredSaved  = Number(stats?.total_measured_savings_usd || 0)
   const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
-  const totalFee       = Number(stats?.total_brevitas_fee_usd || 0)
   const months         = stats?.billing_by_month || []
   const thisMonth      = months[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
 
   return (
     <div className="space-y-10">
+      {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={load} className="annotation hover:text-brand-blue">retry</button></div>}
       <div>
-        <p className="annotation tracking-widest uppercase mb-4">Billing</p>
+        <p className="annotation tracking-widest uppercase mb-4">Savings</p>
         <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy leading-tight">
-          You save. We take 10%.
+          Track what Brevitas saves.
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-3 max-w-lg leading-relaxed">
-          Brevitas charges 10% of the token cost you save by using compression.
-          Nothing if it doesn't help.
+          Token and cost estimates from your recorded provider usage. Unpriced calls remain visible without a guessed dollar value.
         </p>
       </div>
 
       {/* All-time stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="Total calls"
+          value={fmtK(stats?.total_calls)}
+          sub="recorded usage"
+        />
         <StatCard
           label="Total tokens saved"
           value={fmtK(stats?.total_tokens_saved)}
@@ -101,11 +110,6 @@ export default function Billing({ apiKey, refreshTick }) {
           sub="passed the quality gate"
           accent
         />
-        <StatCard
-          label="Brevitas fee (total)"
-          value={`$${fmt(totalFee, 4)}`}
-          sub="10% of cost saved"
-        />
       </div>
 
       {/* This month */}
@@ -115,8 +119,8 @@ export default function Billing({ apiKey, refreshTick }) {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Calls"         value={fmtK(thisMonth.calls)} />
             <StatCard label="Tokens saved"  value={fmtK(thisMonth.tokens_saved)} />
-            <StatCard label="Cost saved"    value={`$${fmt(thisMonth.cost_saved_usd, 4)}`} accent />
-            <StatCard label="Fee this month" value={`$${fmt(thisMonth.brevitas_fee_usd, 4)}`} />
+            <StatCard label="Measured savings" value={`$${fmt(thisMonth.measured_savings_usd ?? thisMonth.cost_saved_usd, 4)}`} accent />
+            <StatCard label="Verified savings" value={`$${fmt(thisMonth.verified_savings_usd ?? thisMonth.cost_saved_usd, 4)}`} accent />
           </div>
         </div>
       )}
@@ -125,19 +129,19 @@ export default function Billing({ apiKey, refreshTick }) {
       {months.length > 1 && (
         <div>
           <p className="annotation tracking-widest uppercase mb-4">// monthly history</p>
-          <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-5 gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Month', 'Calls', 'Tokens saved', 'Cost saved', 'Fee'].map(h => (
+          <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
+            <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
+              {['Month', 'Calls', 'Tokens saved', 'Measured', 'Verified'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
             {months.map(m => (
-              <div key={m.month} className="grid grid-cols-5 gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
+              <div key={m.month} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
                 <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.month}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.tokens_saved)}</span>
-                <span className="font-mono text-xs text-brand-teal">${fmt(m.cost_saved_usd, 4)}</span>
-                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(m.brevitas_fee_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-blue">${fmt(m.measured_savings_usd ?? m.cost_saved_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-teal">${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}</span>
               </div>
             ))}
           </div>
@@ -146,13 +150,13 @@ export default function Billing({ apiKey, refreshTick }) {
 
       {/* Empty state */}
       {months.length === 0 && (
-        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-16 text-center">
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-10 sm:p-16 text-center">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-2">No usage yet.</p>
-          <p className="annotation">// start compressing to see billing data here</p>
+          <p className="annotation">// start compressing to see usage and savings here</p>
         </div>
       )}
 
-      {/* How billing works */}
+      {/* How savings are measured */}
       <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 space-y-3">
         <p className="annotation tracking-widest uppercase mb-2">// how it works</p>
         <div className="space-y-2">
@@ -160,8 +164,8 @@ export default function Billing({ apiKey, refreshTick }) {
             ['Baseline tokens', 'What you would have sent to Anthropic/OpenAI without Brevitas'],
             ['Compressed tokens', 'What Brevitas actually sent after compression'],
             ['Tokens saved', 'The difference — real input tokens that never reached the provider'],
-            ['Cost saved', 'Tokens saved × provider cost per token for your model'],
-            ['Brevitas fee', '10% of cost saved — only charged when you save money'],
+            ['Measured savings', 'Receipt-based estimate using the recorded provider and model'],
+            ['Verified savings', 'Measured savings from calls that passed the quality gate'],
           ].map(([term, def]) => (
             <div key={term} className="flex gap-4">
               <span className="font-mono text-[11px] text-brand-blue shrink-0 w-36">{term}</span>

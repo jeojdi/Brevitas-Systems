@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { streamCompression } from '../lib/api.js'
 
 const STORAGE_KEY = 'bvt_playground'
 
@@ -92,12 +93,13 @@ export default function Playground({ apiKey }) {
   const [complexity, setComplexity]        = usePersisted('complexity', 0.5)
   const [compressionLevel, setCompression] = usePersisted('compressionLevel', 2)
   const [pruneBudget, setPruneBudget]      = usePersisted('pruneBudget', 5)
-  const [stages, setStages]               = usePersisted('stages', [])
+  const [stages, setStages]               = useState([])
   const [streaming, setStreaming]          = useState(false)
   const [error, setError]                  = useState('')
   const abortRef                           = useRef(null)
 
   const addStage = (event) => setStages(prev => [...prev, event])
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   const run = async () => {
     if (abortRef.current) abortRef.current.abort()
@@ -109,41 +111,16 @@ export default function Playground({ apiKey }) {
     setStages([])
 
     try {
-      const res = await fetch('/v1/compress/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({
+      await streamCompression(apiKey, {
           task,
           messages:          messages.split('\n').map(s => s.trim()).filter(Boolean),
           prior_context:     context.split('\n').map(s => s.trim()).filter(Boolean),
           complexity,
           compression_level: compressionLevel,
           prune_budget:      pruneBudget,
-        }),
+        }, addStage, {
         signal: controller.signal,
       })
-
-      if (!res.ok) throw new Error(await res.text())
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop()
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            if (event.stage === 'error') { setError(event.message); break }
-            addStage(event)
-          } catch { /* malformed chunk, skip */ }
-        }
-      }
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message)
     } finally {
@@ -151,7 +128,7 @@ export default function Playground({ apiKey }) {
     }
   }
 
-  const routed    = stages.find(s => s.stage === 'routed')
+  const retrieving = stages.find(s => s.stage === 'retrieving')
   const compressed = stages.find(s => s.stage === 'compressed')
   const modelEvt  = stages.find(s => s.stage === 'model_response')
   const done      = stages.find(s => s.stage === 'done')
@@ -162,8 +139,8 @@ export default function Playground({ apiKey }) {
 
 def compress(messages, prior_context, task=""):
     r = requests.post(
-        "http://localhost:8000/v1/compress",
-        headers={"X-API-Key": "YOUR_API_KEY"},
+        "https://brevitassystems.com/v1/compress",
+        headers={"X-Brevitas-Key": "YOUR_API_KEY"},
         json={
             "messages": messages,
             "prior_context": prior_context,
@@ -174,13 +151,13 @@ def compress(messages, prior_context, task=""):
     )
     r.raise_for_status()
     d = r.json()
-    # pass d["compressed_messages"] + d["pruned_context"]
-    # to your next agent — not the raw context
+    # If a provider is configured, d["model_response"] is its reply.
+    # Otherwise pass the compressed fields to your own model.
     return d`
 
   const curlSnippet =
-`curl -X POST http://localhost:8000/v1/compress \\
-  -H "X-API-Key: YOUR_API_KEY" \\
+`curl -X POST https://brevitassystems.com/v1/compress \\
+  -H "X-Brevitas-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "task": "your task here",
@@ -310,7 +287,7 @@ def compress(messages, prior_context, task=""):
           {/* Streaming spinner (shown until first stage arrives) */}
           {streaming && stages.length === 0 && (
             <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-10 text-center flex flex-col items-center justify-center gap-2">
-              <p className="annotation">// routing…</p>
+              <p className="annotation">// retrieving context…</p>
             </div>
           )}
 
@@ -321,20 +298,16 @@ def compress(messages, prior_context, task=""):
             </div>
           )}
 
-          {/* Stage 1: Routing */}
-          {routed && (
+          {/* Stage 1: Retrieval */}
+          {retrieving && (
             <StageCard>
               <div className="flex items-center justify-between">
-                <p className="annotation">// routing</p>
+                <p className="annotation">// retrieving relevant context</p>
                 <span className="w-2 h-2 rounded-full bg-brand-teal shrink-0" />
               </div>
               <p className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">
-                model → <span className="text-brand-blue">{routed.model}</span>
+                task → <span className="text-brand-blue">{retrieving.task || 'current request'}</span>
               </p>
-              <div className="h-1 bg-brand-border dark:bg-brand-dark-border rounded-full overflow-hidden">
-                <div className="h-full bg-brand-teal rounded-full" style={{ width: `${Math.round(routed.route_fit * 100)}%` }} />
-              </div>
-              <p className="annotation">route fit {(routed.route_fit * 100).toFixed(0)}%</p>
             </StageCard>
           )}
 
@@ -343,7 +316,7 @@ def compress(messages, prior_context, task=""):
             <StageCard>
               <div className="flex items-center justify-between">
                 <p className="annotation">// compression + pruning</p>
-                {streaming && !result && <span className="annotation">running model…</span>}
+                {streaming && !result && <span className="annotation">finishing…</span>}
               </div>
 
               {/* Live token bar */}
@@ -397,10 +370,10 @@ def compress(messages, prior_context, task=""):
             </StageCard>
           )}
 
-          {/* Stage 3: Model response (if model is configured) */}
+          {/* Stage 3: optional model response */}
           {modelEvt?.text && (
             <StageCard>
-              <p className="annotation">// model response</p>
+              <p className="annotation">// {modelEvt.provider || 'model'} / {modelEvt.model || 'active model'}</p>
               <p className="text-xs font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid bg-brand-bg dark:bg-brand-dark-bg rounded-xl p-3 leading-relaxed whitespace-pre-wrap">
                 {modelEvt.text}
               </p>
@@ -415,19 +388,18 @@ def compress(messages, prior_context, task=""):
                 <span className="font-mono text-xs text-brand-teal">✓ pipeline complete</span>
               </div>
               <p className="annotation">
-                routed → <span className="text-brand-blue">{result.routed_model_hint}</span>
-                {result.state_id && (
-                  <> · state <span className="text-brand-muted dark:text-brand-dark-muted">{result.state_id.slice(0, 14)}…</span></>
-                )}
+                {result.provider && result.model
+                  ? <>model → <span className="text-brand-blue">{result.provider} / {result.model}</span></>
+                  : 'compression-only request'}
               </p>
             </StageCard>
           )}
 
-          {/* Model still running indicator */}
+          {/* Final stage indicator */}
           {streaming && compressed && !result && (
             <div className="flex items-center gap-2 px-1">
               <span className="w-1.5 h-1.5 rounded-full bg-brand-blue animate-pulse" />
-              <p className="annotation">calling model…</p>
+              <p className="annotation">finishing request…</p>
             </div>
           )}
         </div>
@@ -452,7 +424,8 @@ def compress(messages, prior_context, task=""):
             passing messages between agents. Replace raw context with the returned{' '}
             <code className="font-mono text-brand-blue text-xs">compressed_messages</code> +{' '}
             <code className="font-mono text-brand-blue text-xs">pruned_context</code>.
-            No changes to your agents, prompts, or provider.
+            If the Model tab is configured, the same request also returns{' '}
+            <code className="font-mono text-brand-blue text-xs">model_response</code> from that provider.
           </p>
         </div>
         <CodeBlock label="// python" code={pythonSnippet} />

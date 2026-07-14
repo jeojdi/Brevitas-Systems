@@ -14,6 +14,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 import brevitas.proxy as proxy
+from brevitas.semantic_cache import SemanticCache
 
 
 class _FakeResp:
@@ -99,6 +100,37 @@ def test_high_temperature_not_cached(monkeypatch):
     client.post("/v1/chat/completions", json=req, headers={"authorization": "test-auth-b"})
     client.post("/v1/chat/completions", json=req, headers={"authorization": "test-auth-b"})
     assert _FakeAsyncClient.calls == 2, "high-temp calls must both reach upstream"
+
+
+def test_cache_key_includes_every_response_control(tmp_path):
+    cache = SemanticCache(str(tmp_path / "cache.db"), semantic_enabled=False)
+    base = {
+        "model": "gpt-4o-mini", "temperature": 0, "seed": 1,
+        "messages": [{"role": "user", "content": "answer"}],
+    }
+    cache.store(base, "openai", "gpt-4o-mini", {"answer": "a"},
+                prompt_tokens=1, completion_tokens=1)
+    assert cache.lookup(base, "openai", "gpt-4o-mini") is not None
+    assert cache.lookup({**base, "seed": 2}, "openai", "gpt-4o-mini") is None
+    assert cache.lookup({**base, "stop": ["END"]}, "openai", "gpt-4o-mini") is None
+    assert cache.lookup({**base, "response_format": {"type": "json_object"}},
+                        "openai", "gpt-4o-mini") is None
+
+
+def test_hosted_cache_varies_by_provider_credential(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    proxy._cache_init_done = False
+    proxy._cache_singleton = None
+    _FakeAsyncClient.calls = 0
+    client = TestClient(proxy.proxy_app)
+    req = {"model": "gpt-4o-mini", "temperature": 0,
+           "messages": [{"role": "user", "content": "same account request"}]}
+    common = {"X-Brevitas-Key": "bvt_customer"}
+    assert client.post("/v1/chat/completions", json=req,
+                       headers={**common, "Authorization": "Bearer provider-a"}).status_code == 200
+    assert client.post("/v1/chat/completions", json=req,
+                       headers={**common, "Authorization": "Bearer provider-b"}).status_code == 200
+    assert _FakeAsyncClient.calls == 2
 
 
 if __name__ == "__main__":

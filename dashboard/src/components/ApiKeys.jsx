@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { apiKeyId, createKey, fetchKeys, revokeKey } from '../lib/api.js'
 
 function CopyButton({ text, small = false }) {
   const [copied, setCopied] = useState(false)
@@ -22,55 +23,63 @@ const ENDPOINTS = [
   ['GET',  '/v1/health',   'server health check'],
 ]
 
-export default function ApiKeys({ apiKey }) {
+export default function ApiKeys({ apiKey, onApiKeyChange }) {
   const [keys, setKeys]       = useState([])
   const [name, setName]       = useState('')
   const [newKey, setNewKey]   = useState('')
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
   const [error, setError]     = useState('')
+  const [activeId, setActiveId] = useState(null)
+  const requestId = useRef(0)
 
-  const loadKeys = async () => {
+  const loadKeys = async (key = apiKey) => {
+    const id = ++requestId.current
+    setLoading(true)
+    setError('')
     try {
-      const res = await fetch('/v1/keys', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.detail || `Failed to load API keys (${res.status})`)
-      }
-      setKeys((await res.json()).keys ?? [])
+      const data = await fetchKeys(key)
+      if (id === requestId.current) setKeys(data.keys ?? [])
     } catch (e) {
-      setError(e.message)
+      if (id === requestId.current) setError(e.message)
+    } finally {
+      if (id === requestId.current) setLoading(false)
     }
   }
 
   useEffect(() => { loadKeys() }, [apiKey])
+  useEffect(() => {
+    let active = true
+    setActiveId(null)
+    apiKeyId(apiKey).then(id => { if (active) setActiveId(id) }).catch(() => { if (active) setActiveId('') })
+    return () => { active = false }
+  }, [apiKey])
 
   const create = async () => {
-    setLoading(true); setError(''); setNewKey('')
+    setCreating(true); setError(''); setNewKey('')
     try {
-      const res = await fetch('/v1/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Brevitas-Key': apiKey },
-        body: JSON.stringify({ name: name.trim() || 'unnamed' }),
-      })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
+      const data = await createKey(apiKey, name.trim() || 'unnamed')
       setNewKey(data.api_key)
       setName('')
-      await loadKeys()
+      await onApiKeyChange?.(data.api_key)
+      await loadKeys(data.api_key)
     } catch (e) {
       setError(e.message)
     } finally {
-      setLoading(false)
+      setCreating(false)
     }
   }
 
   const revoke = async (id) => {
+    if (!activeId || id === activeId) return
     if (!window.confirm('Revoke this API key? Calls using it will stop within 30 seconds.')) return
-    const res = await fetch(`/v1/keys/${id}`, {
-      method: 'DELETE', headers: { 'X-Brevitas-Key': apiKey },
-    })
-    if (!res.ok) return setError(await res.text())
-    await loadKeys()
+    setError('')
+    try {
+      await revokeKey(apiKey, id)
+      await loadKeys()
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   return (
@@ -89,7 +98,7 @@ export default function ApiKeys({ apiKey }) {
       {/* ── Create ── */}
       <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-7 space-y-4">
         <p className="annotation">// create a new key</p>
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <input
             value={name}
             onChange={e => setName(e.target.value)}
@@ -99,10 +108,10 @@ export default function ApiKeys({ apiKey }) {
           />
           <button
             onClick={create}
-            disabled={loading}
+            disabled={creating}
             className="bg-brand-blue hover:bg-brand-navy disabled:opacity-50 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors whitespace-nowrap"
           >
-            {loading ? 'Creating…' : 'Create →'}
+            {creating ? 'Creating…' : 'Create →'}
           </button>
         </div>
 
@@ -126,14 +135,16 @@ export default function ApiKeys({ apiKey }) {
           <div className="flex-1 h-px bg-brand-border dark:bg-brand-dark-border" />
         </div>
 
-        {keys.length === 0 ? (
+        {loading ? (
+          <p className="annotation">// loading keys…</p>
+        ) : keys.length === 0 ? (
           <p className="annotation">// no keys yet</p>
         ) : (
           <div className="space-y-2">
             {keys.map((k, i) => (
               <div
                 key={k.id || i}
-                className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex items-center justify-between"
+                className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex flex-wrap items-center justify-between gap-3"
               >
                 <div>
                   <p className="text-sm font-medium text-brand-navy dark:text-brand-dark-navy">{k.name}</p>
@@ -141,7 +152,13 @@ export default function ApiKeys({ apiKey }) {
                     // created {new Date(k.created).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                   </p>
                 </div>
-                <button onClick={() => revoke(k.id)} className="font-mono text-[10px] uppercase tracking-widest text-red-500 hover:underline">Revoke</button>
+                <button
+                  onClick={() => revoke(k.id)}
+                  disabled={!activeId || k.id === activeId}
+                  className="font-mono text-[10px] uppercase tracking-widest text-red-500 hover:underline disabled:text-brand-muted disabled:no-underline"
+                >
+                  {k.id === activeId ? 'Active' : 'Revoke'}
+                </button>
               </div>
             ))}
           </div>
@@ -154,7 +171,7 @@ export default function ApiKeys({ apiKey }) {
           <p className="annotation tracking-widest uppercase shrink-0">Active Key</p>
           <div className="flex-1 h-px bg-brand-border dark:bg-brand-dark-border" />
         </div>
-        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex items-center gap-3">
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <code className="flex-1 text-xs font-mono text-brand-muted dark:text-brand-dark-muted truncate">{apiKey}</code>
           <CopyButton text={apiKey} small />
         </div>

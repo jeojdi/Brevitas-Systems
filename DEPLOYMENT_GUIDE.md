@@ -6,9 +6,10 @@ development/test fallback only.
 
 ## 1. Supabase
 
-Apply every file in `supabase/migrations/` in timestamp order. The final migration,
-`20260710_cloud_usage.sql`, creates the canonical `usage_log`, API-key and provider-config
-tables, idempotency constraint, indexes, and RLS boundaries.
+Apply every file in `supabase/migrations/` in timestamp order through
+`20260714_legal_acceptances.sql`. `20260710_cloud_usage.sql` creates the canonical usage and
+API-key tables; the later migrations add device authorization and legal-acceptance records.
+Do not also apply the duplicate base schema in `api/migrations/001_persistent_stores.sql`.
 
 Service-owned tables have RLS enabled with no end-user policies. Only Railway's service-role
 credential can access them. `user_keys` has an owner-only policy so an authenticated dashboard

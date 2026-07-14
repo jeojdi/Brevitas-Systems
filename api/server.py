@@ -145,7 +145,7 @@ def _make_ollama_backend(model: str):
             resp.raise_for_status()
             return resp.json().get("response", "")
         except Exception as exc:
-            return f"[ollama error: {exc}]"
+            raise HTTPException(status_code=502, detail="Ollama request failed") from exc
     return backend
 
 
@@ -169,7 +169,7 @@ def _make_anthropic_backend(api_key: str, model: str):
             resp.raise_for_status()
             return resp.json()["content"][0]["text"]
         except Exception as exc:
-            return f"[anthropic error: {exc}]"
+            raise HTTPException(status_code=502, detail="Anthropic request failed") from exc
     return backend
 
 
@@ -188,7 +188,7 @@ def _make_openai_compat_backend(api_key: str, model: str, base_url: str):
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
         except Exception as exc:
-            return f"[{base_url} error: {exc}]"
+            raise HTTPException(status_code=502, detail="Model provider request failed") from exc
     return backend
 
 
@@ -209,6 +209,20 @@ def _build_backend(config: dict | None):
     if provider in _PROVIDER_BASE_URLS:
         return _make_openai_compat_backend(api_key, model, _PROVIDER_BASE_URLS[provider])
     return _noop_backend
+
+
+def _run_configured_model(kh: str, messages: list[str], context: list[str], task: str) -> dict:
+    config = _store.get_provider_config(kh)
+    if not config:
+        return {"provider": "", "model": "", "model_response": ""}
+    if config.get("model") not in (_PROVIDER_MODELS.get(config.get("provider")) or []):
+        raise HTTPException(status_code=502, detail="Saved model provider configuration is invalid")
+    prompt = "\n\n".join(filter(None, [f"Task: {task}" if task else "", *messages, *context]))
+    return {
+        "provider": config["provider"],
+        "model": config["model"],
+        "model_response": _build_backend(config)(prompt, config["model"]),
+    }
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -347,6 +361,8 @@ async def _protect_model_proxy(request: Request, call_next):
 def _safe_record_usage(**values) -> bool:
     """Telemetry is best-effort; it must never damage a model/compression response."""
     try:
+        if "owner_id" not in values and values.get("key_hash"):
+            values["owner_id"] = _store.key_owner(values["key_hash"])
         return bool(_store.record_usage(**values))
     except Exception as exc:
         logger.error("usage write failed: %s", type(exc).__name__)
@@ -536,7 +552,7 @@ def revoke_key(request: Request, key_id: str, kh: str = Depends(_authenticated))
 class ProviderConfigRequest(BaseModel):
     provider: str
     provider_api_key: str = ""
-    model: str = Field(max_length=100)
+    model: str = Field(min_length=1, max_length=100)
 
 
 @app.get("/v1/provider")
@@ -544,10 +560,12 @@ class ProviderConfigRequest(BaseModel):
 def get_provider(request: Request, kh: str = Depends(_authenticated)):
     config = _store.get_provider_config(kh)
     if config is None:
-        return {"provider": "ollama", "model": "llama3.2", "has_api_key": False}
+        return {"configured": False, "provider": "ollama", "model": "llama3.2",
+                "has_api_key": False}
     raw_key = _decrypt(config["provider_api_key"])
     masked = ("*" * 8 + raw_key[-4:]) if len(raw_key) > 4 else ""
     return {
+        "configured": True,
         "provider": config["provider"],
         "model": config["model"],
         "has_api_key": bool(raw_key),
@@ -560,6 +578,11 @@ def get_provider(request: Request, kh: str = Depends(_authenticated)):
 def set_provider(request: Request, body: ProviderConfigRequest, kh: str = Depends(_authenticated)):
     if body.provider not in _PROVIDER_MODELS:
         raise HTTPException(status_code=400, detail=f"Unknown provider '{body.provider}'")
+    allowed_models = _PROVIDER_MODELS[body.provider]
+    if not allowed_models:
+        raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' is not available")
+    if body.model not in allowed_models:
+        raise HTTPException(status_code=400, detail="Model is not supported by this provider")
     existing = _store.get_provider_config(kh)
     if body.provider != "ollama" and not body.provider_api_key:
         # Allow if a key is already saved for this provider — keep it
@@ -570,7 +593,6 @@ def set_provider(request: Request, body: ProviderConfigRequest, kh: str = Depend
     else:
         encrypted_key = _encrypt(body.provider_api_key)
     _store.set_provider_config(kh, body.provider, encrypted_key, body.model)
-    _pipelines.pop(kh, None)
     return {"ok": True, "provider": body.provider, "model": body.model}
 
 
@@ -614,8 +636,8 @@ class CompressRequest(BaseModel):
     @field_validator("messages", "prior_context", mode="before")
     @classmethod
     def _check_str_lengths(cls, v):
-        for s in v:
-            if len(s) > _MAX_STR:
+        for s in v if isinstance(v, list) else []:
+            if isinstance(s, str) and len(s) > _MAX_STR:
                 raise ValueError(f"Individual strings must be under {_MAX_STR:,} characters")
         return v
 
@@ -661,6 +683,9 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
     output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
     actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+    model_result = _run_configured_model(
+        kh, out_messages, sel["selected_context"], task,
+    )
 
     if body.meter:
         _safe_record_usage(
@@ -687,6 +712,8 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
         "message_roles":       message_roles,            # prompt segment roles seen (task/context/…)
         "info_density":        info_density,             # per-class retention + overall_ok
         "message_latency_ms":  message_latency_ms,
+        **model_result,
+        "routed_model_hint":   model_result["model"],
     }
 
 
@@ -782,6 +809,10 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
         try:
             task = body.task or (body.messages[0][:200] if body.messages else "")
             event_queue.put({"stage": "retrieving", "task": task[:120]})
+            config = _store.get_provider_config(kh)
+            if config:
+                event_queue.put({"stage": "routed", "provider": config["provider"],
+                                 "model": config["model"], "route_fit": 1.0})
             if cancel_event.is_set():
                 return
 
@@ -822,6 +853,13 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                              "quality_sim": quality_sim,
                              "fallback": sel["fallback_applied"]})
 
+            model_result = _run_configured_model(
+                kh, out_messages, sel["selected_context"], task,
+            )
+            if model_result["model"]:
+                event_queue.put({"stage": "model_response", **model_result,
+                                 "text": model_result["model_response"]})
+
             if body.meter:
                 _safe_record_usage(
                     key_hash=kh,
@@ -843,6 +881,8 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 "message_reason":      message_reason,
                 "method":              method,
                 "quality_sim":         quality_sim,
+                **model_result,
+                "routed_model_hint":   model_result["model"],
             }})
         except _ClientGone:
             pass
@@ -1165,7 +1205,17 @@ def _warn_if_compressor_missing():
 
 @app.get("/v1/health")
 def health():
-    return {"status": "ok", "compressor": _compressor_status()}
+    compressor = _compressor_status()
+    ready = not _lossy_enabled() or all(
+        compressor[name] for name in ("configured", "reachable", "model_loaded")
+    )
+    payload = {"status": "ok" if ready else "degraded", "compressor": compressor}
+    production = "production" in {
+        os.getenv("BREVITAS_ENV", "").lower(),
+        os.getenv("ENVIRONMENT", "").lower(),
+        os.getenv("RAILWAY_ENVIRONMENT_NAME", "").lower(),
+    }
+    return JSONResponse(payload, status_code=503 if production and not ready else 200)
 
 
 def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:

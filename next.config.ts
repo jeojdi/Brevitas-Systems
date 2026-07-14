@@ -21,14 +21,20 @@ const dashboardCsp = [
   "upgrade-insecure-requests",
 ].join("; ");
 
+const dashboardHeaders = [
+  { key: "Content-Security-Policy", value: dashboardCsp },
+  { key: "X-Robots-Tag", value: "noindex, nofollow" },
+];
+const noIndexHeaders = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
+
 const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
-      {
-        source: "/dashboard/:path*",
-        headers: [{ key: "Content-Security-Policy", value: dashboardCsp }],
-      },
+      ...["/dashboard/:path*", "/login", "/signup", "/waitlist"]
+        .map((source) => ({ source, headers: dashboardHeaders })),
+      ...["/email-confirmed", "/welcome"]
+        .map((source) => ({ source, headers: noIndexHeaders })),
     ];
   },
   async rewrites() {
@@ -49,7 +55,6 @@ const nextConfig: NextConfig = {
         { source: '/signup', destination: '/dashboard/index.html' },
         { source: '/email-confirmed', destination: '/email-confirmed.html' },
         { source: '/welcome', destination: '/welcome.html' },
-        { source: '/design-canvas', destination: '/design-canvas.html' },
         { source: '/blog/fable-5', destination: '/fable-5.html' },
         { source: '/blog/60-percent-waste', destination: '/60-percent-waste.html' },
         { source: '/blog/why-caches-dont-help', destination: '/why-caches-dont-help.html' },
@@ -70,6 +75,12 @@ const nextConfig: NextConfig = {
   },
   async redirects() {
     return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: 'www.brevitassystems.com' }],
+        destination: 'https://brevitassystems.com/:path*',
+        permanent: true,
+      },
       { source: '/index.html', destination: '/', permanent: true },
       { source: '/product.html', destination: '/product', permanent: true },
       { source: '/how-it-works', destination: '/product', permanent: true },
@@ -77,13 +88,21 @@ const nextConfig: NextConfig = {
       { source: '/benchmarks.html', destination: '/benchmarks', permanent: true },
       { source: '/docs.html', destination: '/docs', permanent: true },
       { source: '/blog.html', destination: '/blog', permanent: true },
+      { source: '/pricing.html', destination: '/pricing', permanent: true },
       { source: '/waitlist.html', destination: '/waitlist', permanent: true },
       { source: '/privacy.html', destination: '/privacy', permanent: true },
       { source: '/terms.html', destination: '/terms', permanent: true },
       { source: '/legal/privacy', destination: '/privacy', permanent: true },
       { source: '/legal/terms', destination: '/terms', permanent: true },
-      { source: '/design-canvas.html', destination: '/design-canvas', permanent: true },
       { source: '/fable-5.html', destination: '/blog/fable-5', permanent: true },
+      { source: '/60-percent-waste.html', destination: '/blog/60-percent-waste', permanent: true },
+      { source: '/why-caches-dont-help.html', destination: '/blog/why-caches-dont-help', permanent: true },
+      { source: '/compression-without-losing-quality.html', destination: '/blog/compression-without-losing-quality', permanent: true },
+      { source: '/git-for-agent-context.html', destination: '/blog/git-for-agent-context', permanent: true },
+      { source: '/harness.html', destination: '/blog/harness', permanent: true },
+      { source: '/design-partner-program.html', destination: '/blog/design-partner-program', permanent: true },
+      { source: '/orchestration.html', destination: '/orchestration', permanent: true },
+      { source: '/dashboard/index.html', destination: '/dashboard', permanent: true },
     ];
   },
 };

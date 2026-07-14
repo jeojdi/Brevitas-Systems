@@ -1,7 +1,7 @@
 {
   "name": "Brevitas Systems - AI Agent Orchestration Platform",
   "short_name": "Brevitas",
-  "description": "Revolutionary AI orchestration platform that reduces multi-agent token costs by 60% through intelligent compression and optimization.",
+  "description": "Token efficiency and usage tracking for LLM applications.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0F172A",
@@ -34,26 +34,6 @@
       "type": "image/png"
     }
   ],
-  "screenshots": [
-    {
-      "src": "/screenshots/dashboard.png",
-      "sizes": "1920x1080",
-      "type": "image/png",
-      "label": "Brevitas Dashboard - Token Usage Analytics"
-    },
-    {
-      "src": "/screenshots/orchestration.png",
-      "sizes": "1920x1080",
-      "type": "image/png",
-      "label": "Multi-Agent Orchestration Pipeline"
-    },
-    {
-      "src": "/screenshots/mobile.png",
-      "sizes": "750x1334",
-      "type": "image/png",
-      "label": "Mobile Experience"
-    }
-  ],
   "related_applications": [],
   "prefer_related_applications": false,
   "shortcuts": [
@@ -70,22 +50,6 @@
       "description": "Read the documentation",
       "url": "/docs",
       "icons": [{"src": "/icon-192.png", "sizes": "192x192"}]
-    },
-    {
-      "name": "Join Waitlist",
-      "short_name": "Waitlist",
-      "description": "Join the early access waitlist",
-      "url": "/waitlist",
-      "icons": [{"src": "/icon-192.png", "sizes": "192x192"}]
     }
-  ],
-  "share_target": {
-    "action": "/share",
-    "method": "GET",
-    "params": {
-      "title": "title",
-      "text": "text",
-      "url": "url"
-    }
-  }
+  ]
 }

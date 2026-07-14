@@ -62,11 +62,9 @@ export async function POST(request: NextRequest) {
         design_partner: Boolean(body.design_partner),
       };
 
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('waitlist')
-        .insert([row])
-        .select()
-        .single();
+        .insert([row]);
 
       if (error) {
         if (error.code === '23505') {
@@ -84,13 +82,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      console.log('New waitlist signup saved:', { id: data?.id, email: data?.email });
+      console.log('New waitlist signup saved:', { email });
 
       return NextResponse.json(
         {
           success: true,
           message: "Thanks — you're on the list. We'll be in touch.",
-          data: { id: data?.id, email: data?.email },
         },
         { status: 200 }
       );
@@ -102,44 +99,4 @@ export async function POST(request: NextRequest) {
       );
     }
   }, RATE_LIMITS.formSubmission);
-}
-
-export async function GET(request: NextRequest) {
-  return withRateLimit(request, async (req) => {
-    try {
-      const email = trimOrNull(req.nextUrl.searchParams.get('email'))?.toLowerCase();
-      if (!email) {
-        return NextResponse.json(
-          { error: 'Email parameter is required' },
-          { status: 400 }
-        );
-      }
-
-      if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-        return NextResponse.json({ exists: false }, { status: 200 });
-      }
-
-      const { data, error } = await supabase
-        .from('waitlist')
-        .select('email')
-        .eq('email', email)
-        .single();
-
-      if (error && error.code !== 'PGRST116') {
-        console.error('Supabase select error:', error);
-        return NextResponse.json(
-          { error: 'Failed to check waitlist status' },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({ exists: !!data }, { status: 200 });
-    } catch (error) {
-      console.error('Waitlist check error:', error);
-      return NextResponse.json(
-        { error: 'Internal server error' },
-        { status: 500 }
-      );
-    }
-  }, RATE_LIMITS.api);
 }

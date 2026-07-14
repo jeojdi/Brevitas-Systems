@@ -211,7 +211,7 @@ class RateLimiter {
     topOffenders: Array<{ ip: string; requests: number }>;
   } {
     const blockedIps = Array.from(this.store.entries()).filter(
-      ([_, entry]) => entry.blocked
+      ([, entry]) => entry.blocked
     ).length;
 
     const topOffenders = Array.from(this.store.entries())

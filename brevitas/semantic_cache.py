@@ -39,6 +39,7 @@ import os
 import random
 import sqlite3
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,7 @@ class SemanticCache:
         # When False, only the exact-hash layer runs (byte-identical repeats) —
         # zero wrong-answer risk, no embedding dependency. Set True to also match
         # reworded-but-equivalent prompts via the semantic layer.
-        semantic_enabled: bool = True,
+        semantic_enabled: bool = False,
     ):
         if db_path is None:
             db_path = os.getenv("BREVITAS_CACHE_DB") or str(
@@ -133,18 +134,19 @@ class SemanticCache:
         """The request fields that MUST match exactly for a cached answer to be valid.
         With include_last=False the final message is dropped — that's the semantic
         bucket key (everything identical except the question being asked)."""
-        messages = body.get("messages", []) or []
-        msgs = messages if include_last else messages[:-1]
+        request = deepcopy(body)
+        namespace = request.pop("_brevitas_cache_namespace", self.namespace)
+        messages = request.get("messages", []) or []
+        if not include_last and isinstance(messages, list):
+            request["messages"] = messages[:-1]
         return {
-            "namespace": body.get("_brevitas_cache_namespace", self.namespace),
+            "namespace": namespace,
             "provider": provider,
             "model": model,
-            "system": body.get("system", ""),      # Anthropic system prompt
-            "temperature": body.get("temperature"),
-            "top_p": body.get("top_p"),
-            "max_tokens": body.get("max_tokens"),
-            "tools": body.get("tools"),
-            "messages": msgs,
+            # Hash the complete request. Provider APIs keep adding response-affecting
+            # controls (seed, stop, reasoning, response_format, modalities, etc.); an
+            # allowlist silently reuses the wrong response when a new one appears.
+            "request": request,
         }
 
     @staticmethod
@@ -421,7 +423,8 @@ def _demo() -> None:
         orig = _embed.embed
         _embed.embed = lambda t: vecs.get((t or "").strip().lower())
         try:
-            cs = SemanticCache(tempfile.mktemp(suffix=".db"), similarity_threshold=0.97)
+            cs = SemanticCache(tempfile.mktemp(suffix=".db"), similarity_threshold=0.97,
+                               semantic_enabled=True)
             base = {"model": "claude-sonnet-4-6",
                     "messages": [{"role": "user", "content": "how do refunds work"}]}
             cs.store(base, "anthropic", "claude-sonnet-4-6", resp, prompt_tokens=5, completion_tokens=1)

@@ -9,12 +9,11 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pricing · Brevitas Systems</title>
-<meta name="description" content="Performance-based pricing: we take 10% of what we save you, and nothing if we save you nothing. No subscriptions, no seat fees, no lock-in.">
+<meta name="description" content="Performance-based pricing: 10% of verified savings, with no subscription or seat fee.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="theme.css">
-<link rel="stylesheet" href="site.css">
 <style>
 .pricing-hero {
   padding: 120px 0 72px;
@@ -243,7 +242,7 @@
 
 const POINTS = [
   'You pay nothing until we save you money.',
-  'We take 10% of your measured savings, and nothing else.',
+  'We take 10% of verified savings, and nothing else.',
   'No seats, no token caps, no monthly minimum, no lock-in.',
 ];
 
@@ -274,7 +273,7 @@ function PricingPage() {
             <p className="t-body-lg" style={{
               marginTop: 32, maxWidth: 520, marginLeft: 'auto', marginRight: 'auto', color: 'var(--bone-dim)',
             }}>
-              We measure what your pipeline would have spent without Brevitas, subtract what it spends with us, and bill 10% of the difference. If that difference is zero, so is your invoice.
+              We compare receipt-based costs and bill 10% only on savings that pass the quality gate. If verified savings are zero, so is your invoice.
             </p>
 
             <ul style={{
@@ -295,7 +294,7 @@ function PricingPage() {
           </div>
 
           <p className="pricing-note">
-            Usage-based, billed monthly on measured savings. &nbsp;·&nbsp;{' '}
+            Usage-based, billed monthly on verified savings. &nbsp;·&nbsp;{' '}
             <a href="mailto:james@brevitassystems.com">Questions? Reach out.</a>
           </p>
         </div>

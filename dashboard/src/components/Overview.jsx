@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { fetchStats } from '../lib/api.js'
 import {
   BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -39,34 +40,37 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
   const [stats, setStats]     = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
+  const controllerRef = useRef(null)
 
   const loadStats = useCallback(async () => {
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
     setError('')
     try {
-      const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.detail || `Failed to load stats (${res.status})`)
-      }
-      setStats(await res.json())
+      const data = await fetchStats(apiKey, { signal: controller.signal })
+      if (controllerRef.current === controller) setStats(data)
     } catch (e) {
-      setError(e.message)
+      if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
     } finally {
-      setLoading(false)
+      if (controllerRef.current === controller) setLoading(false)
     }
   }, [apiKey])
 
-  useEffect(() => { loadStats() }, [loadStats, refreshTick])
+  useEffect(() => {
+    loadStats()
+    return () => controllerRef.current?.abort()
+  }, [loadStats, refreshTick])
 
   if (loading) return <p className="annotation pt-8">// loading…</p>
-  if (error)   return <p className="font-mono text-xs text-red-500 pt-8">{error}</p>
+  if (error && !stats) return <div className="pt-8"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
 
   const chartData = [...(stats?.history ?? [])]
     .reverse()
     .slice(-20)
     .map((h, i) => ({
       call: i + 1,
-      savings:   parseFloat(h.savings_pct.toFixed(1)),
+      savings:   Number(Number(h.savings_pct || 0).toFixed(1)),
       baseline:  h.baseline_tokens,
       optimized: h.optimized_tokens,
       repo:       h.repo || h.project || 'Unattributed',
@@ -83,9 +87,10 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
 
   return (
     <div className="space-y-16">
+      {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation hover:text-brand-blue">retry</button></div>}
       {/* ── Section label ── */}
       <div>
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
           <div>
             <p className="annotation tracking-widest uppercase">Dashboard metrics — 2026</p>
             <p className="annotation mt-1">Tracking runs server-side, even when this dashboard is closed.</p>
@@ -120,7 +125,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       )}
 
       {chartData.length === 0 ? (
-        <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-20 text-center">
+        <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-10 sm:p-20 text-center">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-3">No data yet.</p>
           <p className="annotation">
             // run a compression from the{' '}
@@ -130,7 +135,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       ) : (
         <>
           {/* ── Savings chart ── */}
-          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-8">
+          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8">
             <p className="annotation tracking-widest uppercase mb-1">Savings %</p>
             <p className="font-serif text-xl text-brand-navy dark:text-brand-dark-navy mb-6">
               last {chartData.length} calls
@@ -172,7 +177,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
           </div>
 
           {/* ── Token comparison chart ── */}
-          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-8">
+          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8">
             <p className="annotation tracking-widest uppercase mb-1">Token footprint</p>
             <p className="font-serif text-xl text-brand-navy dark:text-brand-dark-navy mb-6">
               baseline <em className="italic text-brand-blue">vs</em> optimized

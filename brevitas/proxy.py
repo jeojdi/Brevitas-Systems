@@ -30,7 +30,7 @@ from copy import deepcopy
 from typing import Any, Callable
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ._compress import count_messages_tokens, report_usage
@@ -169,6 +169,36 @@ def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> No
         cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c)
     except Exception:
         pass
+
+
+def _cache_body(body: dict, request: Request, *credentials: str) -> dict:
+    """Original request plus safe cache-vary metadata; never persist raw credentials."""
+    cached = deepcopy(body)
+    cached["_brevitas_cache_namespace"] = _key_id("\0".join(
+        value for value in credentials if value
+    ))
+    cached["_brevitas_cache_vary"] = {
+        name: request.headers.get(name, "") for name in (
+            "anthropic-version", "anthropic-beta", "openai-organization",
+            "openai-project", "openai-beta", "idempotency-key", "x-brevitas-upstream",
+        ) if request.headers.get(name)
+    }
+    return cached
+
+
+async def _json_object(request: Request) -> tuple[bytes, dict]:
+    raw = await request.body()
+    try:
+        body = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    return raw, body
+
+
+def _upstream_ok(response: httpx.Response) -> bool:
+    return 200 <= int(response.status_code) < 300
 
 
 async def _report_cache_hit(request: Request, provider: str, model: str, hit,
@@ -434,20 +464,19 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
 
 @proxy_app.post("/v1/messages")
 async def proxy_anthropic_messages(request: Request) -> Any:
-    body = await request.json()
+    _, body = await _json_object(request)
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, "messages")
-    identity = request.headers.get("x-brevitas-key") or api_key
+    brevitas_key = request.headers.get("x-brevitas-key", "")
+    identity = brevitas_key or api_key
     sess_key = f"ant:{_key_id(identity)}:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
     cache = _get_cache()
-    cache_body = deepcopy(body) if cache is not None else None
-    if cache_body is not None:
-        cache_body["_brevitas_cache_namespace"] = _key_id(identity)
+    cache_body = _cache_body(body, request, brevitas_key, api_key) if cache is not None else None
     if cache is not None:
         hit = _cache_lookup(cache, cache_body, "anthropic", model)
         if hit is not None:
@@ -477,7 +506,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         upstream = await client.send(
             client.build_request("POST", endpoint, headers=headers, json=body), stream=True
         )
-        if upstream.status_code >= 400:
+        if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
@@ -524,18 +553,19 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         data = upstream.json()
     except Exception:
         data = {}
-    try:
-        session.record_response(data["content"][0]["text"])
-    except (KeyError, IndexError, TypeError):
-        pass
-    if cache is not None and upstream.status_code == 200 and data:
-        _cache_store(cache, cache_body, "anthropic", model, data)
-    await _record_receipt(
-        request, "anthropic", model, "messages", baseline,
-        normalize_usage(data.get("usage"), "anthropic"), session, router, labels,
-        optimized, str(data.get("id") or ""), strategy, fleet_pipe,
-    )
-    session.advance()
+    if _upstream_ok(upstream):
+        try:
+            session.record_response(data["content"][0]["text"])
+        except (KeyError, IndexError, TypeError):
+            pass
+        if cache is not None and data:
+            _cache_store(cache, cache_body, "anthropic", model, data)
+        await _record_receipt(
+            request, "anthropic", model, "messages", baseline,
+            normalize_usage(data.get("usage"), "anthropic"), session, router, labels,
+            optimized, str(data.get("id") or ""), strategy, fleet_pipe,
+        )
+        session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
                     headers=_response_headers(upstream))
 
@@ -546,23 +576,22 @@ async def proxy_anthropic_messages(request: Request) -> Any:
 @proxy_app.post("/openai/chat/completions")
 @proxy_app.post("/v1/chat/completions")
 async def proxy_openai_chat(request: Request) -> Any:
-    body = await request.json()
+    _, body = await _json_object(request)
     model: str = body.get("model", "")
     auth = request.headers.get("authorization", "")
     provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
     labels = parse_brevitas_headers(request.headers)
     labels["gateway"] = labels.get("gateway") or (provider if provider == "openrouter" else "")
     baseline = count_request_tokens(body, "chat.completions")
-    identity = request.headers.get("x-brevitas-key") or auth
+    brevitas_key = request.headers.get("x-brevitas-key", "")
+    identity = brevitas_key or auth
     sess_key = f"oai:{_key_id(identity)}:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
 
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
     cache = _get_cache()
-    cache_body = deepcopy(body) if cache is not None else None
-    if cache_body is not None:
-        cache_body["_brevitas_cache_namespace"] = _key_id(identity)
+    cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
     if cache is not None:
         hit = _cache_lookup(cache, cache_body, provider, model)
         if hit is not None:
@@ -604,7 +633,7 @@ async def proxy_openai_chat(request: Request) -> Any:
         upstream = await client.send(
             client.build_request("POST", endpoint, headers=headers, json=body), stream=True
         )
-        if upstream.status_code >= 400:
+        if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
@@ -651,18 +680,19 @@ async def proxy_openai_chat(request: Request) -> Any:
         data = upstream.json()
     except Exception:
         data = {}
-    try:
-        session.record_response(data["choices"][0]["message"]["content"] or "")
-    except (KeyError, IndexError, TypeError):
-        pass
-    if cache is not None and upstream.status_code == 200 and data:
-        _cache_store(cache, cache_body, provider, model, data)
-    await _record_receipt(
-        request, provider, model, "chat.completions", baseline,
-        normalize_usage(data.get("usage"), provider), session, router, labels,
-        optimized, str(data.get("id") or ""), strategy, fleet_pipe,
-    )
-    session.advance()
+    if _upstream_ok(upstream):
+        try:
+            session.record_response(data["choices"][0]["message"]["content"] or "")
+        except (KeyError, IndexError, TypeError):
+            pass
+        if cache is not None and data:
+            _cache_store(cache, cache_body, provider, model, data)
+        await _record_receipt(
+            request, provider, model, "chat.completions", baseline,
+            normalize_usage(data.get("usage"), provider), session, router, labels,
+            optimized, str(data.get("id") or ""), strategy, fleet_pipe,
+        )
+        session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
                     headers=_response_headers(upstream))
 
@@ -673,8 +703,7 @@ async def proxy_openai_chat(request: Request) -> Any:
 @proxy_app.post("/openai/responses")
 @proxy_app.post("/v1/responses")
 async def proxy_openai_responses(request: Request) -> Any:
-    raw_body = await request.body()
-    body = json.loads(raw_body)
+    raw_body, body = await _json_object(request)
     model = str(body.get("model") or "")
     provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
     labels = parse_brevitas_headers(request.headers)
@@ -715,7 +744,7 @@ async def proxy_openai_responses(request: Request) -> Any:
         upstream = await client.send(
             client.build_request("POST", endpoint, headers=headers, **request_body), stream=True
         )
-        if upstream.status_code >= 400:
+        if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
@@ -752,19 +781,20 @@ async def proxy_openai_responses(request: Request) -> Any:
         data = upstream.json()
     except Exception:
         data = {}
-    await _record_receipt(
-        request, provider, model, "responses", baseline,
-        normalize_usage(data.get("usage"), provider), session, router, labels,
-        optimized, str(data.get("id") or ""), strategy, labels.get("pipeline", ""),
-    )
-    session.advance()
+    if _upstream_ok(upstream):
+        await _record_receipt(
+            request, provider, model, "responses", baseline,
+            normalize_usage(data.get("usage"), provider), session, router, labels,
+            optimized, str(data.get("id") or ""), strategy, labels.get("pipeline", ""),
+        )
+        session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
                     headers=_response_headers(upstream))
 
 
 async def _proxy_openai_plain(request: Request, operation: str) -> Any:
     """Meter OpenAI-compatible endpoints that do not need message optimization."""
-    body = await request.json()
+    _, body = await _json_object(request)
     model = str(body.get("model") or "")
     provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
     labels = parse_brevitas_headers(request.headers)
@@ -782,7 +812,7 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
         upstream = await client.send(
             client.build_request("POST", endpoint, headers=headers, json=body), stream=True
         )
-        if upstream.status_code >= 400:
+        if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose(); await client.aclose()
@@ -812,12 +842,13 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
         data = upstream.json()
     except Exception:
         data = {}
-    await _record_receipt(
-        request, provider, model, operation, baseline,
-        normalize_usage(data.get("usage"), provider), session, router, labels,
-        False, str(data.get("id") or ""), "passthrough", labels.get("pipeline", ""),
-    )
-    session.advance()
+    if _upstream_ok(upstream):
+        await _record_receipt(
+            request, provider, model, operation, baseline,
+            normalize_usage(data.get("usage"), provider), session, router, labels,
+            False, str(data.get("id") or ""), "passthrough", labels.get("pipeline", ""),
+        )
+        session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
                     headers=_response_headers(upstream))
 

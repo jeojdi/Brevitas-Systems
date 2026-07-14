@@ -16,11 +16,21 @@ def test_health_reports_compressor_block(client, monkeypatch):
     server._COMPRESSOR_STATUS.update(ts=0.0, data=None)   # bust the cache
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     data = client.get("/v1/health").json()
-    assert data["status"] == "ok"
+    assert data["status"] == "degraded"
     comp = data["compressor"]
     assert set(comp) == {"configured", "reachable", "model_loaded"}
     assert comp["configured"] is False           # no URL set -> not configured
     assert comp["reachable"] is False
+
+
+def test_health_fails_closed_in_production(client, monkeypatch):
+    import api.server as server
+    server._COMPRESSOR_STATUS.update(ts=0.0, data=None)
+    monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+    response = client.get("/v1/health")
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
 
 
 def test_health_configured_but_unreachable(client, monkeypatch):

@@ -263,6 +263,22 @@ class UsageStore:
             for name, definition in _USAGE_COLUMNS.items():
                 if name not in existing:
                     db.execute(f"ALTER TABLE usage_log ADD COLUMN {name} {definition}")
+            # Early databases required quality_proxy even though modern lossless calls
+            # intentionally record it as NULL. Rebuild once so those calls are not silently
+            # dropped by SQLite's INSERT OR IGNORE.
+            quality_column = next(
+                r for r in db.execute("PRAGMA table_info(usage_log)") if r[1] == "quality_proxy"
+            )
+            if quality_column[3]:
+                columns = ["id", "key_hash", "ts", *_USAGE_COLUMNS]
+                names = ",".join(columns)
+                db.execute("ALTER TABLE usage_log RENAME TO usage_log_legacy")
+                db.execute(
+                    f"CREATE TABLE usage_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    f"key_hash TEXT NOT NULL, ts TEXT NOT NULL, {definitions})"
+                )
+                db.execute(f"INSERT INTO usage_log ({names}) SELECT {names} FROM usage_log_legacy")
+                db.execute("DROP TABLE usage_log_legacy")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS usage_request_unique ON usage_log(key_hash, request_id) WHERE request_id <> ''")
             for column in ("ts", "project", "source", "repo", "client", "provider", "model", "call_site_id"):
                 db.execute(f"CREATE INDEX IF NOT EXISTS usage_{column}_idx ON usage_log(key_hash, {column})")

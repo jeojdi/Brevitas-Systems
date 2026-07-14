@@ -25,13 +25,14 @@ CREATE INDEX IF NOT EXISTS idx_waitlist_created_at ON waitlist(created_at DESC);
 -- Add RLS (Row Level Security) policies
 ALTER TABLE waitlist ENABLE ROW LEVEL SECURITY;
 
--- Create a policy that allows insert from anon users (for the public waitlist form)
-CREATE POLICY "Allow anonymous inserts" ON waitlist
-  FOR INSERT WITH CHECK (true);
-
--- Create a policy that allows authenticated users to view all entries (for admin)
-CREATE POLICY "Allow authenticated select" ON waitlist
-  FOR SELECT USING (auth.role() = 'authenticated');
+-- Public submissions may insert, but no browser role may read waitlist PII.
+DROP POLICY IF EXISTS "Allow anonymous inserts" ON waitlist;
+DROP POLICY IF EXISTS "Allow authenticated select" ON waitlist;
+DROP POLICY IF EXISTS "Enable insert for anon users" ON waitlist;
+DROP POLICY IF EXISTS "Enable select for authenticated users" ON waitlist;
+DROP POLICY IF EXISTS "Enable select for anon to check email" ON waitlist;
+CREATE POLICY "Enable insert for anon users" ON waitlist
+  FOR INSERT TO anon WITH CHECK (true);
 
 -- Create a function to update the updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -43,6 +44,7 @@ END;
 $$ language 'plpgsql';
 
 -- Create a trigger to automatically update the updated_at column
+DROP TRIGGER IF EXISTS update_waitlist_updated_at ON waitlist;
 CREATE TRIGGER update_waitlist_updated_at BEFORE UPDATE
   ON waitlist FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

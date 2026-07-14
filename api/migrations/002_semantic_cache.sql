@@ -31,8 +31,11 @@ create index if not exists semantic_cache_ctx
 create index if not exists semantic_cache_emb
     on public.semantic_cache using ivfflat (embedding vector_cosine_ops) with (lists = 100);
 
--- Backend-only table (written with the service-role key); keep RLS off + service-role only,
--- matching the api_keys/usage_log convention in migration 001.
+-- Backend-only content. RLS + explicit grants prevent anon/authenticated clients from
+-- reading cached prompts or responses even if their project defaults grant table access.
+alter table public.semantic_cache enable row level security;
+revoke all on table public.semantic_cache from anon, authenticated;
+grant select, insert, update, delete on table public.semantic_cache to service_role;
 
 -- Semantic lookup: nearest non-expired neighbour in the same context bucket, above a
 -- similarity floor. Returns at most one row. (<=> is cosine distance; 1 - distance = cosine.)
@@ -56,4 +59,7 @@ create or replace function public.semantic_cache_lookup(
       and (1 - (embedding <=> p_embedding)) >= p_threshold
     order by embedding <=> p_embedding
     limit 1;
-$$ language sql;
+$$ language sql security invoker set search_path = public, extensions, pg_catalog;
+
+revoke all on function public.semantic_cache_lookup(vector, text, float) from public, anon, authenticated;
+grant execute on function public.semantic_cache_lookup(vector, text, float) to service_role;

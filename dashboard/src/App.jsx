@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supabase.js'
+import { authModeForPath, cacheApiKey, supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supabase.js'
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
@@ -11,7 +11,7 @@ import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
 
-const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
+const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Model', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
 
 function pendingDeviceCode() {
@@ -111,6 +111,10 @@ export default function App() {
   }, [apiKey])
 
   const signOut = () => supabase.auth.signOut()
+  const activateApiKey = async key => {
+    setApiKey(key)
+    try { await cacheApiKey(session.user.id, key) } catch { /* active for this session; next login self-heals */ }
+  }
 
   if (supabaseMisconfigured) {
     return (
@@ -141,7 +145,7 @@ export default function App() {
   }
 
   if (!session) {
-    return <Auth darkMode={darkMode} onToggleDark={toggleDark} />
+    return <Auth darkMode={darkMode} onToggleDark={toggleDark} initialMode={authModeForPath(window.location.pathname)} />
   }
 
   if (deviceCode) {
@@ -167,9 +171,14 @@ export default function App() {
     return (
       <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center flex-col gap-4">
         <p className="text-sm text-red-500">{keyError}</p>
-        <button onClick={signOut} className="font-mono text-[11px] tracking-widest uppercase text-brand-muted hover:text-brand-navy transition-colors">
-          Sign out
-        </button>
+        <div className="flex gap-4">
+          <button onClick={() => window.location.reload()} className="font-mono text-[11px] tracking-widest uppercase text-brand-blue hover:text-brand-navy transition-colors">
+            Retry
+          </button>
+          <button onClick={signOut} className="font-mono text-[11px] tracking-widest uppercase text-brand-muted hover:text-brand-navy transition-colors">
+            Sign out
+          </button>
+        </div>
       </div>
     )
   }
@@ -177,8 +186,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
       {/* ── Floating pill nav ── */}
-      <div className="sticky top-0 z-50 px-6 pt-5 pb-3">
-        <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm px-6 py-3.5 flex items-center justify-between max-w-7xl mx-auto">
+      <div className="sticky top-0 z-50 px-3 sm:px-6 pt-3 sm:pt-5 pb-3">
+        <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 max-w-7xl mx-auto">
           {/* Logo */}
           <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
             <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-7 w-auto dark:hidden" />
@@ -186,12 +195,12 @@ export default function App() {
           </a>
 
           {/* Tabs */}
-          <nav className="flex items-center gap-1">
+          <nav className="order-3 xl:order-none w-full xl:w-auto flex items-center gap-1 overflow-x-auto pb-1 xl:pb-0">
             {[...BASE_TABS, ...(isAdmin ? ['Admin'] : [])].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
+                className={`shrink-0 px-3 sm:px-4 py-2 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
                   activeTab === tab
                     ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
                     : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy'
@@ -228,14 +237,14 @@ export default function App() {
       </div>
 
       {/* ── Page content ── */}
-      <main className="flex-1 px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
+      <main className="flex-1 px-4 sm:px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
         {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
-        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
+        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'Billing'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Savings'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
       </main>
       <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">

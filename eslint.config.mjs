@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "dashboard/**",
     // public/ files run via Babel standalone in the browser, not via Next.js
     "public/**",
+    // Archived prototypes are retained for reference, not shipped or maintained.
+    "archive/**",
   ]),
 ]);
 

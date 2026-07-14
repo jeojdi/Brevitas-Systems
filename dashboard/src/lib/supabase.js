@@ -10,12 +10,14 @@ export const supabase = supabaseMisconfigured
   ? null
   : createClient(url, key)
 
+export const authModeForPath = pathname => /^\/(signup|waitlist)\/?$/.test(pathname) ? 'signup' : 'login'
+
 /**
  * Mint a fresh Brevitas API key from the backend.
  * @returns {Promise<string>}
  */
-async function mintApiKey(accessToken) {
-  const res = await fetch('/v1/keys', {
+async function mintApiKey(accessToken, request = fetch) {
+  const res = await request('/v1/keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
     body: JSON.stringify({ name: 'dashboard' }),
@@ -46,6 +48,13 @@ export async function resendSignupConfirmation(email, redirectTo, auth = supabas
   if (error) throw error
 }
 
+export async function cacheApiKey(userId, apiKey, client = supabase) {
+  const { error } = await client
+    .from('user_keys')
+    .upsert({ user_id: userId, api_key: apiKey }, { onConflict: 'user_id' })
+  if (error) throw error
+}
+
 /**
  * Return a working Brevitas API key for a user, self-healing stale keys.
  *
@@ -54,11 +63,11 @@ export async function resendSignupConfirmation(email, redirectTo, auth = supabas
  * @param {string} userId
  * @returns {Promise<string>}
  */
-export async function getOrCreateApiKey(userId, accessToken) {
+export async function getOrCreateApiKey(userId, accessToken, client = supabase, request = fetch) {
   // 1. Look up any cached key (ignore errors — e.g. a missing user_keys table).
   let cached = null
   try {
-    const { data } = await supabase
+    const { data } = await client
       .from('user_keys')
       .select('api_key')
       .eq('user_id', userId)
@@ -68,14 +77,12 @@ export async function getOrCreateApiKey(userId, accessToken) {
     cached = null
   }
 
-  if (cached && await cachedKeyIsValid(cached)) return cached
+  if (cached && await cachedKeyIsValid(cached, request)) return cached
 
   // Missing/stale key -> mint a fresh one and replace the dashboard cache.
-  const apiKey = await mintApiKey(accessToken)
+  const apiKey = await mintApiKey(accessToken, request)
   try {
-    await supabase
-      .from('user_keys')
-      .upsert({ user_id: userId, api_key: apiKey }, { onConflict: 'user_id' })
+    await cacheApiKey(userId, apiKey, client)
   } catch {
     // non-fatal: a missing table or RLS must not block using the freshly minted key
   }
