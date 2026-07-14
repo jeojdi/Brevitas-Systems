@@ -375,16 +375,22 @@ def _dashboard_identity(request: Request) -> dict:
     if not auth.lower().startswith("bearer "):
         return {}
     url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").rstrip("/")
-    api_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") \
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    # The store already requires this project-scoped credential; prefer it so a stale
+    # optional anon key cannot make valid dashboard sessions look unauthenticated.
+    api_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") \
+        or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
     if not url or not api_key:
         return {}
     try:
         response = _requests.get(f"{url}/auth/v1/user", headers={
             "apikey": api_key, "Authorization": auth,
         }, timeout=5)
-        return response.json() if response.ok else {}
-    except Exception:
+        if not response.ok:
+            logger.warning("Supabase dashboard auth rejected status=%s", response.status_code)
+            return {}
+        return response.json()
+    except Exception as exc:
+        logger.warning("Supabase dashboard auth unavailable: %s", type(exc).__name__)
         return {}
 
 

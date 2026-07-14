@@ -44,7 +44,10 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
     setError('')
     try {
       const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (!res.ok) throw new Error('Failed to load stats')
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.detail || `Failed to load stats (${res.status})`)
+      }
       setStats(await res.json())
     } catch (e) {
       setError(e.message)

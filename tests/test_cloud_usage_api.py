@@ -2,6 +2,7 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -12,6 +13,36 @@ from api.auth import hash_key
 from api.store import UsageStore
 
 BEARER = "Bearer"
+
+
+def test_dashboard_identity_prefers_authoritative_service_role(monkeypatch):
+    import api.server as server
+
+    captured = {}
+
+    class Response:
+        ok = True
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"id": "user-1"}
+
+    def get(url, *, headers, timeout):
+        captured.update(url=url, headers=headers, timeout=timeout)
+        return Response()
+
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "stale-anon")
+    monkeypatch.setattr(server._requests, "get", get)
+
+    identity = server._dashboard_identity(SimpleNamespace(
+        headers={"authorization": f"{BEARER} user-token"}))
+
+    assert identity["id"] == "user-1"
+    assert captured["headers"] == {
+        "apikey": "service-role", "Authorization": f"{BEARER} user-token"}
 
 
 def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):

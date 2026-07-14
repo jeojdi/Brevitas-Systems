@@ -32,8 +32,14 @@ export default function ApiKeys({ apiKey }) {
   const loadKeys = async () => {
     try {
       const res = await fetch('/v1/keys', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (res.ok) setKeys((await res.json()).keys ?? [])
-    } catch {}
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.detail || `Failed to load API keys (${res.status})`)
+      }
+      setKeys((await res.json()).keys ?? [])
+    } catch (e) {
+      setError(e.message)
+    }
   }
 
   useEffect(() => { loadKeys() }, [apiKey])

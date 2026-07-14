@@ -97,7 +97,7 @@ export default function App() {
       .then(key => setApiKey(key))
       .catch(err => setKeyError(err.message))
       .finally(() => setKeyLoading(false))
-  }, [session?.user?.id])
+  }, [session?.user?.id, session?.access_token])
 
   useEffect(() => {
     const metadata = session?.user?.app_metadata || {}

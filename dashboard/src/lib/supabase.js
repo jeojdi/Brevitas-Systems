@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY
+const env = import.meta.env || {}
+const url = env.VITE_SUPABASE_URL
+const key = env.VITE_SUPABASE_ANON_KEY
 
 export const supabaseMisconfigured = !url || !key
 
@@ -27,6 +28,15 @@ async function mintApiKey(accessToken) {
   return api_key
 }
 
+export async function cachedKeyIsValid(apiKey, request = fetch) {
+  if (!apiKey) return false
+  const res = await request('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
+  if (res.ok) return true
+  if (res.status === 401) return false
+  const error = await res.json().catch(() => ({}))
+  throw new Error(error.detail || `Could not validate API key (${res.status})`)
+}
+
 /**
  * Return a working Brevitas API key for a user, self-healing stale keys.
  *
@@ -49,10 +59,9 @@ export async function getOrCreateApiKey(userId, accessToken) {
     cached = null
   }
 
-  // The API-key store is also persisted in Supabase, so a cached account key remains valid.
-  if (cached) return cached
+  if (cached && await cachedKeyIsValid(cached)) return cached
 
-  // Cached key missing -> mint a fresh one and save it for later sessions.
+  // Missing/stale key -> mint a fresh one and replace the dashboard cache.
   const apiKey = await mintApiKey(accessToken)
   try {
     await supabase

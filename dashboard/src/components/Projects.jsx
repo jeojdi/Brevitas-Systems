@@ -10,7 +10,11 @@ export default function Projects({ apiKey, refreshTick }) {
 
   useEffect(() => {
     fetch('/v1/stats/breakdown', { headers: { 'X-Brevitas-Key': apiKey } })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error('Failed to load repositories')))
+      .then(async response => {
+        if (response.ok) return response.json()
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || `Failed to load repositories (${response.status})`)
+      })
       .then(data => setRows(data.rows || []))
       .catch(error => setError(error.message))
   }, [apiKey, refreshTick])

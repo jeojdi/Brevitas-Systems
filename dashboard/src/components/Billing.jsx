@@ -30,7 +30,10 @@ export default function Billing({ apiKey, refreshTick }) {
     setError('')
     try {
       const r = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
-      if (!r.ok) throw new Error(`${r.status}`)
+      if (!r.ok) {
+        const error = await r.json().catch(() => ({}))
+        throw new Error(error.detail || `Failed to load billing (${r.status})`)
+      }
       setStats(await r.json())
     } catch (e) {
       setError(e.message)
