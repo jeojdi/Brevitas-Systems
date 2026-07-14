@@ -71,12 +71,10 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
       {/* Card */}
       <div className="w-full max-w-sm">
         {/* Logo */}
-        <div className="flex items-center gap-2 mb-10 justify-center">
-          <a href="/" className="flex items-center gap-2 no-underline">
-            <span className="font-serif text-[1.6rem] font-medium text-brand-navy dark:text-brand-dark-navy leading-none">Brevitas</span>
-            <span className="font-mono text-[9px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted leading-none pt-1">
-              Systems
-            </span>
+        <div className="mb-10 flex justify-center">
+          <a href="/" className="no-underline" aria-label="Brevitas Systems home">
+            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-10 w-auto dark:hidden" />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-10 w-auto hidden dark:block" />
           </a>
         </div>
 

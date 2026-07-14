@@ -100,11 +100,9 @@ export default function App() {
   }, [session?.user?.id])
 
   useEffect(() => {
-    if (!session?.access_token) return
-    fetch('/v1/admin/stats', { headers: { Authorization: `Bearer ${session.access_token}` } })
-      .then(response => setIsAdmin(response.ok))
-      .catch(() => setIsAdmin(false))
-  }, [session?.access_token])
+    const metadata = session?.user?.app_metadata || {}
+    setIsAdmin(metadata.brevitas_admin === true || metadata.role === 'brevitas_admin')
+  }, [session?.user?.app_metadata])
 
   useEffect(() => {
     if (!apiKey) return
@@ -182,11 +180,9 @@ export default function App() {
       <div className="sticky top-0 z-50 px-6 pt-5 pb-3">
         <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm px-6 py-3.5 flex items-center justify-between max-w-7xl mx-auto">
           {/* Logo */}
-          <a href="/" className="flex items-center gap-2 shrink-0 no-underline">
-            <span className="font-serif text-[1.35rem] font-medium text-brand-navy dark:text-brand-dark-navy leading-none">Brevitas</span>
-            <span className="font-mono text-[9px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted leading-none pt-0.5">
-              Systems
-            </span>
+          <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
+            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-7 w-auto dark:hidden" />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-7 w-auto hidden dark:block" />
           </a>
 
           {/* Tabs */}

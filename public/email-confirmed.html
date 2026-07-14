@@ -10,8 +10,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #eef0f7; color: #0d1530; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     main { width: min(100%, 480px); padding: 48px; text-align: center; background: #fff; border: 1px solid #e2e4f0; border-radius: 24px; box-shadow: 0 18px 60px rgba(13, 21, 48, .08); }
-    .brand { margin-bottom: 36px; font-family: Georgia, serif; font-size: 24px; }
-    .brand small { margin-left: 8px; color: #8b93b8; font: 9px ui-monospace, monospace; letter-spacing: .18em; text-transform: uppercase; }
+    .brand { width: 180px; height: auto; margin-bottom: 36px; }
     .check { width: 56px; height: 56px; display: grid; place-items: center; margin: 0 auto 24px; border-radius: 50%; background: #e4f4ef; color: #2d8a6e; font-size: 26px; }
     h1 { margin: 0; font: 40px/1.1 Georgia, serif; font-weight: 400; }
     p { margin: 16px 0 30px; color: #687092; line-height: 1.6; }
@@ -26,7 +25,7 @@
 </head>
 <body>
   <main>
-    <div class="brand">Brevitas <small>Systems</small></div>
+    <img class="brand" src="/assets/b-logo-tight.png" alt="Brevitas">
     <div class="check" aria-hidden="true">✓</div>
     <h1 id="title">Your email is confirmed.</h1>
     <p id="message">Your account is ready. Sign in to open your token tracking dashboard.</p>

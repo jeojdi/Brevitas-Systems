@@ -10,23 +10,6 @@ export const supabase = supabaseMisconfigured
   : createClient(url, key)
 
 /**
- * Whether the backend still recognises an API key. The backend stores keys separately
- * from the dashboard's Supabase cache, so a backend redeploy can invalidate a cached key.
- * We must validate before trusting a cached key, otherwise the user is stuck with a dead one.
- * @param {string} apiKey
- * @returns {Promise<boolean>}
- */
-async function keyIsValid(apiKey) {
-  if (!apiKey) return false
-  try {
-    const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-/**
  * Mint a fresh Brevitas API key from the backend.
  * @returns {Promise<string>}
  */
@@ -36,7 +19,10 @@ async function mintApiKey(accessToken) {
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
     body: JSON.stringify({ name: 'dashboard' }),
   })
-  if (!res.ok) throw new Error('Failed to create API key')
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}))
+    throw new Error(error.detail || `Failed to create API key (${res.status})`)
+  }
   const { api_key } = await res.json()
   return api_key
 }
@@ -44,10 +30,7 @@ async function mintApiKey(accessToken) {
 /**
  * Return a working Brevitas API key for a user, self-healing stale keys.
  *
- * Reads any cached key from Supabase, validates it against the backend, and — if it is
- * missing or no longer valid — mints a fresh one and overwrites the cache. This survives
- * backend redeploys that reset the key store (the previous version handed back a dead
- * cached key forever, which showed as "Failed to load stats").
+ * Reuses the account's key from Supabase or mints one for a new account.
  *
  * @param {string} userId
  * @returns {Promise<string>}
@@ -66,10 +49,10 @@ export async function getOrCreateApiKey(userId, accessToken) {
     cached = null
   }
 
-  // 2. Reuse the cached key only if the backend still accepts it.
-  if (cached && (await keyIsValid(cached))) return cached
+  // The API-key store is also persisted in Supabase, so a cached account key remains valid.
+  if (cached) return cached
 
-  // 3. Cached key missing or stale -> mint a fresh one and overwrite the cache.
+  // Cached key missing -> mint a fresh one and save it for later sessions.
   const apiKey = await mintApiKey(accessToken)
   try {
     await supabase
