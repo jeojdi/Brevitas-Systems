@@ -9,6 +9,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
   const [notice, setNotice]   = useState('')
+  const [acceptedTerms, setAcceptedTerms] = useState(false)
 
   const reset = () => { setError(''); setNotice('') }
 
@@ -25,7 +26,10 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
         const { error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: `${window.location.origin}/email-confirmed` },
+          options: {
+            emailRedirectTo: `${window.location.origin}/email-confirmed`,
+            data: { accepted_terms_at: new Date().toISOString(), terms_version: '2026-07-14' },
+          },
         })
         if (error) throw error
         setNotice('Check your email to confirm your account, then sign in.')
@@ -137,6 +141,21 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
               </div>
             )}
 
+            {mode === 'signup' && (
+              <label className="flex items-start gap-2.5 text-[11px] leading-relaxed text-brand-muted dark:text-brand-dark-muted py-1">
+                <input
+                  type="checkbox"
+                  required
+                  checked={acceptedTerms}
+                  onChange={e => setAcceptedTerms(e.target.checked)}
+                  className="mt-0.5 shrink-0 accent-brand-blue"
+                />
+                <span>
+                  I agree to the <a href="/terms" target="_blank" rel="noreferrer" className="text-brand-blue underline">Terms of Service</a>, including its arbitration and class-action waiver, and acknowledge the <a href="/privacy" target="_blank" rel="noreferrer" className="text-brand-blue underline">Privacy Policy</a>.
+                </span>
+              </label>
+            )}
+
             {isRecovery && (
               <div>
                 <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
@@ -196,6 +215,10 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
               </button>
             )}
           </div>}
+        </div>
+        <div className="mt-5 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">
+          <a href="/privacy" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Privacy</a>
+          <a href="/terms" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Terms</a>
         </div>
       </div>
     </div>

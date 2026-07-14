@@ -238,6 +238,10 @@ export default function App() {
         {activeTab === 'Billing'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
       </main>
+      <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">
+        <a href="/privacy" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Privacy</a>
+        <a href="/terms" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Terms</a>
+      </footer>
     </div>
   )
 }
