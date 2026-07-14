@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from '../lib/supabase.js'
+import { resendSignupConfirmation, supabase } from '../lib/supabase.js'
 
 export default function Auth({ darkMode, onToggleDark, initialMode = 'login', onPasswordUpdated }) {
   const [mode, setMode]       = useState(initialMode)
@@ -10,6 +10,8 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
   const [error, setError]     = useState('')
   const [notice, setNotice]   = useState('')
   const [acceptedTerms, setAcceptedTerms] = useState(false)
+  const [confirmationEmail, setConfirmationEmail] = useState('')
+  const [resending, setResending] = useState(false)
 
   const reset = () => { setError(''); setNotice('') }
 
@@ -32,7 +34,8 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
           },
         })
         if (error) throw error
-        setNotice('Check your email to confirm your account, then sign in.')
+        setConfirmationEmail(email)
+        setNotice('Request accepted. If this address needs confirmation, check your inbox or resend below. Already confirmed? Sign in or reset your password.')
         setMode('login')
       } else if (mode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
@@ -50,9 +53,28 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
         onPasswordUpdated?.()
       }
     } catch (err) {
+      if (mode === 'login' && err.message.toLowerCase().includes('email not confirmed')) {
+        setConfirmationEmail(email)
+      }
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function resendConfirmation() {
+    setResending(true)
+    setError('')
+    try {
+      await resendSignupConfirmation(
+        confirmationEmail,
+        `${window.location.origin}/email-confirmed`,
+      )
+      setNotice('Confirmation request accepted. Check your inbox and its existing Brevitas email thread.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setResending(false)
     }
   }
 
@@ -105,6 +127,16 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
             <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-[12px]">
               {error}
             </div>
+          )}
+          {mode === 'login' && confirmationEmail && (
+            <button
+              type="button"
+              onClick={resendConfirmation}
+              disabled={resending}
+              className="mb-4 text-[11px] text-brand-blue hover:underline disabled:opacity-50"
+            >
+              {resending ? 'Resending…' : 'Resend confirmation email'}
+            </button>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -193,7 +225,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
             {mode === 'login' && (
               <>
                 <button
-                  onClick={() => { setMode('signup'); reset() }}
+                  onClick={() => { setMode('signup'); setConfirmationEmail(''); reset() }}
                   className="text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
                 >
                   No account? Sign up

@@ -37,6 +37,15 @@ export async function cachedKeyIsValid(apiKey, request = fetch) {
   throw new Error(error.detail || `Could not validate API key (${res.status})`)
 }
 
+export async function resendSignupConfirmation(email, redirectTo, auth = supabase.auth) {
+  const { error } = await auth.resend({
+    type: 'signup',
+    email,
+    options: { emailRedirectTo: redirectTo },
+  })
+  if (error) throw error
+}
+
 /**
  * Return a working Brevitas API key for a user, self-healing stale keys.
  *
