@@ -23,13 +23,13 @@ def test_health_reports_compressor_block(client, monkeypatch):
     assert comp["reachable"] is False
 
 
-def test_health_fails_closed_in_production(client, monkeypatch):
+def test_health_stays_available_but_degraded_in_production(client, monkeypatch):
     import api.server as server
     server._COMPRESSOR_STATUS.update(ts=0.0, data=None)
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
     response = client.get("/v1/health")
-    assert response.status_code == 503
+    assert response.status_code == 200
     assert response.json()["status"] == "degraded"
 
 

@@ -1210,12 +1210,9 @@ def health():
         compressor[name] for name in ("configured", "reachable", "model_loaded")
     )
     payload = {"status": "ok" if ready else "degraded", "compressor": compressor}
-    production = "production" in {
-        os.getenv("BREVITAS_ENV", "").lower(),
-        os.getenv("ENVIRONMENT", "").lower(),
-        os.getenv("RAILWAY_ENVIRONMENT_NAME", "").lower(),
-    }
-    return JSONResponse(payload, status_code=503 if production and not ready else 200)
+    # Compression already fails safe to lossless, so a missing optional model must be
+    # visible without failing Railway's health check and rolling back the whole API.
+    return payload
 
 
 def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
