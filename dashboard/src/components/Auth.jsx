@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase.js'
 
-export default function Auth({ darkMode, onToggleDark }) {
-  const [mode, setMode]       = useState('login')   // 'login' | 'signup' | 'reset'
+export default function Auth({ darkMode, onToggleDark, initialMode = 'login', onPasswordUpdated }) {
+  const [mode, setMode]       = useState(initialMode)
   const [email, setEmail]     = useState('')
   const [password, setPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
   const [notice, setNotice]   = useState('')
@@ -21,7 +22,11 @@ export default function Auth({ darkMode, onToggleDark }) {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
       } else if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({ email, password })
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/email-confirmed` },
+        })
         if (error) throw error
         setNotice('Check your email to confirm your account, then sign in.')
         setMode('login')
@@ -32,6 +37,13 @@ export default function Auth({ darkMode, onToggleDark }) {
         if (error) throw error
         setNotice('Password reset link sent — check your email.')
         setMode('login')
+      } else if (mode === 'recovery') {
+        if (password !== passwordConfirmation) {
+          throw new Error('Passwords do not match.')
+        }
+        const { error } = await supabase.auth.updateUser({ password })
+        if (error) throw error
+        onPasswordUpdated?.()
       }
     } catch (err) {
       setError(err.message)
@@ -41,6 +53,7 @@ export default function Auth({ darkMode, onToggleDark }) {
   }
 
   const isReset = mode === 'reset'
+  const isRecovery = mode === 'recovery'
 
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center px-4">
@@ -72,11 +85,13 @@ export default function Auth({ darkMode, onToggleDark }) {
             {mode === 'login'  && 'Sign in'}
             {mode === 'signup' && 'Create account'}
             {mode === 'reset'  && 'Reset password'}
+            {mode === 'recovery' && 'Choose a new password'}
           </h1>
           <p className="text-[12px] text-brand-muted dark:text-brand-dark-muted mb-6">
             {mode === 'login'  && 'Welcome back.'}
             {mode === 'signup' && 'Your dashboard is ready in seconds.'}
             {mode === 'reset'  && "We'll email you a reset link."}
+            {mode === 'recovery' && 'Enter a new password for your account.'}
           </p>
 
           {notice && (
@@ -91,19 +106,20 @@ export default function Auth({ darkMode, onToggleDark }) {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
+            {!isRecovery && <div>
               <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
                 Email
               </label>
               <input
                 type="email"
+                autoComplete="email"
                 required
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
               />
-            </div>
+            </div>}
 
             {!isReset && (
               <div>
@@ -112,9 +128,28 @@ export default function Auth({ darkMode, onToggleDark }) {
                 </label>
                 <input
                   type="password"
+                  autoComplete={isRecovery ? 'new-password' : 'current-password'}
                   required
                   value={password}
                   onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  minLength={6}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
+                />
+              </div>
+            )}
+
+            {isRecovery && (
+              <div>
+                <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
+                  Confirm new password
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={passwordConfirmation}
+                  onChange={e => setPasswordConfirmation(e.target.value)}
                   placeholder="••••••••"
                   minLength={6}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
@@ -131,12 +166,13 @@ export default function Auth({ darkMode, onToggleDark }) {
                 ? 'Please wait…'
                 : mode === 'login'  ? 'Sign in'
                 : mode === 'signup' ? 'Create account'
+                : mode === 'recovery' ? 'Update password'
                 : 'Send reset link'}
             </button>
           </form>
 
           {/* Footer links */}
-          <div className="mt-5 flex flex-col gap-2 items-center">
+          {!isRecovery && <div className="mt-5 flex flex-col gap-2 items-center">
             {mode === 'login' && (
               <>
                 <button
@@ -161,7 +197,7 @@ export default function Auth({ darkMode, onToggleDark }) {
                 Back to sign in
               </button>
             )}
-          </div>
+          </div>}
         </div>
       </div>
     </div>

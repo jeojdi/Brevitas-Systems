@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  AreaChart, Area,
-  BarChart, Bar,
+  BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
 } from 'recharts'
 
 const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+const REPO_COLORS = ['#4f5fc4', '#2d8a6e', '#d97706', '#be185d', '#7c3aed', '#0891b2']
 
 function getTooltipStyle(dark) {
   return {
@@ -66,7 +66,11 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       savings:   parseFloat(h.savings_pct.toFixed(1)),
       baseline:  h.baseline_tokens,
       optimized: h.optimized_tokens,
+      repo:       h.repo || h.project || 'Unattributed',
     }))
+
+  const repos = [...new Set(chartData.map(row => row.repo))]
+  const repoColors = Object.fromEntries(repos.map((repo, index) => [repo, REPO_COLORS[index % REPO_COLORS.length]]))
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
@@ -79,7 +83,10 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       {/* ── Section label ── */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <p className="annotation tracking-widest uppercase">Dashboard metrics — 2026</p>
+          <div>
+            <p className="annotation tracking-widest uppercase">Dashboard metrics — 2026</p>
+            <p className="annotation mt-1">Tracking runs server-side, even when this dashboard is closed.</p>
+          </div>
           <button
             onClick={loadStats}
             className="annotation hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
@@ -125,14 +132,16 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
             <p className="font-serif text-xl text-brand-navy dark:text-brand-dark-navy mb-6">
               last {chartData.length} calls
             </p>
+            <div className="flex flex-wrap gap-x-5 gap-y-2 mb-4">
+              {repos.map(repo => (
+                <span key={repo} className="annotation flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: repoColors[repo] }} />
+                  {repo}
+                </span>
+              ))}
+            </div>
             <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 16 }}>
-                <defs>
-                  <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#4f5fc4" stopOpacity={darkMode ? 0.3 : 0.18} />
-                    <stop offset="95%" stopColor="#4f5fc4" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
+              <BarChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 16 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
                 <XAxis
                   dataKey="call"
@@ -144,17 +153,18 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={v => `${v}%`}
                 />
-                <Tooltip {...tooltipStyle} formatter={v => [`${v}%`, 'savings']} />
-                <Area
-                  type="monotone"
-                  dataKey="savings"
-                  stroke="#4f5fc4"
-                  fill="url(#gBlue)"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: '#4f5fc4', strokeWidth: 0 }}
+                <Tooltip
+                  {...tooltipStyle}
+                  formatter={(value, _name, { payload }) => [`${value}%`, payload.repo]}
                 />
-              </AreaChart>
+                <Bar
+                  dataKey="savings"
+                  name="savings"
+                  radius={[4, 4, 0, 0]}
+                >
+                  {chartData.map((row, index) => <Cell key={index} fill={repoColors[row.repo]} />)}
+                </Bar>
+              </BarChart>
             </ResponsiveContainer>
           </div>
 

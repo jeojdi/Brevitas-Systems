@@ -53,6 +53,7 @@ export default function App() {
   const [keyLoading, setKeyLoading] = useState(false)
   const [keyError, setKeyError]   = useState('')
   const [authLoading, setAuthLoading] = useState(true)
+  const [recoveringPassword, setRecoveringPassword] = useState(false)
   const [activeTab, setActiveTab] = useState('Overview')
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
   const [isAdmin, setIsAdmin]     = useState(false)
@@ -78,8 +79,9 @@ export default function App() {
       setAuthLoading(false)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
+      if (event === 'PASSWORD_RECOVERY') setRecoveringPassword(true)
       if (!session) setApiKey('')
     })
 
@@ -133,6 +135,11 @@ export default function App() {
         </span>
       </div>
     )
+  }
+
+  if (recoveringPassword) {
+    return <Auth darkMode={darkMode} onToggleDark={toggleDark} initialMode="recovery"
+                 onPasswordUpdated={() => setRecoveringPassword(false)} />
   }
 
   if (!session) {
@@ -201,8 +208,8 @@ export default function App() {
 
           {/* Right: dark toggle + user email + sign out */}
           <div className="flex items-center gap-3 shrink-0">
-            <span className="annotation hidden lg:flex items-center gap-1.5" title="Usage refreshes every 10 seconds">
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> live
+            <span className="annotation hidden lg:flex items-center gap-1.5" title="Tracking runs server-side, even when this dashboard is closed">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> tracking active
             </span>
             <button
               onClick={toggleDark}
