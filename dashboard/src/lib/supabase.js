@@ -19,7 +19,7 @@ export const supabase = supabaseMisconfigured
 async function keyIsValid(apiKey) {
   if (!apiKey) return false
   try {
-    const res = await fetch('/v1/stats', { headers: { 'X-API-Key': apiKey } })
+    const res = await fetch('/v1/stats', { headers: { 'X-Brevitas-Key': apiKey } })
     return res.ok
   } catch {
     return false
@@ -30,10 +30,10 @@ async function keyIsValid(apiKey) {
  * Mint a fresh Brevitas API key from the backend.
  * @returns {Promise<string>}
  */
-async function mintApiKey() {
+async function mintApiKey(accessToken) {
   const res = await fetch('/v1/keys', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
     body: JSON.stringify({ name: 'dashboard' }),
   })
   if (!res.ok) throw new Error('Failed to create API key')
@@ -52,7 +52,7 @@ async function mintApiKey() {
  * @param {string} userId
  * @returns {Promise<string>}
  */
-export async function getOrCreateApiKey(userId) {
+export async function getOrCreateApiKey(userId, accessToken) {
   // 1. Look up any cached key (ignore errors — e.g. a missing user_keys table).
   let cached = null
   try {
@@ -70,7 +70,7 @@ export async function getOrCreateApiKey(userId) {
   if (cached && (await keyIsValid(cached))) return cached
 
   // 3. Cached key missing or stale -> mint a fresh one and overwrite the cache.
-  const apiKey = await mintApiKey()
+  const apiKey = await mintApiKey(accessToken)
   try {
     await supabase
       .from('user_keys')

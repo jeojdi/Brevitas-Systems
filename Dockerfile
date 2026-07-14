@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # App code + the token-efficiency engine it imports.
 COPY api/ api/
+COPY brevitas/ brevitas/
 COPY token_efficiency_model/ token_efficiency_model/
 
 # Railway injects $PORT at runtime; default to 8000 for local `docker run`.

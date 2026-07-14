@@ -6,12 +6,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
+import hmac
 import json
 import logging
 import queue
+import secrets
 import threading
 import time as _time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import requests as _requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -24,7 +28,7 @@ from slowapi.errors import RateLimitExceeded
 from typing import List, Optional
 
 from token_efficiency_model.lossless.api_adapter import retrieval_select
-from token_efficiency_model.lossless.provider_cache import count_tokens, savings_from_usage
+from token_efficiency_model.lossless.provider_cache import count_tokens
 from token_efficiency_model.lossless.message_optimizer import optimize_message_text
 
 logger = logging.getLogger("brevitas.api")
@@ -69,7 +73,8 @@ def _optimize_message_logged(text: str) -> dict:
 
 
 from .auth import generate_api_key, hash_key
-from .store import UsageStore, cost_for_tokens, PROVIDER_COSTS_PER_1M
+from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage
+from .store import make_store, PROVIDER_COSTS_PER_1M
 
 # ── Encryption ───────────────────────────────────────────────────────────────
 
@@ -78,6 +83,8 @@ def _load_fernet() -> Fernet:
     if secret:
         key = secret.encode() if isinstance(secret, str) else secret
         return Fernet(key)
+    if os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+        raise RuntimeError("BREVITAS_SECRET_KEY is required when Supabase is authoritative")
     key_path = Path(__file__).parent / ".secret_key"
     if key_path.exists():
         return Fernet(key_path.read_bytes().strip())
@@ -120,6 +127,10 @@ _PROVIDER_MODELS = {
     "openai":    ["gpt-4o", "gpt-4o-mini", "o3-mini"],
     "grok":      ["grok-3", "grok-3-mini"],
     "deepseek":  ["deepseek-chat", "deepseek-reasoner"],
+    "azure_openai": [], "google_gemini": [], "groq": [], "xai": [],
+    "mistral": [], "cohere": [], "litellm": [], "langchain": [], "bedrock": [],
+    "together": [], "fireworks": [], "openrouter": [], "perplexity": [],
+    "replicate": [], "huggingface": [],
 }
 
 
@@ -203,7 +214,8 @@ def _build_backend(config: dict | None):
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 
 def _rate_key(request: Request) -> str:
-    return request.headers.get("X-API-Key") or request.client.host
+    raw = request.headers.get("X-Brevitas-Key") or request.headers.get("X-API-Key")
+    return hash_key(raw) if raw else (request.client.host if request.client else "unknown")
 
 limiter = Limiter(key_func=_rate_key)
 
@@ -227,30 +239,246 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_ALLOWED_ORIGINS != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
 @app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path != "/v1/health":
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+@app.middleware("http")
 async def _check_body_size(request: Request, call_next):
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > 2_000_000:
+    try:
+        too_large = content_length and int(content_length) > 2_000_000
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+    if too_large:
         return JSONResponse(status_code=413, content={"detail": "Request body too large (max 2 MB)"})
+    if not content_length and request.method in {"POST", "PUT", "PATCH"}:
+        if len(await request.body()) > 2_000_000:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large (max 2 MB)"})
     return await call_next(request)
 
 
-_store = UsageStore()
+_store = make_store()
+_valid_key_cache: dict[str, float] = {}
+_valid_key_lock = threading.Lock()
+_proxy_windows: dict[str, deque] = defaultdict(deque)
+_proxy_active: dict[str, int] = defaultdict(int)
+_proxy_limit_lock = threading.Lock()
+_PROXY_PATHS = {"/v1/messages", "/v1/chat/completions", "/openai/v1/chat/completions",
+                "/openai/chat/completions",
+                "/v1/responses", "/openai/v1/responses", "/v1/embeddings",
+                "/openai/responses", "/openai/embeddings", "/openai/completions",
+                "/openai/v1/embeddings", "/v1/completions", "/openai/v1/completions"}
 
 
-def _authenticated(x_api_key: Optional[str] = Header(None)) -> str:
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
-    kh = hash_key(x_api_key)
-    if not _store.key_exists(kh):
+def _key_exists(kh: str) -> bool:
+    now = _time.monotonic()
+    with _valid_key_lock:
+        if _valid_key_cache.get(kh, 0) > now:
+            return True
+    valid = _store.key_exists(kh)
+    if valid:
+        with _valid_key_lock:
+            _valid_key_cache[kh] = now + 30  # bounded revocation delay, avoids one DB read per AI call
+    return valid
+
+
+@app.middleware("http")
+async def _protect_model_proxy(request: Request, call_next):
+    if request.url.path not in _PROXY_PATHS:
+        return await call_next(request)
+    raw_key = request.headers.get("x-brevitas-key", "")
+    if not raw_key and os.getenv("BREVITAS_PROXY_AUTH", "true").lower() not in ("0", "false", "no"):
+        return JSONResponse(status_code=401, content={"detail": "Missing X-Brevitas-Key header"})
+    kh = hash_key(raw_key) if raw_key else f"ip:{request.client.host if request.client else 'unknown'}"
+    if raw_key:
+        try:
+            if not _key_exists(kh):
+                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+        except Exception:
+            return JSONResponse(status_code=503, content={"detail": "Authentication store unavailable"})
+    now = _time.monotonic()
+    rpm = int(os.getenv("BREVITAS_PROXY_RPM", "300"))
+    concurrency = int(os.getenv("BREVITAS_PROXY_CONCURRENCY", "20"))
+    # ponytail: process-local counters are enough for one Railway replica; use Redis before scaling out.
+    with _proxy_limit_lock:
+        window = _proxy_windows[kh]
+        while window and now - window[0] >= 60:
+            window.popleft()
+        if len(window) >= rpm or _proxy_active[kh] >= concurrency:
+            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"},
+                                headers={"Retry-After": "1"})
+        window.append(now)
+        _proxy_active[kh] += 1
+    try:
+        response = await call_next(request)
+    except Exception:
+        with _proxy_limit_lock:
+            _proxy_active[kh] = max(0, _proxy_active[kh] - 1)
+        raise
+    original = response.body_iterator
+
+    async def release_after_response():
+        try:
+            async for chunk in original:
+                yield chunk
+        finally:
+            with _proxy_limit_lock:
+                _proxy_active[kh] = max(0, _proxy_active[kh] - 1)
+
+    response.body_iterator = release_after_response()
+    return response
+
+
+def _safe_record_usage(**values) -> bool:
+    """Telemetry is best-effort; it must never damage a model/compression response."""
+    try:
+        return bool(_store.record_usage(**values))
+    except Exception as exc:
+        logger.error("usage write failed: %s", type(exc).__name__)
+        return False
+
+
+def _authenticated(x_api_key: Optional[str] = Header(None),
+                   x_brevitas_key: Optional[str] = Header(None)) -> str:
+    key = x_brevitas_key or x_api_key
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing X-Brevitas-Key header")
+    kh = hash_key(key)
+    try:
+        valid = _key_exists(kh)
+    except Exception as exc:
+        logger.error("API key store unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Authentication store unavailable") from exc
+    if not valid:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return kh
+
+
+def _dashboard_identity(request: Request) -> dict:
+    """Validate and return the current Supabase user."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return {}
+    url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").rstrip("/")
+    api_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") \
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not api_key:
+        return {}
+    try:
+        response = _requests.get(f"{url}/auth/v1/user", headers={
+            "apikey": api_key, "Authorization": auth,
+        }, timeout=5)
+        return response.json() if response.ok else {}
+    except Exception:
+        return {}
+
+
+def _dashboard_user(request: Request) -> str:
+    return str(_dashboard_identity(request).get("id") or "")
+
+
+def _admin_authenticated(request: Request) -> str:
+    configured = os.getenv("BREVITAS_ADMIN_TOKEN", "")
+    supplied = request.headers.get("x-brevitas-admin", "")
+    if configured and supplied and hmac.compare_digest(configured, supplied):
+        return "admin-token"
+    identity = _dashboard_identity(request)
+    metadata = identity.get("app_metadata") or {}
+    if metadata.get("brevitas_admin") is True or metadata.get("role") == "brevitas_admin":
+        return str(identity.get("id") or "admin")
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
+# ── bvx browser authorization ────────────────────────────────────────────────
+
+class DeviceCodeRequest(BaseModel):
+    device_code: str = Field(min_length=40, max_length=128,
+                             pattern=r"^[A-Za-z0-9_-]+$")
+
+
+def _device_expired(row: dict) -> bool:
+    try:
+        expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+        return expires <= datetime.now(timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+@app.post("/v1/device-auth/start")
+@limiter.limit("10/minute")
+def start_device_auth(request: Request):
+    device_code = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
+    try:
+        _store.create_device_request(hash_key(device_code), expires.isoformat())
+    except Exception as exc:
+        logger.error("device auth start failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Device authorization unavailable") from exc
+    dashboard = os.getenv("BREVITAS_DASHBOARD_URL", "https://brevitassystems.com/dashboard").rstrip("/")
+    return JSONResponse({
+        "device_code": device_code,
+        "verification_uri_complete": f"{dashboard}#bvx={device_code}",
+        "expires_in": 600,
+        "interval": 2,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/v1/device-auth/approve")
+@limiter.limit("20/minute")
+def approve_device_auth(request: Request, body: DeviceCodeRequest):
+    owner_id = _dashboard_user(request)
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="Sign in to approve this device")
+    device_hash = hash_key(body.device_code)
+    row = _store.get_device_request(device_hash)
+    if not row or _device_expired(row):
+        raise HTTPException(status_code=410, detail="Device authorization expired")
+    if row.get("approved_at"):
+        if row.get("owner_id") != owner_id:
+            raise HTTPException(status_code=409, detail="Device already connected")
+        return {"status": "approved"}
+
+    key = generate_api_key()
+    kh = hash_key(key)
+    if not _store.approve_device_request(device_hash, owner_id, kh, _encrypt(key)):
+        raise HTTPException(status_code=409, detail="Device authorization already handled")
+    logger.info("bvx device approved owner=%s", owner_id)
+    return {"status": "approved"}
+
+
+@app.post("/v1/device-auth/token")
+@limiter.limit("120/minute")
+def consume_device_auth(request: Request, body: DeviceCodeRequest):
+    device_hash = hash_key(body.device_code)
+    row = _store.get_device_request(device_hash)
+    if not row or _device_expired(row):
+        raise HTTPException(status_code=410, detail="Device authorization expired or consumed")
+    if not row.get("approved_at"):
+        return JSONResponse({"status": "pending"}, status_code=202,
+                            headers={"Cache-Control": "no-store"})
+    consumed = _store.consume_device_request(device_hash)
+    if not consumed:
+        raise HTTPException(status_code=410, detail="Device authorization already consumed")
+    key = _decrypt(consumed["encrypted_key"])
+    with _valid_key_lock:
+        _valid_key_cache[hash_key(key)] = _time.monotonic() + 30
+    return JSONResponse({"api_key": key},
+                        headers={"Cache-Control": "no-store"})
 
 
 # ── Key management ────────────────────────────────────────────────────────────
@@ -262,16 +490,39 @@ class CreateKeyRequest(BaseModel):
 @app.post("/v1/keys")
 @limiter.limit("10/minute")
 def create_key(request: Request, body: CreateKeyRequest):
+    owner_id = _dashboard_user(request)
+    parent = request.headers.get("x-brevitas-key") or request.headers.get("x-api-key") or ""
+    if parent:
+        parent_hash = hash_key(parent)
+        if not _key_exists(parent_hash):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        owner_id = _store.key_owner(parent_hash)
+    if not owner_id and os.getenv("BREVITAS_ALLOW_KEY_CREATION", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(status_code=401, detail="Sign in before creating an API key")
     key = generate_api_key()
     kh = hash_key(key)
-    _store.create_key(kh, body.name)
+    _store.create_key(kh, body.name, owner_id=owner_id)
+    with _valid_key_lock:
+        _valid_key_cache[kh] = _time.monotonic() + 30
     return {"api_key": key, "name": body.name}
 
 
 @app.get("/v1/keys")
 @limiter.limit("60/minute")
 def list_keys(request: Request, _: str = Depends(_authenticated)):
-    return {"keys": _store.list_keys()}
+    return {"keys": _store.list_keys(_)}
+
+
+@app.delete("/v1/keys/{key_id}")
+@limiter.limit("30/minute")
+def revoke_key(request: Request, key_id: str, kh: str = Depends(_authenticated)):
+    if len(key_id) != 64:
+        raise HTTPException(status_code=400, detail="Invalid key id")
+    if not _store.delete_key(kh, key_id):
+        raise HTTPException(status_code=404, detail="API key not found")
+    with _valid_key_lock:
+        _valid_key_cache.pop(key_id, None)
+    return {"revoked": True}
 
 
 # ── Provider config ───────────────────────────────────────────────────────────
@@ -352,6 +603,7 @@ class CompressRequest(BaseModel):
     pipeline:          str       = Field(default="", max_length=100)
     agent:             str       = Field(default="", max_length=100)
     run_id:            str       = Field(default="", max_length=128)
+    meter:             bool      = Field(default=True)
 
     @field_validator("messages", "prior_context", mode="before")
     @classmethod
@@ -404,14 +656,15 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
     actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
 
-    _store.record_usage(
-        key_hash=kh,
-        baseline_tokens=baseline_tokens,
-        optimized_tokens=output_tokens,
-        savings_pct=actual_savings,
-        quality_proxy=None,
-        strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
-    )
+    if body.meter:
+        _safe_record_usage(
+            key_hash=kh,
+            baseline_tokens=baseline_tokens,
+            optimized_tokens=output_tokens,
+            savings_pct=actual_savings,
+            quality_proxy=None,
+            strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
+        )
 
     return {
         "compressed_messages": out_messages,             # last message may be compressed (lossy)
@@ -468,7 +721,7 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
         r = _opt(body.prompt, rate=body.rate if body.rate is not None else 1.0)
         extra = {"task": None, "rate": body.rate}
 
-    _store.record_usage(
+    _safe_record_usage(
         key_hash=kh,
         baseline_tokens=r.tokens_before,
         optimized_tokens=r.tokens_after,
@@ -498,7 +751,7 @@ def compress_retrieval(request: Request, body: RetrievalCompressRequest,
 
     out = retrieval_select(body.task, body.prior_context, k=body.k,
                            min_top_score=body.min_top_score, use_adaptive=True)
-    _store.record_usage(
+    _safe_record_usage(
         key_hash=kh,
         baseline_tokens=out["baseline_tokens"],
         optimized_tokens=out["optimized_tokens"],
@@ -563,14 +816,15 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                              "quality_sim": quality_sim,
                              "fallback": sel["fallback_applied"]})
 
-            _store.record_usage(
-                key_hash=kh,
-                baseline_tokens=baseline_tokens,
-                optimized_tokens=output_tokens,
-                savings_pct=actual_savings,
-                quality_proxy=None,
-                strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
-            )
+            if body.meter:
+                _safe_record_usage(
+                    key_hash=kh,
+                    baseline_tokens=baseline_tokens,
+                    optimized_tokens=output_tokens,
+                    savings_pct=actual_savings,
+                    quality_proxy=None,
+                    strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
+                )
 
             event_queue.put({"stage": "done", "result": {
                 "compressed_messages": out_messages,
@@ -621,100 +875,163 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
 # ── External usage reporting (SDK / proxy) ────────────────────────────────────
 
 class UsageReportRequest(BaseModel):
-    provider:         str   = Field(default="", max_length=50)
-    model:            str   = Field(default="", max_length=100)
-    baseline_tokens:  int   = Field(ge=0)
-    compressed_tokens: int  = Field(ge=0)
-    quality_score:    Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Real quality from gate
-    request_id:       str   = Field(default="", max_length=64)   # idempotency key
-    usage_raw:        Optional[dict] = None                       # provider receipt (verbatim usage object)
-    strategy:         str   = Field(default="", max_length=32)    # lever that produced the savings
-    session_id:       str   = Field(default="", max_length=128)
-    pipeline:         str   = Field(default="", max_length=100)
-    agent:            str   = Field(default="", max_length=100)
-    run_id:           str   = Field(default="", max_length=128)
+    provider: str = Field(default="", max_length=64)
+    model: str = Field(default="", max_length=128)
+    operation: str = Field(default="chat", max_length=64)
+    baseline_tokens: int = Field(ge=0)
+    compressed_tokens: int = Field(ge=0)
+    baseline_output_tokens: Optional[int] = Field(default=None, ge=0)
+    fresh_input_tokens: Optional[int] = Field(default=None, ge=0)
+    cached_input_tokens: Optional[int] = Field(default=None, ge=0)
+    cache_write_tokens: Optional[int] = Field(default=None, ge=0)
+    output_tokens: Optional[int] = Field(default=None, ge=0)
+    quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    request_id: str = Field(default="", max_length=128)
+    usage_raw: Optional[dict] = None  # parsed then discarded; never persisted
+    strategy: str = Field(default="", max_length=64)
+    session_id: str = Field(default="", max_length=128)
+    project: str = Field(default="", max_length=128)
+    environment: str = Field(default="", max_length=64)
+    source: str = Field(default="", max_length=128)
+    repo: str = Field(default="", max_length=128)
+    client: str = Field(default="", max_length=128)
+    pipeline: str = Field(default="", max_length=128)
+    agent: str = Field(default="", max_length=128)
+    call_site_id: str = Field(default="", max_length=128)
+    framework: str = Field(default="", max_length=64)
+    gateway: str = Field(default="", max_length=64)
+    run_id: str = Field(default="", max_length=128)
+    receipt_source: str = Field(default="sdk", pattern="^(sdk|proxy|import|manual)$")
+    receipt_available: bool = True
+    is_stream: bool = False
+
+    @field_validator("provider", "model", "operation", "strategy", "session_id", "project",
+                     "environment", "source", "repo", "client", "pipeline", "agent",
+                     "call_site_id", "framework", "gateway", "run_id")
+    @classmethod
+    def _safe_metadata(cls, value: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("metadata cannot contain control characters")
+        return value
+
+    @field_validator("project", "repo")
+    @classmethod
+    def _repo_name_only(cls, value: str) -> str:
+        """Keep a display name, never a local path or Git remote."""
+        name = value.strip().replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        return name
+
+
+def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
+    if body.request_id and _store.has_request(kh, body.request_id):
+        return {"duplicate": True, "request_id": body.request_id,
+                "tokens_saved": 0, "measured_savings_usd": 0.0,
+                "verified_savings_usd": 0.0, "quality_status": "duplicate"}
+
+    parsed = normalize_usage(body.usage_raw, body.provider)
+    if any(value is not None for value in (body.fresh_input_tokens, body.cached_input_tokens,
+                                            body.cache_write_tokens, body.output_tokens)):
+        receipt = TokenReceipt(
+            body.fresh_input_tokens or 0, body.cached_input_tokens or 0,
+            body.cache_write_tokens or 0, body.output_tokens or 0,
+        )
+    elif parsed.total_tokens:
+        receipt = parsed
+    else:
+        receipt = TokenReceipt(fresh_input_tokens=body.compressed_tokens)
+
+    tokens_saved = body.baseline_tokens - body.compressed_tokens
+    savings_pct = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
+    costs = (calculate_costs(body.provider, body.model, body.baseline_tokens, receipt,
+                             body.baseline_output_tokens)
+             if body.receipt_available else {
+                 "pricing_status": "unpriced", "baseline_cost_usd": None,
+                 "actual_cost_usd": None, "measured_savings_usd": None,
+                 "pricing_version": "", "prices": {},
+             })
+    measured = costs["measured_savings_usd"]
+
+    quality_floor = float(os.getenv("BREVITAS_QUALITY_FLOOR", "0.8"))
+    stream = _seq_stream(kh)
+    if body.quality_score is not None:
+        stream.update(body.quality_score >= quality_floor)
+    if stream.state.tripped:
+        quality_status = "stream_tripped"
+    elif body.quality_score is None:
+        quality_status = "unverified"
+    elif body.quality_score >= quality_floor:
+        quality_status = "verified"
+    else:
+        quality_status = "failed"
+    verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0
+    fee = round(verified * 0.10, 10)
+
+    inserted = _store.record_usage(
+        key_hash=kh,
+        owner_id=_store.key_owner(kh),
+        baseline_tokens=body.baseline_tokens,
+        optimized_tokens=body.compressed_tokens,
+        tokens_saved=tokens_saved,
+        savings_pct=savings_pct,
+        quality_proxy=body.quality_score,
+        provider=body.provider,
+        model=body.model,
+        operation=body.operation,
+        fresh_input_tokens=receipt.fresh_input_tokens,
+        cached_input_tokens=receipt.cached_input_tokens,
+        cache_write_tokens=receipt.cache_write_tokens,
+        output_tokens=receipt.output_tokens,
+        baseline_cost_usd=costs["baseline_cost_usd"],
+        actual_cost_usd=costs["actual_cost_usd"],
+        measured_savings_usd=measured,
+        verified_savings_usd=verified,
+        brevitas_fee_usd=fee,
+        pricing_status=costs["pricing_status"],
+        pricing_version=costs["pricing_version"],
+        quality_status=quality_status,
+        session_id=body.session_id,
+        project=body.project,
+        environment=body.environment,
+        source=body.source,
+        repo=body.repo,
+        client=body.client,
+        pipeline=body.pipeline,
+        agent=body.agent,
+        call_site_id=body.call_site_id,
+        framework=body.framework,
+        gateway=body.gateway,
+        run_id=body.run_id,
+        request_id=body.request_id,
+        strategy=body.strategy,
+        receipt_source=body.receipt_source,
+        is_stream=body.is_stream,
+    )
+    if not inserted and body.request_id:
+        return {"duplicate": True, "request_id": body.request_id,
+                "tokens_saved": 0, "measured_savings_usd": 0.0,
+                "verified_savings_usd": 0.0, "quality_status": "duplicate"}
+    return {
+        "tokens_saved": tokens_saved,
+        "savings_pct": savings_pct,
+        "baseline_cost_usd": costs["baseline_cost_usd"],
+        "actual_cost_usd": costs["actual_cost_usd"],
+        "measured_savings_usd": measured,
+        "verified_savings_usd": round(verified, 8),
+        "cost_saved_usd": round(verified, 8),
+        "brevitas_fee_usd": round(fee, 8),
+        "pricing_status": costs["pricing_status"],
+        "quality_score": body.quality_score,
+        "quality_status": quality_status,
+        "stream": stream.to_dict(),
+    }
 
 
 @app.post("/v1/usage")
 @limiter.limit("300/minute")
 def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
-    # Idempotency (brief b4): a retried post with the same request_id must not
-    # double-bill. First-writer wins; duplicates are acknowledged but not recorded.
-    if body.request_id and _store.has_request(kh, body.request_id):
-        return {"duplicate": True, "request_id": body.request_id,
-                "tokens_saved": 0, "cost_saved_usd": 0.0, "brevitas_fee_usd": 0.0,
-                "quality_status": "duplicate"}
-
-    tokens_saved  = max(0, body.baseline_tokens - body.compressed_tokens)
-    savings_pct   = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
-
-    # Lever 2 visibility: pull the provider's real prompt-cache read count out of the
-    # verbatim usage receipt so it lands in the cached_tokens column (else it's 0 and
-    # native caching looks like it never fired). Best-effort — never break reporting.
-    cached_tokens = 0
-    if body.usage_raw:
-        try:
-            cached_tokens = int(savings_from_usage(body.usage_raw, body.provider, body.model).cached_tokens)
-        except Exception:
-            cached_tokens = 0
-
-    # Only bill savings if quality passes the gate (unverified ⇒ $0, always)
-    quality_floor = 0.8  # Default floor; configurable per customer
-    quality_verified = body.quality_score is not None and body.quality_score >= quality_floor
-
-    # Sequential stream gate (brief b4, always-valid mSPRT): every scored call
-    # updates the per-customer stream; once the stream trips, billing stops for
-    # ALL subsequent calls until the stream is reset — even individually-"verified"
-    # ones (the stream evidence says the lever is degrading).
-    stream = _seq_stream(kh)
-    if body.quality_score is not None:
-        stream.update(body.quality_score >= quality_floor)
-    stream_tripped = stream.state.tripped
-
-    if quality_verified and not stream_tripped:
-        cost_saved = cost_for_tokens(body.provider, body.model, tokens_saved)
-        fee = round(cost_saved * 0.10, 8)
-        quality_status = "verified"
-    else:
-        cost_saved = 0.0
-        fee = 0.0
-        if stream_tripped:
-            quality_status = "stream_tripped"
-        else:
-            quality_status = "unverified" if body.quality_score is None else "failed"
-
-    # Record EVERY call verbatim (auditable log — no more wins-only records):
-    # quality_proxy stays None when nothing was verified (never fake 1.0),
-    # token/savings figures are stored as reported with billing decided above.
-    _store.record_usage(
-        key_hash=kh,
-        baseline_tokens=body.baseline_tokens,
-        optimized_tokens=body.compressed_tokens,
-        savings_pct=savings_pct,
-        quality_proxy=body.quality_score,
-        provider=body.provider,
-        model=body.model,
-        cost_saved_usd=cost_saved,
-        brevitas_fee_usd=fee,
-        session_id=body.session_id,
-        pipeline=body.pipeline,
-        agent=body.agent,
-        run_id=body.run_id,
-        request_id=body.request_id,
-        usage_raw=json.dumps(body.usage_raw) if body.usage_raw else "",
-        quality_status=quality_status,
-        strategy=body.strategy,
-        cached_tokens=cached_tokens,
-    )
-    return {
-        "tokens_saved": tokens_saved if quality_status == "verified" else 0,
-        "savings_pct": savings_pct if quality_status == "verified" else 0.0,
-        "cost_saved_usd": round(cost_saved, 6),
-        "brevitas_fee_usd": round(fee, 6),
-        "quality_score": body.quality_score,
-        "quality_status": quality_status,
-        "stream": stream.to_dict(),
-    }
+    return _record_usage_report(kh, body)
 
 
 # ── Sequential quality streams (brief b4) ─────────────────────────────────────
@@ -747,7 +1064,7 @@ def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
 
 @app.get("/v1/provider-costs")
 def provider_costs():
-    return {"costs_per_1m_tokens": PROVIDER_COSTS_PER_1M}
+    return {"pricing_as_of": "2026-07-10", "costs_per_1m_tokens": PROVIDER_COSTS_PER_1M}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -756,6 +1073,45 @@ def provider_costs():
 @limiter.limit("120/minute")
 def stats(request: Request, kh: str = Depends(_authenticated)):
     return _store.get_stats(kh)
+
+
+@app.get("/v1/stats/breakdown")
+@limiter.limit("120/minute")
+def stats_breakdown(request: Request, kh: str = Depends(_authenticated)):
+    rows = _store.get_breakdown(kh)
+    return {"rows": rows, "totals": _store.get_stats(kh)}
+
+
+@app.get("/v1/admin/stats")
+@limiter.limit("60/minute")
+def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):
+    logger.info("admin usage overview accessed actor=%s", _)
+    return _store.get_admin_stats()
+
+
+@app.get("/v1/admin/stats/breakdown")
+@limiter.limit("60/minute")
+def admin_stats_breakdown(request: Request, _: str = Depends(_admin_authenticated)):
+    logger.info("admin usage breakdown accessed actor=%s", _)
+    return {"rows": _store.get_admin_breakdown(), "totals": _store.get_admin_stats()}
+
+
+@app.get("/v1/stats/pipelines")
+@limiter.limit("120/minute")
+def stats_pipelines(request: Request, kh: str = Depends(_authenticated)):
+    return _store.get_stats_by_pipeline(kh)
+
+
+@app.get("/v1/stats/agents")
+@limiter.limit("120/minute")
+def stats_agents(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
+    return _store.get_stats_by_agent(kh, pipeline=pipeline)
+
+
+@app.get("/v1/stats/runs")
+@limiter.limit("120/minute")
+def stats_runs(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
+    return _store.get_stats_by_run(kh, pipeline=pipeline)
 
 
 _COMPRESSOR_STATUS: dict = {"ts": 0.0, "data": None}
@@ -804,6 +1160,22 @@ def _warn_if_compressor_missing():
 @app.get("/v1/health")
 def health():
     return {"status": "ok", "compressor": _compressor_status()}
+
+
+def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
+    """In-process bridge: hosted proxy receipts use the caller's tenant key."""
+    if not raw_key:
+        return
+    kh = hash_key(raw_key)
+    if not _key_exists(kh):
+        return
+    _record_usage_report(kh, UsageReportRequest.model_validate(payload))
+
+
+# Railway serves the management API and provider-compatible proxy from one process.
+from brevitas.proxy import proxy_app, set_usage_reporter
+set_usage_reporter(_hosted_proxy_receipt)
+app.include_router(proxy_app.router)
 
 
 if __name__ == "__main__":

@@ -240,6 +240,7 @@ def analyze(path: str, as_json: bool) -> None:
             "optimize": len(rep.optimize), "lossless": len(rep.lossless),
             "calls": [{
                 "location": c.location, "provider": c.provider, "transport": c.transport,
+                "call_site_id": c.call_site_id,
                 "task": c.task, "complexity": c.complexity, "strategy": c.strategy.value,
                 "prompt_excerpt": c.prompt_excerpt, "reason": c.reason,
             } for c in rep.calls],

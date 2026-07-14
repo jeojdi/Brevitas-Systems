@@ -1,315 +1,130 @@
-"""
-Phase F tests: Supabase mirror and label tracking.
-
-Validates:
-1. Mirror writer exports usage records with labels
-2. Cost estimation logic
-3. Batch mirror operations
-4. Label sync functionality
-5. Migration schema compatibility
-"""
+"""Canonical cloud receipt/store behavior (the old mirror path no longer exists)."""
+import sqlite3
 import sys
 from pathlib import Path
 
-# Ensure brevitas is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pytest
-from unittest.mock import patch, MagicMock
-from api.mirror import (
-    mirror_to_supabase,
-    _estimate_cost_saved,
-    batch_mirror_to_supabase,
-    sync_labels_to_supabase,
-)
+from api.import_usage import import_sqlite
+from api.store import SupabaseUsageStore, UsageStore, make_store
+from brevitas.receipts import SSEUsageParser, calculate_costs, normalize_usage
 
 
-class TestCostEstimation:
-    """Test cost estimation for different providers and models."""
-
-    def test_openai_cost_estimation(self):
-        """Test cost estimation for OpenAI models."""
-        # GPT-4 turbo: $0.01/$0.03 per 1M
-        cost = _estimate_cost_saved("openai", "gpt-4-turbo", 1000)
-        assert cost > 0
-        assert cost < 0.001  # Should be very small for 1000 tokens
-
-    def test_anthropic_cost_estimation(self):
-        """Test cost estimation for Anthropic models."""
-        # Claude Opus: $0.015/$0.075 per 1M
-        cost = _estimate_cost_saved("anthropic", "claude-opus-4-8", 1000)
-        assert cost > 0
-        assert cost < 0.001
-
-    def test_deepseek_cost_estimation(self):
-        """Test cost estimation for DeepSeek models."""
-        # DeepSeek chat: $0.00014/$0.00028 per 1M
-        cost = _estimate_cost_saved("deepseek", "deepseek-chat", 1000)
-        assert cost > 0
-        # DeepSeek is very cheap, so even 1000 tokens might be < $0.0001
-        assert cost >= 0.0001  # Minimum $0.0001
-
-    def test_unknown_provider_uses_default(self):
-        """Test that unknown providers use default rates."""
-        cost = _estimate_cost_saved("unknown-provider", "unknown-model", 1000)
-        assert cost >= 0.0001
-
-    def test_cost_scales_with_tokens(self):
-        """Test that cost scales linearly with tokens."""
-        cost_100k = _estimate_cost_saved("openai", "gpt-4-turbo", 100000)
-        cost_200k = _estimate_cost_saved("openai", "gpt-4-turbo", 200000)
-        # Cost should approximately double
-        assert cost_200k > cost_100k
-        assert abs(cost_200k - cost_100k * 2) < cost_100k * 0.1  # Within 10%
+def test_provider_receipt_categories():
+    cases = [
+        ("anthropic", {"input_tokens": 10, "cache_read_input_tokens": 20,
+                       "cache_creation_input_tokens": 5, "output_tokens": 7}, (10, 20, 5, 7)),
+        ("openai", {"prompt_tokens": 30, "prompt_tokens_details": {"cached_tokens": 12},
+                    "completion_tokens": 8}, (18, 12, 0, 8)),
+        ("openai", {"input_tokens": 40, "input_tokens_details": {"cached_tokens": 15},
+                    "output_tokens": 9}, (25, 15, 0, 9)),
+        ("google_gemini", {"promptTokenCount": 50, "cachedContentTokenCount": 10,
+                           "candidatesTokenCount": 11}, (40, 10, 0, 11)),
+        ("bedrock", {"inputTokens": 60, "outputTokens": 12}, (60, 0, 0, 12)),
+        ("cohere", {"billed_units": {"input_tokens": 70, "output_tokens": 13}}, (70, 0, 0, 13)),
+        ("ollama", {"prompt_eval_count": 80, "eval_count": 14}, (80, 0, 0, 14)),
+        ("replicate", {"metrics": {"input_token_count": 90,
+                                     "output_token_count": 15}}, (90, 0, 0, 15)),
+    ]
+    for provider, usage, expected in cases:
+        receipt = normalize_usage(usage, provider)
+        assert (receipt.fresh_input_tokens, receipt.cached_input_tokens,
+                receipt.cache_write_tokens, receipt.output_tokens) == expected
 
 
-class TestMirrorToSupabase:
-    """Test mirroring usage records to Supabase."""
+def test_stream_parser_handles_split_final_events():
+    parser = SSEUsageParser("openai")
+    body = (b'data: {"type":"response.completed","response":{"id":"resp_1","usage":'
+            b'{"input_tokens":100,"input_tokens_details":{"cached_tokens":40},'
+            b'"output_tokens":20}}}\n\ndata: [DONE]\n\n')
+    for chunk in (body[:17], body[17:71], body[71:]):
+        parser.feed(chunk)
+    receipt = parser.finish()
+    assert parser.response_id == "resp_1"
+    assert receipt.as_dict() == {"fresh_input_tokens": 60, "cached_input_tokens": 40,
+                                 "cache_write_tokens": 0, "output_tokens": 20,
+                                 "input_tokens": 100, "total_tokens": 120}
 
-    @patch.dict("os.environ", {}, clear=False)
-    def test_skips_without_supabase_config(self):
-        """Test that mirror is skipped when Supabase is not configured."""
-        # Clear Supabase env vars
-        import os
-        os.environ.pop("NEXT_PUBLIC_SUPABASE_URL", None)
-        os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
-
-        result = mirror_to_supabase(
-            user_id="test-user",
-            key_hash="test-key",
-            provider="openai",
-            model="gpt-4",
-            baseline_tokens=1000,
-            optimized_tokens=500,
-            session_id="sess-123",
-        )
-
-        assert result is False
-
-    def test_mirror_record_construction(self):
-        """Test that mirror constructs correct record structure."""
-        # This test verifies the logic without needing Supabase
-        baseline = 10000
-        optimized = 6000
-        tokens_saved = baseline - optimized
-        savings_pct = (tokens_saved / baseline * 100) if baseline > 0 else 0
-
-        assert tokens_saved == 4000
-        assert abs(savings_pct - 40.0) < 0.01
+    anthropic = SSEUsageParser("anthropic")
+    anthropic.feed(b'data: {"type":"message_start","message":{"id":"msg_1","usage":'
+                   b'{"input_tokens":10,"cache_read_input_tokens":20,'
+                   b'"cache_creation_input_tokens":5}}}\n\n')
+    anthropic.feed(b'data: {"type":"message_delta","usage":{"output_tokens":7}}\n\n')
+    assert anthropic.finish().as_dict()["total_tokens"] == 42
 
 
-class TestBatchMirror:
-    """Test batch mirror operations."""
-
-    @patch.dict("os.environ", {}, clear=False)
-    def test_batch_skips_without_config(self):
-        """Test that batch mirror is skipped without Supabase config."""
-        import os
-        os.environ.pop("NEXT_PUBLIC_SUPABASE_URL", None)
-        os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
-
-        records = [
-            {
-                "user_id": "user-1",
-                "key_hash": "key-1",
-                "provider": "openai",
-                "model": "gpt-4",
-                "baseline_tokens": 1000,
-                "optimized_tokens": 500,
-                "session_id": "sess-1",
-            }
-        ]
-
-        result = batch_mirror_to_supabase(records)
-        assert result == 0
-
-    def test_batch_mirror_record_enrichment(self):
-        """Test that batch mirror enriches records with calculations."""
-        # Verify enrichment logic without needing Supabase
-        baseline = 1000
-        optimized = 500
-        tokens_saved = baseline - optimized
-        savings_pct = (tokens_saved / baseline * 100) if baseline > 0 else 0
-
-        assert tokens_saved == 500
-        assert abs(savings_pct - 50.0) < 0.01
-
-    @patch.dict("os.environ", {}, clear=False)
-    def test_batch_mirror_empty_list(self):
-        """Test batch mirror with empty records list."""
-        import os
-        os.environ.pop("NEXT_PUBLIC_SUPABASE_URL", None)
-        os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
-
-        result = batch_mirror_to_supabase([])
-        assert result == 0
+def test_unknown_model_is_unpriced():
+    costs = calculate_costs("new-provider", "future-model", 100, normalize_usage(
+        {"prompt_tokens": 80, "completion_tokens": 10}, "new-provider"))
+    assert costs["pricing_status"] == "unpriced"
+    assert costs["actual_cost_usd"] is None
+    assert costs["measured_savings_usd"] is None
 
 
-class TestLabelSync:
-    """Test label synchronization to Supabase."""
-
-    @patch.dict("os.environ", {}, clear=False)
-    def test_sync_labels_skips_without_config(self):
-        """Test that label sync is skipped without Supabase config."""
-        import os
-        os.environ.pop("NEXT_PUBLIC_SUPABASE_URL", None)
-        os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
-
-        result = sync_labels_to_supabase(
-            user_id="user-123",
-            session_id="sess-123",
-            pipeline="campaign-launch",
-            agent="copywriter",
-            run_id="run-123",
-        )
-
-        assert result is False
-
-    @patch.dict("os.environ", {}, clear=False)
-    def test_sync_no_labels_returns_false(self):
-        """Test that syncing with no labels returns False."""
-        import os
-        os.environ.pop("NEXT_PUBLIC_SUPABASE_URL", None)
-        os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
-
-        result = sync_labels_to_supabase(
-            user_id="user-123",
-            session_id="sess-123",
-        )
-
-        assert result is False
-
-    def test_label_validation(self):
-        """Test that label fields are properly structured."""
-        # Test that labels can be empty strings (backward compatible)
-        labels = {
-            "pipeline": "",
-            "agent": "",
-            "run_id": "",
-        }
-
-        # All can be empty
-        assert labels["pipeline"] == ""
-        assert labels["agent"] == ""
-        assert labels["run_id"] == ""
-
-        # Or populated
-        labels_populated = {
-            "pipeline": "campaign-launch",
-            "agent": "copywriter",
-            "run_id": "run-123",
-        }
-
-        assert labels_populated["pipeline"] == "campaign-launch"
-        assert labels_populated["agent"] == "copywriter"
-        assert labels_populated["run_id"] == "run-123"
+def test_cloud_configuration_selects_supabase_and_sqlite_is_explicit_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-test-value")
+    monkeypatch.delenv("BREVITAS_STORE", raising=False)
+    assert isinstance(make_store(), SupabaseUsageStore)
+    monkeypatch.setenv("BREVITAS_STORE", "sqlite")
+    monkeypatch.setenv("BREVITAS_SQLITE_PATH", str(tmp_path / "fallback.db"))
+    assert isinstance(make_store(), UsageStore)
 
 
-class TestMigrationSchema:
-    """Test Supabase migration schema compatibility."""
-
-    def test_migration_file_exists(self):
-        """Test that the migration file exists."""
-        migration_path = Path(__file__).parent.parent / "supabase/migrations/20260627_add_tracking_labels.sql"
-        assert migration_path.exists()
-
-    def test_migration_has_required_alterations(self):
-        """Test that migration includes required column additions."""
-        migration_path = Path(__file__).parent.parent / "supabase/migrations/20260627_add_tracking_labels.sql"
-        content = migration_path.read_text()
-
-        # Check for required columns
-        assert "ALTER TABLE billing_events" in content
-        assert "pipeline TEXT NOT NULL DEFAULT ''" in content
-        assert "agent TEXT NOT NULL DEFAULT ''" in content
-        assert "run_id TEXT NOT NULL DEFAULT ''" in content
-
-    def test_migration_creates_views(self):
-        """Test that migration creates required views."""
-        migration_path = Path(__file__).parent.parent / "supabase/migrations/20260627_add_tracking_labels.sql"
-        content = migration_path.read_text()
-
-        # Check for view creation
-        assert "savings_by_pipeline" in content
-        assert "savings_by_agent" in content
-        assert "savings_by_run" in content
-
-    def test_migration_creates_indexes(self):
-        """Test that migration creates efficient indexes."""
-        migration_path = Path(__file__).parent.parent / "supabase/migrations/20260627_add_tracking_labels.sql"
-        content = migration_path.read_text()
-
-        # Check for index creation
-        assert "idx_billing_events_pipeline" in content
-        assert "idx_billing_events_pipeline_agent" in content
-        assert "idx_billing_events_run_id" in content
+def test_duplicate_and_breakdown_reconcile(tmp_path):
+    store = UsageStore(str(tmp_path / "usage.db"))
+    store.create_key("key", "test")
+    common = dict(key_hash="key", baseline_tokens=100, optimized_tokens=75,
+                  provider="openai", model="gpt-4o-mini", project="app",
+                  environment="prod", source="api", request_id="request-1",
+                  fresh_input_tokens=75, output_tokens=10,
+                  measured_savings_usd=.01, verified_savings_usd=.008,
+                  pricing_status="priced")
+    assert store.record_usage(**common)
+    assert not store.record_usage(**common)
+    totals = store.get_stats("key")
+    rows = store.get_breakdown("key")
+    assert totals["total_calls"] == sum(row["calls"] for row in rows) == 1
+    assert totals["total_tokens_saved"] == sum(row["tokens_saved"] for row in rows) == 25
+    assert totals["total_measured_savings_usd"] == sum(row["measured_savings_usd"] for row in rows)
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute("select usage_raw from usage_log").fetchone()[0] == ""
 
 
-class TestReconciliationWithLabels:
-    """Test reconciliation invariants with labels."""
+def test_customer_totals_span_owned_keys_and_ownerless_keys_are_isolated(tmp_path):
+    store = UsageStore(str(tmp_path / "accounts.db"))
+    store.create_key("key-a", "a", owner_id="customer-1")
+    store.create_key("key-b", "b", owner_id="customer-1")
+    store.create_key("key-other", "other", owner_id="customer-2")
+    store.create_key("legacy-a", "legacy-a")
+    store.create_key("legacy-b", "legacy-b")
+    store.record_usage("key-a", 100, 80, owner_id="customer-1", project="app",
+                       source="api", provider="openai", model="gpt-4o-mini",
+                       measured_savings_usd=.1, verified_savings_usd=.08)
+    store.record_usage("key-b", 50, 40, owner_id="customer-1", project="app",
+                       source="worker", provider="anthropic", model="claude-sonnet-4-6",
+                       measured_savings_usd=.2, verified_savings_usd=.1)
+    store.record_usage("key-other", 200, 100, owner_id="customer-2")
 
-    def test_cost_breakdown_reconciliation(self):
-        """Test that per-agent costs sum to pipeline total."""
-        # Simulate per-agent costs (as would be returned by stats API)
-        agent_costs = [0.45, 7.20, 5.40, 2.70, 3.30, 1.95, 4.35]
-        pipeline_total = 25.35
-
-        agent_sum = sum(agent_costs)
-        assert abs(agent_sum - pipeline_total) < 0.01  # Allow for floating point rounding
-
-    def test_token_reconciliation(self):
-        """Test that per-agent tokens sum to pipeline total."""
-        agent_tokens = [150, 2400, 1800, 900, 1100, 650, 1450]
-        pipeline_total = 8450
-
-        agent_sum = sum(agent_tokens)
-        assert agent_sum == pipeline_total
-
-
-class TestMirrorIntegration:
-    """Integration tests for mirror system."""
-
-    def test_mirror_record_structure(self):
-        """Test that mirrored records have correct structure."""
-        # Simulate a mirrored record (dict that would be sent to Supabase)
-        record = {
-            "user_id": "user-123",
-            "key_hash": "key-abc",
-            "provider": "deepseek",
-            "model": "deepseek-chat",
-            "baseline_tokens": 10000,
-            "optimized_tokens": 6000,
-            "tokens_saved": 4000,
-            "savings_pct": 40.0,
-            "cost_saved_usd": 0.56,
-            "session_id": "sess-xyz",
-            "pipeline": "campaign-launch",
-            "agent": "copywriter",
-            "run_id": "run-123",
-            "created_at": "2026-06-27T12:00:00",
-        }
-
-        # Validate required fields
-        required_fields = [
-            "user_id",
-            "key_hash",
-            "provider",
-            "model",
-            "baseline_tokens",
-            "optimized_tokens",
-            "session_id",
-            "created_at",
-        ]
-
-        for field in required_fields:
-            assert field in record
-            assert record[field] is not None
-
-        # Validate label fields (should default to empty string if not set)
-        assert "pipeline" in record
-        assert "agent" in record
-        assert "run_id" in record
+    totals = store.get_stats("key-a")
+    rows = store.get_breakdown("key-a")
+    assert totals["total_calls"] == sum(row["calls"] for row in rows) == 2
+    assert totals["total_tokens_saved"] == sum(row["tokens_saved"] for row in rows) == 30
+    assert totals["total_measured_savings_usd"] == round(sum(
+        row["measured_savings_usd"] for row in rows), 8) == .3
+    assert not store.delete_key("legacy-a", "legacy-b")
+    assert store.key_exists("legacy-b")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_sqlite_import_twice_is_idempotent(tmp_path):
+    source = UsageStore(str(tmp_path / "old.db"))
+    source.record_usage("legacy-key", 200, 150, provider="deepseek", model="deepseek-chat",
+                        ts="2024-01-02T03:04:05+00:00", pipeline="legacy")
+    target = UsageStore(str(tmp_path / "new.db"))
+    first = import_sqlite(source.db_path, target)
+    second = import_sqlite(source.db_path, target)
+    assert first == {"read": 1, "inserted": 1, "duplicates": 0}
+    assert second == {"read": 1, "inserted": 0, "duplicates": 1}
+    row = target._rows("legacy-key")[0]
+    assert row["ts"] == "2024-01-02T03:04:05+00:00"
+    assert row["project"] == "legacy"

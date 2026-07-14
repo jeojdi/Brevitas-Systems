@@ -8,6 +8,8 @@ Resolution order (highest to lowest priority):
 """
 from contextvars import ContextVar
 from contextlib import contextmanager
+import os
+from pathlib import Path
 import secrets
 from typing import Optional, Dict, Any
 
@@ -79,8 +81,28 @@ def resolve_labels(
     """
     _brevitas_meta = _brevitas_meta or {}
 
+    project = (_brevitas_meta.get("project") or _brevitas_meta.get("repo")
+               or os.getenv("BREVITAS_PROJECT") or os.getenv("BREVITAS_REPO")
+               or _git_root_name())
+    source = (_brevitas_meta.get("source") or _brevitas_meta.get("client")
+              or os.getenv("BREVITAS_SOURCE") or os.getenv("BREVITAS_CLIENT") or "sdk")
     return {
+        "project": project, "repo": project,
+        "environment": _brevitas_meta.get("environment") or os.getenv("BREVITAS_ENVIRONMENT", ""),
+        "source": source, "client": source,
         "pipeline": _brevitas_meta.get("pipeline") or get_pipeline(),
         "agent": _brevitas_meta.get("agent") or get_agent(),
+        "call_site_id": _brevitas_meta.get("call_site_id", ""),
+        "framework": _brevitas_meta.get("framework", ""),
+        "gateway": _brevitas_meta.get("gateway", ""),
         "run_id": _brevitas_meta.get("run_id") or get_run_id(),
     }
+
+
+def _git_root_name() -> str:
+    """Return only the local Git-root folder name; never a path or remote."""
+    here = Path.cwd().resolve()
+    for directory in (here, *here.parents):
+        if (directory / ".git").exists():
+            return directory.name
+    return here.name

@@ -25,9 +25,6 @@ create policy "Users can view own billing events"
 create index if not exists billing_events_user_ts
   on public.billing_events (user_id, ts desc);
 
-create index if not exists billing_events_user_month
-  on public.billing_events (user_id, date_trunc('month', ts) desc);
-
 -- Monthly billing summary view
 create or replace view public.billing_monthly as
 select

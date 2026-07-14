@@ -168,6 +168,7 @@ def report_usage(
     run_id: str = "",
     usage_raw: dict | None = None,
     strategy: str = "",
+    metadata: dict | None = None,
 ) -> None:
     """Report usage to Brevitas for billing. Fire-and-forget.
 
@@ -181,23 +182,41 @@ def report_usage(
         return
     import uuid
     try:
+        labels = metadata or {}
+        payload = {
+            "provider": provider,
+            "model": model,
+            "baseline_tokens": baseline_tokens,
+            "compressed_tokens": compressed_tokens,
+            "baseline_output_tokens": labels.get("baseline_output_tokens"),
+            "session_id": session.session_id,
+            "pipeline": pipeline,
+            "agent": agent,
+            "run_id": run_id,
+            "quality_score": session.last_quality,
+            "request_id": labels.get("request_id") or uuid.uuid4().hex,
+            "usage_raw": usage_raw,
+            "strategy": strategy,
+            "project": labels.get("project") or labels.get("repo") or "",
+            "environment": labels.get("environment") or "",
+            "source": labels.get("source") or labels.get("client") or "",
+            "repo": labels.get("repo") or "",
+            "client": labels.get("client") or "",
+            "call_site_id": labels.get("call_site_id") or "",
+            "framework": labels.get("framework") or "",
+            "gateway": labels.get("gateway") or "",
+            "operation": labels.get("operation") or "chat",
+            "receipt_source": labels.get("receipt_source") or "sdk",
+            "receipt_available": bool(labels.get("receipt_available", True)),
+            "is_stream": bool(labels.get("is_stream")),
+        }
+        for name in ("fresh_input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens"):
+            if name in labels:
+                payload[name] = labels[name]
         httpx.post(
             f"{cfg['base_url']}/v1/usage",
-            headers={"X-API-Key": cfg["api_key"]},
-            json={
-                "provider": provider,
-                "model": model,
-                "baseline_tokens": baseline_tokens,
-                "compressed_tokens": compressed_tokens,
-                "session_id": session.session_id,
-                "pipeline": pipeline,
-                "agent": agent,
-                "run_id": run_id,
-                "quality_score": session.last_quality,
-                "request_id": uuid.uuid4().hex,
-                "usage_raw": usage_raw,
-                "strategy": strategy,
-            },
+            headers={"X-Brevitas-Key": cfg["api_key"]},
+            json=payload,
             timeout=5,
         )
     except Exception:

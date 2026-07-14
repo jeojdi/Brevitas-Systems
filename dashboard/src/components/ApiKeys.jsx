@@ -31,7 +31,7 @@ export default function ApiKeys({ apiKey }) {
 
   const loadKeys = async () => {
     try {
-      const res = await fetch('/v1/keys', { headers: { 'X-API-Key': apiKey } })
+      const res = await fetch('/v1/keys', { headers: { 'X-Brevitas-Key': apiKey } })
       if (res.ok) setKeys((await res.json()).keys ?? [])
     } catch {}
   }
@@ -43,7 +43,7 @@ export default function ApiKeys({ apiKey }) {
     try {
       const res = await fetch('/v1/keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Brevitas-Key': apiKey },
         body: JSON.stringify({ name: name.trim() || 'unnamed' }),
       })
       if (!res.ok) throw new Error(await res.text())
@@ -58,6 +58,15 @@ export default function ApiKeys({ apiKey }) {
     }
   }
 
+  const revoke = async (id) => {
+    if (!window.confirm('Revoke this API key? Calls using it will stop within 30 seconds.')) return
+    const res = await fetch(`/v1/keys/${id}`, {
+      method: 'DELETE', headers: { 'X-Brevitas-Key': apiKey },
+    })
+    if (!res.ok) return setError(await res.text())
+    await loadKeys()
+  }
+
   return (
     <div className="max-w-2xl space-y-14">
       {/* ── Header ── */}
@@ -67,7 +76,7 @@ export default function ApiKeys({ apiKey }) {
           Your <em className="italic text-brand-blue">API keys.</em>
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-sm mt-3 leading-relaxed">
-          Each key scopes its own pipeline state, usage stats, and shared memory layer.
+          Keys are separate credentials; usage from every key you own rolls into this account dashboard.
         </p>
       </div>
 
@@ -117,7 +126,7 @@ export default function ApiKeys({ apiKey }) {
           <div className="space-y-2">
             {keys.map((k, i) => (
               <div
-                key={i}
+                key={k.id || i}
                 className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex items-center justify-between"
               >
                 <div>
@@ -126,6 +135,7 @@ export default function ApiKeys({ apiKey }) {
                     // created {new Date(k.created).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                   </p>
                 </div>
+                <button onClick={() => revoke(k.id)} className="font-mono text-[10px] uppercase tracking-widest text-red-500 hover:underline">Revoke</button>
               </div>
             ))}
           </div>

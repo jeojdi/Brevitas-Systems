@@ -119,15 +119,19 @@ function PythonSDKDocs() {
         </div>
 
         <Section id="sdk-install" title="Install">
-          <CodeBlock lang="bash" code={`pip install brevitas-systems==0.9.5`} />
+          <CodeBlock lang="bash" code={`pip install brevitas-systems==0.9.10`} />
         </Section>
 
         <Section id="sdk-auth" title="Authentication">
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             Set your API key as an environment variable (recommended), or pass it directly in code.
-            To get an API key, <a href="mailto:contact@brevitassystems.com" className="text-brand-blue hover:underline">contact us</a>.
+            Create and copy a key from the <span className="text-brand-blue">API Keys</span> tab.
           </p>
-          <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here`} />
+          <CodeBlock lang="bash" code={`export BREVITAS_API_KEY=bvt_your_key_here
+export BREVITAS_BASE_URL=https://brevitassystems.com
+export BREVITAS_PROJECT=my-app
+export BREVITAS_ENVIRONMENT=production
+export BREVITAS_SOURCE=backend`} />
           <CodeBlock lang="python" code={`# or configure in code
 from brevitas import configure
 configure(api_key="bvt_your_key_here")`} />
@@ -173,7 +177,7 @@ print(resp.content[0].text)`} />
           </p>
           <CodeBlock lang="bash" code={`brevitas start --api-key bvt_your_key_here --port 4242
 
-export OPENAI_BASE_URL=http://localhost:4242
+export OPENAI_BASE_URL=http://localhost:4242/openai
 export ANTHROPIC_BASE_URL=http://localhost:4242
 # now run your app as usual`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
@@ -188,7 +192,7 @@ export ANTHROPIC_BASE_URL=http://localhost:4242
               <FieldHead />
               <tbody>
                 <Field name="api_key"  type="str"  defaultVal="env var">Your <code className="font-mono text-brand-blue text-xs">bvt_</code> prefixed Brevitas key. Falls back to <code className="font-mono text-xs">BREVITAS_API_KEY</code>.</Field>
-                <Field name="base_url" type="str"  defaultVal='"api.brevitassystems.com"'>Compression engine URL. Point at a local engine for self-hosting.</Field>
+                <Field name="base_url" type="str"  defaultVal='"brevitassystems.com"'>Compression engine URL. Point at a local engine for self-hosting.</Field>
                 <Field name="enabled"  type="bool" defaultVal="True">Toggle compression off without removing <code className="font-mono text-xs">wrap()</code> from your code.</Field>
                 <Field name="timeout"  type="int"  defaultVal="30">Per-request timeout in seconds.</Field>
               </tbody>
@@ -256,7 +260,7 @@ client.chat.completions.create(model="gpt-4o-mini",
             Brevitas with no code change.
           </p>
           <CodeBlock lang="bash" code={`brevitas start --api-key bvt_your_key_here
-export OPENAI_BASE_URL=http://localhost:4242
+export OPENAI_BASE_URL=http://localhost:4242/openai
 # LangChain / CrewAI / LlamaIndex now route through Brevitas`} />
         </Section>
       </div>
@@ -265,7 +269,7 @@ export OPENAI_BASE_URL=http://localhost:4242
 }
 
 function RestAPIDocs() {
-  const BASE = 'https://api.brevitassystems.com'
+  const BASE = 'https://brevitassystems.com'
 
   return (
     <div className="flex gap-12">
@@ -289,7 +293,7 @@ function RestAPIDocs() {
           </h2>
           <p className="text-brand-muted dark:text-brand-dark-muted text-base leading-relaxed max-w-xl">
             The same optimization engine over HTTP — language-agnostic and ready for server-side use.
-            Authenticate all requests with your API key in the <code className="font-mono text-brand-blue text-sm">X-API-Key</code> header.
+            Authenticate all requests with your API key in the <code className="font-mono text-brand-blue text-sm">X-Brevitas-Key</code> header.
           </p>
           <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted mt-4">
             Base URL: <span className="text-brand-navy dark:text-brand-dark-navy">{BASE}</span>
@@ -319,10 +323,10 @@ new_task        ─┘                            pruned_context
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             All endpoints except <code className="font-mono text-brand-blue text-xs">/v1/health</code> and{' '}
             <code className="font-mono text-brand-blue text-xs">/v1/providers</code> require a Brevitas API key
-            in the <code className="font-mono text-brand-blue text-xs">X-API-Key</code> header.
+            in the <code className="font-mono text-brand-blue text-xs">X-Brevitas-Key</code> header.
           </p>
-          <CodeBlock lang="bash" code={`curl https://api.brevitassystems.com/v1/health \\
-  -H "X-API-Key: bvt_your_key_here"`} />
+          <CodeBlock lang="bash" code={`curl https://brevitassystems.com/v1/health \\
+  -H "X-Brevitas-Key: bvt_your_key_here"`} />
         </Section>
 
         <Section id="api-compress" title="POST /v1/compress">
@@ -364,8 +368,8 @@ new_task        ─┘                            pruned_context
 }`} />
 
           <p className="annotation mt-4 mb-2">// example</p>
-          <CodeBlock lang="bash" code={`curl -X POST https://api.brevitassystems.com/v1/compress \\
-  -H "X-API-Key: bvt_your_key_here" \\
+          <CodeBlock lang="bash" code={`curl -X POST https://brevitassystems.com/v1/compress \\
+  -H "X-Brevitas-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{
     "messages": ["Agent A finished the plan. Here are the steps: ..."],
@@ -436,8 +440,8 @@ new_task        ─┘                            pruned_context
                 </table>
               </div>
 
-              <CodeBlock lang="bash" code={`curl -X PUT https://api.brevitassystems.com/v1/provider \\
-  -H "X-API-Key: bvt_your_key_here" \\
+              <CodeBlock lang="bash" code={`curl -X PUT https://brevitassystems.com/v1/provider \\
+  -H "X-Brevitas-Key: bvt_your_key_here" \\
   -H "Content-Type: application/json" \\
   -d '{"provider": "openai", "provider_api_key": "sk-...", "model": "gpt-4o-mini"}'`} />
             </div>
@@ -464,7 +468,7 @@ new_task        ─┘                            pruned_context
               <table className="w-full text-left text-xs">
                 <tbody>
                   {[
-                    ['401', 'Missing or invalid X-API-Key'],
+                    ['401', 'Missing or invalid X-Brevitas-Key'],
                     ['400', 'Validation error (see detail field)'],
                     ['413', 'Request body exceeds 2 MB'],
                     ['429', 'Rate limit exceeded'],
@@ -492,7 +496,7 @@ BREVITAS_KEY = os.environ["BREVITAS_API_KEY"]
 # 1. Point the SDK at Brevitas
 brevitas.configure(
     api_key=BREVITAS_KEY,
-    base_url="https://api.brevitassystems.com",
+    base_url="https://brevitassystems.com",
 )
 
 # 2. Wrap your existing provider client — nothing else changes
@@ -508,8 +512,8 @@ print(resp.content[0].text)
 
 # 4. Check cumulative usage over the REST API
 stats = requests.get(
-    "https://api.brevitassystems.com/v1/stats",
-    headers={"X-API-Key": BREVITAS_KEY},
+    "https://brevitassystems.com/v1/stats",
+    headers={"X-Brevitas-Key": BREVITAS_KEY},
 ).json()
 print(f"Total tokens saved: {stats['total_tokens_saved']:,}")`} />
         </Section>

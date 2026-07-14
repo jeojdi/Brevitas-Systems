@@ -40,6 +40,29 @@ from token_efficiency_model.lossless import optimize_prompt, PromptOptimization
 from token_efficiency_model.lossless import TaskCompressionRouter, classify_task
 
 
+def report_receipt(provider: str, model: str, baseline_tokens: int, usage: dict,
+                   *, operation: str = "chat", quality_score: float | None = None,
+                   metadata: dict | None = None) -> dict:
+    """Report any AgentMap-detected provider receipt without sending model content."""
+    from ._compress import report_usage
+    from .receipts import normalize_usage
+    labels = resolve_labels(metadata)
+    receipt = normalize_usage(usage, provider)
+    session = BrevitasSession()
+    session.last_quality = quality_score
+    # If a provider exposes no token receipt, still count the call without inventing
+    # savings: use the local baseline as actual input and leave receipt categories absent.
+    actual_input = receipt.input_tokens if receipt.total_tokens else baseline_tokens
+    receipt_meta = receipt.as_dict() if receipt.total_tokens else {}
+    report_usage(provider, model, baseline_tokens, actual_input, session,
+                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
+                 usage_raw=usage, strategy="external_receipt",
+                 metadata={**labels, **receipt_meta, "operation": operation,
+                           "receipt_available": bool(receipt.total_tokens),
+                           "receipt_source": "manual"})
+    return receipt.as_dict()
+
+
 def wrap(client, session: BrevitasSession | None = None):
     """
     Wrap an Anthropic or OpenAI client.
@@ -70,5 +93,5 @@ def wrap(client, session: BrevitasSession | None = None):
 __all__ = ["BrevitasClient", "SavingsReport", "BrevitasRouter",
            "configure", "get_config", "wrap", "BrevitasSession",
            "start_run", "agent", "get_pipeline", "get_agent", "get_run_id", "resolve_labels",
-           "optimize_prompt", "PromptOptimization", "TaskCompressionRouter", "classify_task"]
-__version__ = "0.9.9"
+           "report_receipt", "optimize_prompt", "PromptOptimization", "TaskCompressionRouter", "classify_task"]
+__version__ = "0.9.10"

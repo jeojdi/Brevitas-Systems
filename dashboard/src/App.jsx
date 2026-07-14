@@ -6,8 +6,22 @@ import Playground from './components/Playground.jsx'
 import ModelConfig from './components/ModelConfig.jsx'
 import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
+import Projects from './components/Projects.jsx'
+import Admin from './components/Admin.jsx'
+import ApiKeys from './components/ApiKeys.jsx'
+import DeviceConnect from './components/DeviceConnect.jsx'
 
-const TABS = ['Overview', 'Playground', 'Model', 'Docs', 'Billing']
+const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Model', 'Docs', 'Billing']
+const LIVE_REFRESH_MS = 10_000
+
+function pendingDeviceCode() {
+  const match = window.location.hash.match(/^#bvx=([A-Za-z0-9_-]{40,128})$/)
+  if (match) {
+    sessionStorage.setItem('bvx_device_code', match[1])
+    history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+  }
+  return sessionStorage.getItem('bvx_device_code') || ''
+}
 
 function MoonIcon() {
   return (
@@ -41,6 +55,9 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('Overview')
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
+  const [isAdmin, setIsAdmin]     = useState(false)
+  const [refreshTick, setRefreshTick] = useState(0)
+  const [deviceCode, setDeviceCode] = useState(pendingDeviceCode)
 
   const toggleDark = () => {
     const next = !darkMode
@@ -74,11 +91,24 @@ export default function App() {
     if (!session) return
     setKeyLoading(true)
     setKeyError('')
-    getOrCreateApiKey(session.user.id)
+    getOrCreateApiKey(session.user.id, session.access_token)
       .then(key => setApiKey(key))
       .catch(err => setKeyError(err.message))
       .finally(() => setKeyLoading(false))
   }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.access_token) return
+    fetch('/v1/admin/stats', { headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then(response => setIsAdmin(response.ok))
+      .catch(() => setIsAdmin(false))
+  }, [session?.access_token])
+
+  useEffect(() => {
+    if (!apiKey) return
+    const timer = window.setInterval(() => setRefreshTick(tick => tick + 1), LIVE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [apiKey])
 
   const signOut = () => supabase.auth.signOut()
 
@@ -107,6 +137,15 @@ export default function App() {
 
   if (!session) {
     return <Auth darkMode={darkMode} onToggleDark={toggleDark} />
+  }
+
+  if (deviceCode) {
+    const done = () => {
+      sessionStorage.removeItem('bvx_device_code')
+      setDeviceCode('')
+    }
+    return <DeviceConnect accessToken={session.access_token} deviceCode={deviceCode}
+                          email={session.user.email} onDone={done} />
   }
 
   if (keyLoading) {
@@ -145,7 +184,7 @@ export default function App() {
 
           {/* Tabs */}
           <nav className="flex items-center gap-1">
-            {TABS.map(tab => (
+            {[...BASE_TABS, ...(isAdmin ? ['Admin'] : [])].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -162,6 +201,9 @@ export default function App() {
 
           {/* Right: dark toggle + user email + sign out */}
           <div className="flex items-center gap-3 shrink-0">
+            <span className="annotation hidden lg:flex items-center gap-1.5" title="Usage refreshes every 10 seconds">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> live
+            </span>
             <button
               onClick={toggleDark}
               className="text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
@@ -184,11 +226,14 @@ export default function App() {
 
       {/* ── Page content ── */}
       <main className="flex-1 px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
-        {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} />}
+        {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
+        {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'Billing'    && <Billing apiKey={apiKey} />}
+        {activeTab === 'Billing'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
       </main>
     </div>
   )
