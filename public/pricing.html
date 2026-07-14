@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pricing · Brevitas Systems</title>
-<meta name="description" content="Simple, transparent pricing for every team size.">
+<meta name="description" content="Performance-based pricing: we take 10% of what we save you, and nothing if we save you nothing. No subscriptions, no seat fees, no lock-in.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -241,81 +241,10 @@
 <script type="text/babel">
 
 
-const PLANS = [
-  {
-    key: 'individual',
-    name: 'Individual',
-    price: '$10',
-    period: '/mo',
-    desc: 'For solo developers and researchers running agent pipelines.',
-    features: [
-      '1 seat',
-      '500K tokens compressed / month',
-      'Pipeline analytics dashboard',
-      'REST API access',
-      'Community support',
-    ],
-    cta: 'Get started',
-    ctaHref: '/login',
-    ctaStyle: 'secondary',
-  },
-  {
-    key: 'pro',
-    name: 'Pro',
-    price: '$50',
-    period: '/mo',
-    desc: 'For professionals who need deeper insight and higher throughput.',
-    features: [
-      '1 seat',
-      '5M tokens compressed / month',
-      'Full pipeline analytics + exports',
-      'REST API + webhooks',
-      'Custom compression rules',
-      'Priority email support',
-    ],
-    cta: 'Get started',
-    ctaHref: '/login',
-    ctaStyle: 'primary',
-    featured: true,
-    badge: 'Most popular',
-  },
-  {
-    key: 'team',
-    name: 'Team',
-    price: '$70',
-    originalPrice: '$100',
-    period: '/mo',
-    save: 'Save 30%',
-    desc: 'For teams running shared agent infrastructure at scale.',
-    features: [
-      'Up to 5 seats',
-      '25M tokens compressed / month',
-      'Team analytics + shared dashboards',
-      'REST API + webhooks',
-      'Custom integrations',
-      'Priority support',
-    ],
-    cta: 'Get started',
-    ctaHref: '/login',
-    ctaStyle: 'secondary',
-  },
-  {
-    key: 'enterprise',
-    name: 'Enterprise',
-    price: 'Custom',
-    desc: 'For organizations with large-scale pipelines and compliance requirements.',
-    features: [
-      'Unlimited seats',
-      'Custom token limits',
-      'Dedicated account manager',
-      'SLA guarantees',
-      'On-premise deployment option',
-      'Custom contracts & billing',
-    ],
-    cta: 'Contact us',
-    ctaHref: 'mailto:james@brevitassystems.com',
-    ctaStyle: 'secondary',
-  },
+const POINTS = [
+  'You pay nothing until we save you money.',
+  'We take 10% of your measured savings, and nothing else.',
+  'No seats, no token caps, no monthly minimum, no lock-in.',
 ];
 
 function PricingPage() {
@@ -325,49 +254,48 @@ function PricingPage() {
 
       <section className="pricing-hero">
         <div className="container">
-          <Overline dot>PRICING</Overline>
-          <h1 style={{ marginTop: 24 }}>Simple, transparent pricing.</h1>
-          <p>One layer between your agents. No usage surprises, no hidden fees.</p>
+          <h1 style={{ marginTop: 24 }}>You only pay when you save.</h1>
+          <p>No subscriptions. No seat fees. We take a small cut of what we cut, and nothing if we cut nothing.</p>
         </div>
       </section>
 
       <section className="pricing-section">
         <div className="container">
-          <div className="pricing-grid">
-            {PLANS.map(plan => (
-              <div key={plan.key} className={`plan-card${plan.featured ? ' featured' : ''}`}>
-                {plan.badge && <div className="plan-badge">{plan.badge}</div>}
+          <div style={{ maxWidth: 640, margin: '0 auto', textAlign: 'center' }}>
+            <div className="serif" style={{
+              fontSize: 'clamp(84px, 15vw, 168px)', fontWeight: 300, lineHeight: 1,
+              letterSpacing: '-0.03em', color: 'var(--signal)',
+            }}>10%</div>
+            <div style={{
+              marginTop: 8, fontSize: 19, letterSpacing: '0.005em',
+              fontFamily: "'Inter Tight', system-ui, sans-serif", color: 'var(--stone-2)',
+            }}>of what we save you</div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-                  <div className="plan-name" style={{ marginBottom: 0 }}>{plan.name}</div>
-                  {plan.save && <div className="plan-price-save" style={{ marginBottom: 0 }}>{plan.save}</div>}
-                </div>
+            <p className="t-body-lg" style={{
+              marginTop: 32, maxWidth: 520, marginLeft: 'auto', marginRight: 'auto', color: 'var(--bone-dim)',
+            }}>
+              We measure what your pipeline would have spent without Brevitas, subtract what it spends with us, and bill 10% of the difference. If that difference is zero, so is your invoice.
+            </p>
 
-                <div className="plan-price-row">
-                  <span className="plan-price">{plan.price}</span>
-                  {plan.period && <span className="plan-price-period">{plan.period}</span>}
-                </div>
-                {plan.originalPrice && (
-                  <div className="plan-price-original">was {plan.originalPrice}/mo</div>
-                )}
+            <ul style={{
+              listStyle: 'none', padding: 0, margin: '36px auto 0', maxWidth: 460,
+              textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 14,
+            }}>
+              {POINTS.map((p, i) => (
+                <li key={i} className="t-body" style={{ display: 'flex', gap: 12, alignItems: 'flex-start', color: 'var(--bone-dim)' }}>
+                  <span style={{ color: 'var(--signal)', flex: '0 0 auto' }}>→</span>
+                  <span>{p}</span>
+                </li>
+              ))}
+            </ul>
 
-                <p className="plan-desc">{plan.desc}</p>
-
-                <hr className="plan-divider" />
-
-                <ul className="plan-features">
-                  {plan.features.map((f, i) => <li key={i}>{f}</li>)}
-                </ul>
-
-                <a href={plan.ctaHref} className={`plan-cta ${plan.ctaStyle}`}>
-                  {plan.cta}
-                </a>
-              </div>
-            ))}
+            <a href="/login" className="plan-cta primary" style={{ marginTop: 40, display: 'inline-flex', width: 'auto', padding: '16px 32px' }}>
+              Get started →
+            </a>
           </div>
 
           <p className="pricing-note">
-            All plans include a 14-day free trial. No credit card required. &nbsp;·&nbsp;{' '}
+            Usage-based, billed monthly on measured savings. &nbsp;·&nbsp;{' '}
             <a href="mailto:james@brevitassystems.com">Questions? Reach out.</a>
           </p>
         </div>

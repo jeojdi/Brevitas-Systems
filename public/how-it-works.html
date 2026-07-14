@@ -180,8 +180,8 @@ function HowItWorksPage() {
       <TechniqueSection
         index={1}
         anchor="compression"
-        title="Compression. The 40% win."
-        body={<>Every inter-agent message is compressed before the next model bills for it. Connective filler drops. Meaning-bearing tokens stay. This one technique typically recovers 40% of inter-agent token spend — immediately, on the first run.</>}
+        title="Compression. The biggest single lever."
+        body={<>Every inter-agent message is compressed before the next model bills for it. Connective filler drops. Meaning-bearing tokens stay, checked against a semantic-similarity floor so nothing load-bearing is lost. On context-heavy hops this alone can recover roughly 40% of inter-agent token spend, on the first run.</>}
         extra={<p className="t-body">Compression ratio is a knob. Set it globally, per-agent, or per-task-class. The default is conservative; aggressive modes unlock another 10–20% on long pipelines once you've characterized the quality floor.</p>}
         visual={<CompressionSequence />}
       />

@@ -74,43 +74,9 @@ function ProductPage() {
           Your AI agents are expensive. We make them <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>a lot cheaper.</em>
         </h1>
         <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-          Two lines wrap your existing pipeline. Your agents, prompts, and providers stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> them and quietly cuts your bill — typically 40–60%.
+          Two lines wrap your existing pipeline. Your agents, prompts, and providers stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> them and quietly cuts your bill, typically 40–60%.
         </p>
-        <div style={{ maxWidth: 780 }}>
-          <CodeBlockPy
-            filename="pipeline.py"
-            copyable
-            source={`from brevitas import optimize
-
-# Before
-pipeline = [architect, builder, reviewer]
-result = run_pipeline(pipeline, task)
-
-# After
-pipeline = optimize([architect, builder, reviewer])
-result = run_pipeline(pipeline, task)
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.`}
-          />
-        </div>
       </SectionShell>
-
-      {/* What it is */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container" style={{ maxWidth: 760 }}>
-          <h2 className="t-h2" style={{ margin: '0 0 28px' }}>
-            <em style={{ fontStyle: 'italic' }}>Your biggest AI cost isn't a single expensive call. It's what compounds across every hop.</em>
-          </h2>
-          <p className="t-body-lg" style={{ marginBottom: 24 }}>
-            Per-call compressors and provider caches can only see one message at a time. The real money in a multi-agent pipeline is what flows between calls — the same context re-serialized and billed at every hop.
-          </p>
-          <p className="t-body" style={{ marginBottom: 24 }}>
-            Brevitas sees the whole pipeline. It compresses, deduplicates, and references across every hop — not just within one. That's the distinction that makes the numbers move.
-          </p>
-          <p className="t-body">
-            Works with any orchestrator. Agnostic to your prompts and models. Plugs into what you've already built. No lock-in, no rearchitecting.
-          </p>
-        </div>
-      </section>
 
       {/* Composition matrix */}
       <section className="section" style={{ borderTop: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
@@ -151,33 +117,33 @@ result = run_pipeline(pipeline, task)
             {[
               {
                 n: '01',
-                h: 'Compress. The 40% win.',
-                b: 'Every inter-agent message is compressed before the next model bills for it. Connective filler drops; meaning-bearing tokens stay. This one technique typically recovers 40% of inter-agent token spend.',
+                h: 'Compress. The biggest single lever.',
+                b: 'Every inter-agent message is compressed before the next model bills for it. Connective filler drops; the meaning-bearing tokens stay, checked against a semantic-similarity floor so nothing load-bearing is lost. On context-heavy hops this alone can recover roughly 40% of inter-agent token spend.',
                 code: `msg = compress(agent1.output, task_class="code")`,
               },
               {
                 n: '02',
-                h: 'Reference. Stop paying for the same content twice.',
-                b: 'Agent outputs are stored once and referenced downstream — not re-serialized and re-billed at every hop. Equivalent to deduplication at the billing layer.',
-                code: `memory.put("a1_output") -> "mem://a1:7f3b"`,
+                h: 'Cache. Stop paying full price for context the model already saw.',
+                b: 'Repeated context (system prompts, prior turns, shared tools) is served from the provider\'s prompt cache at a fraction of the input rate. Brevitas places the cache breakpoints and keeps the prefix byte-stable across hops so it actually hits.',
+                code: `body = mark_cacheable(stable_prefix)`,
               },
               {
                 n: '03',
-                h: 'Delta. Only send what changed.',
-                b: 'After the first full context pass, subsequent agent calls receive only the changes — not the entire history re-billed. Analogous to how version control stopped sending full file copies.',
-                code: `delta = diff(state_t, state_t_minus_1)`,
+                h: 'Reuse. Skip the call when the answer already exists.',
+                b: 'Identical requests (and, optionally, semantically equivalent ones) return a stored response instead of re-running the model. Retries, parallel agents, and repeated sub-tasks cost nothing the second time.',
+                code: `hit = cache.lookup(request)`,
               },
               {
                 n: '04',
                 h: 'Prune. Cut what the next agent won\'t use.',
-                b: 'A relevance pass drops context the next agent — given its role and task class — is statistically unlikely to use. You stop paying for tokens that were never going to matter.',
+                b: 'A relevance pass drops context the next agent, given its role and task class, is statistically unlikely to use. Lossy by design, gated so the load-bearing facts stay. You stop paying for tokens that were never going to matter.',
                 code: `ctx = prune(ctx, role="reviewer")`,
               },
               {
                 n: '05',
                 h: 'Route. Apply only what earns its keep.',
-                b: 'Task-aware routing decides which optimizations to apply per call. Not every call benefits from every technique — the router makes sure you\'re only spending compute where it drives savings.',
-                code: `router.decide(call) -> [compress, delta]`,
+                b: 'A cost-aware router prices each strategy per call and picks the cheapest, correcting itself from the provider\'s real usage as it goes. Not every call benefits from every technique, so you only spend compute where it moves the number.',
+                code: `router.decide(call) -> "cache_only"`,
               },
             ].map((x, i) => (
               <div key={i} className="fade-up" style={{
@@ -219,42 +185,6 @@ result = run_pipeline(pipeline, task)
         </div>
       </section>
 
-      {/* Integration walkthrough */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 48, maxWidth: 820 }}>Four steps. Five minutes.</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 40, maxWidth: 820 }}>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 01 — INSTALL</div>
-              <CodeBlockPy source={`# Contact us for access — james@brevitassystems.com`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 02 — WRAP YOUR PIPELINE</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
-
-pipeline = optimize([architect, builder, reviewer])`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 03 — RUN AS NORMAL</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`result = pipeline.run(task)`} />
-            </div>
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', marginBottom: 10 }}>STEP 04 — INSPECT THE REPORT</div>
-              <CodeBlockPy filename="pipeline.py" copyable source={`report = pipeline.report()
-# {
-#   "tokens_in": 2924, "tokens_out": 1188,
-#   "cost_baseline": 0.001616, "cost_optimized": 0.000857,
-#   "savings_by_technique": {
-#     "compress": 0.41, "reference": 0.22, "delta": 0.11,
-#     "prune": 0.08, "protocol": 0.04
-#   }
-# }`} />
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* What it doesn't do */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
@@ -287,7 +217,7 @@ pipeline = optimize([architect, builder, reviewer])`} />
           <div style={{ maxWidth: 820 }}>
             <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get your pipeline benchmarked.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              Tell us what you're running. We'll show you exactly where the money is going — and how much we'd put back in your pocket.
+              Tell us what you're running. We'll show you exactly where the money is going, and how much we'd put back in your pocket.
             </p>
             <WaitlistInput variant="inline" source="product-final" />
           </div>

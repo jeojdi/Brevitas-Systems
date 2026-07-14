@@ -38,12 +38,12 @@ function initMatrixCanvas(canvasId, opts) {
   const WAVE_THICKNESS = 48; const WAVE_AMP_MIN = 0.45; const WAVE_AMP_MAX = 0.68;
   const WAVE_SPEED_MIN = 1.2; const WAVE_SPEED_MAX = 2.8;
   const WAVE_R_MIN = 120; const WAVE_R_MAX = 280;
-  const WAVE_DECAY = 0.008; const WAVE_MUTATE = 0.40; const WAVE_SPAWN = 0.10;
+  const WAVE_DECAY = 0.028; const WAVE_MUTATE = 0.40; const WAVE_SPAWN = 0.10;
 
   const POINT_THICKNESS = 32; const POINT_AMP = 0.82;
   const POINT_SPEED_MIN = 0.25; const POINT_SPEED_MAX = 0.50;
   const POINT_R_MIN = 200; const POINT_R_MAX = 380;
-  const POINT_DECAY = 0.022;
+  const POINT_DECAY = 0.05;
   const POINT_SPAWN_MS_MIN = 1200; const POINT_SPAWN_MS_MAX = 2800;
 
   function WaveRipple() {
@@ -499,6 +499,47 @@ function CodeBlockPy({ source, filename, copyable = true }) {
   );
 }
 
+// One-line install command — copyable mono pill for hero / CTA sections
+function InstallCommand({ command }) {
+  const [copied, setCopied] = useState(false);
+  const doCopy = () => {
+    try {
+      navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {}
+  };
+  return (
+    <button
+      onClick={doCopy}
+      className="t-mono"
+      title="Copy install command"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 18,
+        maxWidth: '100%',
+        // Fixed dark translucent fill so white hero text stays legible over the
+        // photo in both light and dark mode (don't use theme --ink-2 here).
+        background: 'rgba(0,0,0,0.5)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        border: '1px solid rgba(255,255,255,0.22)',
+        borderRadius: 10,
+        padding: '16px 22px',
+        color: '#fff',
+        fontSize: 17,
+        cursor: 'pointer',
+        textAlign: 'left',
+      }}
+    >
+      <span aria-hidden="true" style={{ color: 'var(--bronze)', userSelect: 'none' }}>$</span>
+      <span style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}>{command}</span>
+      <span style={{ color: copied ? 'var(--signal)' : 'var(--stone-2)', userSelect: 'none', flexShrink: 0 }}>
+        {copied ? '✓ copied' : '⧉ copy'}
+      </span>
+    </button>
+  );
+}
+
 // --- Waitlist ---
 function WaitlistInput({ variant = 'inline', source = 'unknown' }) {
   const [email, setEmail] = useState('');
@@ -768,16 +809,16 @@ function Nav({ current }) {
     { href: '/how-it-works', label: 'How it works', k: 'how' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
     { href: '/pricing', label: 'Pricing', k: 'pricing' },
-    { href: 'mailto:james@brevitassystems.com', label: 'Docs', k: 'docs' },
+    // Docs hidden from nav for now
     { href: '/blog', label: 'Blog', k: 'blog' },
   ];
   return (
     <>
       <nav className={`nav ${scrolled ? 'scrolled' : ''}`} aria-label="Primary">
         <div className="nav-inner">
-          <a href="/" style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10, color: 'var(--fg)' }}>
-            <span className="serif" style={{ fontSize: 22, letterSpacing: '-0.015em', lineHeight: 1 }}>Brevitas</span>
-            <span className="t-mono" style={{ fontSize: 9, letterSpacing: '0.18em', color: 'var(--stone)' }}>SYSTEMS</span>
+          <a href="/" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--fg)' }} aria-label="Brevitas Systems — home">
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" className="nav-logo logo-for-dark" style={{ height: 29, width: 'auto' }} />
+            <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" className="nav-logo logo-for-light" style={{ height: 29, width: 'auto' }} />
           </a>
           <div className="nav-links desktop">
             {links.map(l => (
@@ -804,63 +845,47 @@ function Nav({ current }) {
   );
 }
 
-function Footer() {
-  useEffect(() => {
-    return initMatrixCanvas('footer-matrix');
-  }, []);
+const FOOTER_COLS = [
+  { title: 'Product', links: [['Product', '/product'], ['How it works', '/how-it-works'], ['Benchmarks', '/benchmarks'], ['Pricing', '/pricing']] },
+  { title: 'Company', links: [['Blog', '/blog'], ['Contact', 'mailto:james@brevitassystems.com']] },
+  { title: 'Resources', links: [['Docs', 'mailto:james@brevitassystems.com'], ['Changelog', 'mailto:james@brevitassystems.com']] },
+  { title: 'Legal', links: [['Privacy', '#'], ['Terms', '#']] },
+];
 
+function Footer() {
+  const social = [
+    { label: 'X', href: 'https://x.com/Brevitas_sys', d: 'M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z' },
+    { label: 'LinkedIn', href: 'https://www.linkedin.com/company/brevitas-ai/', d: 'M4.98 3.5C4.98 4.88 3.87 6 2.5 6S0 4.88 0 3.5 1.12 1 2.5 1s2.48 1.12 2.48 2.5zM.5 8h4V24h-4V8zm7.5 0h3.8v2.2h.05c.53-1 1.83-2.2 3.77-2.2 4.03 0 4.78 2.65 4.78 6.1V24h-4v-7.1c0-1.7-.03-3.9-2.38-3.9-2.38 0-2.74 1.86-2.74 3.78V24h-4V8z' },
+    { label: 'GitHub', href: 'https://github.com/Brevitas-ai', d: 'M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 016 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58C20.56 22.29 24 17.8 24 12.5 24 5.87 18.63.5 12 .5z' },
+  ];
   return (
     <footer className="footer" style={{ position: 'relative', overflow: 'hidden' }}>
-      {/* Layer 0: flowers — swaps by theme */}
-      <img className="hero-bg-dark"  src="/assets/flowers-dark.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
-      <img className="hero-bg-light" src="/assets/flowers.jpg"        alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', zIndex: 0, opacity: 0.92 }} />
-      {/* Layer 1: ASCII canvas — subtle opacity so it doesn't overwhelm */}
-      <canvas id="footer-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, opacity: 0.45, pointerEvents: 'none' }} />
-      {/* Layer 2: heavy scrim so footer text stays legible */}
-      <div aria-hidden="true" className="footer-scrim" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }} />
-      {/* Layer 3: content */}
-      <div className="container" style={{ position: 'relative', zIndex: 3 }}>
-        <div className="footer-grid">
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
-              <span className="serif" style={{ fontSize: 22, fontWeight: 400, letterSpacing: '-0.01em' }}>Brevitas Systems</span>
+      <div aria-hidden="true" className="footer-watermark">brevitas</div>
+      <div className="container" style={{ position: 'relative', zIndex: 1 }}>
+        <div className="footer-main">
+          <div className="footer-brand">
+            <a href="/" aria-label="Brevitas Systems — home" style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" className="logo-for-dark" style={{ height: 26, width: 'auto' }} />
+              <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" className="logo-for-light" style={{ height: 26, width: 'auto' }} />
+            </a>
+            <div className="footer-social">
+              {social.map(s => (
+                <a key={s.label} href={s.href} aria-label={s.label} target="_blank" rel="noopener noreferrer">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d={s.d} /></svg>
+                </a>
+              ))}
             </div>
-            <div className="t-body" style={{ maxWidth: 320, fontSize: 14, color: 'var(--stone-2)' }}>
-              <span className="mono" style={{ color: 'var(--fg-dim)' }}>brevitas</span> (Latin) — shortness, concision. A rhetorical virtue: saying more with less.
-            </div>
+            <div className="footer-copy">© 2026 · All rights reserved</div>
           </div>
-          <div>
-            <h4>Product</h4>
-            <ul>
-              <li><a href="/product">Product</a></li>
-              <li><a href="/how-it-works">How it works</a></li>
-              <li><a href="/benchmarks">Benchmarks</a></li>
-              <li><a href="/pricing">Pricing</a></li>
-              <li><a href="mailto:james@brevitassystems.com">Docs</a></li>
-              <li><a href="mailto:james@brevitassystems.com">Changelog</a></li>
-            </ul>
-          </div>
-          <div>
-            <h4>Company</h4>
-            <ul>
-              <li><a href="/blog">Blog</a></li>
-              <li><a href="mailto:james@brevitassystems.com">Contact</a></li>
-              <li><a href="/waitlist">Waitlist</a></li>
-            </ul>
-          </div>
-          <div>
-            <h4>Stay in the loop</h4>
-            <WaitlistInput variant="footer-small" source="footer" />
-            <div className="t-mono" style={{ marginTop: 14, color: 'var(--stone)', fontSize: 12 }}>
-              A monthly note. No marketing.
-            </div>
-          </div>
-        </div>
-        <div className="footer-bottom">
-          <div>©2026 Brevitas Systems. All rights reserved.</div>
-          <div className="legal">
-            <a href="#">Privacy</a>
-            <a href="#">Terms</a>
+          <div className="footer-cols">
+            {FOOTER_COLS.map(col => (
+              <div key={col.title} className="footer-col">
+                <h4>{col.title}</h4>
+                <ul>
+                  {col.links.map(([label, href]) => <li key={label}><a href={href}>{label}</a></li>)}
+                </ul>
+              </div>
+            ))}
           </div>
         </div>
       </div>

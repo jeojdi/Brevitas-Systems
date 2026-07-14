@@ -346,14 +346,14 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   background: #8ea6ff;
   color: #07101f;
   border-color: rgba(142, 166, 255, 0.46);
-  box-shadow: 0 4px 14px rgba(142, 166, 255, 0.2);
+  box-shadow: none;
 }
 .btn-primary:hover {
   background: #9eb4ff;
   border-color: rgba(142, 166, 255, 0.7);
   color: #06101f;
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(142, 166, 255, 0.28);
+  box-shadow: none;
 }
 
 /* Hero buttons — larger, bolder hit area on both CTAs to draw people in */
@@ -367,11 +367,11 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .hero-cta {
   background: #96acff;
   border-color: rgba(142, 166, 255, 0.84);
-  box-shadow: 0 8px 26px rgba(142, 166, 255, 0.46);
+  box-shadow: none;
 }
 .hero-cta:hover {
   background: #a6b9ff;
-  box-shadow: 0 12px 34px rgba(142, 166, 255, 0.58);
+  box-shadow: none;
 }
 
 .btn-secondary {
@@ -570,7 +570,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   padding: 14px 36px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 24px;
   background: var(--nav-bg);
   backdrop-filter: blur(8px);
@@ -596,8 +596,10 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 @media (max-width: 720px) { .nav-inner { padding: 14px 22px; } }
 .nav-links {
   display: flex;
-  gap: 24px;
+  gap: 26px;
   align-items: center;
+  margin-left: 20px;      /* sit next to the logo, not flung to the far right */
+  margin-right: auto;     /* push the theme toggle + Sign up button to the right edge */
 }
 .nav-link {
   font-size: 12px;
@@ -673,10 +675,78 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 
 /* Footer */
 .footer {
-  border-top: 1px solid rgba(196, 206, 229, 0.2);
+  border-top: 1px solid rgba(196, 206, 229, 0.12);
   background: transparent;
-  padding: 86px 0 36px;
+  padding: clamp(88px, 13vh, 150px) 0 46px;
   margin-top: 0;
+}
+
+/* Giant faint wordmark watermark bleeding off the bottom-left */
+.footer-watermark {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: -0.24em;
+  z-index: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(150px, 26vw, 440px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--fg);
+  opacity: 0.04;
+  /* fade the wordmark out toward the bottom of the footer */
+  -webkit-mask-image: linear-gradient(to bottom, #000 15%, transparent 88%);
+  mask-image: linear-gradient(to bottom, #000 15%, transparent 88%);
+}
+
+/* brand column (logo top, social + copyright pinned to the bottom) | link columns */
+.footer-main {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: clamp(40px, 7vw, 120px);
+  align-items: stretch;
+}
+.footer-brand { display: flex; flex-direction: column; }
+.footer-brand .footer-social { margin-top: auto; padding-top: 96px; }
+.footer-social { display: flex; gap: 10px; }
+.footer-social a {
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 7px;
+  color: var(--stone-2);
+  transition: color var(--dur-xs), border-color var(--dur-xs);
+}
+.footer-social a:hover { color: var(--fg); border-color: var(--stone); }
+.footer-copy {
+  margin-top: 18px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; letter-spacing: 0.02em; color: var(--stone);
+}
+
+.footer-cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(108px, auto));
+  gap: clamp(28px, 4vw, 64px);
+}
+/* .footer scope beats the leftover uppercase-mono `.footer h4` rule (same specificity, later in file) */
+.footer .footer-col h4 {
+  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-size: 14px; font-weight: 600; letter-spacing: 0;
+  text-transform: none; color: var(--fg);
+  margin: 0 0 18px 0;
+}
+.footer-col ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.footer-col li a { color: var(--stone-2); font-size: 14px; transition: color var(--dur-xs); }
+.footer-col li a:hover { color: var(--fg); }
+
+@media (max-width: 820px) {
+  .footer-main { grid-template-columns: 1fr; gap: 48px; }
+  .footer-brand .footer-social { padding-top: 32px; }
+  .footer-cols { grid-template-columns: 1fr 1fr; gap: 36px; }
 }
 .footer-grid {
   display: grid;
@@ -739,7 +809,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   50% { opacity: 0.5; }
 }
 
-/* Theme-aware logo variants */
+/* Theme-aware logo variants (nav logo swaps: white-wordmark on dark, black-wordmark on light) */
 .logo-for-dark  { display: block; }
 .logo-for-light { display: none; }
 [data-theme="light"] .logo-for-dark  { display: none; }

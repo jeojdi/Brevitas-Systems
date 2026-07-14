@@ -75,9 +75,9 @@
   "url": "https://brevitassystems.com",
   "logo": "https://brevitassystems.com/logo.png",
   "sameAs": [
-    "https://twitter.com/BrevitasSystems",
-    "https://github.com/brevitas-systems",
-    "https://linkedin.com/company/brevitas-systems"
+    "https://x.com/Brevitas_sys",
+    "https://github.com/Brevitas-ai",
+    "https://www.linkedin.com/company/brevitas-ai/"
   ],
   "contactPoint": {
     "@type": "ContactPoint",
@@ -634,9 +634,12 @@ function LandingPage() {
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
             most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
           </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 96, alignItems: 'center', justifyContent: 'center' }}>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
             <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
+          </div>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', justifyContent: 'center', marginBottom: 96 }}>
+            <InstallCommand command="brew install brevitas-ai/brevitas/bvx && bvx install ai" />
           </div>
           <div className="fade-up delay-3 in" style={{
             display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
@@ -855,7 +858,7 @@ function LandingPage() {
                       }} />
                     </div>
                   </div>
-
+                  
                   {/* Metric */}
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     <div className="serif tabular" style={{
@@ -874,17 +877,15 @@ function LandingPage() {
       {/* S9 — Final CTA */}
       <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
-          <div className="waitlist-split">
-            <div>
-              <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 12, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 20 }}>Design partner program</div>
-              <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 22 }}>Find out how much you're overpaying.</h2>
-              <p className="t-body-lg" style={{ marginBottom: 0, maxWidth: 460, color: 'var(--bone-dim)' }}>
-                Drop your pipeline shape in the form. We'll tell you what we'd cut and how much it'd save. We work with a small group of teams, so tell us what you're running.
-              </p>
-            </div>
-            <div>
-              <GlassmorphicWaitlistForm source="landing-final" />
-            </div>
+          <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
+            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 22 }}>Find out how much you're overpaying.</h2>
+            <p className="t-body-lg" style={{ margin: '0 auto 40px', maxWidth: 560, color: 'var(--bone-dim)' }}>
+              We work with a small group of teams. Sign up and we'll show you exactly what we'd cut and how much it'd save.
+            </p>
+            <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
+            <p style={{ marginTop: 48, paddingTop: 28, borderTop: '1px solid var(--line)', maxWidth: 520, marginLeft: 'auto', marginRight: 'auto', marginBottom: 0, fontSize: 15, lineHeight: 1.65, color: 'var(--stone-2)' }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: 'var(--bone-dim)' }}>brevitas</span> <span style={{ fontStyle: 'italic' }}>(Latin)</span> — shortness, concision. A rhetorical virtue: saying more with less.
+            </p>
           </div>
         </div>
       </section>
