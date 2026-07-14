@@ -38,7 +38,6 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         { source: '/', destination: '/index.html' },
         { source: '/product', destination: '/product.html' },
-        { source: '/how-it-works', destination: '/how-it-works.html' },
         { source: '/benchmarks', destination: '/benchmarks.html' },
         { source: '/docs', destination: '/docs.html' },
         { source: '/blog', destination: '/blog.html' },
@@ -73,7 +72,8 @@ const nextConfig: NextConfig = {
     return [
       { source: '/index.html', destination: '/', permanent: true },
       { source: '/product.html', destination: '/product', permanent: true },
-      { source: '/how-it-works.html', destination: '/how-it-works', permanent: true },
+      { source: '/how-it-works', destination: '/product', permanent: true },
+      { source: '/how-it-works.html', destination: '/product', permanent: true },
       { source: '/benchmarks.html', destination: '/benchmarks', permanent: true },
       { source: '/docs.html', destination: '/docs', permanent: true },
       { source: '/blog.html', destination: '/blog', permanent: true },

@@ -525,7 +525,7 @@ function ThesisSequence() {
         transition: 'opacity 500ms',
         marginTop: 24,
       }}>
-        <a href="/how-it-works" className="btn btn-ghost underline">
+        <a href="/product" className="btn btn-ghost underline">
           See how →
         </a>
       </div>

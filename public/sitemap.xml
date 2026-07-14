@@ -27,14 +27,6 @@
     <priority>0.8</priority>
   </url>
 
-  <!-- How It Works -->
-  <url>
-    <loc>https://brevitassystems.com/how-it-works</loc>
-    <lastmod>2026-04-25T00:00:00+00:00</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-
   <!-- Pricing -->
   <url>
     <loc>https://brevitassystems.com/pricing</loc>

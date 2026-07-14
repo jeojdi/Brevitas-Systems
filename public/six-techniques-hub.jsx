@@ -15,7 +15,7 @@ const TECHNIQUES = [
     short: 'Compress',
     body: "Each agent's output is compressed before being passed downstream. Redundant sentences removed, task-relevant structure preserved. Compression ratio tunable per pipeline.",
     tag: 'Per-hop',
-    demo: 'how-it-works.html#compression',
+    demo: '/product',
   },
   {
     n: '02',

@@ -74,7 +74,7 @@
     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
       <a href="/" class="btn btn-secondary">Home</a>
       <a href="/product" class="btn btn-secondary">Product</a>
-      <a href="/how-it-works" class="btn btn-secondary">How it Works</a>
+      <a href="/product" class="btn btn-secondary">Product</a>
       <a href="/benchmarks" class="btn btn-secondary">Benchmarks</a>
       <a href="mailto:james@brevitassystems.com" class="btn btn-secondary">Docs</a>
       <a href="/waitlist" class="btn btn-secondary">Waitlist</a>
@@ -116,7 +116,7 @@ async function testAPI() {
 
 // Test routes
 async function testRoutes() {
-  const routes = ['/', '/product', '/how-it-works', '/benchmarks', '/docs', '/waitlist'];
+  const routes = ['/', '/product', '/benchmarks', '/docs', '/waitlist'];
   const resultDiv = document.getElementById('routes-result');
   let html = '';
 

@@ -8,7 +8,6 @@ Crawl-delay: 1
 
 # Important directories to index
 Allow: /features
-Allow: /how-it-works
 Allow: /pricing
 Allow: /docs
 Allow: /blog
