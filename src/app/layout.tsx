@@ -83,14 +83,15 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: "/favicon.ico", sizes: "any" },
-      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/brevitas-mark.ico", sizes: "any" },
+      { url: "/brevitas-mark.svg", type: "image/svg+xml" },
     ],
-    apple: "/apple-touch-icon.png",
+    apple: "/brevitas-touch-icon.png",
     other: [
       {
         rel: "mask-icon",
-        url: "/safari-pinned-tab.svg",
+        url: "/brevitas-pinned-tab.svg",
+        color: "#3169f6",
       },
     ],
   },

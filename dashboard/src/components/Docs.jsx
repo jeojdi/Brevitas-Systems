@@ -18,9 +18,9 @@ function Endpoint({ method, path, description }) {
     PUT:  'bg-amber-500 text-white',
   }
   return (
-    <div className="flex items-center gap-3 font-mono text-sm">
+    <div className="flex flex-wrap items-center gap-3 font-mono text-sm">
       <span className={`px-2 py-0.5 rounded text-xs font-bold ${colors[method]}`}>{method}</span>
-      <span className="text-brand-navy dark:text-brand-dark-navy">{path}</span>
+      <span className="text-brand-navy dark:text-brand-dark-navy break-all">{path}</span>
       {description && <span className="text-brand-muted dark:text-brand-dark-muted text-xs">— {description}</span>}
     </div>
   )
@@ -307,7 +307,7 @@ function RestAPIDocs() {
             The pipeline compresses messages, prunes low-relevance context, and returns only what the
             next agent needs — with exact token counts before and after.
           </p>
-          <div className="bg-brand-bg dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-5">
+          <div className="bg-brand-bg dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-5 overflow-x-auto">
             <p className="annotation mb-3">// typical flow</p>
             <pre className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid leading-relaxed whitespace-pre">{`agent_1_output  ─┐
 prior_context   ─┤─▶  POST /v1/compress  ─▶  compressed_messages

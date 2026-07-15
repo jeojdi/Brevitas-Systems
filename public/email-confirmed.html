@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>Email confirmed · Brevitas Systems</title>
-  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/brevitas-mark.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #eef0f7; color: #0d1530; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -16,6 +19,13 @@
     p { margin: 16px 0 30px; color: #687092; line-height: 1.6; }
     a { display: block; padding: 14px 20px; border-radius: 12px; background: #4f5fc4; color: #fff; text-decoration: none; font-weight: 600; }
     a:hover { opacity: .9; }
+    @media (max-width: 520px) {
+      body { padding: 16px; }
+      main { padding: 32px 22px; border-radius: 16px; }
+      .brand { width: 160px; margin-bottom: 28px; }
+      h1 { font-size: 34px; }
+      a { min-height: 48px; }
+    }
     @media (prefers-color-scheme: dark) {
       body { background: #0c0c0c; color: #eee; }
       main { background: #141414; border-color: #242424; box-shadow: none; }

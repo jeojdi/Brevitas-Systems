@@ -167,8 +167,8 @@ export default function Billing({ apiKey, refreshTick }) {
             ['Measured savings', 'Receipt-based estimate using the recorded provider and model'],
             ['Verified savings', 'Measured savings from calls that passed the quality gate'],
           ].map(([term, def]) => (
-            <div key={term} className="flex gap-4">
-              <span className="font-mono text-[11px] text-brand-blue shrink-0 w-36">{term}</span>
+            <div key={term} className="flex flex-col sm:flex-row gap-1 sm:gap-4">
+              <span className="font-mono text-[11px] text-brand-blue shrink-0 sm:w-36">{term}</span>
               <span className="font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">{def}</span>
             </div>
           ))}

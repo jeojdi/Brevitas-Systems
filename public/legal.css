@@ -15,3 +15,13 @@ a { color:var(--link); }
 .notice { padding:16px 18px; border:1px solid var(--line); border-radius:12px; }
 footer { padding:24px 0 48px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; }
 footer a { margin-right:18px; }
+@media (max-width:520px) {
+  header,main,footer { width:min(100% - 32px,760px); }
+  header { padding:24px 0 20px; }
+  main { padding:38px 0 56px; }
+  h1 { font-size:2.35rem; letter-spacing:0; }
+  h2 { margin-top:34px; }
+  .notice { padding:14px; }
+  footer { display:flex; flex-wrap:wrap; gap:10px 16px; }
+  footer a { margin-right:0; min-height:44px; display:inline-flex; align-items:center; }
+}

@@ -4,6 +4,28 @@
 
 body {
   @apply bg-brand-bg text-brand-navy font-sans antialiased;
+  overflow-x: hidden;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100%;
+}
+
+.dashboard-app main,
+.dashboard-app section {
+  min-width: 0;
+}
+
+.dashboard-app .min-h-screen { min-height: 100dvh; }
+.dashboard-app pre { max-width: 100%; overflow-x: auto; }
+.dashboard-app code, .dashboard-app .annotation { overflow-wrap: anywhere; }
+.dashboard-app [class*="overflow-x-auto"] {
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dark body {
@@ -31,4 +53,40 @@ body {
 .dark textarea,
 .dark select {
   background-color: #1c1c1c;
+}
+
+@media (max-width: 639px) {
+  .dashboard-app button,
+  .dashboard-app input,
+  .dashboard-app select,
+  .dashboard-app textarea {
+    min-height: 44px;
+  }
+
+  .dashboard-app input,
+  .dashboard-app select,
+  .dashboard-app textarea {
+    font-size: 16px;
+  }
+
+  .dashboard-app .text-5xl,
+  .dashboard-app .text-4xl {
+    font-size: 2rem;
+    line-height: 1.15;
+  }
+
+  .dashboard-app .p-20,
+  .dashboard-app .p-16,
+  .dashboard-app .p-10,
+  .dashboard-app .p-8,
+  .dashboard-app .p-7 {
+    padding: 1.25rem;
+  }
+
+  .dashboard-app .grid-cols-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-app .gap-12 { gap: 1.5rem; }
+  .dashboard-app .w-36 { width: auto; }
 }

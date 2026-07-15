@@ -239,7 +239,7 @@ export default function ModelConfig({ apiKey }) {
       )}
 
       {/* Actions */}
-      <div className="flex gap-3">
+      <div className="flex flex-col sm:flex-row gap-3">
         <button
           onClick={save}
           disabled={saving || !resolvedModel || (providerDef?.needsKey && !providerKey && !savedKeyForProvider)}
@@ -250,7 +250,7 @@ export default function ModelConfig({ apiKey }) {
         <button
           onClick={test}
           disabled={testing || saving || !editingActive || (current.provider === 'ollama' && !ollamaAvailable)}
-          className="px-6 rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface text-brand-navy dark:text-brand-dark-navy text-sm font-medium hover:border-brand-blue transition-colors disabled:opacity-40"
+          className="px-6 py-3.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface text-brand-navy dark:text-brand-dark-navy text-sm font-medium hover:border-brand-blue transition-colors disabled:opacity-40"
         >
           {testing ? 'Testing…' : 'Test'}
         </button>

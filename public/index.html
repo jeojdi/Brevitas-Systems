@@ -44,11 +44,11 @@
 <meta name="theme-color" content="#0a0d0a">
 
 <!-- Favicon and Icons -->
-<link rel="icon" href="/favicon.ico" sizes="any">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
 
 <!-- Preconnect to external domains -->
@@ -661,31 +661,42 @@ function LandingPage() {
             <p className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 28 }}>
               trusted by teams from
             </p>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(32px, 6vw, 72px)', flexWrap: 'wrap' }}>
+            <div className="trusted-logos">
               {[
-                { src: '/assets/ycombinator-logo.png', alt: 'Y Combinator' },
-                { src: '/assets/deepmind-logo.svg',    alt: 'Google DeepMind' },
-                { src: '/assets/nvidia-logo.svg',      darkSrc: '/assets/NVIDIA%20Logo%20White.svg',     alt: 'NVIDIA' },
-                { src: '/assets/anthropic-logo.svg',   darkSrc: '/assets/Anthropic%20Logo%20white.svg',  alt: 'Anthropic' },
-              ].map(({ src, darkSrc, alt }) => (
-                <div key={alt} style={{ width: 120, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {darkSrc ? (
-                    <React.Fragment>
-                      <img src={darkSrc} alt={alt} className="logo-for-dark"
-                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
-                        onMouseEnter={e => e.currentTarget.style.opacity = 1}
-                        onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
-                      <img src={src} alt="" aria-hidden="true" className="logo-for-light"
-                        style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
-                        onMouseEnter={e => e.currentTarget.style.opacity = 1}
-                        onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
-                    </React.Fragment>
-                  ) : (
-                    <img src={src} alt={alt}
-                      style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.75, transition: 'opacity 300ms' }}
-                      onMouseEnter={e => e.currentTarget.style.opacity = 1}
-                      onMouseLeave={e => e.currentTarget.style.opacity = 0.75} />
+                { brand: 'yc',        src: '/assets/ycombinator-logo.png', alt: 'Y Combinator' },
+                { brand: 'deepmind',  src: '/assets/deepmind-logo.svg',    alt: 'Google DeepMind' },
+                {
+                  brand: 'nvidia',
+                  src: '/assets/nvidia-logo.svg',
+                  darkSrc: '/assets/trusted-nvidia-dark-brevitas.svg',
+                  alt: 'NVIDIA',
+                },
+                {
+                  brand: 'anthropic',
+                  src: '/assets/trusted-anthropic-coral-brevitas.svg',
+                  alt: 'Anthropic',
+                },
+              ].map(({ brand, src, darkSrc, alt }) => (
+                <div
+                  key={alt}
+                  className={`trusted-logo-item trusted-logo-item--${brand}`}
+                  role="img"
+                  aria-label={alt}
+                >
+                  {darkSrc && (
+                    <img
+                      src={darkSrc}
+                      alt=""
+                      aria-hidden="true"
+                      className="trusted-logo trusted-logo--dark"
+                    />
                   )}
+                  <img
+                    src={src}
+                    alt=""
+                    aria-hidden="true"
+                    className={`trusted-logo${darkSrc ? ' trusted-logo--light' : ''}`}
+                  />
                 </div>
               ))}
             </div>

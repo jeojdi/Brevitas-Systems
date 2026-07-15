@@ -11,11 +11,22 @@
 
 /* ---- Global overflow safety (all viewports) ---------------------------- */
 /* Note: svg intentionally excluded — fixed-size logos/icons must keep dims. */
+html { overflow-x: clip; }
+body { min-width: 320px; }
 img, video, canvas, iframe, table { max-width: 100%; }
-pre, table, .code-block, .codeblock { max-width: 100%; overflow-x: auto; }
+img, video { height: auto; }
+pre, table, .code-block, .codeblock {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+main, section, article, .container, .section { min-width: 0; }
+button, input, select, textarea { min-width: 0; }
 
 /* ======================= Phones (<= 640px) ============================== */
 @media (max-width: 640px) {
+
+  .container { padding-left: 18px !important; padding-right: 18px !important; }
 
   /* Collapse ad-hoc multi-column inline grids to a single column.
      Scoped to content containers, so .nav-inner / .footer-grid are excluded. */
@@ -28,25 +39,122 @@ pre, table, .code-block, .codeblock { max-width: 100%; overflow-x: auto; }
 
   /* Inline flex rows that act as multi-column layouts: let them wrap rather
      than overflow. Column-direction stacks are already fine and untouched. */
-  .section [style*="display: 'flex'"][style*="gap"]:not([style*="column"]) {
+  .section [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]),
+  .container [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]),
+  main [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]) {
     flex-wrap: wrap;
   }
 
   /* Trim the large inline section / card paddings */
-  .section { padding-top: 56px !important; padding-bottom: 56px !important; }
+  .section { padding-top: 52px !important; padding-bottom: 52px !important; }
   .form-container, .success-container { padding: 28px 22px !important; }
   .auth-card { padding: 32px 22px 28px !important; }
 
   /* Display headings: scale with viewport so they never overflow */
-  .t-display-xl { font-size: clamp(32px, 9vw, 44px) !important; line-height: 1.08 !important; }
-  .t-display-l  { font-size: clamp(28px, 8vw, 40px) !important; line-height: 1.12 !important; }
-  .t-display    { font-size: clamp(26px, 7vw, 36px) !important; line-height: 1.15 !important; }
+  .t-display-xl { font-size: clamp(34px, 10vw, 44px) !important; line-height: 1.08 !important; letter-spacing: 0 !important; }
+  .t-display-l  { font-size: clamp(29px, 8vw, 40px) !important; line-height: 1.12 !important; letter-spacing: 0 !important; }
+  .t-display    { font-size: clamp(27px, 7vw, 36px) !important; line-height: 1.15 !important; letter-spacing: 0 !important; }
+  .t-h1 { font-size: clamp(32px, 9vw, 42px) !important; letter-spacing: 0 !important; }
+  .t-h2 { font-size: clamp(28px, 8vw, 36px) !important; letter-spacing: 0 !important; }
+  .t-h3 { font-size: clamp(22px, 6vw, 28px) !important; letter-spacing: 0 !important; }
 
   /* Comfortable tap targets for primary controls */
-  .btn, a.btn, .nav-link { min-height: 44px; display: inline-flex; align-items: center; }
+  .btn, a.btn, .nav-link, button, input, select, textarea {
+    min-height: 44px;
+  }
+  input, select, textarea { font-size: 16px !important; }
+
+  .hero-btn {
+    width: min(100%, 320px);
+    justify-content: center;
+    padding: 15px 20px;
+    font-size: 16px;
+  }
+
+  button[title="Copy install command"] {
+    width: 100%;
+    gap: 10px !important;
+    padding: 13px 14px !important;
+    font-size: 12px !important;
+  }
+  button[title="Copy install command"] > span:nth-child(2) {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .bv-field-wrap { left: 0 !important; right: 0 !important; }
+
+  .waitlist-row { flex-direction: column; }
+  .waitlist-row .btn { width: 100%; justify-content: center; }
+
+  table { display: block; width: 100%; }
+
+  .nav.scrolled { padding: 8px; }
+  .nav-inner {
+    gap: 8px;
+    padding: 11px 16px;
+  }
+  .nav.scrolled .nav-inner { border-radius: 16px; }
+  .nav-inner > a:first-child { min-width: 0; margin-right: auto; }
+  .nav-logo { max-width: min(148px, 44vw); height: auto !important; }
+  .theme-toggle, .nav-hamburger {
+    width: 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .nav-sheet {
+    padding: max(20px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+    overflow-y: auto;
+  }
+  .nav-sheet-links a { font-size: clamp(34px, 11vw, 44px); }
+
+  .footer { padding-top: 64px; padding-bottom: 32px; }
+  .footer-cols { gap: 32px 24px; }
+  .footer-bottom { margin-top: 48px; align-items: flex-start; }
 
   /* Keep wide auth/waitlist shells edge-friendly */
   .auth-shell, .waitlist-shell { padding-left: 18px !important; padding-right: 18px !important; }
+
+  /* The orchestration view has a separate shell from the shared React nav. */
+  .orch-nav {
+    min-height: 60px;
+    height: auto;
+    padding: 8px 16px !important;
+  }
+  .orch-nav-links { display: none !important; }
+  .orch-nav-right { gap: 8px !important; }
+  .orch-nav-right .live-label,
+  .orch-nav-right .nav-time { display: none; }
+  .orch-ticker { padding: 10px 16px !important; gap: 28px !important; }
+  .orch-main { padding: 28px 16px 64px !important; }
+  .breadcrumb {
+    margin-bottom: 0 !important;
+    padding: 0 16px !important;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .tab-bar {
+    margin-bottom: 28px !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab-btn { flex: 0 0 auto; padding-left: 14px !important; padding-right: 14px !important; }
+  .card, .stat-card, .agent-card, .chart-card, .cost-compare {
+    padding: 20px !important;
+  }
+  .pipeline-wrap { padding: 16px !important; }
+  .cost-table { min-width: 620px; }
+  .pipe-log { overflow: auto !important; }
+  .pipe-log-line { min-width: 480px; }
+}
+
+@media (max-width: 480px) {
+  .footer-cols { grid-template-columns: 1fr 1fr; }
+  .footer-watermark { font-size: 132px; }
 }
 
 /* ======================= Small tablets (<= 820px) ======================= */

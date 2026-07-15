@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
@@ -6,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(resolve(root, path), 'utf8')
+const sha256 = path => createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')
 
 test('internal artifacts are archived outside public hosting', () => {
   for (const name of ['design-canvas.html', 'design-canvas.jsx', 'hero-demo.html',
@@ -44,6 +46,26 @@ test('live HTML references only existing static assets', () => {
         `${file}: ${reference}`)
     }
   }
+})
+
+test('favicon routes use the Brevitas mark without a stale Next override', () => {
+  assert.equal(existsSync(resolve(root, 'src/app/favicon.ico')), false)
+  assert.equal(existsSync(resolve(root, 'src/app/icon.ico')), true)
+
+  const expected = sha256('public/brevitas-mark.ico')
+  assert.equal(sha256('public/favicon.ico'), expected)
+  assert.equal(sha256('src/app/icon.ico'), expected)
+
+  for (const file of readdirSync(resolve(root, 'public')).filter(name => name.endsWith('.html'))) {
+    const html = read(`public/${file}`)
+    assert.match(html, /\/brevitas-mark\.(?:ico|svg)/, file)
+    assert.doesNotMatch(html, /href=["']\/favicon(?:\.|-)/, file)
+  }
+
+  const dashboard = read('public/dashboard/index.html')
+  assert.match(dashboard, /\/brevitas-mark\.(?:ico|svg)/)
+  assert.doesNotMatch(dashboard, /href=["']\/favicon(?:\.|-)/)
+  assert.match(read('public/site.webmanifest'), /\/brevitas-(?:mark|app|touch)-/)
 })
 
 test('dashboard aliases receive CSP and are excluded from indexing', () => {

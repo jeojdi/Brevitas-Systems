@@ -82,11 +82,11 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
   const isRecovery = mode === 'recovery'
 
   return (
-    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center px-4">
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center px-4 py-8 sm:py-12">
       {/* Dark mode toggle */}
       <button
         onClick={onToggleDark}
-        className="fixed top-5 right-5 text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
+        className="fixed top-3 right-3 sm:top-5 sm:right-5 w-11 h-11 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
         aria-label="Toggle dark mode"
       >
         {darkMode
@@ -97,14 +97,14 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
       {/* Card */}
       <div className="w-full max-w-sm">
         {/* Logo */}
-        <div className="mb-10 flex justify-center">
+        <div className="mb-7 sm:mb-10 flex justify-center">
           <a href="/" className="no-underline" aria-label="Brevitas Systems home">
-            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-10 w-auto dark:hidden" />
-            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-10 w-auto hidden dark:block" />
+            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-9 sm:h-10 w-auto dark:hidden" />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-9 sm:h-10 w-auto hidden dark:block" />
           </a>
         </div>
 
-        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-8 shadow-sm">
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl sm:rounded-2xl p-5 sm:p-8 shadow-sm">
           <h1 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy mb-1">
             {mode === 'login'  && 'Sign in'}
             {mode === 'signup' && 'Create account'}

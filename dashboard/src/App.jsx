@@ -186,22 +186,22 @@ export default function App() {
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
       {/* ── Dashboard header ── */}
-      <div className="sticky top-0 z-50 px-3 sm:px-6 pt-3 sm:pt-5 pb-3">
-        <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm max-w-7xl mx-auto overflow-hidden">
-          <div className="px-4 sm:px-6 py-4 flex items-center justify-between gap-5">
+      <div className="sticky top-0 z-50 px-2 sm:px-6 pt-2 sm:pt-5 pb-2 sm:pb-3">
+        <header className="bg-white dark:bg-brand-dark-surface rounded-xl sm:rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm max-w-7xl mx-auto overflow-hidden">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-3 sm:gap-5">
             <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
-              <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-7 w-auto dark:hidden" />
-              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-7 w-auto hidden dark:block" />
+              <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto dark:hidden" />
+              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto hidden dark:block" />
             </a>
 
             {/* Right: dark toggle + user email + sign out */}
-            <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+            <div className="flex items-center gap-1 sm:gap-4 shrink-0">
               <span className="annotation hidden lg:flex items-center gap-1.5" title="Tracking runs server-side, even when this dashboard is closed">
                 <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> tracking active
               </span>
               <button
                 onClick={toggleDark}
-                className="text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
+                className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
                 title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               >
                 {darkMode ? <SunIcon /> : <MoonIcon />}
@@ -211,7 +211,7 @@ export default function App() {
               </span>
               <button
                 onClick={signOut}
-                className="text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
+                className="min-h-10 px-2 text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
               >
                 Sign out
               </button>
@@ -219,7 +219,7 @@ export default function App() {
           </div>
 
           <nav
-            className="border-t border-brand-border dark:border-brand-dark-border px-3 sm:px-5 py-3 flex items-center gap-2 overflow-x-auto"
+            className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
             aria-label="Dashboard sections"
           >
             {[...BASE_TABS, ...(isAdmin ? ['Admin'] : [])].map(tab => (
@@ -227,7 +227,7 @@ export default function App() {
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 aria-current={activeTab === tab ? 'page' : undefined}
-                className={`shrink-0 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
+                className={`shrink-0 min-h-11 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
                   activeTab === tab
                     ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
                     : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy hover:bg-brand-bg dark:hover:bg-brand-dark-elevated'
@@ -241,7 +241,7 @@ export default function App() {
       </div>
 
       {/* ── Page content ── */}
-      <main className="flex-1 px-4 sm:px-6 pt-8 pb-16 max-w-7xl mx-auto w-full">
+      <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
         {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}

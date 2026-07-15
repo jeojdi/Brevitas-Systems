@@ -197,8 +197,8 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
               >
                 {method}
               </span>
-              <div>
-                <p className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{path}</p>
+              <div className="min-w-0">
+                <p className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy break-all">{path}</p>
                 <p className="annotation mt-0.5">// {desc}</p>
               </div>
             </div>
