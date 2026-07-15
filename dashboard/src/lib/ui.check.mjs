@@ -15,3 +15,9 @@ test('model UI exposes only backend-advertised models and server-side Ollama', a
   assert.match(model, /providerCatalog\.providers/)
   assert.match(model, /ollama\.available/)
 })
+
+test('dashboard navigation is separated and exposes its active section', async () => {
+  const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /aria-label="Dashboard sections"/)
+  assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
+})

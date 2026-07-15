@@ -185,59 +185,63 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
-      {/* ── Floating pill nav ── */}
+      {/* ── Dashboard header ── */}
       <div className="sticky top-0 z-50 px-3 sm:px-6 pt-3 sm:pt-5 pb-3">
-        <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 max-w-7xl mx-auto">
-          {/* Logo */}
-          <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
-            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-7 w-auto dark:hidden" />
-            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-7 w-auto hidden dark:block" />
-          </a>
+        <header className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm max-w-7xl mx-auto overflow-hidden">
+          <div className="px-4 sm:px-6 py-4 flex items-center justify-between gap-5">
+            <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
+              <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-7 w-auto dark:hidden" />
+              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-7 w-auto hidden dark:block" />
+            </a>
 
-          {/* Tabs */}
-          <nav className="order-3 xl:order-none w-full xl:w-auto flex items-center gap-1 overflow-x-auto pb-1 xl:pb-0">
+            {/* Right: dark toggle + user email + sign out */}
+            <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+              <span className="annotation hidden lg:flex items-center gap-1.5" title="Tracking runs server-side, even when this dashboard is closed">
+                <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> tracking active
+              </span>
+              <button
+                onClick={toggleDark}
+                className="text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
+                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              >
+                {darkMode ? <SunIcon /> : <MoonIcon />}
+              </button>
+              <span className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
+                {session.user.email}
+              </span>
+              <button
+                onClick={signOut}
+                className="text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+
+          <nav
+            className="border-t border-brand-border dark:border-brand-dark-border px-3 sm:px-5 py-3 flex items-center gap-2 overflow-x-auto"
+            aria-label="Dashboard sections"
+          >
             {[...BASE_TABS, ...(isAdmin ? ['Admin'] : [])].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`shrink-0 px-3 sm:px-4 py-2 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
+                aria-current={activeTab === tab ? 'page' : undefined}
+                className={`shrink-0 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
                   activeTab === tab
                     ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
-                    : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy'
+                    : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy hover:bg-brand-bg dark:hover:bg-brand-dark-elevated'
                 }`}
               >
                 {tab}
               </button>
             ))}
           </nav>
-
-          {/* Right: dark toggle + user email + sign out */}
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="annotation hidden lg:flex items-center gap-1.5" title="Tracking runs server-side, even when this dashboard is closed">
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> tracking active
-            </span>
-            <button
-              onClick={toggleDark}
-              className="text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
-              title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              {darkMode ? <SunIcon /> : <MoonIcon />}
-            </button>
-            <span className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
-              {session.user.email}
-            </span>
-            <button
-              onClick={signOut}
-              className="text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
-            >
-              Sign out
-            </button>
-          </div>
         </header>
       </div>
 
       {/* ── Page content ── */}
-      <main className="flex-1 px-4 sm:px-6 pt-6 pb-16 max-w-7xl mx-auto w-full">
+      <main className="flex-1 px-4 sm:px-6 pt-8 pb-16 max-w-7xl mx-auto w-full">
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
         {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}

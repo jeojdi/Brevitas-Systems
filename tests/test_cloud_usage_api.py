@@ -79,6 +79,39 @@ def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):
     assert client.post("/v1/device-auth/token", json={"device_code": expired}).status_code == 410
 
 
+def test_api_keys_create_list_and_revoke_for_account_and_legacy_keys(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "keys.db"))
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    client = TestClient(server.app)
+
+    monkeypatch.setattr(server, "_dashboard_user", lambda request: "user-1")
+    account_key = client.post("/v1/keys", json={"name": "dashboard"})
+    assert account_key.status_code == 200
+    raw_account_key = account_key.json()["api_key"]
+
+    monkeypatch.setattr(server, "_dashboard_user", lambda request: "")
+    child = client.post("/v1/keys", headers={"X-Brevitas-Key": raw_account_key},
+                        json={"name": "project"})
+    assert child.status_code == 200
+    child_id = hash_key(child.json()["api_key"])
+    listed = client.get("/v1/keys", headers={"X-Brevitas-Key": raw_account_key})
+    assert child_id in {key["id"] for key in listed.json()["keys"]}
+    assert client.delete(f"/v1/keys/{child_id}",
+                         headers={"X-Brevitas-Key": raw_account_key}).status_code == 200
+
+    legacy_key = "bvt_legacy"
+    store.create_key(hash_key(legacy_key), "legacy")
+    legacy_child = client.post("/v1/keys", headers={"X-Brevitas-Key": legacy_key},
+                               json={"name": "legacy-child"})
+    assert legacy_child.status_code == 200
+    assert client.get("/v1/stats", headers={
+        "X-Brevitas-Key": legacy_child.json()["api_key"]}).status_code == 200
+    assert client.post("/v1/keys", json={"name": "anonymous"}).status_code == 401
+
+
 def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     import api.server as server
     store = UsageStore(str(tmp_path / "api.db"))

@@ -56,6 +56,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
   }, [apiKey])
 
   const create = async () => {
+    if (creating) return
     setCreating(true); setError(''); setNewKey('')
     try {
       const data = await createKey(apiKey, name.trim() || 'unnamed')
@@ -103,6 +104,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
             value={name}
             onChange={e => setName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && create()}
+            maxLength={100}
             placeholder="Project name"
             className="flex-1 bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-4 py-3 text-sm text-brand-navy dark:text-brand-dark-navy placeholder-brand-muted dark:placeholder-brand-dark-muted focus:outline-none focus:border-brand-blue transition-colors"
           />
@@ -116,7 +118,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
         </div>
 
         {newKey && (
-          <div className="bg-brand-teal-dim dark:bg-brand-dark-teal-dim border border-brand-teal/30 rounded-xl p-4">
+          <div aria-live="polite" className="bg-brand-teal-dim dark:bg-brand-dark-teal-dim border border-brand-teal/30 rounded-xl p-4">
             <p className="annotation text-brand-teal mb-2">// shown once — copy now</p>
             <div className="flex items-center gap-3">
               <code className="flex-1 text-xs font-mono text-brand-teal break-all">{newKey}</code>
@@ -125,7 +127,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
           </div>
         )}
 
-        {error && <p className="font-mono text-xs text-red-500">{error}</p>}
+        {error && <p role="alert" className="font-mono text-xs text-red-500">{error}</p>}
       </div>
 
       {/* ── Existing keys ── */}

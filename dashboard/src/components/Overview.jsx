@@ -27,8 +27,8 @@ function getTooltipStyle(dark) {
 
 function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-dark-navy' }) {
   return (
-    <div className="text-center">
-      <p className={`font-mono text-4xl lg:text-5xl font-medium tabular-nums ${valueClass}`}>
+    <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-5 sm:p-6 min-w-0">
+      <p className={`font-mono text-3xl xl:text-4xl font-medium tabular-nums truncate ${valueClass}`} title={String(value)}>
         {value}
       </p>
       <p className="annotation mt-2">{label}</p>
@@ -86,13 +86,13 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
   const tooltipStyle = getTooltipStyle(darkMode)
 
   return (
-    <div className="space-y-16">
+    <div className="space-y-12">
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation hover:text-brand-blue">retry</button></div>}
       {/* ── Section label ── */}
       <div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
           <div>
-            <p className="annotation tracking-widest uppercase">Dashboard metrics — 2026</p>
+            <p className="annotation tracking-widest uppercase">Token efficiency overview</p>
             <p className="annotation mt-1">Tracking runs server-side, even when this dashboard is closed.</p>
           </div>
           <button
@@ -106,7 +106,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       </div>
 
       {/* ── Big stats row ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-8 lg:gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
         <BigStat value={stats.total_calls} label="// ai calls" />
         <BigStat value={fmt(stats.total_tokens_saved)} label="// tokens saved" valueClass="text-brand-blue" />
         <BigStat value={`$${Number(stats.total_measured_savings_usd || 0).toFixed(2)}`} label="// measured savings" valueClass="text-brand-blue" />

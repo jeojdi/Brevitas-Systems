@@ -514,12 +514,14 @@ class CreateKeyRequest(BaseModel):
 def create_key(request: Request, body: CreateKeyRequest):
     owner_id = _dashboard_user(request)
     parent = request.headers.get("x-brevitas-key") or request.headers.get("x-api-key") or ""
+    parent_authenticated = False
     if parent:
         parent_hash = hash_key(parent)
         if not _key_exists(parent_hash):
             raise HTTPException(status_code=401, detail="Invalid API key")
+        parent_authenticated = True
         owner_id = _store.key_owner(parent_hash)
-    if not owner_id and os.getenv("BREVITAS_ALLOW_KEY_CREATION", "").lower() not in ("1", "true", "yes"):
+    if not owner_id and not parent_authenticated and os.getenv("BREVITAS_ALLOW_KEY_CREATION", "").lower() not in ("1", "true", "yes"):
         raise HTTPException(status_code=401, detail="Sign in before creating an API key")
     key = generate_api_key()
     kh = hash_key(key)

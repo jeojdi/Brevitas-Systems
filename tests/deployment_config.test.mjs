@@ -30,6 +30,11 @@ test('public discovery files contain only live public routes and assets', () => 
   assert.doesNotMatch(read('public/pricing.html'), /site\.css/)
 })
 
+test('homepage install flow explicitly authenticates bvx before setup', () => {
+  assert.match(read('public/index.html'),
+    /brew install brevitas-ai\/brevitas\/bvx && bvx login && bvx install ai/)
+})
+
 test('live HTML references only existing static assets', () => {
   const asset = /(?:src|href)=["']([^"']+\.(?:css|ico|js|jsx|jpg|png|svg|webmanifest|mp4))["']/g
   for (const file of readdirSync(resolve(root, 'public')).filter(name => name.endsWith('.html'))) {
