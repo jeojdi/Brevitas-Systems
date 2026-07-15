@@ -499,44 +499,80 @@ function CodeBlockPy({ source, filename, copyable = true }) {
   );
 }
 
-// One-line install command — copyable mono pill for hero / CTA sections
-function InstallCommand({ command }) {
+// One-line install command — OS-tabbed, copyable mono pill for hero / CTA sections.
+// `commands`: [{ label, prompt, command }]. Falls back to a single `command` prop.
+const DEFAULT_INSTALL_COMMANDS = [
+  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login && bvx install ai' },
+  { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex' },
+];
+
+function InstallCommand({ commands, command }) {
+  const list = commands || (command ? [{ label: '', prompt: '$', command }] : DEFAULT_INSTALL_COMMANDS);
+  const [active, setActive] = useState(0);
   const [copied, setCopied] = useState(false);
+  const current = list[active] || list[0];
   const doCopy = () => {
     try {
-      navigator.clipboard.writeText(command);
+      navigator.clipboard.writeText(current.command);
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {}
   };
   return (
-    <button
-      onClick={doCopy}
-      className="t-mono"
-      title="Copy install command"
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 18,
-        maxWidth: '100%',
-        // Fixed dark translucent fill so white hero text stays legible over the
-        // photo in both light and dark mode (don't use theme --ink-2 here).
-        background: 'rgba(0,0,0,0.5)',
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
-        border: '1px solid rgba(255,255,255,0.22)',
-        borderRadius: 10,
-        padding: '16px 22px',
-        color: '#fff',
-        fontSize: 17,
-        cursor: 'pointer',
-        textAlign: 'left',
-      }}
-    >
-      <span aria-hidden="true" style={{ color: 'var(--bronze)', userSelect: 'none' }}>$</span>
-      <span style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}>{command}</span>
-      <span style={{ color: copied ? 'var(--signal)' : 'var(--stone-2)', userSelect: 'none', flexShrink: 0 }}>
-        {copied ? '✓ copied' : '⧉ copy'}
-      </span>
-    </button>
+    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 10, maxWidth: '100%' }}>
+      {list.length > 1 && (
+        <div className="t-mono" style={{ display: 'flex', gap: 10, fontSize: 16 }}>
+          {list.map((c, i) => (
+            <button
+              key={c.label}
+              onClick={() => { setActive(i); setCopied(false); }}
+              style={{
+                background: i === active ? '#ffffff' : 'rgba(0,0,0,0.5)',
+                backdropFilter: 'blur(6px)',
+                WebkitBackdropFilter: 'blur(6px)',
+                border: i === active ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.4)',
+                borderRadius: 10,
+                padding: '10px 22px',
+                color: i === active ? '#0a0d0a' : '#ffffff',
+                fontWeight: 600,
+                letterSpacing: '0.01em',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={doCopy}
+        className="t-mono"
+        title="Copy install command"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 18,
+          maxWidth: '100%',
+          // Fixed dark translucent fill so white hero text stays legible over the
+          // photo in both light and dark mode (don't use theme --ink-2 here).
+          background: 'rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+          border: '1px solid rgba(255,255,255,0.22)',
+          borderRadius: 10,
+          padding: '16px 22px',
+          color: '#fff',
+          fontSize: 17,
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
+        <span aria-hidden="true" style={{ color: 'var(--bronze)', userSelect: 'none' }}>{current.prompt || '$'}</span>
+        <span style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}>{current.command}</span>
+        <span style={{ color: copied ? 'var(--signal)' : 'var(--stone-2)', userSelect: 'none', flexShrink: 0 }}>
+          {copied ? '✓ copied' : '⧉ copy'}
+        </span>
+      </button>
+    </div>
   );
 }
 

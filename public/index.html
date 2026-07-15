@@ -632,12 +632,12 @@ function LandingPage() {
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
             most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
           </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 20, alignItems: 'center', justifyContent: 'center' }}>
+          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
             <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
           </div>
           <div className="fade-up delay-2 in" style={{ display: 'flex', justifyContent: 'center', marginBottom: 96 }}>
-            <InstallCommand command="brew install brevitas-ai/brevitas/bvx && bvx login && bvx install ai" />
+            <InstallCommand />
           </div>
           <div className="fade-up delay-3 in" style={{
             display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',

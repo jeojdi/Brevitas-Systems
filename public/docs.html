@@ -8,8 +8,8 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Docs · Brevitas Systems</title>
-<meta name="description" content="API reference for the Brevitas token efficiency API.">
+<title>Install · Brevitas Systems</title>
+<meta name="description" content="Install Brevitas (bvx) — the CLI that routes your AI coding tools through the token-trimming proxy.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -35,18 +35,22 @@ const BASE_URL = 'https://brevitassystems.com';
 
 const TOC = [
   { group: 'GETTING STARTED', items: [
-    { id: 'overview',    label: 'Overview' },
-    { id: 'auth',        label: 'Authentication' },
+    { id: 'overview',     label: 'How it works' },
+    { id: 'requirements', label: 'Requirements' },
   ]},
-  { group: 'ENDPOINTS', items: [
-    { id: 'compress',   label: 'POST /v1/compress' },
-    { id: 'stats',      label: 'GET /v1/stats' },
-    { id: 'provider',   label: 'Provider config' },
-    { id: 'keys',       label: 'Key management' },
+  { group: 'INSTALL', items: [
+    { id: 'install', label: 'Install' },
+    { id: 'setup',   label: 'First-time setup' },
   ]},
-  { group: 'GUIDES', items: [
-    { id: 'examples',   label: 'Code examples' },
-    { id: 'deployment', label: 'Deployment' },
+  { group: 'MANAGE', items: [
+    { id: 'verify',    label: 'Verify it works' },
+    { id: 'service',   label: 'Background service' },
+    { id: 'update',    label: 'Updating' },
+    { id: 'uninstall', label: 'Uninstalling' },
+  ]},
+  { group: 'REFERENCE', items: [
+    { id: 'commands',        label: 'Command reference' },
+    { id: 'troubleshooting', label: 'Troubleshooting' },
   ]},
 ];
 
@@ -72,8 +76,8 @@ function DocsPage() {
           <aside className="docs-side">
             <div className="docs-side-inner">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28 }}>
-                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>API REFERENCE</span>
-                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>v1</span>
+                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>INSTALL GUIDE</span>
+                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>bvx</span>
               </div>
               {TOC.map(group => (
                 <div key={group.group} style={{ marginBottom: 28 }}>
@@ -106,277 +110,189 @@ function DocsPage() {
           {/* Main */}
           <main className="docs-main">
 
-            <Section id="overview" kicker="GETTING STARTED · 01" title={<>Overview.</>}>
+            <Section id="overview" kicker="GETTING STARTED · 01" title={<>How it works.</>}>
               <p className="t-body-lg">
-                Brevitas sits between agent hops. POST accumulated context to <span className="mono bronze">/v1/compress</span> to select relevant chunks and, when the guarded compressor is configured, shorten compressible message context. The endpoint returns the original text whenever a safety gate or dependency is unavailable.
+                Brevitas is middleware that sits between your AI coding assistants and the LLM
+                provider, trimming tokens on every request. The <span className="mono bronze">bvx</span> CLI
+                installs it, points each supported tool at a local proxy, and supervises the background service.
               </p>
               <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 2, padding: '20px 24px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--stone-2)', lineHeight: 1.7 }}>
-                <div style={{ color: 'var(--stone)', marginBottom: 8 }}>{'// typical flow'}</div>
-                <pre style={{ margin: 0, whiteSpace: 'pre', overflowX: 'auto' }}>{`agent_1_output  ─┐
-prior_context   ─┤─▶  POST /v1/compress  ─▶  compressed_messages
-new_task        ─┘                            pruned_context
-                                              savings_pct
-                                                   │
-                                                   ▼
-                                             agent_2 (receives less)`}</pre>
+                <div style={{ color: 'var(--stone)', marginBottom: 8 }}>{'// request path'}</div>
+                <pre style={{ margin: 0, whiteSpace: 'pre', overflowX: 'auto' }}>{`AI Tool  ─▶  Brevitas Local Proxy  ─▶  brevitas-systems  ─▶  LLM Provider  ─▶  Response
+             (127.0.0.1:8080)          (optimization,
+                                         local socket)`}</pre>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginTop: 8 }}>
-                {[
-                  ['Compression', 'Optionally shortens context segments behind retention gates.'],
-                  ['Context pruning', 'Scores and keeps only the most task-relevant prior context chunks.'],
-                  ['Token accounting', 'Returns tokenizer-based before/after counts on every call.'],
-                ].map(([h, b]) => (
-                  <div key={h} style={{ padding: 16, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
-                    <div className="serif" style={{ fontSize: 16, marginBottom: 6 }}>{h}</div>
-                    <div className="t-body" style={{ fontSize: 13, color: 'var(--stone-2)' }}>{b}</div>
-                  </div>
-                ))}
-              </div>
-              <p className="t-mono" style={{ fontSize: 12, color: 'var(--stone)' }}>
-                Base URL: <span style={{ color: 'var(--bone-dim)' }}>{BASE_URL}</span>
-              </p>
-            </Section>
-
-            <Section id="auth" kicker="GETTING STARTED · 02" title={<>Authentication.</>}>
-              <p className="t-body">
-                Health and provider discovery are public. Account data and compression requests require a Brevitas API key in the <span className="mono bronze">X-Brevitas-Key</span> header. Create keys after signing in to the dashboard; raw keys are never stored in the API-key registry.
-              </p>
-              <CodeBlock lang="http" code={`X-Brevitas-Key: bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
-            </Section>
-
-            <Section id="compress" kicker="ENDPOINTS · 01" title={<>POST /v1/compress.</>}>
-              <Endpoint method="POST" path="/v1/compress" label="main endpoint — compress + prune agent context" />
-              <p className="t-body">
-                Selects relevant context and optionally compresses eligible message segments. If you saved a provider in the dashboard, the endpoint also calls it and includes the response; otherwise the provider fields are empty and your application can send the transformed input itself. Rate limited to <strong style={{ color: 'var(--fg)' }}>60 requests/minute</strong> per key.
-              </p>
-
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4 }}>{'// request body'}</div>
+              <p className="t-body">There are three moving parts:</p>
               <table className="docs-table">
-                <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                <thead><tr><th>Piece</th><th>What it is</th><th>Who manages it</th></tr></thead>
                 <tbody>
-                  <tr><td><span className="mono">messages</span></td><td><span className="mono stone">string[]</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>Agent outputs to compress. Max 100 elements, 50 k chars each.</td></tr>
-                  <tr><td><span className="mono">prior_context</span></td><td><span className="mono stone">string[]</span></td><td><span className="mono stone">optional</span></td><td>Context chunks to prune. Max 200 elements.</td></tr>
-                  <tr><td><span className="mono">task</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Current task description — used to score context relevance. Max 2,000 chars.</td></tr>
-                  <tr><td><span className="mono">prune_budget</span></td><td><span className="mono stone">int</span></td><td><span className="mono stone">optional</span></td><td>Max context chunks to keep (1–50). Default 5.</td></tr>
-                  <tr><td><span className="mono">lossy</span></td><td><span className="mono stone">boolean</span></td><td><span className="mono stone">optional</span></td><td>Attempt guarded message compression when the remote compressor is configured. Default true; otherwise the original message is returned.</td></tr>
-                  <tr><td><span className="mono">meter</span></td><td><span className="mono stone">boolean</span></td><td><span className="mono stone">optional</span></td><td>Record numeric usage metadata. Default true.</td></tr>
+                  <tr><td><span className="mono bronze">bvx</span></td><td>The installer/manager CLI (written in Go). Detects your AI tools, stores one API key, points each tool at the local proxy, and runs the background service.</td><td>You — <span className="mono">brew</span> / <span className="mono">install.ps1</span></td></tr>
+                  <tr><td><span className="mono">Proxy service</span></td><td>A local HTTP proxy on <span className="mono">127.0.0.1:8080</span> that every configured tool routes through. Runs in the background (<span className="mono">bvx serve</span>).</td><td><span className="mono">bvx</span> — installs + supervises it</td></tr>
+                  <tr><td><span className="mono">brevitas-systems</span></td><td>The Python package holding the optimization logic. <span className="mono">bvx</span> talks to it over a local socket. Not bundled — installed and pinned via <span className="mono">pip</span>.</td><td><span className="mono">bvx install</span> / <span className="mono">update</span></td></tr>
                 </tbody>
               </table>
-
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// response'}</div>
-              <CodeBlock lang="json" code={`{
-  "compressed_messages": ["…"],
-  "pruned_context":      ["…"],
-  "baseline_tokens":     312,
-  "optimized_tokens":    118,
-  "savings_pct":         62.18,
-  "fallback_applied":    false,
-  "reason":              "selected",
-  "message_reason":      "compressed",
-  "method":              "structural+llmlingua2",
-  "quality_sim":         0.9731,
-  "provider":            "deepseek",
-  "model":               "deepseek-chat",
-  "model_response":      "…",
-  "routed_model_hint":   "deepseek-chat"
-}`} />
-            </Section>
-
-            <Section id="stats" kicker="ENDPOINTS · 02" title={<>GET /v1/stats.</>}>
-              <Endpoint method="GET" path="/v1/stats" label="aggregated token savings for your key" />
-              <CodeBlock lang="json" code={`{
-  "total_calls":            42,
-  "total_tokens_saved":     18420,
-  "avg_savings_pct":        61.4,
-  "avg_quality_proxy":      0.971,
-  "total_baseline_tokens":  30000,
-  "total_optimized_tokens": 11580,
-  "history": [
-    {
-      "timestamp":        "2026-06-11T14:22:01+00:00",
-      "baseline_tokens":  312,
-      "optimized_tokens": 118,
-      "savings_pct":      62.18,
-      "quality_proxy":    0.9731
-    }
-  ]
-}`} />
-            </Section>
-
-            <Section id="provider" kicker="ENDPOINTS · 03" title={<>Provider config.</>}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-                <div>
-                  <Endpoint method="GET" path="/v1/provider" label="get current model backend" />
-                  <CodeBlock lang="json" code={`{
-  "provider":    "anthropic",
-  "model":       "claude-sonnet-4-6",
-  "has_api_key": true,
-  "masked_key":  "********3x9f"
-}`} />
-                </div>
-
-                <div>
-                  <Endpoint method="PUT" path="/v1/provider" label="set model backend" />
-                  <table className="docs-table">
-                    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
-                    <tbody>
-                      <tr><td><span className="mono">provider</span></td><td><span className="mono stone">string</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>ollama · anthropic · openai · grok · deepseek</td></tr>
-                      <tr><td><span className="mono">model</span></td><td><span className="mono stone">string</span></td><td><span className="mono" style={{color:'var(--signal)'}}>required</span></td><td>Model name for the chosen provider.</td></tr>
-                      <tr><td><span className="mono">provider_api_key</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Provider API key. Required for all except ollama. Stored encrypted at rest.</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                <div>
-                  <Endpoint method="GET" path="/v1/providers" label="list all supported providers and models" />
-                </div>
-              </div>
-            </Section>
-
-            <Section id="keys" kicker="ENDPOINTS · 04" title={<>Key management.</>}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-                <div>
-                  <Endpoint method="POST" path="/v1/keys" label="create a Brevitas API key — signed-in dashboard session or existing key required" />
-                  <table className="docs-table">
-                    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
-                    <tbody>
-                      <tr><td><span className="mono">name</span></td><td><span className="mono stone">string</span></td><td><span className="mono stone">optional</span></td><td>Human-readable label. Max 100 chars. Default "default".</td></tr>
-                    </tbody>
-                  </table>
-                  <CodeBlock lang="json" code={`// response — the api_key is shown once, store it immediately
-{
-  "api_key": "bvt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "name":    "my-agent-project"
-}`} />
-                </div>
-                <div>
-                  <Endpoint method="GET" path="/v1/keys" label="list keys (names + dates, no raw values)" />
-                </div>
-              </div>
-            </Section>
-
-            <Section id="examples" kicker="GUIDES · 01" title={<>Code examples.</>}>
-              <CodeBlock lang="python" code={`import requests
-
-BREVITAS_KEY = "bvt_your_key_here"
-BASE         = "${BASE_URL}"
-HEADERS      = {"X-Brevitas-Key": BREVITAS_KEY, "Content-Type": "application/json"}
-
-def compress(messages: list[str], prior_context: list[str], task: str = "") -> dict:
-    r = requests.post(
-        f"{BASE}/v1/compress",
-        headers=HEADERS,
-        json={
-            "messages":          messages,
-            "prior_context":     prior_context,
-            "task":              task,
-            "prune_budget":      5,
-        },
-    )
-    r.raise_for_status()
-    return r.json()
-
-# In your agent pipeline:
-result = compress(
-    messages=["Agent 1 produced a long analysis of the user's data pipeline…"],
-    prior_context=["User is on Python 3.11.", "Project uses pandas.", "Tests use pytest."],
-    task="Write a data validation function",
-)
-
-# Pass these to agent 2 — NOT the raw context
-agent2_input = result["compressed_messages"] + result["pruned_context"]
-print(f"Saved {result['savings_pct']}%  |  method {result['method']}")`} />
-
-              <CodeBlock lang="javascript" code={`const BREVITAS_KEY = "bvt_your_key_here";
-const BASE = "${BASE_URL}";
-
-async function compress(messages, priorContext, task = "") {
-  const res = await fetch(\`\${BASE}/v1/compress\`, {
-    method: "POST",
-    headers: {
-      "X-Brevitas-Key": BREVITAS_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messages,
-      prior_context: priorContext,
-      task,
-      prune_budget: 5,
-    }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-const result = await compress(
-  ["Agent 1 output…"],
-  ["Context chunk 1", "Context chunk 2"],
-  "Generate a report"
-);
-
-// Feed these to your next agent
-const agent2Input = [...result.compressed_messages, ...result.pruned_context];
-console.log(\`Saved \${result.savings_pct}% · \${result.optimized_tokens} tokens out\`);`} />
-
-              <CodeBlock lang="bash" code={`# Create an API key at ${BASE_URL}/dashboard, then compress context
-curl -X POST ${BASE_URL}/v1/compress \\
-  -H "X-Brevitas-Key: bvt_your_key_here" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "task": "Write a data validation function",
-    "messages": ["Agent 1 produced a long analysis..."],
-    "prior_context": ["User is on Python 3.11.", "Project uses pandas."],
-    "prune_budget": 5
-  }'
-
-# Check token savings
-curl ${BASE_URL}/v1/stats \\
-  -H "X-Brevitas-Key: bvt_your_key_here"`} />
-            </Section>
-
-            <Section id="deployment" kicker="GUIDES · 02" title={<>Deployment.</>}>
               <p className="t-body">
-                Brevitas is designed to run as a self-hosted sidecar alongside your agent pipeline. Configure it with environment variables and put it behind a TLS-terminating proxy for external access.
+                <span className="mono bronze">bvx</span> never bundles the optimizer and never edits a tool
+                config you haven't approved. Every config change is backed up before it's rewritten.
               </p>
+            </Section>
 
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4 }}>{'// environment variables'}</div>
+            <Section id="requirements" kicker="GETTING STARTED · 02" title={<>Requirements.</>}>
+              <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>macOS, Linux, or Windows</strong> (x86-64 or ARM64).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Python 3.13+</strong> — required by <span className="mono">brevitas-systems</span>. Homebrew installs it as a dependency automatically; on Windows install it yourself (e.g. from <a href="https://www.python.org/downloads/" className="btn-inline" style={{ color: 'var(--bronze)' }}>python.org</a> or <span className="mono">winget install Python.Python.3.13</span>).</li>
+                <li className="t-body">An account at <a href="https://brevitassystems.com" className="btn-inline" style={{ color: 'var(--bronze)' }}>brevitassystems.com</a> — you authorize it during setup and the device key is stored in your OS credential store (Keychain / Credential Manager / Secret Service).</li>
+              </ul>
+              <p className="t-body">
+                You do <strong style={{ color: 'var(--fg)' }}>not</strong> need a Go toolchain or a C compiler —
+                every install path below ships a prebuilt binary.
+              </p>
+            </Section>
+
+            <Section id="install" kicker="INSTALL · 01" title={<>Install.</>}>
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>{'// macOS / Linux (Homebrew)'}</div>
+              <CodeBlock lang="sh" code={`brew tap Brevitas-ai/brevitas
+brew install bvx`} />
+              <p className="t-body">Or as a single command:</p>
+              <CodeBlock lang="sh" code={`brew install Brevitas-ai/brevitas/bvx`} />
+              <p className="t-body">To build the latest <span className="mono">main</span> from source instead of a release binary:</p>
+              <CodeBlock lang="sh" code={`brew install --HEAD Brevitas-ai/brevitas/bvx`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 12 }}>{'// Windows (PowerShell)'}</div>
+              <CodeBlock lang="powershell" code={`irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+              <p className="t-body">
+                This downloads the prebuilt <span className="mono">bvx.exe</span> for your architecture,
+                <strong style={{ color: 'var(--fg)' }}> verifies its SHA-256</strong> against the release
+                <span className="mono"> checksums.txt</span>, installs it to <span className="mono">%LOCALAPPDATA%\Programs\bvx</span>,
+                and adds that folder to your user PATH. Open a <strong style={{ color: 'var(--fg)' }}>new</strong> terminal
+                afterward so the updated PATH takes effect.
+              </p>
+              <p className="t-body">To pin a specific version, set <span className="mono">$env:BVX_VERSION</span> before running:</p>
+              <CodeBlock lang="powershell" code={`$env:BVX_VERSION = "0.1.20"
+irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 12 }}>{'// verify the binary is installed'}</div>
+              <CodeBlock lang="sh" code={`bvx version`} />
+              <p className="t-body">
+                This only confirms the CLI is on your PATH — it does <strong style={{ color: 'var(--fg)' }}>not</strong> configure
+                anything yet. That's the next step.
+              </p>
+            </Section>
+
+            <Section id="setup" kicker="INSTALL · 02" title={<>First-time setup.</>}>
+              <p className="t-body">Run the interactive installer once:</p>
+              <CodeBlock lang="sh" code={`bvx install`} />
+              <p className="t-body">This is the same as <span className="mono">bvx install ai</span>. Here's exactly what it does:</p>
+              <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Scans</strong> your system for supported AI tools (Claude Code, Codex CLI, Continue, Aider, …).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Opens the Brevitas dashboard</strong> for one-click account authorization.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Stores</strong> the dedicated device key in your OS credential store.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Rewrites</strong> each supported tool's documented config to route through <span className="mono">http://127.0.0.1:8080</span> (backing up the original first).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Installs and starts</strong> the background services (proxy + <span className="mono">brevitas-systems</span> optimizer).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Runs diagnostics</strong> and prints a summary.</li>
+              </ol>
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 8 }}>{'// example output'}</div>
+              <CodeBlock lang="text" code={`Scanning system...
+
+  ✓ Claude Code
+  ✓ Codex CLI
+  ✓ Continue
+  ✓ Aider
+  ⚠ Cursor (manual step required)
+  ⚠ GitHub Copilot — Unsupported
+
+Detected 4 configurable tool(s), 1 manual, 1 unsupported.
+
+Opening https://brevitassystems.com/dashboard#bvx=...
+Waiting for approval... approved
+
+Installing...
+
+  ✓ API key stored in macOS Keychain
+  ✓ Claude Code configured`} />
+              <p className="t-body">
+                <strong style={{ color: 'var(--fg)' }}>Wiring up a codebase instead.</strong> To route every LLM
+                call in a project through Brevitas (instead of configuring interactive tools):
+              </p>
+              <CodeBlock lang="sh" code={`bvx install <repo>                 # scan + open the AI-call map
+bvx install <repo> --apply         # write a .env.agentmap you can source
+bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs`} />
+            </Section>
+
+            <Section id="verify" kicker="MANAGE · 01" title={<>Verify it works.</>}>
+              <CodeBlock lang="sh" code={`bvx status     # proxy, service, and provider status
+bvx doctor     # full diagnostics across the installation`} />
+              <p className="t-body">If something looks off, re-apply config and restart the service:</p>
+              <CodeBlock lang="sh" code={`bvx repair`} />
+            </Section>
+
+            <Section id="service" kicker="MANAGE · 02" title={<>Background service.</>}>
+              <p className="t-body">Control the background proxy service directly:</p>
+              <CodeBlock lang="sh" code={`bvx start      # start the proxy service
+bvx stop       # stop it
+bvx restart    # restart it
+bvx logs       # print the proxy logs
+bvx logs -f    # follow the logs live`} />
+            </Section>
+
+            <Section id="update" kicker="MANAGE · 03" title={<>Updating.</>}>
+              <p className="t-body">Upgrade the <span className="mono">bvx</span> CLI itself with your package manager:</p>
+              <CodeBlock lang="sh" code={`# macOS / Linux
+brew upgrade bvx
+
+# Windows — just re-run the installer; it fetches the latest release
+irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+              <p className="t-body">Upgrade the optimization engine (<span className="mono">brevitas-systems</span>):</p>
+              <CodeBlock lang="sh" code={`bvx update`} />
+            </Section>
+
+            <Section id="uninstall" kicker="MANAGE · 04" title={<>Uninstalling.</>}>
+              <p className="t-body">This restores every tool config from its backup and removes the background service:</p>
+              <CodeBlock lang="sh" code={`bvx uninstall`} />
+              <p className="t-body">Then remove the CLI itself:</p>
+              <CodeBlock lang="sh" code={`# macOS / Linux
+brew uninstall bvx
+
+# Windows
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Programs\\bvx"
+# and remove that folder from your user PATH (System Settings → Environment Variables)`} />
+            </Section>
+
+            <Section id="commands" kicker="REFERENCE · 01" title={<>Command reference.</>}>
               <table className="docs-table">
-                <thead><tr><th>Variable</th><th>Required</th><th>Description</th></tr></thead>
+                <thead><tr><th>Command</th><th>Description</th></tr></thead>
                 <tbody>
-                  <tr><td><span className="mono">BREVITAS_SECRET_KEY</span></td><td><span className="mono stone">production</span></td><td>Stable Fernet key for encrypting provider credentials. Required when Supabase is authoritative.</td></tr>
-                  <tr><td><span className="mono">ALLOWED_ORIGINS</span></td><td><span className="mono stone">optional</span></td><td>Comma-separated CORS origins. Default "*". Set to your frontend URL in production.</td></tr>
-                  <tr><td><span className="mono">OLLAMA_HOST</span></td><td><span className="mono stone">optional</span></td><td>Ollama base URL. Default http://localhost:11434.</td></tr>
+                  <tr><td><span className="mono">bvx install</span></td><td>Configure AI coding tools (<span className="mono">install ai</span>) or a codebase (<span className="mono">install &lt;repo&gt;</span>)</td></tr>
+                  <tr><td><span className="mono">bvx uninstall</span></td><td>Restore all tool configs and remove the background service</td></tr>
+                  <tr><td><span className="mono">bvx status</span></td><td>Show proxy, service, and provider status</td></tr>
+                  <tr><td><span className="mono">bvx stats</span></td><td>Show cumulative token-savings metrics from the proxy</td></tr>
+                  <tr><td><span className="mono">bvx providers</span></td><td>List supported providers and their detection/config state</td></tr>
+                  <tr><td><span className="mono">bvx doctor</span></td><td>Run diagnostics across the whole installation</td></tr>
+                  <tr><td><span className="mono">bvx repair</span></td><td>Re-apply configuration and restart the service</td></tr>
+                  <tr><td><span className="mono">bvx start</span> / <span className="mono">stop</span> / <span className="mono">restart</span></td><td>Control the background proxy service</td></tr>
+                  <tr><td><span className="mono">bvx logs</span></td><td>Print (or follow, with <span className="mono">-f</span>) the proxy logs</td></tr>
+                  <tr><td><span className="mono">bvx config</span></td><td>Print or edit Brevitas configuration</td></tr>
+                  <tr><td><span className="mono">bvx login</span> / <span className="mono">logout</span></td><td>Connect through the dashboard / remove the stored key</td></tr>
+                  <tr><td><span className="mono">bvx update</span></td><td>Check for and upgrade the <span className="mono">brevitas-systems</span> package</td></tr>
+                  <tr><td><span className="mono">bvx version</span></td><td>Print version information</td></tr>
                 </tbody>
               </table>
+              <p className="t-body">Run <span className="mono">bvx help</span> to see the full list at any time.</p>
+            </Section>
 
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// start the server'}</div>
-              <CodeBlock lang="bash" code={`# Single worker (default)
-uvicorn api.server:app --host 0.0.0.0 --port 8000
-
-# With a custom secret key (recommended for production)
-BREVITAS_SECRET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") \\
-ALLOWED_ORIGINS="https://your-dashboard.example.com" \\
-uvicorn api.server:app --host 0.0.0.0 --port 8000`} />
-
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// TLS via Caddy (recommended)'}</div>
-              <CodeBlock lang="caddyfile" code={`# Caddyfile
-brevitas.yourdomain.com {
-    reverse_proxy localhost:8000
-}`} />
-
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginBottom: 4, marginTop: 20 }}>{'// or nginx'}</div>
-              <CodeBlock lang="nginx" code={`server {
-    listen 443 ssl;
-    server_name brevitas.yourdomain.com;
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}`} />
+            <Section id="troubleshooting" kicker="REFERENCE · 02" title={<>Troubleshooting.</>}>
+              <table className="docs-table">
+                <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">bvx: command not found</span> (Windows)</td><td>Open a new terminal; PATH updates only apply to shells started after install.</td></tr>
+                  <tr><td>A tool still hits the provider directly</td><td>Run <span className="mono">bvx status</span> to confirm it was configured, then <span className="mono">bvx repair</span> to re-apply.</td></tr>
+                  <tr><td>Optimizer won't start</td><td>Make sure Python 3.13+ is installed and on your PATH, then run <span className="mono">bvx update</span> followed by <span className="mono">bvx doctor</span>.</td></tr>
+                  <tr><td>Anything else</td><td><span className="mono">bvx doctor</span> inspects the whole installation and points at the specific problem.</td></tr>
+                </tbody>
+              </table>
+              <p className="t-body">
+                For how the proxy and optimizer communicate under the hood, see <span className="mono">PROTOCOL.md</span> in the repository.
+              </p>
             </Section>
 
             <div style={{ borderTop: '1px solid var(--line)', marginTop: 80, paddingTop: 40, paddingBottom: 80 }}>
@@ -525,16 +441,6 @@ function Section({ id, kicker, title, children }) {
         {children}
       </div>
     </section>
-  );
-}
-
-function Endpoint({ method, path, label }) {
-  return (
-    <div className="endpoint-badge">
-      <span className={`method-badge method-${method}`}>{method}</span>
-      <span className="t-mono" style={{ fontSize: 13, color: 'var(--bone-dim)' }}>{path}</span>
-      {label && <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>— {label}</span>}
-    </div>
   );
 }
 

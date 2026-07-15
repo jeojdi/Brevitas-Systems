@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats } from '../lib/api.js'
+import InstallCommand from './InstallCommand.jsx'
 import {
   BarChart, Bar, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -87,6 +88,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
 
   return (
     <div className="space-y-12">
+      <InstallCommand />
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation hover:text-brand-blue">retry</button></div>}
       {/* ── Section label ── */}
       <div>

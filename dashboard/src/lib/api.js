@@ -36,8 +36,15 @@ export const compress = (apiKey, body, options = {}) => apiJson('/v1/compress', 
   ...options, method: 'POST', body,
 })
 
-export async function streamCompression(apiKey, body, onEvent, { request = fetch, signal } = {}) {
-  const response = await request('/v1/compress/stream', {
+export const streamCompression = (apiKey, body, onEvent, options) =>
+  streamEvents('/v1/compress/stream', apiKey, body, onEvent, options)
+
+// Interactive Playground chat — same SSE shape as compression, different endpoint.
+export const streamPlaygroundChat = (apiKey, body, onEvent, options) =>
+  streamEvents('/v1/playground/stream', apiKey, body, onEvent, options)
+
+async function streamEvents(path, apiKey, body, onEvent, { request = fetch, signal } = {}) {
+  const response = await request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Brevitas-Key': apiKey },
     body: JSON.stringify(body),

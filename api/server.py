@@ -119,6 +119,7 @@ _PROVIDER_BASE_URLS = {
     "openai":   "https://api.openai.com/v1",
     "grok":     "https://api.x.ai/v1",
     "deepseek": "https://api.deepseek.com/v1",
+    "groq":     "https://api.groq.com/openai/v1",   # OpenAI-compatible; free tier powers the Playground default
 }
 
 _PROVIDER_MODELS = {
@@ -127,11 +128,18 @@ _PROVIDER_MODELS = {
     "openai":    ["gpt-4o", "gpt-4o-mini", "o3-mini"],
     "grok":      ["grok-3", "grok-3-mini"],
     "deepseek":  ["deepseek-chat", "deepseek-reasoner"],
-    "azure_openai": [], "google_gemini": [], "groq": [], "xai": [],
+    "groq":      ["gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    "azure_openai": [], "google_gemini": [], "xai": [],
     "mistral": [], "cohere": [], "litellm": [], "langchain": [], "bedrock": [],
     "together": [], "fireworks": [], "openrouter": [], "perplexity": [],
     "replicate": [], "huggingface": [],
 }
+
+# Playground zero-config default: a free hosted model reached with a single SERVER-side key.
+# The key is never sent to the browser and is only used when a request carries no bring-your-own key.
+_PLAYGROUND_KEY      = os.getenv("BREVITAS_PLAYGROUND_KEY", "")
+_PLAYGROUND_PROVIDER = os.getenv("BREVITAS_PLAYGROUND_PROVIDER", "groq")
+_PLAYGROUND_MODEL    = os.getenv("BREVITAS_PLAYGROUND_MODEL", "gemma2-9b-it")
 
 
 def _make_ollama_backend(model: str):
@@ -209,6 +217,86 @@ def _build_backend(config: dict | None):
     if provider in _PROVIDER_BASE_URLS:
         return _make_openai_compat_backend(api_key, model, _PROVIDER_BASE_URLS[provider])
     return _noop_backend
+
+
+def _compress_pipeline(task: str, messages: list[str], prior_context: list[str],
+                       prune_budget: int, lossy: bool) -> dict:
+    """Shared context-reduction core used by /v1/compress, /v1/compress/stream and
+    /v1/playground/stream. Messages pass through unchanged except the volatile LAST message,
+    which is lossily shrunk when `lossy` is on and the remote compressor is available.
+    prior_context is retrieval-pruned to the chunks relevant to `task`. All savings use the
+    real tokenizer; no quality number is ever fabricated (quality_sim is None unless measured)."""
+    sel = retrieval_select(task, prior_context, k=prune_budget, use_adaptive=True)
+    baseline_msg_tokens = estimate_tokens_many(messages)
+
+    out_messages = list(messages)
+    message_reason = "lossy_disabled"
+    method = "lossless"
+    quality_sim = None
+    message_rate = None
+    message_roles = None
+    info_density = None
+    message_latency_ms = 0.0
+    if lossy and _lossy_enabled() and out_messages:
+        mo = _optimize_message_logged(out_messages[-1])
+        out_messages[-1] = mo["text"]
+        message_reason = mo["reason"]
+        method = mo["method"]
+        quality_sim = mo.get("quality_sim")
+        message_rate = mo.get("rate")
+        message_roles = mo.get("roles")
+        info_density = mo.get("info_density")
+        message_latency_ms = mo.get("latency_ms", 0.0)
+
+    optimized_msg_tokens = estimate_tokens_many(out_messages)
+    baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
+    output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
+    actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+    return {
+        "out_messages":       out_messages,
+        "selected_context":   sel["selected_context"],
+        "baseline_tokens":    baseline_tokens,
+        "optimized_tokens":   output_tokens,
+        "savings_pct":        actual_savings,
+        "message_reason":     message_reason,
+        "method":             method,
+        "quality_sim":        quality_sim,
+        "message_rate":       message_rate,
+        "message_roles":      message_roles,
+        "info_density":       info_density,
+        "message_latency_ms": message_latency_ms,
+        "fallback_applied":   sel["fallback_applied"],
+        "reason":             sel["reason"],
+    }
+
+
+def _make_named_backend(provider: str, model: str, raw_key: str):
+    """Build a one-shot model backend from a provider id + RAW key (no encryption, no store).
+    Used for ephemeral Playground keys and the server-side free default."""
+    if provider == "ollama":
+        return _make_ollama_backend(model)
+    if provider == "anthropic":
+        return _make_anthropic_backend(raw_key, model)
+    if provider in _PROVIDER_BASE_URLS:
+        return _make_openai_compat_backend(raw_key, model, _PROVIDER_BASE_URLS[provider])
+    return _noop_backend
+
+
+def _build_chat_backend(byok_provider: str, byok_model: str, byok_key: str):
+    """Resolve the model backend for a Playground chat turn. Priority:
+      1. bring-your-own ephemeral key from the request (never stored, never logged),
+      2. the server-side free default (BREVITAS_PLAYGROUND_KEY),
+      3. no model — compression-only (empty response).
+    Returns (provider, model, backend)."""
+    if byok_key and byok_provider and byok_model:
+        allowed = _PROVIDER_MODELS.get(byok_provider)
+        if not allowed or byok_model not in allowed:
+            raise HTTPException(status_code=502, detail="Unsupported provider or model for chat")
+        return byok_provider, byok_model, _make_named_backend(byok_provider, byok_model, byok_key)
+    if _PLAYGROUND_KEY:
+        return (_PLAYGROUND_PROVIDER, _PLAYGROUND_MODEL,
+                _make_named_backend(_PLAYGROUND_PROVIDER, _PLAYGROUND_MODEL, _PLAYGROUND_KEY))
+    return "", "", _noop_backend
 
 
 def _run_configured_model(kh: str, messages: list[str], context: list[str], task: str) -> dict:
@@ -655,65 +743,40 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     quality proxy is recorded.
     """
     task = body.task or (body.messages[0][:200] if body.messages else "")
-    sel = retrieval_select(task, body.prior_context, k=body.prune_budget, use_adaptive=True)
-
-    # Baseline is measured against the ORIGINAL messages + full prior context.
-    baseline_msg_tokens = estimate_tokens_many(body.messages)
-
-    # Lossy lever: shrink the volatile LAST message via the remote compressor. Earlier
-    # messages stay byte-identical so the provider cache still hits the stable prefix.
-    out_messages = list(body.messages)
-    message_reason = "lossy_disabled"
-    method = "lossless"
-    quality_sim = None
-    message_rate = None
-    message_roles = None
-    info_density = None
-    message_latency_ms = 0.0
-    if body.lossy and _lossy_enabled() and out_messages:
-        mo = _optimize_message_logged(out_messages[-1])
-        out_messages[-1] = mo["text"]
-        message_reason = mo["reason"]
-        method = mo["method"]
-        quality_sim = mo.get("quality_sim")
-        message_rate = mo.get("rate")
-        message_roles = mo.get("roles")
-        info_density = mo.get("info_density")
-        message_latency_ms = mo.get("latency_ms", 0.0)
-
-    optimized_msg_tokens = estimate_tokens_many(out_messages)
-    baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
-    output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
-    actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+    # Baseline is measured against the ORIGINAL messages + full prior context; the volatile
+    # LAST message may be lossily shrunk while earlier messages stay byte-identical so the
+    # provider cache still hits the stable prefix.
+    pipe = _compress_pipeline(task, body.messages, body.prior_context, body.prune_budget, body.lossy)
+    out_messages = pipe["out_messages"]
     model_result = _run_configured_model(
-        kh, out_messages, sel["selected_context"], task,
+        kh, out_messages, pipe["selected_context"], task,
     )
 
     if body.meter:
         _safe_record_usage(
             key_hash=kh,
-            baseline_tokens=baseline_tokens,
-            optimized_tokens=output_tokens,
-            savings_pct=actual_savings,
+            baseline_tokens=pipe["baseline_tokens"],
+            optimized_tokens=pipe["optimized_tokens"],
+            savings_pct=pipe["savings_pct"],
             quality_proxy=None,
-            strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
+            strategy=f"lossy:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
         )
 
     return {
         "compressed_messages": out_messages,             # last message may be compressed (lossy)
-        "pruned_context":      sel["selected_context"],
-        "baseline_tokens":     baseline_tokens,
-        "optimized_tokens":    output_tokens,
-        "savings_pct":         actual_savings,
-        "fallback_applied":    sel["fallback_applied"],
-        "reason":              sel["reason"],            # prior-context retrieval reason
-        "message_reason":      message_reason,           # last-message optimization reason
-        "method":              method,
-        "quality_sim":         quality_sim,              # embedding cosine sim (None if unmeasured)
-        "message_rate":        message_rate,             # chosen keep-ratio (adaptive), None if n/a
-        "message_roles":       message_roles,            # prompt segment roles seen (task/context/…)
-        "info_density":        info_density,             # per-class retention + overall_ok
-        "message_latency_ms":  message_latency_ms,
+        "pruned_context":      pipe["selected_context"],
+        "baseline_tokens":     pipe["baseline_tokens"],
+        "optimized_tokens":    pipe["optimized_tokens"],
+        "savings_pct":         pipe["savings_pct"],
+        "fallback_applied":    pipe["fallback_applied"],
+        "reason":              pipe["reason"],            # prior-context retrieval reason
+        "message_reason":      pipe["message_reason"],    # last-message optimization reason
+        "method":              pipe["method"],
+        "quality_sim":         pipe["quality_sim"],       # embedding cosine sim (None if unmeasured)
+        "message_rate":        pipe["message_rate"],      # chosen keep-ratio (adaptive), None if n/a
+        "message_roles":       pipe["message_roles"],     # prompt segment roles seen (task/context/…)
+        "info_density":        pipe["info_density"],      # per-class retention + overall_ok
+        "message_latency_ms":  pipe["message_latency_ms"],
         **model_result,
         "routed_model_hint":   model_result["model"],
     }
@@ -818,45 +881,26 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             if cancel_event.is_set():
                 return
 
-            sel = retrieval_select(task, body.prior_context, k=body.prune_budget, use_adaptive=True)
+            pipe = _compress_pipeline(task, body.messages, body.prior_context,
+                                      body.prune_budget, body.lossy)
             if cancel_event.is_set():
                 return
-
-            baseline_msg_tokens = estimate_tokens_many(body.messages)
-
-            # Lossy lever: shrink only the volatile last message (see /v1/compress).
-            out_messages = list(body.messages)
-            message_reason = "lossy_disabled"
-            method = "lossless"
-            quality_sim = None
-            if body.lossy and _lossy_enabled() and out_messages:
-                mo = _optimize_message_logged(out_messages[-1])
-                out_messages[-1] = mo["text"]
-                message_reason = mo["reason"]
-                method = mo["method"]
-                quality_sim = mo.get("quality_sim")
-            if cancel_event.is_set():
-                return
-
-            optimized_msg_tokens = estimate_tokens_many(out_messages)
-            baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
-            output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
-            actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+            out_messages = pipe["out_messages"]
 
             # Carry the same fields the dashboard's compression card reads, so the token
             # bar + savings + messages/context all populate live (not just on `done`).
             # quality_proxy stays None on this lossless path — never fake a quality number.
-            event_queue.put({"stage": "compressed", "selected": len(sel["selected_context"]),
-                             "baseline_tokens": baseline_tokens, "optimized_tokens": output_tokens,
-                             "savings_pct": actual_savings, "quality_proxy": None,
+            event_queue.put({"stage": "compressed", "selected": len(pipe["selected_context"]),
+                             "baseline_tokens": pipe["baseline_tokens"], "optimized_tokens": pipe["optimized_tokens"],
+                             "savings_pct": pipe["savings_pct"], "quality_proxy": None,
                              "compressed_messages": out_messages,
-                             "pruned_context": sel["selected_context"],
-                             "message_reason": message_reason, "method": method,
-                             "quality_sim": quality_sim,
-                             "fallback": sel["fallback_applied"]})
+                             "pruned_context": pipe["selected_context"],
+                             "message_reason": pipe["message_reason"], "method": pipe["method"],
+                             "quality_sim": pipe["quality_sim"],
+                             "fallback": pipe["fallback_applied"]})
 
             model_result = _run_configured_model(
-                kh, out_messages, sel["selected_context"], task,
+                kh, out_messages, pipe["selected_context"], task,
             )
             if model_result["model"]:
                 event_queue.put({"stage": "model_response", **model_result,
@@ -865,24 +909,24 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
             if body.meter:
                 _safe_record_usage(
                     key_hash=kh,
-                    baseline_tokens=baseline_tokens,
-                    optimized_tokens=output_tokens,
-                    savings_pct=actual_savings,
+                    baseline_tokens=pipe["baseline_tokens"],
+                    optimized_tokens=pipe["optimized_tokens"],
+                    savings_pct=pipe["savings_pct"],
                     quality_proxy=None,
-                    strategy=f"lossy:{message_reason}|ctx:{sel['reason']}"[:64],
+                    strategy=f"lossy:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
                 )
 
             event_queue.put({"stage": "done", "result": {
                 "compressed_messages": out_messages,
-                "pruned_context":      sel["selected_context"],
-                "baseline_tokens":     baseline_tokens,
-                "optimized_tokens":    output_tokens,
-                "savings_pct":         actual_savings,
-                "fallback_applied":    sel["fallback_applied"],
-                "reason":              sel["reason"],
-                "message_reason":      message_reason,
-                "method":              method,
-                "quality_sim":         quality_sim,
+                "pruned_context":      pipe["selected_context"],
+                "baseline_tokens":     pipe["baseline_tokens"],
+                "optimized_tokens":    pipe["optimized_tokens"],
+                "savings_pct":         pipe["savings_pct"],
+                "fallback_applied":    pipe["fallback_applied"],
+                "reason":              pipe["reason"],
+                "message_reason":      pipe["message_reason"],
+                "method":              pipe["method"],
+                "quality_sim":         pipe["quality_sim"],
                 **model_result,
                 "routed_model_hint":   model_result["model"],
             }})
@@ -911,6 +955,136 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
         finally:
             # Signal the worker to stop on any exit (normal end, client abort,
             # or generator close) so it doesn't keep running / record usage.
+            cancel_event.set()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Interactive Playground chat ───────────────────────────────────────────────
+
+class PlaygroundChatRequest(BaseModel):
+    messages:          List[str] = Field(max_length=100)
+    prior_context:     List[str] = Field(default=[], max_length=400)
+    task:              str       = Field(default="", max_length=2000)
+    compression_level: int       = Field(default=2, ge=1, le=3)
+    prune_budget:      int       = Field(default=5, ge=1, le=50)
+    # Bring-your-own key: request-scoped only. NEVER stored, NEVER logged.
+    byok_provider:     str       = Field(default="", max_length=32)
+    byok_model:        str       = Field(default="", max_length=128)
+    byok_key:          str       = Field(default="", max_length=400)
+
+    @field_validator("messages", "prior_context", mode="before")
+    @classmethod
+    def _check_str_lengths(cls, v):
+        for s in v if isinstance(v, list) else []:
+            if isinstance(s, str) and len(s) > _MAX_STR:
+                raise ValueError(f"Individual strings must be under {_MAX_STR:,} characters")
+        return v
+
+
+@app.post("/v1/playground/stream")
+@limiter.limit("60/minute")
+async def playground_stream(request: Request, body: PlaygroundChatRequest,
+                            kh: str = Depends(_authenticated)):
+    """Interactive chat for the dashboard Playground. Runs the same compression pipeline as
+    /v1/compress/stream, then answers with either a bring-your-own ephemeral model or the
+    server-side free default. Streams the same SSE stages so the frontend reader is shared."""
+    # Resolve the backend up-front so an invalid BYOK provider/model returns a clean 502
+    # instead of surfacing mid-stream. Raises HTTPException on bad input.
+    provider, model, backend = _build_chat_backend(body.byok_provider, body.byok_model, body.byok_key)
+
+    event_queue: queue.Queue = queue.Queue()
+    SENTINEL = object()
+    cancel_event = threading.Event()
+
+    def _run():
+        try:
+            task = body.task or (body.messages[0][:200] if body.messages else "")
+            event_queue.put({"stage": "retrieving", "task": task[:120]})
+            if provider and model:
+                event_queue.put({"stage": "routed", "provider": provider,
+                                 "model": model, "route_fit": 1.0})
+            if cancel_event.is_set():
+                return
+
+            pipe = _compress_pipeline(task, body.messages, body.prior_context,
+                                      body.prune_budget, lossy=True)
+            if cancel_event.is_set():
+                return
+            out_messages = pipe["out_messages"]
+
+            event_queue.put({"stage": "compressed", "selected": len(pipe["selected_context"]),
+                             "baseline_tokens": pipe["baseline_tokens"], "optimized_tokens": pipe["optimized_tokens"],
+                             "savings_pct": pipe["savings_pct"], "quality_proxy": None,
+                             "compressed_messages": out_messages,
+                             "pruned_context": pipe["selected_context"],
+                             "message_reason": pipe["message_reason"], "method": pipe["method"],
+                             "quality_sim": pipe["quality_sim"],
+                             "fallback": pipe["fallback_applied"]})
+
+            # Answer with the resolved backend (compressed messages + pruned context only).
+            model_response = ""
+            if provider and model:
+                prompt = "\n\n".join(filter(None, [
+                    f"Task: {task}" if task else "", *out_messages, *pipe["selected_context"],
+                ]))
+                model_response = backend(prompt, model)
+                event_queue.put({"stage": "model_response", "provider": provider, "model": model,
+                                 "text": model_response, "model_response": model_response})
+
+            # Record compression savings so the Overview graphs reflect chat turns. The model
+            # choice never affects savings metering; the BYOK key is not part of this record.
+            _safe_record_usage(
+                key_hash=kh,
+                baseline_tokens=pipe["baseline_tokens"],
+                optimized_tokens=pipe["optimized_tokens"],
+                savings_pct=pipe["savings_pct"],
+                quality_proxy=None,
+                strategy=f"chat:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
+            )
+
+            event_queue.put({"stage": "done", "result": {
+                "compressed_messages": out_messages,
+                "pruned_context":      pipe["selected_context"],
+                "baseline_tokens":     pipe["baseline_tokens"],
+                "optimized_tokens":    pipe["optimized_tokens"],
+                "savings_pct":         pipe["savings_pct"],
+                "fallback_applied":    pipe["fallback_applied"],
+                "reason":              pipe["reason"],
+                "message_reason":      pipe["message_reason"],
+                "method":              pipe["method"],
+                "quality_sim":         pipe["quality_sim"],
+                "provider":            provider,
+                "model":               model,
+                "model_response":      model_response,
+            }})
+        except _ClientGone:
+            pass
+        except Exception as exc:
+            event_queue.put({"stage": "error", "message": str(exc)})
+        finally:
+            event_queue.put(SENTINEL)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await loop.run_in_executor(None, lambda: event_queue.get(timeout=0.5))
+                except queue.Empty:
+                    continue
+                if item is SENTINEL:
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        finally:
             cancel_event.set()
 
     return StreamingResponse(
