@@ -146,9 +146,15 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     store.create_key(hash_key("bvt_other"), "other", owner_id="user-2")
     store.record_usage(hash_key("bvt_other"), 50, 40, project="other-app", source="api")
     assert client.get("/v1/stats", headers=headers).json()["total_calls"] == 1
-    monkeypatch.setenv("BREVITAS_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "user-2", "app_metadata": {}})
     assert client.get("/v1/admin/stats").status_code == 403
-    admin = client.get("/v1/admin/stats", headers={"X-Brevitas-Admin": "admin-secret"})
+    assert client.get("/v1/admin/stats", headers={
+        "X-Brevitas-Admin": "legacy-static-token"}).status_code == 403
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
+    admin = client.get("/v1/admin/stats", headers={
+        "Authorization": "Bearer " + "test-admin-session"})
     assert admin.status_code == 200
     assert admin.json()["total_calls"] == 2
 
@@ -189,13 +195,16 @@ def test_admin_financial_report_is_filtered_paginated_and_protected(tmp_path, mo
                        actual_cost_usd=.30, measured_savings_usd=.10,
                        verified_savings_usd=.08, brevitas_fee_usd=.008)
     monkeypatch.setattr(server, "_store", store)
-    monkeypatch.setenv("BREVITAS_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "regular-user", "app_metadata": {}})
     client = TestClient(server.app)
 
     assert client.get("/v1/admin/stats/breakdown").status_code == 403
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"role": "brevitas_admin"}})
     response = client.get(
         "/v1/admin/stats/breakdown?range=all&account=user-a&limit=1",
-        headers={"X-Brevitas-Admin": "admin-secret"},
+        headers={"Authorization": "Bearer " + "test-admin-session"},
     )
     assert response.status_code == 200
     report = response.json()
@@ -204,14 +213,22 @@ def test_admin_financial_report_is_filtered_paginated_and_protected(tmp_path, mo
     assert report["rows"][0]["actual_cost_usd"] == .14
     assert report["totals"]["total_actual_cost_usd"] == .14
     assert client.get("/v1/admin/stats/breakdown?range=365d",
-                      headers={"X-Brevitas-Admin": "admin-secret"}).status_code == 422
+                      headers={"Authorization": "Bearer " + "test-admin-session"}).status_code == 422
+    billing = client.get("/v1/admin/billing?range=all", headers={
+        "Authorization": "Bearer " + "test-admin-session"})
+    assert billing.status_code == 200
+    assert billing.json()["amount_owed_usd"] == .013
+    assert billing.json()["payment_status_tracked"] is False
+    assert {account["account_id"] for account in billing.json()["accounts"]} == {
+        "user-a", "user-b"}
 
 
 def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
     import api.server as server
 
     personal_key = "phx_" + "private"
-    monkeypatch.setenv("BREVITAS_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
     monkeypatch.setenv("POSTHOG_PROJECT_ID", "42")
     monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", personal_key)
     server._POSTHOG_CACHE.clear()
@@ -237,7 +254,7 @@ def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
     monkeypatch.setattr(server._requests, "post", post)
     response = TestClient(server.app).get(
         "/v1/admin/analytics?range=30d",
-        headers={"X-Brevitas-Admin": "admin-secret"},
+        headers={"Authorization": "Bearer " + "test-admin-session"},
     )
     assert response.status_code == 200
     assert response.json()["visitors"] == 80

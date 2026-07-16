@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 
 const num = value => Number(value || 0).toLocaleString()
 const usd = value => `$${Number(value || 0).toFixed(4)}`
+const billingUsd = value => `$${Number(value || 0).toFixed(2)}`
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${Math.round(seconds)}s`
 const ranges = ['7d', '30d', '90d', 'all']
 
@@ -30,12 +31,21 @@ export default function Admin({ accessToken, refreshTick }) {
   const [error, setError] = useState('')
   const [trafficError, setTrafficError] = useState('')
   const [offset, setOffset] = useState(0)
+  const [billingOpen, setBillingOpen] = useState(false)
+  const [billing, setBilling] = useState(null)
+  const [billingError, setBillingError] = useState('')
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ range, limit: '100', offset: String(offset) })
     Object.entries(filters).forEach(([key, value]) => { if (value.trim()) params.set(key, value.trim()) })
     return params.toString()
   }, [range, filters, offset])
+
+  const billingQuery = useMemo(() => {
+    const params = new URLSearchParams({ range })
+    Object.entries(filters).forEach(([key, value]) => { if (value.trim()) params.set(key, value.trim()) })
+    return params.toString()
+  }, [range, filters])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -56,6 +66,16 @@ export default function Admin({ accessToken, refreshTick }) {
     return () => controller.abort()
   }, [accessToken, range, refreshTick])
 
+  useEffect(() => {
+    if (!billingOpen) return undefined
+    const controller = new AbortController()
+    setBillingError('')
+    adminJson(`/v1/admin/billing?${billingQuery}`, accessToken, controller.signal)
+      .then(setBilling)
+      .catch(error => { if (error.name !== 'AbortError') setBillingError(error.message) })
+    return () => controller.abort()
+  }, [accessToken, billingOpen, billingQuery, refreshTick])
+
   const updateFilter = (key, value) => {
     setOffset(0)
     setFilters(current => ({ ...current, [key]: value }))
@@ -67,7 +87,7 @@ export default function Admin({ accessToken, refreshTick }) {
   const totals = data.totals || {}
   const page = data.pagination || { total: data.rows.length, limit: 100, offset: 0 }
 
-  return <div className="space-y-10" data-ph-sensitive>
+  return <div className="space-y-10 ph-no-capture" data-ph-sensitive>
     <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5">
       <div>
         <p className="annotation tracking-widest uppercase">Brevitas operations · restricted</p>
@@ -99,13 +119,41 @@ export default function Admin({ accessToken, refreshTick }) {
     </section>
 
     <section className="space-y-4">
-      <div><p className="annotation tracking-widest uppercase">Financial operations</p><h3 className="font-serif text-2xl mt-1">Customer spend and savings.</h3></div>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div><p className="annotation tracking-widest uppercase">Financial operations</p><h3 className="font-serif text-2xl mt-1">Customer spend and savings.</h3></div>
+        <button type="button" aria-expanded={billingOpen} onClick={() => setBillingOpen(open => !open)}
+          className="rounded-xl bg-brand-blue text-white px-4 py-2.5 text-sm font-medium">
+          {billingOpen ? 'Hide billing' : 'Billing · Amount owed'}
+        </button>
+      </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Actual customer spend" value={usd(totals.total_actual_cost_usd)} />
         <StatCard label="Baseline spend" value={usd(totals.total_baseline_cost_usd)} />
         <StatCard label="Verified savings" value={usd(totals.total_verified_savings_usd)} accent="text-brand-teal" />
         <StatCard label="Brevitas fees" value={usd(totals.total_brevitas_fee_usd)} accent="text-brand-blue" />
       </div>
+
+      {billingOpen && <div className="rounded-2xl border border-brand-blue/30 bg-brand-blue/5 p-5 space-y-5 ph-no-capture" data-ph-sensitive>
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+          <div>
+            <p className="annotation tracking-widest uppercase">Billing · restricted</p>
+            <h4 className="font-serif text-3xl mt-1 text-brand-navy dark:text-brand-dark-navy">Amount owed to Brevitas</h4>
+            <p className="text-sm text-brand-muted mt-2">Calculated from metered Brevitas fees for the selected period and filters. Payment and collection status are not yet tracked.</p>
+          </div>
+          <p className="font-serif text-4xl text-brand-blue">{billing ? billingUsd(billing.amount_owed_usd) : '—'}</p>
+        </div>
+        {billingError ? <p className="font-mono text-xs text-red-500">{billingError}</p> : !billing ? <p className="annotation">// loading billing…</p> :
+          <div className="overflow-x-auto rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
+            <table className="w-full min-w-[720px] text-left"><thead><tr>{['Account', 'Calls', 'Customer spend', 'Verified savings', 'Amount owed'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
+              <tbody>{billing.accounts.length ? billing.accounts.map(account => <tr key={account.account_id} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
+                <td className="font-mono text-xs px-4 py-3 ph-no-capture" data-ph-sensitive>{account.account_email || 'No email'}<br/><span className="text-brand-muted">{account.account_id}</span></td>
+                <td className="font-mono text-xs px-4 py-3">{num(account.calls)}</td>
+                <td className="font-mono text-xs px-4 py-3">{billingUsd(account.actual_spend_usd)}</td>
+                <td className="font-mono text-xs px-4 py-3 text-brand-teal">{billingUsd(account.verified_savings_usd)}</td>
+                <td className="font-mono text-xs px-4 py-3 text-brand-blue">{billingUsd(account.amount_owed_usd)}</td>
+              </tr>) : <tr><td colSpan="5" className="annotation px-4 py-5">No billable usage for these filters.</td></tr>}</tbody></table>
+          </div>}
+      </div>}
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
         {Object.keys(filters).map(key => <label key={key} className="annotation capitalize">{key}

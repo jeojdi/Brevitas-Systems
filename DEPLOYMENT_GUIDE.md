@@ -22,8 +22,8 @@ To grant Brevitas operators the cross-customer view, set this on their Supabase 
 { "brevitas_admin": true }
 ```
 
-under `app_metadata`. A server-only `BREVITAS_ADMIN_TOKEN` is also supported for internal
-automation.
+under `app_metadata`. There is intentionally no static header-token bypass; every Admin API
+request must carry a valid Supabase user session with this metadata.
 
 ## 2. Railway
 

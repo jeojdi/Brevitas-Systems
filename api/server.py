@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
-import hmac
 import json
 import logging
 import queue
@@ -538,10 +537,6 @@ def _dashboard_user(request: Request) -> str:
 
 
 def _admin_authenticated(request: Request) -> str:
-    configured = os.getenv("BREVITAS_ADMIN_TOKEN", "")
-    supplied = request.headers.get("x-brevitas-admin", "")
-    if configured and supplied and hmac.compare_digest(configured, supplied):
-        return "admin-token"
     identity = _dashboard_identity(request)
     metadata = identity.get("app_metadata") or {}
     if metadata.get("brevitas_admin") is True or metadata.get("role") == "brevitas_admin":
@@ -1527,6 +1522,57 @@ def admin_stats_breakdown(
     return {"rows": rows[offset:offset + limit], "totals": report["totals"],
             "pagination": {"total": len(rows), "limit": limit, "offset": offset},
             "range": range}
+
+
+@app.get("/v1/admin/billing")
+@limiter.limit("60/minute")
+def admin_billing(
+    request: Request,
+    range: str = Query("30d", pattern=r"^(7d|30d|90d|all)$"),
+    account: str = Query("", max_length=128),
+    project: str = Query("", max_length=128),
+    client: str = Query("", max_length=128),
+    provider: str = Query("", max_length=64),
+    model: str = Query("", max_length=128),
+    _: str = Depends(_admin_authenticated),
+):
+    logger.info("admin billing summary accessed actor=%s", _)
+    start = ""
+    if range != "all":
+        days = int(range[:-1])
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    filters = {"start": start, "owner_id": account, "project": project,
+               "client": client, "provider": provider, "model": model}
+    report = (_store.get_admin_report(filters) if hasattr(_store, "get_admin_report") else
+              {"rows": _store.get_admin_breakdown(), "totals": _store.get_admin_stats()})
+    accounts: dict[str, dict] = {}
+    for row in report["rows"]:
+        account_id = str(row.get("account_id") or "Unattributed")
+        bucket = accounts.setdefault(account_id, {
+            "account_id": account_id,
+            "account_email": row.get("account_email") or "",
+            "calls": 0,
+            "actual_spend_usd": 0.0,
+            "verified_savings_usd": 0.0,
+            "amount_owed_usd": 0.0,
+        })
+        bucket["calls"] += int(row.get("calls") or 0)
+        bucket["actual_spend_usd"] += float(row.get("actual_cost_usd") or 0)
+        bucket["verified_savings_usd"] += float(row.get("verified_savings_usd") or 0)
+        bucket["amount_owed_usd"] += float(row.get("brevitas_fee_usd") or 0)
+    for bucket in accounts.values():
+        for field in ("actual_spend_usd", "verified_savings_usd", "amount_owed_usd"):
+            bucket[field] = round(bucket[field], 8)
+    totals = report["totals"]
+    return {
+        "currency": "USD",
+        "amount_owed_usd": round(float(totals.get("total_brevitas_fee_usd") or 0), 8),
+        "basis": "metered_brevitas_fees",
+        "payment_status_tracked": False,
+        "accounts": sorted(accounts.values(),
+                           key=lambda item: (-item["amount_owed_usd"], item["account_id"])),
+        "range": range,
+    }
 
 
 @app.get("/v1/admin/analytics")

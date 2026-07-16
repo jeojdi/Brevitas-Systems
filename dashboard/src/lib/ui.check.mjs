@@ -19,6 +19,8 @@ test('admin UI combines protected PostHog and financial operations without secre
   const admin = await source('Admin')
   assert.match(admin, /\/v1\/admin\/analytics/)
   assert.match(admin, /\/v1\/admin\/stats\/breakdown/)
+  assert.match(admin, /\/v1\/admin\/billing/)
+  assert.match(admin, /Billing · Amount owed/)
   assert.match(admin, /data-ph-sensitive/)
   assert.doesNotMatch(admin, /POSTHOG_PERSONAL_API_KEY|X-Brevitas-Admin/)
 })
