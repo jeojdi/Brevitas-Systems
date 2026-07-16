@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 // One-line install commands for the bvx CLI, OS-tabbed with copy-to-clipboard.
 const COMMANDS = [
-  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login && bvx install ai' },
+  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login' },
   { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex' },
 ]
 

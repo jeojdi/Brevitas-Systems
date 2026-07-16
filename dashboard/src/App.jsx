@@ -13,6 +13,31 @@ import { capture, identify, resetAnalytics } from './lib/analytics.js'
 
 const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
+const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).get('preview') === 'dashboard'
+const PREVIEW_STATS = {
+  total_calls: 128,
+  total_tokens_saved: 84200,
+  total_optimized_tokens: 60300,
+  total_measured_savings_usd: 38.42,
+  total_verified_savings_usd: 31.68,
+  total_actual_tokens: 60300,
+  unpriced_calls: 2,
+  history: [
+    [1180, 690, 'agent-platform'], [1320, 710, 'agent-platform'],
+    [980, 520, 'support-bot'], [1540, 770, 'agent-platform'],
+    [1240, 810, 'research-pipeline'], [1710, 790, 'research-pipeline'],
+    [1080, 590, 'support-bot'], [1420, 680, 'agent-platform'],
+    [1880, 840, 'research-pipeline'], [1360, 720, 'agent-platform'],
+    [1120, 610, 'support-bot'], [1640, 760, 'research-pipeline'],
+  ].map(([baseline_tokens, optimized_tokens, project], index) => ({
+    timestamp: new Date(Date.UTC(2026, 6, 16, 12, index * 5)).toISOString(),
+    baseline_tokens,
+    optimized_tokens,
+    savings_pct: Number((((baseline_tokens - optimized_tokens) / baseline_tokens) * 100).toFixed(1)),
+    project,
+  })).reverse(),
+}
 
 function pendingDeviceCode() {
   const match = window.location.hash.match(/^#bvx=([A-Za-z0-9_-]{40,128})$/)
@@ -47,6 +72,44 @@ function SunIcon() {
   )
 }
 
+function DashboardPreview({ darkMode, onToggleDark }) {
+  return (
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
+      <div className="sticky top-0 z-50 px-2 sm:px-6 pt-2 sm:pt-5 pb-2 sm:pb-3">
+        <header className="bg-white dark:bg-brand-dark-surface rounded-xl sm:rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm max-w-7xl mx-auto overflow-hidden">
+          <div className="px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-3">
+            <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
+              <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto dark:hidden" />
+              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto hidden dark:block" />
+            </a>
+            <div className="flex items-center gap-2 sm:gap-4">
+              <span className="annotation flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> local preview
+              </span>
+              <button
+                onClick={onToggleDark}
+                className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
+                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              >
+                {darkMode ? <SunIcon /> : <MoonIcon />}
+              </button>
+            </div>
+          </div>
+          <nav className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3" aria-label="Dashboard preview section">
+            <span className="inline-flex min-h-11 items-center px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue">
+              Overview
+            </span>
+          </nav>
+        </header>
+      </div>
+      <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+        <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} />
+      </main>
+    </div>
+  )
+}
+
 export default function App() {
   const [session, setSession]     = useState(null)
   const [apiKey, setApiKey]       = useState('')
@@ -72,6 +135,7 @@ export default function App() {
 
   // Initialise Supabase session
   useEffect(() => {
+    if (PREVIEW_MODE) { setAuthLoading(false); return }
     if (supabaseMisconfigured) { setAuthLoading(false); return }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -128,6 +192,10 @@ export default function App() {
   const activateApiKey = async key => {
     setApiKey(key)
     try { await cacheApiKey(session.user.id, key) } catch { /* active for this session; next login self-heals */ }
+  }
+
+  if (PREVIEW_MODE) {
+    return <DashboardPreview darkMode={darkMode} onToggleDark={toggleDark} />
   }
 
   if (supabaseMisconfigured) {

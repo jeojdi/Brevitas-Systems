@@ -2,23 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats } from '../lib/api.js'
 import InstallCommand from './InstallCommand.jsx'
 import {
-  BarChart, Bar, Cell,
+  AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip,
-  Legend, ResponsiveContainer,
+  ResponsiveContainer,
 } from 'recharts'
 
 const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
-const REPO_COLORS = ['#4f5fc4', '#2d8a6e', '#d97706', '#be185d', '#7c3aed', '#0891b2']
-
-// Round up to a "nice" axis ceiling (1/2/5 × 10ⁿ) so the savings chart auto-scales:
-// small savings zoom in (a 5% bar is clearly visible), large savings expand toward 100%.
-function niceCeil(v) {
-  if (!(v > 0)) return 5
-  const pow = Math.pow(10, Math.floor(Math.log10(v)))
-  const n = v / pow
-  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10
-  return Math.min(100, step * pow)
-}
 
 function getTooltipStyle(dark) {
   return {
@@ -47,13 +36,18 @@ function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-d
   )
 }
 
-export default function Overview({ apiKey, darkMode, refreshTick }) {
-  const [stats, setStats]     = useState(null)
-  const [loading, setLoading] = useState(true)
+export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null }) {
+  const [stats, setStats]     = useState(previewStats)
+  const [loading, setLoading] = useState(!previewStats)
   const [error, setError]     = useState('')
   const controllerRef = useRef(null)
 
   const loadStats = useCallback(async () => {
+    if (previewStats) {
+      setStats(previewStats)
+      setLoading(false)
+      return
+    }
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
@@ -66,7 +60,7 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
     } finally {
       if (controllerRef.current === controller) setLoading(false)
     }
-  }, [apiKey])
+  }, [apiKey, previewStats])
 
   useEffect(() => {
     loadStats()
@@ -76,30 +70,47 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
   if (loading) return <p className="annotation pt-8">// loading…</p>
   if (error && !stats) return <div className="pt-8"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
 
-  const chartData = [...(stats?.history ?? [])]
+  const recentCalls = [...(stats?.history ?? [])]
     .reverse()
     .slice(-20)
-    .map((h, i) => ({
-      call: i + 1,
-      savings:   Number(Number(h.savings_pct || 0).toFixed(1)),
-      baseline:  h.baseline_tokens,
-      optimized: h.optimized_tokens,
-      repo:       h.repo || h.project || 'Unattributed',
-    }))
+    .map((h, i) => {
+      const baseline = Math.max(0, Number(h.baseline_tokens) || 0)
+      const notSaved = Math.max(0, Number(h.optimized_tokens) || 0)
+      const saved = Math.max(0, baseline - notSaved)
 
-  const repos = [...new Set(chartData.map(row => row.repo))]
-  const repoColors = Object.fromEntries(repos.map((repo, index) => [repo, REPO_COLORS[index % REPO_COLORS.length]]))
+      return {
+        call: i + 1,
+        saved,
+        notSaved,
+        repo: h.repo || h.project || 'Unattributed',
+      }
+    })
 
-  // Auto-scale the savings axis to the data (with headroom) so bars track their value
-  // instead of vanishing at the bottom of a fixed 0–100% axis.
-  const maxSaving = chartData.reduce((m, row) => Math.max(m, row.savings), 0)
-  const savingsYMax = niceCeil(maxSaving * 1.1)
+  const recentSaved = recentCalls.reduce((total, row) => total + row.saved, 0)
+  const recentNotSaved = recentCalls.reduce((total, row) => total + row.notSaved, 0)
+  const savedBeforeRange = Math.max(0, Number(stats?.total_tokens_saved || 0) - recentSaved)
+  const notSavedBeforeRange = Math.max(0, Number(stats?.total_optimized_tokens || 0) - recentNotSaved)
+  const chartData = recentCalls.reduce((rows, row) => {
+    const previous = rows.at(-1)
+    rows.push({
+      ...row,
+      totalSaved: (previous?.totalSaved ?? savedBeforeRange) + row.saved,
+      totalNotSaved: (previous?.totalNotSaved ?? notSavedBeforeRange) + row.notSaved,
+    })
+    return rows
+  }, [])
+  const chartTotals = chartData.at(-1)
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
-  const labelColor   = darkMode ? '#2e3860' : '#c4c8e2'
-  const baselineFill = darkMode ? '#1c2440' : '#e2e4f0'
+  const savedColor   = '#4f5fc4'
+  const notSavedColor = darkMode ? '#737373' : '#9ca3af'
+  const pointRingColor = darkMode ? '#141414' : '#ffffff'
   const tooltipStyle = getTooltipStyle(darkMode)
+  const tooltipLabel = (call, payload) => {
+    const repo = payload?.[0]?.payload?.repo
+    return `Call #${call}${repo ? ` · ${repo}` : ''}`
+  }
 
   return (
     <div className="space-y-12">
@@ -150,77 +161,86 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
           </p>
         </div>
       ) : (
-        <>
-          {/* ── Savings chart ── */}
-          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8">
-            <p className="annotation tracking-widest uppercase mb-1">Savings %</p>
-            <p className="font-serif text-xl text-brand-navy dark:text-brand-dark-navy mb-6">
-              last {chartData.length} calls
-            </p>
-            <div className="flex flex-wrap gap-x-5 gap-y-2 mb-4">
-              {repos.map(repo => (
-                <span key={repo} className="annotation flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: repoColors[repo] }} />
-                  {repo}
-                </span>
-              ))}
+        <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8 overflow-hidden">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-6">
+            <div>
+              <p className="annotation tracking-widest uppercase mb-1">Total token outcome</p>
+              <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
+                running total <em className="italic text-brand-blue">saved</em> vs not saved
+              </p>
+              <p className="annotation mt-2">// cumulative totals through the last {chartData.length} calls</p>
             </div>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 16 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-                <XAxis
-                  dataKey="call"
-                  tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                  label={{ value: 'call #', position: 'insideBottom', offset: -10, fill: labelColor, fontSize: 10, fontFamily: 'JetBrains Mono' }}
-                />
-                <YAxis
-                  domain={[0, savingsYMax]}
-                  allowDecimals={false}
-                  tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                  tickFormatter={v => `${v}%`}
-                />
-                <Tooltip
-                  {...tooltipStyle}
-                  formatter={(value, _name, { payload }) => [`${value}%`, payload.repo]}
-                />
-                <Bar
-                  dataKey="savings"
-                  name="savings"
-                  radius={[4, 4, 0, 0]}
-                >
-                  {chartData.map((row, index) => <Cell key={index} fill={repoColors[row.repo]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div className="grid grid-cols-2 gap-2 sm:gap-3 min-w-0 sm:min-w-[320px]">
+              <div className="rounded-xl border border-brand-blue/20 bg-brand-blue/5 dark:bg-brand-dark-blue-dim/40 px-4 py-3">
+                <p className="annotation flex items-center gap-2">
+                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> saved
+                </p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(chartTotals.totalSaved)}</p>
+              </div>
+              <div className="rounded-xl border border-neutral-300/50 dark:border-neutral-700/50 bg-neutral-100/60 dark:bg-neutral-800/30 px-4 py-3">
+                <p className="annotation flex items-center gap-2">
+                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: notSavedColor }} /> not saved
+                </p>
+                <p className="font-mono text-xl sm:text-2xl text-neutral-500 dark:text-neutral-400 tabular-nums mt-1">{fmt(chartTotals.totalNotSaved)}</p>
+              </div>
+            </div>
           </div>
-
-          {/* ── Token comparison chart ── */}
-          <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8">
-            <p className="annotation tracking-widest uppercase mb-1">Token footprint</p>
-            <p className="font-serif text-xl text-brand-navy dark:text-brand-dark-navy mb-6">
-              baseline <em className="italic text-brand-blue">vs</em> optimized
-            </p>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartData} barGap={2} margin={{ top: 4, right: 4, left: 0, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+          <div role="img" aria-label="Layered area chart comparing cumulative tokens saved and not saved">
+            <ResponsiveContainer width="100%" height={320}>
+              <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 0, bottom: 4 }}>
+                <defs>
+                  <linearGradient id="savedArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
+                    <stop offset="100%" stopColor={savedColor} stopOpacity={0.03} />
+                  </linearGradient>
+                  <linearGradient id="notSavedArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={notSavedColor} stopOpacity={0.24} />
+                    <stop offset="100%" stopColor={notSavedColor} stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
                 <XAxis
                   dataKey="call"
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                  tickLine={false}
+                  axisLine={false}
                 />
                 <YAxis
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={fmt}
+                  tickLine={false}
+                  axisLine={false}
+                  width={46}
                 />
-                <Tooltip {...tooltipStyle} />
-                <Legend
-                  wrapperStyle={{ fontSize: 11, color: tickColor, fontFamily: 'JetBrains Mono' }}
+                <Tooltip
+                  {...tooltipStyle}
+                  labelFormatter={tooltipLabel}
+                  formatter={(value, name) => [`${Number(value).toLocaleString()} tokens`, name]}
                 />
-                <Bar dataKey="baseline"  name="baseline"  fill={baselineFill} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="optimized" name="optimized" fill="#4f5fc4"      radius={[4, 4, 0, 0]} />
-              </BarChart>
+                <Area
+                  type="monotone"
+                  dataKey="totalNotSaved"
+                  name="Not saved total"
+                  stroke={notSavedColor}
+                  fill="url(#notSavedArea)"
+                  strokeWidth={2}
+                  dot={{ r: 5, fill: notSavedColor, stroke: pointRingColor, strokeWidth: 2 }}
+                  activeDot={{ r: 7, stroke: pointRingColor, strokeWidth: 2.5 }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="totalSaved"
+                  name="Saved total"
+                  stroke={savedColor}
+                  fill="url(#savedArea)"
+                  strokeWidth={3}
+                  dot={{ r: 5.5, fill: savedColor, stroke: pointRingColor, strokeWidth: 2 }}
+                  activeDot={{ r: 7.5, stroke: pointRingColor, strokeWidth: 2.5 }}
+                />
+              </AreaChart>
             </ResponsiveContainer>
           </div>
-        </>
+        </div>
       )}
     </div>
   )

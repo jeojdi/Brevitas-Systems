@@ -15,6 +15,32 @@ test('dashboard navigation is separated and exposes its active section', async (
   assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
 })
 
+test('overview uses a cumulative saved and not-saved area chart', async () => {
+  const overview = await source('Overview')
+  assert.match(overview, /AreaChart, Area/)
+  assert.match(overview, /dataKey="totalSaved"/)
+  assert.match(overview, /dataKey="totalNotSaved"/)
+  assert.match(overview, /fill="url\(#savedArea\)"/)
+  assert.match(overview, /fill="url\(#notSavedArea\)"/)
+  assert.equal((overview.match(/type="monotone"/g) || []).length, 2)
+  assert.match(overview, /dot=\{\{ r: 5,/)
+  assert.match(overview, /dot=\{\{ r: 5\.5,/)
+  assert.match(overview, /savedBeforeRange/)
+  assert.match(overview, /notSavedBeforeRange/)
+  assert.match(overview, /const savedColor\s*=\s*'#4f5fc4'/)
+  assert.match(overview, /const notSavedColor\s*=\s*darkMode \? '#737373' : '#9ca3af'/)
+  assert.doesNotMatch(overview, /BarChart|LineChart|<Bar\b|<Line\b/)
+})
+
+test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
+  const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /\['localhost', '127\.0\.0\.1'\]\.includes\(window\.location\.hostname\)/)
+  assert.match(app, /get\('preview'\) === 'dashboard'/)
+  assert.match(app, /previewStats=\{PREVIEW_STATS\}/)
+  assert.match(app, /if \(PREVIEW_MODE\) \{\s*return <DashboardPreview/)
+  assert.match(app, /if \(!session\) \{\s*return <Auth/)
+})
+
 test('admin UI combines protected PostHog and financial operations without secrets', async () => {
   const admin = await source('Admin')
   assert.match(admin, /\/v1\/admin\/analytics/)
