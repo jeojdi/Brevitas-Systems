@@ -246,7 +246,9 @@ def test_retrieval_reports_metadata():
         "reason": "retrieved",
     }
 
-    with patch.object(client, "_route_client") as mock_route, patch(
+    with patch.dict("os.environ", {"BREVITAS_RETRIEVAL_ENABLED": "1"}), patch.object(
+        client, "_route_client"
+    ) as mock_route, patch(
         "token_efficiency_model.lossless.engine.retrieval_select",
         return_value=mock_retrieval_result,
     ):

@@ -1,14 +1,19 @@
-"""Shared lossless optimization engine — used by the SDK wrapper, the drop-in client, and
+"""Shared request optimization engine — used by the SDK wrapper, drop-in client, and
 the proxy so the router + caching + retrieval logic lives in ONE place.
 
 optimize_request(): given a chat request body, asks the router whether to cache_only, retrieve,
-or passthrough for this call, applies the chosen LOSSLESS strategy in-place, and returns the
+or passthrough for this call, applies the chosen strategy in-place, and returns the
 decision. record_usage(): computes honest savings from the provider response and feeds the
 real cache-hit rate back to the router so it adapts per provider/session.
+
+Caching is byte-preserving. Retrieval is context-reducing and can change model behavior, so
+automatic retrieval is disabled unless ``BREVITAS_RETRIEVAL_ENABLED=1``. The explicit retrieval
+API remains available for paired workload evaluation.
 """
 
 from __future__ import annotations
 
+import os
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,8 +25,8 @@ from .router import BrevitasRouter
 # messages is APPEND-ONLY. Once a chunk has been sent to the provider it stays sent, in
 # first-seen order, so the retrieved prefix is byte-identical turn-over-turn and the
 # provider prefix cache HITS it — retrieval then composes with caching instead of
-# busting it (the token-savings-≠-dollar-savings root cause). Strictly lossless vs pure
-# per-turn retrieval: we only ever ADD context, never drop what retrieval already chose.
+# busting it (the token-savings-≠-dollar-savings root cause). Relative to per-turn retrieval,
+# the accumulator only ADDS context; it never drops a block retrieval already chose.
 _RETRIEVED_MAX_SESSIONS = 1024
 _RETRIEVED_MAX_CHUNKS = 256    # per-session cap; past it, fail safe to full context
 _retrieved_blocks: "OrderedDict[str, List[str]]" = OrderedDict()
@@ -36,6 +41,12 @@ _B9_MAX_PIPES = 1024
 _B9_MIN_POST = 3
 _B9_MARGIN = 0.05
 _b9_pipes: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _retrieval_enabled() -> bool:
+    return os.environ.get("BREVITAS_RETRIEVAL_ENABLED", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def _b9_state(pipeline: str) -> dict:
@@ -136,7 +147,16 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     decision = router.decide(session_id, stable, query)
 
     strategy = decision.strategy
-    if strategy == "retrieve":
+    if strategy == "retrieve" and not _retrieval_enabled():
+        strategy = "cache_only"
+        router.note_strategy(session_id, "cache_only")
+        meta = {
+            "strategy": "cache_only",
+            "reason": "retrieval_opt_in_required",
+            "router_recommendation": "retrieve",
+            "quality_status": "byte_preserving",
+        }
+    elif strategy == "retrieve":
         # reduce the prior context to the relevant chunks (fail-safe to full inside)
         sel = retrieval_select(query[:200], stable, k=8, use_adaptive=True)
         if not sel["fallback_applied"] and sel.get("baseline_tokens", 0) > 0:
@@ -152,8 +172,8 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             acc = _accumulate_retrieved(session_id, list(sel["selected_context"]))
         if acc and len(acc) <= _RETRIEVED_MAX_CHUNKS:
             # (an unbounded append-only set eventually re-approaches full context AND
-            # dropping accumulated chunks would bust the prefix — past the cap the only
-            # lossless move is to stop pruning and send everything: cache_only)
+            # dropping accumulated chunks would bust the prefix — past the cap the safest
+            # move is to stop pruning and send everything: cache_only)
             keep = set(acc)
             # Build new message list: keep all assistant/tool turns; prune user/context text
             new_msgs = []
@@ -178,11 +198,19 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             meta = {"strategy": "retrieve", "reason": decision.reason,
                     "kept": len(new_msgs), "of": len(messages),
                     "baseline_tokens": sel["baseline_tokens"],
-                    "optimized_tokens": sel["optimized_tokens"]}
+                    "optimized_tokens": sel["optimized_tokens"],
+                    "retrieval_method": sel.get("method"),
+                    "bridge_expansions": sel.get("bridge_expansions", 0),
+                    "quality_status": "experimental_unverified"}
         else:
             strategy = "cache_only"  # retrieval bailed -> safe fall-through to caching
             router.note_strategy(session_id, "cache_only")  # full context actually sent
-            meta = None
+            meta = {
+                "strategy": "cache_only",
+                "reason": f"retrieval_fallback:{sel.get('reason', 'unknown')}",
+                "retrieval_method": sel.get("method"),
+                "quality_status": "byte_preserving",
+            }
     else:
         meta = None
     if meta is None:

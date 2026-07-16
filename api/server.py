@@ -830,7 +830,7 @@ class CompressRequest(BaseModel):
     complexity:        float     = Field(default=0.5, ge=0.0, le=1.0)
     urgency:           float     = Field(default=0.5, ge=0.0, le=1.0)
     compression_level: int       = Field(default=2, ge=1, le=3)
-    prune_budget:      int       = Field(default=5, ge=1, le=50)
+    prune_budget:      int       = Field(default=8, ge=1, le=50)
     lossy:             bool       = Field(default=True)   # compress the volatile last message (LLMLingua-2)
     delta_mode:        str       = Field(default="off", pattern="^(off|on)$")
     wire_mode:         str       = Field(default="json", pattern="^(json|msgpack)$")
@@ -851,9 +851,10 @@ class CompressRequest(BaseModel):
 @app.post("/v1/compress")
 @limiter.limit("60/minute")
 def compress(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
-    """Lossless context reduction (Lever 4 retrieval) with accuracy-first fail-safe.
+    """Context reduction (Lever 4 retrieval) with an accuracy-first fail-safe.
 
-    Messages pass through unchanged (the volatile content is never lossily rewritten);
+    Retrieval can omit evidence and is therefore experimental, not lossless. Messages pass
+    through unchanged when ``lossy=false``;
     prior_context is reduced to the chunks relevant to `task`. If retrieval is unavailable
     or low-confidence, the FULL context is returned. Savings use the real tokenizer; no
     quality proxy is recorded.
@@ -901,7 +902,7 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
 class RetrievalCompressRequest(BaseModel):
     task:              str       = Field(default="", max_length=2000)
     prior_context:     List[str] = Field(default=[], max_length=500)
-    k:                 int       = Field(default=5, ge=1, le=50)
+    k:                 int       = Field(default=8, ge=1, le=50)
     min_top_score:     float     = Field(default=0.2, ge=0.0, le=1.0)
 
 
@@ -958,9 +959,12 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
 @limiter.limit("60/minute")
 def compress_retrieval(request: Request, body: RetrievalCompressRequest,
                        kh: str = Depends(_authenticated)):
-    """Lossless-lever path: reduce prior_context to the chunks relevant to `task` using
-    dense retrieval (Lever 4 — DPR/ColBERTv2 family), with an accuracy-first fail-safe to
-    full context. Savings are measured with the real tokenizer; no quality proxy."""
+    """Experimental context reduction using hybrid dense+sparse multi-hop retrieval.
+
+    The path fails safe to full context on empty, broad, low-confidence, or negligible-savings
+    queries. It can still omit evidence, so token savings are unverified until the customer's
+    paired workload clears a quality gate. Savings use the real tokenizer; no score is invented.
+    """
     from token_efficiency_model.lossless.api_adapter import retrieval_select
 
     out = retrieval_select(body.task, body.prior_context, k=body.k,

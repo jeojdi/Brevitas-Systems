@@ -1,6 +1,6 @@
 """Cache-stable retrieval layout (brief b1): the retrieved context set is append-only
 per session, so its prefix is byte-identical across turns and composes with provider
-prefix caching. Strictly lossless vs per-turn retrieval (only adds, never drops)."""
+prefix caching. It only adds to what per-turn retrieval selected; retrieval itself is lossy."""
 from __future__ import annotations
 
 import pytest
@@ -51,6 +51,7 @@ def test_engine_retrieve_keeps_previously_sent_context(monkeypatch):
                 "fallback_applied": False, "reason": "retrieved"}
 
     monkeypatch.setattr(eng, "retrieval_select", fake_select)
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
     router = BrevitasRouter(provider="deepseek", retrieve_keep_frac=0.3, epsilon=0.0)
 
     def turn(q):
@@ -70,6 +71,25 @@ def test_engine_retrieve_keeps_previously_sent_context(monkeypatch):
     assert docA in users1
     # turn 2 picked docB, but docA (sent on turn 1) is RETAINED — append-only
     assert docA in users2 and docB in users2, "previously-sent context must persist"
+
+
+def test_engine_requires_explicit_retrieval_opt_in(monkeypatch):
+    body = {
+        "messages": [
+            {"role": "user", "content": " ".join(["context"] * 1500)},
+            {"role": "user", "content": "What matters?"},
+        ]
+    }
+    router = BrevitasRouter(provider="deepseek", epsilon=0.0)
+    monkeypatch.setattr(router, "decide", lambda *a, **k: _retrieve_decision())
+    monkeypatch.delenv("BREVITAS_RETRIEVAL_ENABLED", raising=False)
+
+    original = list(body["messages"])
+    meta = eng.optimize_request(body, "deepseek", router, "opt-in")
+
+    assert meta["strategy"] == "cache_only"
+    assert meta["reason"] == "retrieval_opt_in_required"
+    assert body["messages"] == original
 
 
 def _retrieve_decision():

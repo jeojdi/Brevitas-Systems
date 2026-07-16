@@ -90,6 +90,7 @@ def test_engine_marks_anthropic_on_retrieve_path(monkeypatch):
                 "savings_pct": 60.0, "fallback_applied": False, "reason": "retrieved"}
 
     monkeypatch.setattr(eng, "retrieval_select", fake_select)
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
     body = {"model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": ctx1},
                          {"role": "assistant", "content": "noted"},

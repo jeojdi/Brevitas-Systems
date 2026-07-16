@@ -352,9 +352,10 @@ def init(path: str, do_apply: bool, use_ai: bool) -> None:
         else:
             _print("[dim]Skipped. Re-run with --apply when ready.[/dim]")
 
-    _print("\n[bold green]Savings start on your very next call[/bold green] — caching, "
-           "retrieval and routing are automatic and fail-safe (worst case: your request "
-           "passes through untouched). Check [yellow]brevitas status[/yellow] for numbers.\n")
+    _print("\n[bold green]Savings start on your very next call[/bold green] — byte-preserving "
+           "caching is automatic. Context-reducing retrieval stays off unless you explicitly "
+           "enable it after a paired quality test. Check [yellow]brevitas status[/yellow] "
+           "for numbers.\n")
 
 
 if __name__ == "__main__":

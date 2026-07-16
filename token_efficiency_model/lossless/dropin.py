@@ -1,4 +1,4 @@
-"""Drop-in middleware wrapper for lossless token savings across OpenAI/Anthropic/DeepSeek.
+"""Drop-in token-savings middleware for OpenAI, Anthropic, and DeepSeek.
 
 USAGE (3-line):
   from token_efficiency_model.lossless.dropin import BrevitasDropIn
@@ -46,10 +46,12 @@ class SavingsReport:
 class BrevitasDropIn:
     """Drop-in middleware for OpenAI/Anthropic/DeepSeek chat APIs.
 
-    Wraps a base_url + api_key and applies lossless token savings:
+    Wraps a base_url + API key and applies token savings:
     - Provider-native caching (Anthropic breakpoints, OpenAI/DeepSeek prefix cache)
-    - Optional retrieval-based context reduction (fail-safe to full context)
+    - Experimental retrieval-based context reduction when explicitly enabled
     - Honest savings computation from real usage
+
+    Caching is byte-preserving. Retrieval can omit evidence and is not described as lossless.
     """
 
     def __init__(
@@ -129,11 +131,11 @@ class BrevitasDropIn:
         session_id: str = "default",
         **kwargs: Any,
     ) -> Tuple[Any, SavingsReport]:
-        """Call the provider's chat API with lossless token savings applied AUTOMATICALLY.
+        """Call the provider's chat API with token savings applied automatically.
 
-        The built-in router decides per call whether to lean on provider caching (cache_only)
-        or reduce context via retrieval, based on whether your context repeats and the
-        provider's real (observed) cache-hit rate. All lossless; fails safe to full context.
+        The built-in router uses byte-preserving provider caching by default. It may reduce
+        context via retrieval only when ``BREVITAS_RETRIEVAL_ENABLED=1``; that path is
+        experimental and should be enabled after a paired workload quality test.
 
         Args:
             messages: Chat messages (standard OpenAI/Anthropic format).
@@ -172,7 +174,7 @@ class BrevitasDropIn:
                 body["system"] = "\n\n".join([*sys_texts, *existing]) if existing else "\n\n".join(sys_texts)
                 body["messages"] = rest
 
-        # Router-driven, automatic, lossless optimization (cache_only | retrieve | passthrough)
+        # Router-driven optimization (byte-preserving by default; retrieval is explicit opt-in).
         decision = optimize_request(body, provider, self._router, session_id)
 
         if provider == "anthropic":

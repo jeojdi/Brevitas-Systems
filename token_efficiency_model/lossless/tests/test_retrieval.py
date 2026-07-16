@@ -6,13 +6,17 @@ import numpy as np
 
 from token_efficiency_model.lossless.retrieval import (
     AdaptiveRetrievalConfig,
+    BM25Retriever,
     DenseRetriever,
     MaxSimReranker,
+    QualityFirstRetrievalConfig,
     RetrievalConfig,
     ResidualCompressor,
     fetch_adaptive,
     fetch_for_hop,
+    fetch_quality_first,
     maxsim,
+    reciprocal_rank_fusion,
 )
 
 
@@ -64,6 +68,77 @@ def test_save_load_roundtrip(tmp_path):
     r2 = DenseRetriever(enc)
     r2.load(p)
     assert r2.retrieve("mtu balancer", k=1)[0][1] == "timeout mtu balancer"
+
+
+def test_bm25_recovers_exact_identifier():
+    retriever = BM25Retriever()
+    retriever.index([
+        "General network troubleshooting and timeout guidance",
+        "Incident INC-4821 was caused by an MTU-1420 mismatch",
+        "Database connection pooling recommendations",
+    ])
+    hits = retriever.retrieve("What caused INC-4821?", k=2)
+    assert hits[0][0] == 1
+
+
+def test_rrf_rewards_agreement_between_rankers():
+    first = [(0, "dense only", 0.9), (1, "agreed", 0.8)]
+    second = [(1, "agreed", 8.0), (2, "sparse only", 7.0)]
+    fused = reciprocal_rank_fusion([first, second])
+    assert fused[0][0] == 1
+
+
+def test_quality_first_retrieval_protects_explicit_second_hop():
+    context = [
+        "Vermont soccer. The team competes in the America East Conference.",
+        "Soccer archive. A team conference was formerly known by another name.",
+        "Vermont athletics. Conference soccer team history and records.",
+        "America East Conference. It was the North Atlantic Conference from 1988 to 1996.",
+    ]
+
+    class FixedDense:
+        def retrieve(self, query, k):
+            order = [0, 1, 2, 3]
+            return [(i, context[i], 0.9 - i * 0.1) for i in order[:k]]
+
+    chosen, meta = fetch_quality_first(
+        FixedDense(),
+        "The Vermont soccer team competes in a conference formerly known as what?",
+        context,
+        QualityFirstRetrievalConfig(max_k=2, min_k=2, bridge_seed_k=1),
+    )
+    assert context[0] in chosen
+    assert context[3] in chosen
+    assert meta["bridge_expansions"] == 1
+    assert meta["method"] == "hybrid_rrf_bridge"
+
+
+def test_bridge_cap_counts_replacements_not_already_selected_links():
+    context = [
+        "Seed Passage. See Already Selected Alpha, Already Selected Beta, and Needed.",
+        "Already Selected Alpha. Existing evidence.",
+        "Already Selected Beta. Existing evidence.",
+        "Unrelated Decoy. Background material.",
+        "Needed. The decisive second-hop evidence.",
+    ]
+
+    class FixedDense:
+        def retrieve(self, query, k):
+            return [(i, context[i], 0.9 - i * 0.1) for i in range(min(k, len(context)))]
+
+    chosen, meta = fetch_quality_first(
+        FixedDense(),
+        "What did the seed passage establish?",
+        context,
+        QualityFirstRetrievalConfig(
+            max_k=4,
+            min_k=4,
+            bridge_seed_k=1,
+            max_bridge_expansions=1,
+        ),
+    )
+    assert context[4] in chosen
+    assert meta["bridge_expansions"] == 1
 
 
 def test_low_confidence_falls_back_to_full():

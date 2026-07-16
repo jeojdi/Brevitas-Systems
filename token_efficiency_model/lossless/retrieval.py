@@ -1,6 +1,6 @@
 """Lever 4 — retrieval instead of context-stuffing.
 
-Faithful implementations of two published retrievers, plus a Brevitas fetch wrapper:
+Retrieval primitives used by Brevitas, plus an accuracy-first fetch wrapper:
 
 1. DPR dual-encoder dense retrieval  (Karpukhin et al., EMNLP 2020, arXiv:2004.04906)
    sim(q, p) = E_Q(q) · E_P(p)  (inner product); top-k by maximum inner product.
@@ -11,6 +11,13 @@ Faithful implementations of two published retrievers, plus a Brevitas fetch wrap
    Residual compression: cluster token embeddings to centroids; store
    (centroid_id + quantized residual) instead of full float vectors (6–10× smaller).
 
+3. BM25 sparse retrieval + Reciprocal Rank Fusion (Cormack et al., SIGIR 2009),
+   which recovers exact names, identifiers, and dates that a small dense encoder can miss.
+
+4. A bounded second evidence hop.  When a highly ranked passage explicitly references the
+   title of another available passage, that linked passage is protected in the final set.  This
+   is a deterministic, no-extra-LLM approximation of iterative multi-hop retrieval.
+
 The encoder is injected (any object exposing `.encode(list[str], normalize_embeddings=bool)`),
 so tests can use a deterministic local encoder and the benchmark a real sentence-transformer.
 
@@ -20,11 +27,13 @@ hop, but FAILS SAFE to the full context if the index is empty or retrieval confi
 
 from __future__ import annotations
 
+import html
 import json
-import os
+import math
 import re
-from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from collections import Counter
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -79,7 +88,106 @@ class DenseRetriever:
 
 
 # --------------------------------------------------------------------------- #
-# 2. ColBERTv2 — MaxSim late interaction + residual compression
+# 2. BM25 sparse retrieval + rank fusion
+# --------------------------------------------------------------------------- #
+_LEXICAL_TOKEN = re.compile(r"[a-z0-9]+")
+_LEXICAL_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "both", "by",
+    "did", "do", "does", "during", "for", "from", "had", "has", "have", "how",
+    "i", "in", "into", "is", "it", "its", "of", "on", "or", "that", "the",
+    "their", "this", "to", "was", "were", "what", "when", "where", "which",
+    "who", "whom", "why", "with",
+})
+
+
+def _lexical_tokens(text: str, *, drop_stopwords: bool = False) -> List[str]:
+    tokens = _LEXICAL_TOKEN.findall((text or "").casefold())
+    if drop_stopwords:
+        return [token for token in tokens if token not in _LEXICAL_STOPWORDS]
+    return tokens
+
+
+class BM25Retriever:
+    """Small in-process BM25 retriever for the per-request context collection.
+
+    Brevitas normally ranks tens or hundreds of already supplied context blocks, so a local
+    index avoids another service and lets exact lexical evidence complement dense semantics.
+    The scoring equation is Robertson BM25 with the common ``k1=1.2, b=0.75`` defaults.
+    """
+
+    def __init__(self, k1: float = 1.2, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self._chunks: List[str] = []
+        self._ids: List = []
+        self._tokens: List[List[str]] = []
+        self._doc_freq: Counter = Counter()
+        self._avg_len = 0.0
+
+    def index(self, chunks: Sequence[str], ids: Optional[Sequence] = None) -> None:
+        self._chunks = list(chunks)
+        self._ids = list(ids) if ids is not None else list(range(len(self._chunks)))
+        self._tokens = [_lexical_tokens(chunk) for chunk in self._chunks]
+        self._doc_freq = Counter(token for tokens in self._tokens for token in set(tokens))
+        self._avg_len = (
+            sum(len(tokens) for tokens in self._tokens) / len(self._tokens)
+            if self._tokens else 0.0
+        )
+
+    def retrieve(self, query: str, k: int = 5) -> List[Tuple[object, str, float]]:
+        if not self._chunks or k <= 0:
+            return []
+        query_tokens = _lexical_tokens(query, drop_stopwords=True)
+        if not query_tokens:
+            return []
+        n_docs = len(self._chunks)
+        scores = np.zeros(n_docs, dtype=np.float32)
+        avg_len = max(1.0, self._avg_len)
+        for i, doc_tokens in enumerate(self._tokens):
+            counts = Counter(doc_tokens)
+            length_norm = 1.0 - self.b + self.b * len(doc_tokens) / avg_len
+            score = 0.0
+            for token in query_tokens:
+                frequency = counts[token]
+                if frequency == 0:
+                    continue
+                doc_frequency = self._doc_freq[token]
+                inverse_doc_frequency = math.log(
+                    1.0 + (n_docs - doc_frequency + 0.5) / (doc_frequency + 0.5)
+                )
+                score += inverse_doc_frequency * (
+                    frequency * (self.k1 + 1.0)
+                ) / (frequency + self.k1 * length_norm)
+            scores[i] = score
+        limit = min(k, n_docs)
+        # Stable full sort is intentional: context collections are small, and deterministic
+        # ties matter for reproducible quality experiments.
+        ranked = np.argsort(-scores, kind="stable")[:limit]
+        return [(self._ids[i], self._chunks[i], float(scores[i])) for i in ranked]
+
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[Tuple[object, str, float]]],
+    rank_constant: int = 60,
+) -> List[Tuple[object, str, float]]:
+    """Fuse heterogeneous rankings without pretending their raw scores are comparable."""
+    scores: Dict[object, float] = {}
+    chunks: Dict[object, str] = {}
+    first_seen: Dict[object, int] = {}
+    seen_counter = 0
+    for ranking in rankings:
+        for rank, (chunk_id, chunk, _score) in enumerate(ranking, start=1):
+            if chunk_id not in first_seen:
+                first_seen[chunk_id] = seen_counter
+                seen_counter += 1
+            chunks[chunk_id] = chunk
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (rank_constant + rank)
+    ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], first_seen[chunk_id]))
+    return [(chunk_id, chunks[chunk_id], scores[chunk_id]) for chunk_id in ordered_ids]
+
+
+# --------------------------------------------------------------------------- #
+# 3. ColBERTv2 — MaxSim late interaction + residual compression
 # --------------------------------------------------------------------------- #
 def maxsim(query_tokens: np.ndarray, doc_tokens: np.ndarray) -> float:
     """ColBERTv2 late interaction: S = Σ_i max_j (q_i · d_j)."""
@@ -162,11 +270,11 @@ class ResidualCompressor:
 # 3. ColBERTv2 MaxSim reranker — late-interaction top-N to final-k pruning
 # --------------------------------------------------------------------------- #
 class MaxSimReranker:
-    """Rerank top-N DPR results using ColBERTv2 late-interaction MaxSim.
+    """Rerank top-N DPR results using a sentence-level MaxSim heuristic.
 
-    Treats passage text as sentences (sentence-level late-interaction approximation).
-    This is a faithful approximation of ColBERTv2's per-token MaxSim using a
-    sentence-transformer that operates at sentence granularity.
+    This is not a trained ColBERTv2 reranker: the injected sentence encoder does not expose
+    contextual token embeddings.  The operator remains useful for experiments and backwards
+    compatibility, but production quality-first retrieval uses dense+sparse fusion below.
     """
 
     def __init__(self, encoder, normalize: bool = True):
@@ -241,6 +349,221 @@ class RetrievalConfig:
     k: int = 5
     min_top_score: float = 0.2      # below this, retrieval is "unsure" -> use full context
     fallback_to_full: bool = True
+
+
+@dataclass
+class QualityFirstRetrievalConfig:
+    """Conservative hybrid retrieval configuration.
+
+    ``min_k`` is the caller's evidence budget.  The bridge hop may replace a low-ranked
+    passage but never reduces that budget.  Retrieval remains context-reducing—not lossless—
+    so callers should keep it opt-in until their own paired workload clears a quality gate.
+    """
+
+    max_k: int = 10
+    min_k: int = 8
+    min_top_score: float = 0.2
+    fallback_to_full: bool = True
+    rank_constant: int = 60
+    candidate_multiplier: int = 4
+    bridge_seed_k: int = 3
+    max_bridge_expansions: int = 2
+
+
+def _passage_title(text: str) -> str:
+    """Extract a conservative title prefix used only for exact cross-passage links."""
+    first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    candidates = []
+    for match in re.finditer(r"\.\s+", first_line[:240]):
+        candidate = first_line[:match.start()].strip()
+        if 3 <= len(candidate) <= 120 and len(candidate.split()) <= 18:
+            candidates.append((candidate, first_line[match.end():]))
+    # Wikipedia-style inputs often start ``Title. Title is ...``. Looking for that repeated
+    # prefix handles titles containing periods, such as ``No. 2 Squadron RAAF``.
+    for candidate, remainder in reversed(candidates):
+        folded_candidate = html.unescape(candidate).casefold()
+        folded_remainder = html.unescape(remainder).casefold()
+        if folded_remainder.startswith(folded_candidate):
+            return candidate
+    candidate = candidates[0][0] if candidates else first_line.strip()
+    if 3 <= len(candidate) <= 120 and len(candidate.split()) <= 18:
+        return candidate
+    return ""
+
+
+_GENERIC_TITLE_WORDS = frozenset({
+    "administration", "airport", "album", "association", "city", "conference",
+    "county", "history", "lake", "memorial", "park", "school", "season", "society",
+    "state", "station", "team", "university",
+})
+
+
+def _passage_title_aliases(title: str) -> List[str]:
+    """Conservative aliases for links such as ``Winner (band)`` -> ``Winner``.
+
+    Aliases are only used when unique candidate passages are already in the supplied context;
+    they never trigger an external fetch.  This keeps the bridge hop bounded and auditable.
+    """
+    clean = html.unescape(title or "").strip()
+    aliases = [clean] if clean else []
+    without_parenthetical = re.sub(r"\s*\([^)]*\)\s*$", "", clean).strip()
+    if without_parenthetical and without_parenthetical != clean:
+        aliases.append(without_parenthetical)
+    before_comma = without_parenthetical.split(",", 1)[0].strip()
+    if len(before_comma) >= 5 and before_comma != without_parenthetical:
+        aliases.append(before_comma)
+    words = re.findall(r"[^\W_]+", without_parenthetical, flags=re.UNICODE)
+    initialism_words = [
+        word for word in words
+        if word.casefold() not in _LEXICAL_STOPWORDS and word.casefold() not in {"of", "for"}
+    ]
+    if 2 <= len(initialism_words) <= 8:
+        initialism = "".join(word[0] for word in initialism_words).upper()
+        if len(initialism) >= 2:
+            aliases.append(initialism)
+    looks_like_named_entity = bool(words) and all(
+        word[:1].isupper() or len(word) == 1 for word in words
+    )
+    if looks_like_named_entity and 2 <= len(words) <= 4:
+        surname = words[-1]
+        if len(surname) >= 5 and surname.casefold() not in _GENERIC_TITLE_WORDS:
+            aliases.append(surname)
+    # Longest first avoids a short alias taking priority when both match.
+    return sorted(set(aliases), key=lambda value: (-len(value), value.casefold()))
+
+
+def _alias_match_length(text: str, aliases: Sequence[str]) -> int:
+    folded = html.unescape(text or "").casefold()
+    return max(
+        (
+            len(alias) for alias in aliases
+            if (len(alias) >= 4 or (len(alias) >= 2 and alias.isupper()))
+            and re.search(r"(?<!\w)" + re.escape(alias.casefold()) + r"(?!\w)", folded)
+        ),
+        default=0,
+    )
+
+
+def _linked_bridge_ids(
+    ranked: Sequence[Tuple[object, str, float]],
+    full_context: Sequence[str],
+    seed_k: int,
+) -> List[object]:
+    """Find second-hop passages explicitly named by the best first-hop passages."""
+    titles = [_passage_title(chunk) for chunk in full_context]
+    aliases = [_passage_title_aliases(title) for title in titles]
+    rank_by_id = {chunk_id: rank for rank, (chunk_id, _chunk, _score) in enumerate(ranked)}
+    linked_by_id: Dict[object, Tuple[int, int, int, int, object]] = {}
+    for seed_rank, (seed_id, seed_text, _score) in enumerate(ranked[:seed_k]):
+        seed_index = int(seed_id)
+        for candidate_id, title in enumerate(titles):
+            if candidate_id == seed_index or not title:
+                continue
+            # Follow links in either direction.  In multi-hop evidence, the first passage may
+            # name the bridge target, or a lower-ranked bridge passage may name the first hop.
+            forward_match = _alias_match_length(seed_text, aliases[candidate_id])
+            reverse_match = _alias_match_length(full_context[candidate_id], aliases[seed_index])
+            if forward_match or reverse_match:
+                # A first-hop passage naming its target is stronger than the reverse
+                # relation. Within a direction, prefer earlier seeds and longer aliases.
+                direction = 0 if forward_match else 1
+                match_length = forward_match or reverse_match
+                priority = (
+                    direction,
+                    seed_rank,
+                    -match_length,
+                    rank_by_id.get(candidate_id, len(ranked)),
+                    candidate_id,
+                )
+                previous = linked_by_id.get(candidate_id)
+                if previous is None or priority < previous:
+                    linked_by_id[candidate_id] = priority
+    linked = sorted(linked_by_id.values())
+    return [candidate_id for *_priority, candidate_id in linked]
+
+
+def fetch_quality_first(
+    retriever: DenseRetriever,
+    query: str,
+    full_context: Sequence[str],
+    cfg: Optional[QualityFirstRetrievalConfig] = None,
+) -> Tuple[List[str], dict]:
+    """Hybrid one-hop retrieval plus a bounded deterministic second evidence hop."""
+    cfg = cfg or QualityFirstRetrievalConfig()
+    context = list(full_context)
+    if not context:
+        return [], {"fallback_applied": False, "reason": "empty_context"}
+
+    candidate_k = min(
+        len(context),
+        max(cfg.max_k, cfg.max_k * max(1, cfg.candidate_multiplier), 32),
+    )
+    dense = retriever.retrieve(query, candidate_k)
+    if not dense:
+        return context, {"fallback_applied": True, "reason": "empty_index"}
+    if dense[0][2] < cfg.min_top_score and cfg.fallback_to_full:
+        return context, {
+            "fallback_applied": True,
+            "reason": "low_confidence",
+            "top_score": dense[0][2],
+        }
+
+    sparse_retriever = BM25Retriever()
+    sparse_retriever.index(context)
+    sparse = sparse_retriever.retrieve(query, candidate_k)
+    fused = reciprocal_rank_fusion([dense, sparse], cfg.rank_constant) if sparse else dense
+    if not fused:
+        return context, {"fallback_applied": True, "reason": "no_candidates"}
+
+    chosen_k = min(len(context), max(1, min(cfg.min_k, cfg.max_k)))
+    chosen = list(fused[:chosen_k])
+    chosen_ids = {chunk_id for chunk_id, _chunk, _score in chosen}
+    protected_ids = {chunk_id for chunk_id, _chunk, _score in fused[:cfg.bridge_seed_k]}
+    bridge_ids = _linked_bridge_ids(fused, context, cfg.bridge_seed_k)
+    applied_bridges: List[object] = []
+    fused_by_id = {chunk_id: (chunk_id, chunk, score) for chunk_id, chunk, score in fused}
+
+    for bridge_id in bridge_ids:
+        if bridge_id in chosen_ids:
+            protected_ids.add(bridge_id)
+            continue
+        if len(applied_bridges) >= cfg.max_bridge_expansions:
+            break
+        replacement_index = next(
+            (
+                index for index in range(len(chosen) - 1, -1, -1)
+                if chosen[index][0] not in protected_ids
+            ),
+            None,
+        )
+        if replacement_index is None:
+            break
+        removed_id = chosen[replacement_index][0]
+        bridge_item = fused_by_id.get(
+            bridge_id,
+            (bridge_id, context[int(bridge_id)], 0.0),
+        )
+        chosen[replacement_index] = bridge_item
+        chosen_ids.remove(removed_id)
+        chosen_ids.add(bridge_id)
+        protected_ids.add(bridge_id)
+        applied_bridges.append(bridge_id)
+
+    # Return relevance order.  The proxy restores original message order when rebuilding a
+    # conversation, while the explicit retrieval API may intentionally put evidence first.
+    fused_rank = {chunk_id: rank for rank, (chunk_id, _chunk, _score) in enumerate(fused)}
+    chosen.sort(key=lambda item: fused_rank.get(item[0], len(fused)))
+    return [chunk for _chunk_id, chunk, _score in chosen], {
+        "fallback_applied": False,
+        "reason": "retrieved",
+        "k_chosen": len(chosen),
+        "top_score": dense[0][2],
+        "method": "hybrid_rrf_bridge",
+        "bridge_expansions": len(applied_bridges),
+        "dense_sparse_top_overlap": len(
+            {item[0] for item in dense[:chosen_k]} & {item[0] for item in sparse[:chosen_k]}
+        ),
+    }
 
 
 def fetch_for_hop(retriever: DenseRetriever, query: str, full_context: Sequence[str],
