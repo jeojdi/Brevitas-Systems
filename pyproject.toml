@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brevitas-systems"
-version = "0.9.10"
+version = "0.9.11"
 description = "Lossless token savings + per-pipeline/agent tracking between your agents and the model."
 readme = "README.md"
 license = { text = "Proprietary" }
@@ -14,6 +14,7 @@ dependencies = [
     "requests>=2.31.0",
     "tiktoken>=0.7.0",
     "numpy>=1.24.0",
+    "fastembed>=0.3.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.0.0",
@@ -22,9 +23,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# the retrieval lever's embedding model (ONNX MiniLM via fastembed — no torch). Core install
-# works without it — retrieval fail-safes to full context / caching when the encoder is absent.
-retrieval = ["fastembed>=0.3.0"]
+# Compatibility alias: fastembed is now part of the base model installed by `bvx install`.
+retrieval = []
 # semantic response cache: local embeddings for reworded-match hits (numpy already core).
 # Absent → the cache still runs exact-hash-only, no reworded matching.
 semanticcache = ["sentence-transformers>=2.2.0"]

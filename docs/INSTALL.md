@@ -79,7 +79,7 @@ SHA-256** against the release `checksums.txt`, installs it to
 - To pin a specific version, set `$env:BVX_VERSION` before running:
 
   ```powershell
-  $env:BVX_VERSION = "0.1.20"
+  $env:BVX_VERSION = "0.1.22"
   irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex
   ```
 
@@ -112,6 +112,10 @@ This is the same as `bvx install ai`. Here's exactly what it does:
    `http://127.0.0.1:8080` (backing up the original first).
 5. **Installs and starts** the background services (proxy + `brevitas-systems`
    optimizer).
+
+BVX `0.1.22` pins `brevitas-systems==0.9.11`, including the quality-first hybrid retrieval
+runtime. The managed optimizer enables retrieval by default; set
+`BREVITAS_RETRIEVAL_ENABLED=0` before starting BVX to use byte-preserving caching only.
 6. **Runs diagnostics** and prints a summary.
 
 Example output:

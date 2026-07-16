@@ -1,5 +1,5 @@
 """
-Brevitas — drop lossless token savings between your agents and the model.
+Brevitas — add measured token savings between your agents and the model.
 
 Quick start (importable service — recommended):
     from brevitas import BrevitasClient
@@ -12,9 +12,10 @@ Quick start (importable service — recommended):
     )
     print(savings.savings_pct, savings.cache_placement["strategy"])
 
-The client auto-routes every call (cache vs retrieve), keeps the prefix byte-identical so
-provider caching fires, learns each provider's real cache-hit rate, and reports honest
-savings. Lossless — never drops load-bearing content; fails safe to full context.
+The client keeps cacheable prefixes byte-identical, learns each provider's real cache-hit
+rate, and reports measured savings. Provider caching is byte-preserving. Context-reducing
+retrieval is experimental and requires ``BREVITAS_RETRIEVAL_ENABLED=1`` after a paired
+workload quality test.
 
 Quick start (SDK wrapper around an existing client):
     import anthropic, brevitas
@@ -94,4 +95,4 @@ __all__ = ["BrevitasClient", "SavingsReport", "BrevitasRouter",
            "configure", "get_config", "wrap", "BrevitasSession",
            "start_run", "agent", "get_pipeline", "get_agent", "get_run_id", "resolve_labels",
            "report_receipt", "optimize_prompt", "PromptOptimization", "TaskCompressionRouter", "classify_task"]
-__version__ = "0.9.10"
+__version__ = "0.9.11"
