@@ -43,9 +43,10 @@ accuracy/savings frontier.
 
 ## Wiring status
 
-- `POST /v1/compress/retrieval` (additive) exposes Lever 4 with the fail-safe; records
-  **real** token savings and **no** quality proxy. The legacy lossy `/v1/compress` path is
-  unchanged.
+- `POST /v1/compress/retrieval` exposes experimental hybrid dense+BM25 retrieval with a
+  bounded bridge hop and full-context fallbacks; it records **real** token savings and
+  **no** invented quality proxy. See the
+  [quality plan](../../benchmarks/levers/RETRIEVAL_QUALITY_PLAN.md).
 - Levers 1/2/3/5 are validated library modules, not yet on the live request path.
 
 ## A note on the RLM citation

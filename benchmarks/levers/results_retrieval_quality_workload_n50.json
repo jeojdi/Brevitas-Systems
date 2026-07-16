@@ -1,0 +1,1329 @@
+{
+  "summary": {
+    "n_questions": 50,
+    "dataset": "HotpotQA distractor validation",
+    "model": "deepseek-chat",
+    "retrieval": "production-order adaptive MaxSim, min_k=8, max_k=10",
+    "full_context": {
+      "EM": 66.0,
+      "F1": 76.98,
+      "prompt_tokens": 75593
+    },
+    "adaptive_retrieval": {
+      "EM": 62.0,
+      "F1": 76.86,
+      "prompt_tokens": 61121
+    },
+    "EM_delta_points": -4.0,
+    "F1_delta_points": -0.12,
+    "EM_delta_95pct_paired_bootstrap_CI": [
+      -14.0,
+      6.0
+    ],
+    "F1_delta_95pct_paired_bootstrap_CI": [
+      -8.67,
+      8.12
+    ],
+    "token_reduction_pct": 19.14,
+    "full_correct_retrieval_wrong": 4,
+    "full_wrong_retrieval_correct": 2,
+    "answers_changed": 10,
+    "questions_missing_supporting_title": 9,
+    "supporting_title_recall_pct": 91.0,
+    "retrieval_fallbacks": 0,
+    "average_passages_sent": 8.16
+  },
+  "records": [
+    {
+      "index": 0,
+      "id": "5a8b57f25542995d1e6f1371",
+      "question": "Were Scott Derrickson and Ed Wood of the same nationality?",
+      "gold": "yes",
+      "full_answer": "Yes",
+      "retrieval_answer": "Yes",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1199,
+      "retrieval_prompt_tokens": 890,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Ed Wood",
+        "Scott Derrickson"
+      ],
+      "selected_supporting_titles": [
+        "Ed Wood",
+        "Scott Derrickson"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 1,
+      "id": "5a8c7595554299585d9e36b6",
+      "question": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+      "gold": "Chief of Protocol",
+      "full_answer": "United States ambassador to Ghana and to Czechoslovakia",
+      "retrieval_answer": "United States ambassador to Ghana and to Czechoslovakia",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1305,
+      "retrieval_prompt_tokens": 1050,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Kiss and Tell (1945 film)",
+        "Shirley Temple"
+      ],
+      "selected_supporting_titles": [
+        "Kiss and Tell (1945 film)",
+        "Shirley Temple"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 2,
+      "id": "5a85ea095542994775f606a8",
+      "question": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+      "gold": "Animorphs",
+      "full_answer": "Animorphs",
+      "retrieval_answer": "Animorphs",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1559,
+      "retrieval_prompt_tokens": 1455,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Animorphs",
+        "The Hork-Bajir Chronicles"
+      ],
+      "selected_supporting_titles": [
+        "Animorphs",
+        "The Hork-Bajir Chronicles"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 3,
+      "id": "5adbf0a255429947ff17385a",
+      "question": "Are the Laleli Mosque and Esma Sultan Mansion located in the same neighborhood?",
+      "gold": "no",
+      "full_answer": "Yes",
+      "retrieval_answer": "No",
+      "full_em": 0.0,
+      "retrieval_em": 1.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1030,
+      "retrieval_prompt_tokens": 847,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Esma Sultan Mansion",
+        "Laleli Mosque"
+      ],
+      "selected_supporting_titles": [
+        "Esma Sultan Mansion",
+        "Laleli Mosque"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 4,
+      "id": "5a8e3ea95542995a26add48d",
+      "question": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+      "gold": "Greenwich Village, New York City",
+      "full_answer": "Greenwich Village",
+      "retrieval_answer": "New York City",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.5714285714285715,
+      "retrieval_f1": 0.7499999999999999,
+      "full_prompt_tokens": 1346,
+      "retrieval_prompt_tokens": 1249,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Adriana Trigiani",
+        "Big Stone Gap (film)"
+      ],
+      "selected_supporting_titles": [
+        "Big Stone Gap (film)"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 5,
+      "id": "5abd94525542992ac4f382d2",
+      "question": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+      "gold": "YG Entertainment",
+      "full_answer": "YG Entertainment",
+      "retrieval_answer": "YG Entertainment",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1380,
+      "retrieval_prompt_tokens": 1142,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "2014 S/S",
+        "Winner (band)"
+      ],
+      "selected_supporting_titles": [
+        "2014 S/S",
+        "Winner (band)"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 6,
+      "id": "5a85b2d95542997b5ce40028",
+      "question": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+      "gold": "Eenasul Fateh",
+      "full_answer": "Eenasul Fateh",
+      "retrieval_answer": "Eenasul Fateh",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1858,
+      "retrieval_prompt_tokens": 1473,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Eenasul Fateh",
+        "Management consulting"
+      ],
+      "selected_supporting_titles": [
+        "Eenasul Fateh",
+        "Management consulting"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 7,
+      "id": "5a87ab905542996e4f3088c1",
+      "question": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+      "gold": "3,677 seated",
+      "full_answer": "4,000",
+      "retrieval_answer": "4,000 capacity (3,677 seated)",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.6666666666666666,
+      "full_prompt_tokens": 2962,
+      "retrieval_prompt_tokens": 1415,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Androscoggin Bank Colis\u00e9e",
+        "Lewiston Maineiacs"
+      ],
+      "selected_supporting_titles": [
+        "Androscoggin Bank Colis\u00e9e",
+        "Lewiston Maineiacs"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 8,
+      "id": "5a7bbb64554299042af8f7cc",
+      "question": "Who is older, Annie Morton or Terry Richardson?",
+      "gold": "Terry Richardson",
+      "full_answer": "Annie Morton",
+      "retrieval_answer": "Annie Morton",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1347,
+      "retrieval_prompt_tokens": 1018,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Annie Morton",
+        "Terry Richardson"
+      ],
+      "selected_supporting_titles": [
+        "Annie Morton",
+        "Terry Richardson"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 9,
+      "id": "5a8db19d5542994ba4e3dd00",
+      "question": "Are Local H and For Against both from the United States?",
+      "gold": "yes",
+      "full_answer": "Yes",
+      "retrieval_answer": "Yes",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1376,
+      "retrieval_prompt_tokens": 1126,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "For Against",
+        "Local H"
+      ],
+      "selected_supporting_titles": [
+        "For Against",
+        "Local H"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 10,
+      "id": "5a7166395542994082a3e814",
+      "question": "What is the name of the fight song of the university whose main campus is in Lawrence, Kansas and whose branch campuses are in the Kansas City metropolitan area?",
+      "gold": "Kansas Song",
+      "full_answer": "Kansas Song (We\u2019re From Kansas)",
+      "retrieval_answer": "Kansas Song",
+      "full_em": 0.0,
+      "retrieval_em": 1.0,
+      "full_f1": 0.5714285714285715,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1716,
+      "retrieval_prompt_tokens": 1307,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Kansas Song",
+        "University of Kansas"
+      ],
+      "selected_supporting_titles": [
+        "Kansas Song",
+        "University of Kansas"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 11,
+      "id": "5a877e5d5542993e715abf7d",
+      "question": "What screenwriter with credits for \"Evolution\" co-wrote a film starring Nicolas Cage and T\u00e9a Leoni?",
+      "gold": "David Weissman",
+      "full_answer": "David Weissman",
+      "retrieval_answer": "David Weissman",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1279,
+      "retrieval_prompt_tokens": 911,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "David Weissman",
+        "The Family Man"
+      ],
+      "selected_supporting_titles": [
+        "David Weissman",
+        "The Family Man"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 12,
+      "id": "5ab3b0bf5542992ade7c6e39",
+      "question": "What year did Guns N Roses perform a promo for a movie starring Arnold Schwarzenegger as a former New York Police detective?",
+      "gold": "1999",
+      "full_answer": "1999",
+      "retrieval_answer": "1999",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1547,
+      "retrieval_prompt_tokens": 1231,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "End of Days (film)",
+        "Oh My God (Guns N' Roses song)"
+      ],
+      "selected_supporting_titles": [
+        "End of Days (film)",
+        "Oh My God (Guns N' Roses song)"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 13,
+      "id": "5ab56e32554299637185c594",
+      "question": "Are Random House Tower and 888 7th Avenue both used for real estate?",
+      "gold": "no",
+      "full_answer": "No",
+      "retrieval_answer": "No",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 2742,
+      "retrieval_prompt_tokens": 2538,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "888 7th Avenue",
+        "Random House Tower"
+      ],
+      "selected_supporting_titles": [
+        "888 7th Avenue",
+        "Random House Tower"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 14,
+      "id": "5ab6d09255429954757d337d",
+      "question": "The football manager who recruited David Beckham managed Manchester United during what timeframe?",
+      "gold": "from 1986 to 2013",
+      "full_answer": "1986 to 2013",
+      "retrieval_answer": "1986 to 2013",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.8571428571428571,
+      "retrieval_f1": 0.8571428571428571,
+      "full_prompt_tokens": 990,
+      "retrieval_prompt_tokens": 849,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "1995\u201396 Manchester United F.C. season",
+        "Alex Ferguson"
+      ],
+      "selected_supporting_titles": [
+        "1995\u201396 Manchester United F.C. season",
+        "Alex Ferguson"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 15,
+      "id": "5a75e05c55429976ec32bc5f",
+      "question": "Brown State Fishing Lake is in a country that has a population of how many inhabitants ?",
+      "gold": "9,984",
+      "full_answer": "9,984",
+      "retrieval_answer": "The context does not provide the population of the country.",
+      "full_em": 1.0,
+      "retrieval_em": 0.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1596,
+      "retrieval_prompt_tokens": 1258,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Brown County, Kansas",
+        "Brown State Fishing Lake"
+      ],
+      "selected_supporting_titles": [
+        "Brown State Fishing Lake"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 16,
+      "id": "5ab3e45655429976abd1bcd4",
+      "question": "The Vermont Catamounts men's soccer team currently competes in a conference that was formerly known as what from 1988 to 1996?",
+      "gold": "the North Atlantic Conference",
+      "full_answer": "North Atlantic Conference",
+      "retrieval_answer": "America East Conference",
+      "full_em": 1.0,
+      "retrieval_em": 0.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 0.3333333333333333,
+      "full_prompt_tokens": 1331,
+      "retrieval_prompt_tokens": 1265,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "America East Conference",
+        "Vermont Catamounts men's soccer"
+      ],
+      "selected_supporting_titles": [
+        "Vermont Catamounts men's soccer"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 17,
+      "id": "5ab29c24554299449642c932",
+      "question": "Are Giuseppe Verdi and Ambroise Thomas both Opera composers ?",
+      "gold": "yes",
+      "full_answer": "Yes",
+      "retrieval_answer": "Yes",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1373,
+      "retrieval_prompt_tokens": 1276,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Ambroise Thomas",
+        "Giuseppe Verdi"
+      ],
+      "selected_supporting_titles": [
+        "Ambroise Thomas",
+        "Giuseppe Verdi"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 18,
+      "id": "5ae0d4c9554299603e418468",
+      "question": "Roger O. Egeberg was Assistant Secretary for Health and Scientific Affairs during the administration of a president that served during what years?",
+      "gold": "1969 until 1974",
+      "full_answer": "1969 until 1974",
+      "retrieval_answer": "1969\u20131974",
+      "full_em": 1.0,
+      "retrieval_em": 0.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1683,
+      "retrieval_prompt_tokens": 1418,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Richard Nixon",
+        "Roger O. Egeberg"
+      ],
+      "selected_supporting_titles": [
+        "Roger O. Egeberg"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 19,
+      "id": "5a8133725542995ce29dcbdb",
+      "question": "Which writer was from England, Henry Roth or Robert Erskine Childers?",
+      "gold": "Robert Erskine Childers DSC",
+      "full_answer": "Robert Erskine Childers",
+      "retrieval_answer": "Robert Erskine Childers",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.8571428571428571,
+      "retrieval_f1": 0.8571428571428571,
+      "full_prompt_tokens": 969,
+      "retrieval_prompt_tokens": 795,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Henry Roth",
+        "Robert Erskine Childers"
+      ],
+      "selected_supporting_titles": [
+        "Henry Roth",
+        "Robert Erskine Childers"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 20,
+      "id": "5ae7a8175542993210983ed8",
+      "question": "Which other Mexican Formula One race car driver has held the podium besides the Force India driver born in 1990?",
+      "gold": "Pedro Rodr\u00edguez",
+      "full_answer": "Pedro Rodr\u00edguez",
+      "retrieval_answer": "Pedro Rodr\u00edguez",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1249,
+      "retrieval_prompt_tokens": 1012,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Formula One drivers from Mexico",
+        "Sergio P\u00e9rez"
+      ],
+      "selected_supporting_titles": [
+        "Formula One drivers from Mexico",
+        "Sergio P\u00e9rez"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 21,
+      "id": "5ae6050f55429929b0807a5e",
+      "question": "This singer of A Rather Blustery Day also voiced what hedgehog?",
+      "gold": "Sonic",
+      "full_answer": "Sonic the Hedgehog",
+      "retrieval_answer": "Sonic the Hedgehog",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.6666666666666666,
+      "retrieval_f1": 0.6666666666666666,
+      "full_prompt_tokens": 1597,
+      "retrieval_prompt_tokens": 1238,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "A Rather Blustery Day",
+        "Jim Cummings"
+      ],
+      "selected_supporting_titles": [
+        "A Rather Blustery Day",
+        "Jim Cummings"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 22,
+      "id": "5adddccd5542997dc7907069",
+      "question": "Aside from the Apple Remote, what other device can control the program Apple Remote was originally designed to interact with?",
+      "gold": "keyboard function keys",
+      "full_answer": "Siri Remote",
+      "retrieval_answer": "Siri Remote",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1763,
+      "retrieval_prompt_tokens": 1469,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Apple Remote",
+        "Front Row (software)"
+      ],
+      "selected_supporting_titles": [
+        "Apple Remote",
+        "Front Row (software)"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 23,
+      "id": "5ae2070a5542994d89d5b313",
+      "question": "Which performance act has a higher instrument to person ratio, Badly Drawn Boy or Wolf Alice? ",
+      "gold": "Badly Drawn Boy",
+      "full_answer": "Badly Drawn Boy",
+      "retrieval_answer": "Badly Drawn Boy",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1081,
+      "retrieval_prompt_tokens": 900,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Badly Drawn Boy",
+        "Wolf Alice"
+      ],
+      "selected_supporting_titles": [
+        "Badly Drawn Boy",
+        "Wolf Alice"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 24,
+      "id": "5ae22b8d554299234fd0440f",
+      "question": "What was the father of Kasper Schmeichel voted to be by the IFFHS in 1992?",
+      "gold": "World's Best Goalkeeper",
+      "full_answer": "World's Best Goalkeeper",
+      "retrieval_answer": "World's Best Goalkeeper",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1260,
+      "retrieval_prompt_tokens": 875,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Kasper Schmeichel",
+        "Peter Schmeichel"
+      ],
+      "selected_supporting_titles": [
+        "Kasper Schmeichel",
+        "Peter Schmeichel"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 25,
+      "id": "5a722b8655429971e9dc9329",
+      "question": "Who was the writer of These Boots Are Made for Walkin' and who died in 2007?",
+      "gold": "Barton Lee Hazlewood",
+      "full_answer": "Lee Hazlewood",
+      "retrieval_answer": "Lee Hazlewood",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.8,
+      "retrieval_f1": 0.8,
+      "full_prompt_tokens": 1182,
+      "retrieval_prompt_tokens": 973,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Lee Hazlewood",
+        "These Boots Are Made for Walkin'"
+      ],
+      "selected_supporting_titles": [
+        "These Boots Are Made for Walkin'"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 26,
+      "id": "5adf37a95542995ec70e8f97",
+      "question": "The 2011\u201312 VCU Rams men's basketball team, led by third year head coach Shaka Smart, represented Virginia Commonwealth University which was founded in what year?",
+      "gold": "1838",
+      "full_answer": "1838",
+      "retrieval_answer": "1838",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1810,
+      "retrieval_prompt_tokens": 1674,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "2011\u201312 VCU Rams men's basketball team",
+        "Virginia Commonwealth University"
+      ],
+      "selected_supporting_titles": [
+        "2011\u201312 VCU Rams men's basketball team"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 27,
+      "id": "5abd259d55429924427fcf1a",
+      "question": "Are both Dictyosperma, and Huernia described as a genus?",
+      "gold": "yes",
+      "full_answer": "Yes",
+      "retrieval_answer": "Yes",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 410,
+      "retrieval_prompt_tokens": 410,
+      "passages_sent": 2,
+      "supporting_titles": [
+        "Dictyosperma",
+        "Huernia"
+      ],
+      "selected_supporting_titles": [
+        "Dictyosperma",
+        "Huernia"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 28,
+      "id": "5a828c8355429966c78a6a50",
+      "question": "Kaiser Ventures corporation was founded by an American industrialist who became known as the father of modern American shipbuilding?",
+      "gold": "Henry J. Kaiser",
+      "full_answer": "Henry J. Kaiser",
+      "retrieval_answer": "Henry J. Kaiser",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1251,
+      "retrieval_prompt_tokens": 1182,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Henry J. Kaiser",
+        "Kaiser Ventures"
+      ],
+      "selected_supporting_titles": [
+        "Henry J. Kaiser",
+        "Kaiser Ventures"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 29,
+      "id": "5a8a3e745542996c9b8d5e70",
+      "question": "What is the name for the adventure in \"Tunnels and Trolls\", a game designed by Ken St. Andre?",
+      "gold": "Arena of Khazan",
+      "full_answer": "Arena of Khazan",
+      "retrieval_answer": "Arena of Khazan",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1243,
+      "retrieval_prompt_tokens": 997,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Arena of Khazan",
+        "Tunnels &amp; Trolls"
+      ],
+      "selected_supporting_titles": [
+        "Arena of Khazan",
+        "Tunnels &amp; Trolls"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 30,
+      "id": "5ac23ff0554299636651994d",
+      "question": "When was Poison's album \"Shut Up, Make Love\" released?",
+      "gold": "2000",
+      "full_answer": "2000",
+      "retrieval_answer": "2000",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1453,
+      "retrieval_prompt_tokens": 1104,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Poison (American band)",
+        "Shut Up, Make Love"
+      ],
+      "selected_supporting_titles": [
+        "Poison (American band)",
+        "Shut Up, Make Love"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 31,
+      "id": "5ae4a3265542995ad6573de5",
+      "question": "Hayden is a singer-songwriter from Canada, but where does Buck-Tick hail from?",
+      "gold": "Fujioka, Gunma",
+      "full_answer": "Fujioka, Gunma",
+      "retrieval_answer": "Fujioka, Gunma",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1194,
+      "retrieval_prompt_tokens": 961,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Buck-Tick",
+        "Hayden (musician)"
+      ],
+      "selected_supporting_titles": [
+        "Buck-Tick",
+        "Hayden (musician)"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 32,
+      "id": "5ae0361155429925eb1afc2c",
+      "question": "Which  French ace pilot and adventurer fly L'Oiseau Blanc",
+      "gold": "Charles Eug\u00e8ne",
+      "full_answer": "Charles Nungesser",
+      "retrieval_answer": "Charles Nungesser",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.5,
+      "retrieval_f1": 0.5,
+      "full_prompt_tokens": 1280,
+      "retrieval_prompt_tokens": 812,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Charles Nungesser",
+        "L'Oiseau Blanc"
+      ],
+      "selected_supporting_titles": [
+        "Charles Nungesser",
+        "L'Oiseau Blanc"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 33,
+      "id": "5abc0a5d5542993f40c73c64",
+      "question": "Are Freakonomics and In the Realm of the Hackers both American documentaries?",
+      "gold": "no",
+      "full_answer": "No",
+      "retrieval_answer": "No",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1711,
+      "retrieval_prompt_tokens": 1543,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Freakonomics (film)",
+        "In the Realm of the Hackers"
+      ],
+      "selected_supporting_titles": [
+        "Freakonomics (film)",
+        "In the Realm of the Hackers"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 34,
+      "id": "5a7cc50e554299452d57ba3e",
+      "question": "Which band, Letters to Cleo or Screaming Trees, had more members?",
+      "gold": "Letters to Cleo",
+      "full_answer": "Screaming Trees",
+      "retrieval_answer": "Screaming Trees",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1480,
+      "retrieval_prompt_tokens": 1016,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Letters to Cleo",
+        "Screaming Trees"
+      ],
+      "selected_supporting_titles": [
+        "Letters to Cleo",
+        "Screaming Trees"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 35,
+      "id": "5abf63f15542997ec76fd3ea",
+      "question": "Alexander Kerensky was defeated and destroyed by the Bolsheviks in the course of a civil war that ended when ?",
+      "gold": "October 1922",
+      "full_answer": "1923",
+      "retrieval_answer": "1922",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.6666666666666666,
+      "full_prompt_tokens": 1907,
+      "retrieval_prompt_tokens": 1679,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Russian Civil War",
+        "Socialist Revolutionary Party"
+      ],
+      "selected_supporting_titles": [
+        "Russian Civil War",
+        "Socialist Revolutionary Party"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 36,
+      "id": "5a8ef2a75542995a26add583",
+      "question": "Seven Brief Lessons on Physics was written by an Italian physicist that has worked in France since what year?",
+      "gold": "2000",
+      "full_answer": "2000",
+      "retrieval_answer": "2000",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1284,
+      "retrieval_prompt_tokens": 1031,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Carlo Rovelli",
+        "Seven Brief Lessons on Physics"
+      ],
+      "selected_supporting_titles": [
+        "Carlo Rovelli",
+        "Seven Brief Lessons on Physics"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 37,
+      "id": "5a80721b554299485f5985ef",
+      "question": "The Livesey Hal War Memorial commemorates the fallen of which war, that had over 60 million casualties?",
+      "gold": "World War II",
+      "full_answer": "World War II",
+      "retrieval_answer": "World War I",
+      "full_em": 1.0,
+      "retrieval_em": 0.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 0.6666666666666666,
+      "full_prompt_tokens": 1039,
+      "retrieval_prompt_tokens": 772,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Livesey Hall War Memorial",
+        "World War II casualties"
+      ],
+      "selected_supporting_titles": [
+        "Livesey Hall War Memorial"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 38,
+      "id": "5ab51dae5542991779162d82",
+      "question": "Are both Elko Regional Airport and Gerald R. Ford International Airport located in Michigan?",
+      "gold": "no",
+      "full_answer": "No",
+      "retrieval_answer": "No",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1486,
+      "retrieval_prompt_tokens": 1154,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Elko Regional Airport",
+        "Gerald R. Ford International Airport"
+      ],
+      "selected_supporting_titles": [
+        "Elko Regional Airport",
+        "Gerald R. Ford International Airport"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 39,
+      "id": "5a7571135542992d0ec05f98",
+      "question": "Ralph Hefferline was a psychology professor at a university that is located in what city?",
+      "gold": "New York City",
+      "full_answer": "New York City",
+      "retrieval_answer": "New York City",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1355,
+      "retrieval_prompt_tokens": 977,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Columbia University",
+        "Ralph Hefferline"
+      ],
+      "selected_supporting_titles": [
+        "Columbia University",
+        "Ralph Hefferline"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 40,
+      "id": "5a7a0e1e5542990783324e1a",
+      "question": "Which dog's ancestors include Gordon and Irish Setters: the Manchester Terrier or the Scotch Collie?",
+      "gold": "Scotch Collie",
+      "full_answer": "Scotch Collie",
+      "retrieval_answer": "Scotch Collie",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1736,
+      "retrieval_prompt_tokens": 1490,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Manchester Terrier",
+        "Scotch Collie"
+      ],
+      "selected_supporting_titles": [
+        "Manchester Terrier",
+        "Scotch Collie"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 41,
+      "id": "5a74106b55429979e288289e",
+      "question": "Where is the company that Sachin Warrier worked for as a software engineer headquartered? ",
+      "gold": "Mumbai",
+      "full_answer": "Mumbai, Maharashtra",
+      "retrieval_answer": "Mumbai, Maharashtra",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.6666666666666666,
+      "retrieval_f1": 0.6666666666666666,
+      "full_prompt_tokens": 1250,
+      "retrieval_prompt_tokens": 1051,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Sachin Warrier",
+        "Tata Consultancy Services"
+      ],
+      "selected_supporting_titles": [
+        "Sachin Warrier",
+        "Tata Consultancy Services"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 42,
+      "id": "5a79311755429970f5fffe67",
+      "question": "A Japanese manga series based on a 16 year old high school student Ichitaka Seto, is written and illustrated by someone born in what year?",
+      "gold": "1962",
+      "full_answer": "1962",
+      "retrieval_answer": "1962",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1816,
+      "retrieval_prompt_tokens": 1573,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "I&quot;s",
+        "Masakazu Katsura"
+      ],
+      "selected_supporting_titles": [
+        "I&quot;s"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 43,
+      "id": "5ab2d3df554299194fa9352c",
+      "question": "The battle in which Giuseppe Arimondi lost his life secured what for Ethiopia?",
+      "gold": "sovereignty",
+      "full_answer": "sovereignty",
+      "retrieval_answer": "sovereignty",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1955,
+      "retrieval_prompt_tokens": 1655,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Battle of Adwa",
+        "Giuseppe Arimondi"
+      ],
+      "selected_supporting_titles": [
+        "Battle of Adwa",
+        "Giuseppe Arimondi"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 44,
+      "id": "5a760ab65542994ccc918697",
+      "question": "Alfred Balk served as the secretary of the Committee on the Employment of Minority Groups in the News Media under which United States Vice President?",
+      "gold": "Nelson Rockefeller",
+      "full_answer": "Nelson Rockefeller",
+      "retrieval_answer": "Nelson Rockefeller",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 2639,
+      "retrieval_prompt_tokens": 1669,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Alfred Balk",
+        "Nelson Rockefeller"
+      ],
+      "selected_supporting_titles": [
+        "Alfred Balk",
+        "Nelson Rockefeller"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 45,
+      "id": "5a7d54165542995f4f402256",
+      "question": "A medieval fortress in Dirleton, East Lothian, Scotland borders on the south side of what coastal area?",
+      "gold": "Yellowcraig",
+      "full_answer": "Yellowcraigs",
+      "retrieval_answer": "Yellowcraigs",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 1107,
+      "retrieval_prompt_tokens": 888,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Dirleton Castle",
+        "Yellowcraigs"
+      ],
+      "selected_supporting_titles": [
+        "Dirleton Castle",
+        "Yellowcraigs"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 46,
+      "id": "5ab859a955429934fafe6d7b",
+      "question": "Who is the writer of this song that was inspired by words on a tombstone and was the first track on the box set Back to Mono?",
+      "gold": "Phil Spector",
+      "full_answer": "Phil Spector",
+      "retrieval_answer": "Phil Spector",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 2462,
+      "retrieval_prompt_tokens": 2133,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "Back to Mono (1958\u20131969)",
+        "To Know Him Is to Love Him"
+      ],
+      "selected_supporting_titles": [
+        "Back to Mono (1958\u20131969)",
+        "To Know Him Is to Love Him"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 47,
+      "id": "5add61d65542995b365fab21",
+      "question": "What type of forum did a former Soviet statesman initiate?",
+      "gold": "Organizations could come together to address global issues",
+      "full_answer": "World Summit of Nobel Peace Laureates",
+      "retrieval_answer": "Soviet Jewry Movement",
+      "full_em": 0.0,
+      "retrieval_em": 0.0,
+      "full_f1": 0.0,
+      "retrieval_f1": 0.0,
+      "full_prompt_tokens": 2046,
+      "retrieval_prompt_tokens": 1866,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Mikhail Gorbachev",
+        "World Summit of Nobel Peace Laureates"
+      ],
+      "selected_supporting_titles": [
+        "Mikhail Gorbachev"
+      ],
+      "supporting_title_recall": 0.5,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 48,
+      "id": "5a8e068b5542995085b37384",
+      "question": "Are Ferocactus and Silene both types of plant?",
+      "gold": "yes",
+      "full_answer": "Yes",
+      "retrieval_answer": "Yes",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1360,
+      "retrieval_prompt_tokens": 1075,
+      "passages_sent": 9,
+      "supporting_titles": [
+        "Ferocactus",
+        "Silene"
+      ],
+      "selected_supporting_titles": [
+        "Ferocactus",
+        "Silene"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    },
+    {
+      "index": 49,
+      "id": "5abbf698554299114383a0b5",
+      "question": "Which British first-generation jet-powered medium bomber was used in the South West Pacific theatre of World War II?",
+      "gold": "English Electric Canberra",
+      "full_answer": "English Electric Canberra",
+      "retrieval_answer": "English Electric Canberra",
+      "full_em": 1.0,
+      "retrieval_em": 1.0,
+      "full_f1": 1.0,
+      "retrieval_f1": 1.0,
+      "full_prompt_tokens": 1599,
+      "retrieval_prompt_tokens": 1429,
+      "passages_sent": 8,
+      "supporting_titles": [
+        "English Electric Canberra",
+        "No. 2 Squadron RAAF"
+      ],
+      "selected_supporting_titles": [
+        "English Electric Canberra",
+        "No. 2 Squadron RAAF"
+      ],
+      "supporting_title_recall": 1.0,
+      "fallback_applied": false,
+      "retrieval_reason": "retrieved"
+    }
+  ]
+}
