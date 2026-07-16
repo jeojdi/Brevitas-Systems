@@ -1,0 +1,50 @@
+{
+  "run_date": "2026-07-16",
+  "dataset": "HotpotQA distractor validation",
+  "dataset_records": "first 100 validation questions",
+  "model": "deepseek-chat",
+  "temperature": 0.0,
+  "retrieval": {
+    "encoder": "sentence-transformers/all-MiniLM-L6-v2 via FastEmbed ONNX",
+    "method": "adaptive MaxSim, restored to original BVX message order",
+    "min_k": 8,
+    "max_k": 10,
+    "minimum_top_score": 0.2,
+    "average_passages_sent": 8.16,
+    "fallbacks": 0
+  },
+  "full_context": {
+    "exact_match": 66.0,
+    "f1": 79.13,
+    "prompt_tokens": 141147
+  },
+  "adaptive_retrieval": {
+    "exact_match": 64.0,
+    "f1": 79.51,
+    "prompt_tokens": 115223
+  },
+  "deltas": {
+    "exact_match_points": -2.0,
+    "exact_match_95_percent_paired_bootstrap_ci": [-9.0, 5.0],
+    "f1_points": 0.38,
+    "f1_95_percent_paired_bootstrap_ci": [-4.98, 5.87],
+    "prompt_token_reduction_percent": 18.37
+  },
+  "paired_outcomes": {
+    "full_correct_retrieval_wrong": 7,
+    "full_wrong_retrieval_correct": 5,
+    "answers_changed": 21,
+    "clear_semantic_regressions_after_manual_review": 5
+  },
+  "supporting_evidence_analysis": {
+    "questions_missing_at_least_one_gold_supporting_passage": 19,
+    "gold_supporting_title_recall_percent": 90.5,
+    "exact_match_delta_on_questions_with_missing_support_points": -31.58,
+    "exact_match_regressions_with_missing_gold_support": 6
+  },
+  "runtime_observations": {
+    "maxsim_numpy_runtime_warnings": 21,
+    "warning": "Aggregate deltas are statistically inconclusive at n=100, but retrieval is not strictly lossless because individual correct answers regressed and supporting evidence was omitted."
+  },
+  "full_result_sha1": "2f1efbbbaa809187987f93a54f6b8e6b2ed332e0"
+}
