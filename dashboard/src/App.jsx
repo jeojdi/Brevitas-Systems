@@ -3,7 +3,6 @@ import { authModeForPath, cacheApiKey, supabase, supabaseMisconfigured, getOrCre
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
-import ModelConfig from './components/ModelConfig.jsx'
 import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
 import Projects from './components/Projects.jsx'
@@ -11,7 +10,7 @@ import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
 
-const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Model', 'Docs', 'Savings']
+const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
 
 function pendingDeviceCode() {
@@ -246,7 +245,6 @@ export default function App() {
         {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
-        {activeTab === 'Model'      && <ModelConfig  apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
         {activeTab === 'Savings'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}

@@ -16,6 +16,14 @@ const SUGGESTIONS = [
   'What failure modes should we test for?',
 ]
 
+// Compact dollar formatting: cents at 2dp, sub-cent at 4dp, tiny values as a floor.
+const fmtUsd = (v) => {
+  if (!v) return '$0.00'
+  if (v < 0.0001) return '<$0.0001'
+  if (v < 0.01) return `$${v.toFixed(4)}`
+  return `$${v.toFixed(2)}`
+}
+
 function TokenBar({ baseline, optimized }) {
   const pct = baseline > 0 ? Math.max(4, Math.round((optimized / baseline) * 100)) : 100
   return (
@@ -38,21 +46,40 @@ function SavingsStrip({ meta, live = false }) {
     <div className={`rounded-xl border p-3.5 space-y-3 ${live
       ? 'border-brand-blue/40 bg-brand-blue-dim dark:bg-brand-dark-blue-dim'
       : 'border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg'}`}>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <p className="annotation">{live ? '// compressing context…' : '// context compressed'}</p>
         {meta.total > 0 && (
           <p className="annotation">kept {meta.selected}/{meta.total} chunks</p>
         )}
       </div>
+
+      {/* Cache-hit banner — the model call was skipped entirely */}
+      {meta.cacheHit && (
+        <div className="flex items-center gap-2 rounded-lg bg-brand-teal-dim dark:bg-brand-dark-teal-dim px-3 py-2">
+          <span className="text-brand-teal">⚡</span>
+          <p className="font-mono text-xs text-brand-teal">
+            served from cache · {meta.cacheKind || 'exact'} match · model call skipped
+          </p>
+        </div>
+      )}
+
       <TokenBar baseline={meta.baseline} optimized={meta.optimized} />
-      <div className="grid grid-cols-2 gap-3 pt-0.5">
+      <div className="grid grid-cols-3 gap-3 pt-0.5">
         <div>
-          <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">{meta.savingsPct.toFixed(1)}%</p>
+          <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">
+            {meta.cacheHit ? '100' : meta.savingsPct.toFixed(1)}%
+          </p>
           <p className="annotation mt-0.5">// tokens saved</p>
         </div>
         <div>
           <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{retained}</p>
           <p className="annotation mt-0.5">// context retained</p>
+        </div>
+        <div>
+          <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">
+            {meta.costSaved != null ? fmtUsd(meta.costSaved) : '—'}
+          </p>
+          <p className="annotation mt-0.5">// saved ≈ {meta.priceBasis || 'gpt-4o'}</p>
         </div>
       </div>
     </div>
@@ -99,10 +126,14 @@ export default function Playground({ apiKey }) {
 
   // Cumulative session savings across all completed turns.
   const totals = turns.reduce((acc, t) => {
-    if (t.meta) { acc.saved += t.meta.baseline - t.meta.optimized; acc.n += 1; acc.pctSum += t.meta.savingsPct }
+    if (t.meta) {
+      acc.saved += t.meta.tokensSaved ?? (t.meta.baseline - t.meta.optimized)
+      acc.cost  += t.meta.costSaved ?? 0
+      acc.hits  += t.meta.cacheHit ? 1 : 0
+      acc.n     += 1
+    }
     return acc
-  }, { saved: 0, n: 0, pctSum: 0 })
-  const avgSavings = totals.n ? totals.pctSum / totals.n : 0
+  }, { saved: 0, cost: 0, hits: 0, n: 0 })
 
   const byokReady = mode === 'byok' && byokProvider && byokModel && byokKey
   const canSend = !streaming && input.trim() && (mode === 'free' || byokReady)
@@ -144,12 +175,24 @@ export default function Playground({ apiKey }) {
             method: event.method,
           }
           setPending(lastMeta)
+        } else if (event.stage === 'cached') {
+          // Cache served this turn — flag it live so the badge appears immediately.
+          lastMeta = { ...(lastMeta || {}), cacheHit: true, cacheKind: event.kind, cacheSimilarity: event.similarity }
+          setPending(lastMeta)
         } else if (event.stage === 'model_response') {
           replyText = event.text || ''
         } else if (event.stage === 'done') {
           const r = event.result || {}
           replyText = replyText || r.model_response || ''
-          const meta = { ...(lastMeta || {}), provider: r.provider, model: r.model }
+          const meta = {
+            ...(lastMeta || {}),
+            provider: r.provider, model: r.model,
+            cacheHit: r.cache_hit ?? lastMeta?.cacheHit ?? false,
+            cacheKind: r.cache_kind || lastMeta?.cacheKind || '',
+            tokensSaved: r.tokens_saved_total ?? (lastMeta ? lastMeta.baseline - lastMeta.optimized : 0),
+            costSaved: r.cost_saved_usd ?? 0,
+            priceBasis: r.price_basis || 'gpt-4o-mini',
+          }
           setTurns(prev => [...prev, {
             role: 'assistant',
             content: replyText || '// no model configured — compression-only (add a key to get a reply)',
@@ -263,16 +306,16 @@ export default function Playground({ apiKey }) {
       {/* ── Session totals ── */}
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
-          <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">{totals.saved.toLocaleString()}</p>
+          <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">{Math.round(totals.saved).toLocaleString()}</p>
           <p className="annotation mt-1">// tokens saved this chat</p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
-          <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{avgSavings.toFixed(1)}%</p>
-          <p className="annotation mt-1">// avg savings / turn</p>
+          <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{fmtUsd(totals.cost)}</p>
+          <p className="annotation mt-1">// cost saved · ≈ gpt-4o</p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
-          <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">{totals.n}</p>
-          <p className="annotation mt-1">// turns compressed</p>
+          <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">{totals.hits}<span className="text-base text-brand-muted dark:text-brand-dark-muted"> / {totals.n}</span></p>
+          <p className="annotation mt-1">// cache hits</p>
         </div>
       </div>
 
@@ -366,6 +409,7 @@ export default function Playground({ apiKey }) {
             {streaming ? '…' : 'Send'}
           </button>
         </div>
+        <p className="annotation mt-2">// tip — send the same message again to watch it get served from cache (100% saved)</p>
       </div>
 
       {/* ── Integration guide ── */}

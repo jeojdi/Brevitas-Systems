@@ -10,6 +10,16 @@ import {
 const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 const REPO_COLORS = ['#4f5fc4', '#2d8a6e', '#d97706', '#be185d', '#7c3aed', '#0891b2']
 
+// Round up to a "nice" axis ceiling (1/2/5 × 10ⁿ) so the savings chart auto-scales:
+// small savings zoom in (a 5% bar is clearly visible), large savings expand toward 100%.
+function niceCeil(v) {
+  if (!(v > 0)) return 5
+  const pow = Math.pow(10, Math.floor(Math.log10(v)))
+  const n = v / pow
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10
+  return Math.min(100, step * pow)
+}
+
 function getTooltipStyle(dark) {
   return {
     contentStyle: {
@@ -80,6 +90,11 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
   const repos = [...new Set(chartData.map(row => row.repo))]
   const repoColors = Object.fromEntries(repos.map((repo, index) => [repo, REPO_COLORS[index % REPO_COLORS.length]]))
 
+  // Auto-scale the savings axis to the data (with headroom) so bars track their value
+  // instead of vanishing at the bottom of a fixed 0–100% axis.
+  const maxSaving = chartData.reduce((m, row) => Math.max(m, row.savings), 0)
+  const savingsYMax = niceCeil(maxSaving * 1.1)
+
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
   const labelColor   = darkMode ? '#2e3860' : '#c4c8e2'
@@ -111,8 +126,8 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
         <BigStat value={stats.total_calls} label="// ai calls" />
         <BigStat value={fmt(stats.total_tokens_saved)} label="// tokens saved" valueClass="text-brand-blue" />
-        <BigStat value={`$${Number(stats.total_measured_savings_usd || 0).toFixed(2)}`} label="// measured savings" valueClass="text-brand-blue" />
-        <BigStat value={`$${Number(stats.total_verified_savings_usd || 0).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
+        <BigStat value={`$${Math.abs(Number(stats.total_measured_savings_usd || 0)).toFixed(2)}`} label="// measured savings" valueClass="text-brand-blue" />
+        <BigStat value={`$${Math.abs(Number(stats.total_verified_savings_usd || 0)).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
       </div>
 
       {/* ── Token flow summary ── */}
@@ -159,7 +174,8 @@ export default function Overview({ apiKey, darkMode, refreshTick }) {
                   label={{ value: 'call #', position: 'insideBottom', offset: -10, fill: labelColor, fontSize: 10, fontFamily: 'JetBrains Mono' }}
                 />
                 <YAxis
-                  domain={[0, 100]}
+                  domain={[0, savingsYMax]}
+                  allowDecimals={false}
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={v => `${v}%`}
                 />

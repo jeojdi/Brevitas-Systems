@@ -73,8 +73,10 @@ def _optimize_message_logged(text: str) -> dict:
 
 
 from .auth import generate_api_key, hash_key
-from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage
+from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage, MODEL_PRICES
 from .store import make_store, PROVIDER_COSTS_PER_1M
+from brevitas.semantic_cache import SemanticCache
+from brevitas import _embed
 
 # ── Encryption ───────────────────────────────────────────────────────────────
 
@@ -140,6 +142,39 @@ _PROVIDER_MODELS = {
 _PLAYGROUND_KEY      = os.getenv("BREVITAS_PLAYGROUND_KEY", "")
 _PLAYGROUND_PROVIDER = os.getenv("BREVITAS_PLAYGROUND_PROVIDER", "groq")
 _PLAYGROUND_MODEL    = os.getenv("BREVITAS_PLAYGROUND_MODEL", "gemma2-9b-it")
+
+# Playground response cache — repeated/reworded questions skip the model call entirely
+# (≈100% savings on that turn). Lazy singleton; any failure disables it so a cache issue
+# can never break the endpoint. Semantic layer auto-enables where the embed model is present.
+_playground_cache = None
+_playground_cache_init = False
+
+
+def _get_playground_cache():
+    global _playground_cache, _playground_cache_init
+    if not _playground_cache_init:
+        _playground_cache_init = True
+        try:
+            _playground_cache = SemanticCache(semantic_enabled=_embed.available())
+        except Exception as exc:  # pragma: no cover — cache is best-effort
+            logger.warning("Playground cache disabled: %s", type(exc).__name__)
+            _playground_cache = None
+    return _playground_cache
+
+
+# Saved tokens are priced at a reference paid model (the free default model is $0), clearly
+# labeled in the UI as an estimate — never a charge.
+_PLAYGROUND_PRICE_MODEL = os.getenv("BREVITAS_PLAYGROUND_PRICE_MODEL", "gpt-4o")
+_PLAYGROUND_PRICE = MODEL_PRICES.get(("openai", _PLAYGROUND_PRICE_MODEL), {"input": 2.5, "output": 10.0})
+
+
+def _price_usd(input_tokens: int, output_tokens: int) -> float:
+    """Reference-rate dollar value of saved tokens (input + output)."""
+    return round(
+        max(0, input_tokens) * _PLAYGROUND_PRICE["input"] / 1_000_000
+        + max(0, output_tokens) * _PLAYGROUND_PRICE["output"] / 1_000_000,
+        6,
+    )
 
 
 def _make_ollama_backend(model: str):
@@ -1026,26 +1061,83 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                              "quality_sim": pipe["quality_sim"],
                              "fallback": pipe["fallback_applied"]})
 
-            # Answer with the resolved backend (compressed messages + pruned context only).
+            # Answer with the resolved backend — but first check the semantic/exact cache:
+            # a repeated (or reworded) question skips the model call entirely (≈100% savings).
             model_response = ""
+            cache_hit = False
+            cache_kind = ""
+            cache_similarity = 1.0
+            cache_saved_tokens = 0
+            compression_saved = max(0, pipe["baseline_tokens"] - pipe["optimized_tokens"])
             if provider and model:
                 prompt = "\n\n".join(filter(None, [
                     f"Task: {task}" if task else "", *out_messages, *pipe["selected_context"],
                 ]))
-                model_response = backend(prompt, model)
-                event_queue.put({"stage": "model_response", "provider": provider, "model": model,
-                                 "text": model_response, "model_response": model_response})
+                cache = _get_playground_cache()
+                cbody = {"messages": [{"role": "user", "content": prompt}],
+                         "temperature": 0, "_brevitas_cache_namespace": kh}
+                hit = None
+                if cache is not None:
+                    try:
+                        hit = cache.lookup(cbody, provider, model)
+                    except Exception:
+                        hit = None
+                if cancel_event.is_set():
+                    return
 
-            # Record compression savings so the Overview graphs reflect chat turns. The model
-            # choice never affects savings metering; the BYOK key is not part of this record.
-            _safe_record_usage(
-                key_hash=kh,
-                baseline_tokens=pipe["baseline_tokens"],
-                optimized_tokens=pipe["optimized_tokens"],
-                savings_pct=pipe["savings_pct"],
-                quality_proxy=None,
-                strategy=f"chat:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
-            )
+                if hit is not None:
+                    model_response = (hit.response or {}).get("text", "")
+                    cache_hit = True
+                    cache_kind = hit.kind
+                    cache_similarity = round(float(hit.similarity), 4)
+                    cache_saved_tokens = (hit.prompt_tokens or count_tokens(prompt)) \
+                        + (hit.completion_tokens or count_tokens(model_response))
+                    event_queue.put({"stage": "cached", "kind": cache_kind,
+                                     "similarity": cache_similarity, "tokens_saved": cache_saved_tokens})
+                else:
+                    model_response = backend(prompt, model)
+                    if cache is not None:
+                        try:
+                            cache.store(cbody, provider, model, {"text": model_response},
+                                        prompt_tokens=count_tokens(prompt),
+                                        completion_tokens=count_tokens(model_response))
+                        except Exception:
+                            pass  # caching is best-effort — never fail the turn over it
+
+                event_queue.put({"stage": "model_response", "provider": provider, "model": model,
+                                 "text": model_response, "model_response": model_response,
+                                 "cached": cache_hit})
+
+            # Total tokens saved this turn = compression + (whole call, if the cache served it).
+            tokens_saved_total = compression_saved + (cache_saved_tokens if cache_hit else 0)
+            # Cost saved at reference rates: compression trims input tokens; a cache hit also
+            # eliminates the full call (its prompt as input + completion as output).
+            if cache_hit:
+                cost_saved_usd = _price_usd(compression_saved + (hit.prompt_tokens or 0),
+                                            hit.completion_tokens or count_tokens(model_response))
+            else:
+                cost_saved_usd = _price_usd(compression_saved, 0)
+
+            # Record the turn's effective savings so the Overview graphs reflect wins. A cache
+            # hit eliminates the whole call, so it books as ~100% savings for that turn.
+            if cache_hit:
+                _safe_record_usage(
+                    key_hash=kh,
+                    baseline_tokens=pipe["baseline_tokens"] + cache_saved_tokens,
+                    optimized_tokens=0,
+                    savings_pct=100.0,
+                    quality_proxy=None,
+                    strategy=f"chat:cache_{cache_kind}|ctx:{pipe['reason']}"[:64],
+                )
+            else:
+                _safe_record_usage(
+                    key_hash=kh,
+                    baseline_tokens=pipe["baseline_tokens"],
+                    optimized_tokens=pipe["optimized_tokens"],
+                    savings_pct=pipe["savings_pct"],
+                    quality_proxy=None,
+                    strategy=f"chat:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
+                )
 
             event_queue.put({"stage": "done", "result": {
                 "compressed_messages": out_messages,
@@ -1058,6 +1150,12 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 "message_reason":      pipe["message_reason"],
                 "method":              pipe["method"],
                 "quality_sim":         pipe["quality_sim"],
+                "cache_hit":           cache_hit,
+                "cache_kind":          cache_kind,
+                "cache_similarity":    cache_similarity,
+                "tokens_saved_total":  tokens_saved_total,
+                "cost_saved_usd":      cost_saved_usd,
+                "price_basis":         _PLAYGROUND_PRICE_MODEL,
                 "provider":            provider,
                 "model":               model,
                 "model_response":      model_response,

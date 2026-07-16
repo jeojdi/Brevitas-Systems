@@ -67,7 +67,7 @@ export default function Pipelines({ apiKey }) {
 
   if (!apiKey) return (
     <div className="pt-12 text-center">
-      <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">// no API key — configure one in the Model tab</p>
+      <p className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">// no API key — create one in the API Keys tab</p>
     </div>
   )
 
