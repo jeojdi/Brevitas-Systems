@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { capture } from '../lib/analytics.js'
 
 export default function DeviceConnect({ accessToken, deviceCode, email, onDone }) {
   const [status, setStatus] = useState('ready')
@@ -14,6 +15,7 @@ export default function DeviceConnect({ accessToken, deviceCode, email, onDone }
         body: JSON.stringify({ device_code: deviceCode }),
       })
       if (!response.ok) throw new Error((await response.json()).detail || 'Connection failed')
+      capture('device_connected')
       setStatus('done')
     } catch (err) {
       setError(err.message)
@@ -22,7 +24,7 @@ export default function DeviceConnect({ accessToken, deviceCode, email, onDone }
   }
 
   if (status === 'done') return (
-    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center px-4">
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center px-4 ph-no-capture" data-ph-sensitive>
       <div className="w-full max-w-md bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5 sm:p-8 text-center">
         <div className="w-10 h-10 rounded-full bg-brand-teal-dim text-brand-teal mx-auto mb-5 flex items-center justify-center text-xl">✓</div>
         <h1 className="font-serif text-3xl text-brand-navy dark:text-brand-dark-navy">bvx is connected.</h1>

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { supabase } from '@/lib/supabase';
 import { withRateLimit, RATE_LIMITS } from '@/lib/rate-limiter';
+import { captureServerEvent } from '@/lib/posthog-server';
 
 interface WaitlistPayload {
   email?: string;
@@ -83,6 +85,19 @@ export async function POST(request: NextRequest) {
       }
 
       console.log('New waitlist signup saved:', { email });
+
+      await captureServerEvent({
+        // This conversion does not need an email address or other lead details in
+        // PostHog. A one-time identifier keeps the event anonymous.
+        distinctId: `waitlist:${randomUUID()}`,
+        event: 'waitlist_joined',
+        properties: {
+          source: 'website_waitlist',
+          has_company: Boolean(row.company),
+          has_orchestrator: Boolean(row.orchestrator),
+          requested_design_partnership: row.design_partner,
+        },
+      });
 
       return NextResponse.json(
         {

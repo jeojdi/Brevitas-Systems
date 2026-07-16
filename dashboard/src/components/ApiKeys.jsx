@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiKeyId, createKey, fetchKeys, revokeKey } from '../lib/api.js'
+import { capture } from '../lib/analytics.js'
 
 function CopyButton({ text, small = false }) {
   const [copied, setCopied] = useState(false)
@@ -62,6 +63,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
       const data = await createKey(apiKey, name.trim() || 'unnamed')
       setNewKey(data.api_key)
       setName('')
+      capture('api_key_created')
       await onApiKeyChange?.(data.api_key)
       await loadKeys(data.api_key)
     } catch (e) {
@@ -77,6 +79,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
     setError('')
     try {
       await revokeKey(apiKey, id)
+      capture('api_key_revoked')
       await loadKeys()
     } catch (e) {
       setError(e.message)
@@ -84,7 +87,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
   }
 
   return (
-    <div className="max-w-2xl space-y-14">
+    <div className="max-w-2xl space-y-14 ph-no-capture" data-ph-sensitive>
       {/* ── Header ── */}
       <div>
         <p className="annotation tracking-widest uppercase mb-4">Key Management</p>

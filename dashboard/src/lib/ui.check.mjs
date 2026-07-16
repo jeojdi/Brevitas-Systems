@@ -14,3 +14,11 @@ test('dashboard navigation is separated and exposes its active section', async (
   assert.match(app, /aria-label="Dashboard sections"/)
   assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
 })
+
+test('admin UI combines protected PostHog and financial operations without secrets', async () => {
+  const admin = await source('Admin')
+  assert.match(admin, /\/v1\/admin\/analytics/)
+  assert.match(admin, /\/v1\/admin\/stats\/breakdown/)
+  assert.match(admin, /data-ph-sensitive/)
+  assert.doesNotMatch(admin, /POSTHOG_PERSONAL_API_KEY|X-Brevitas-Admin/)
+})

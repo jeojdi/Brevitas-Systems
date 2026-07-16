@@ -220,18 +220,36 @@ def _breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "optimized_tokens": stat["total_optimized_tokens"],
                     "actual_tokens": stat["total_actual_tokens"],
                     "tokens_saved": stat["total_tokens_saved"],
+                    "baseline_cost_usd": stat["total_baseline_cost_usd"],
+                    "actual_cost_usd": stat["total_actual_cost_usd"],
                     "measured_savings_usd": stat["total_measured_savings_usd"],
                     "verified_savings_usd": stat["total_verified_savings_usd"],
+                    "brevitas_fee_usd": stat["total_brevitas_fee_usd"],
                     "unpriced_calls": stat["unpriced_calls"]})
     return sorted(out, key=lambda r: (-r["tokens_saved"], r["repo"], r["client"], r["model"]))
 
 
-def _admin_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _admin_breakdown(rows: list[dict[str, Any]], emails: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    emails = emails or {}
     accounts: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         accounts[str(row.get("owner_id") or "Unattributed")].append(row)
-    return [{"account_id": account, **item} for account, account_rows in accounts.items()
+    return [{"account_id": account, "account_email": emails.get(account, ""), **item}
+            for account, account_rows in accounts.items()
             for item in _breakdown(account_rows)]
+
+
+def _filter_admin_rows(rows: list[dict[str, Any]], filters: dict[str, str]) -> list[dict[str, Any]]:
+    start = filters.get("start", "")
+    result = []
+    for row in rows:
+        if start and str(row.get("ts") or "") < start:
+            continue
+        if any(filters.get(field) and str(row.get(field) or "") != filters[field]
+               for field in ("owner_id", "project", "client", "provider", "model")):
+            continue
+        result.append(row)
+    return result
 
 
 class UsageStore:
@@ -397,6 +415,10 @@ class UsageStore:
     def get_admin_breakdown(self) -> list[dict[str, Any]]:
         return _admin_breakdown(self._all_rows())
 
+    def get_admin_report(self, filters: dict[str, str]) -> dict[str, Any]:
+        rows = _filter_admin_rows(self._all_rows(), filters)
+        return {"totals": _stats(rows), "rows": _admin_breakdown(rows)}
+
     def _legacy_group(self, key_hash: str, field: str, pipeline: str = "") -> list[dict[str, Any]]:
         rows = self._rows(key_hash)
         if pipeline:
@@ -558,6 +580,38 @@ class SupabaseUsageStore:
 
     def get_admin_breakdown(self) -> list[dict[str, Any]]:
         return _admin_breakdown(self._all_rows())
+
+    def get_admin_report(self, filters: dict[str, str]) -> dict[str, Any]:
+        params: dict[str, str] = {"select": "*", "order": "ts.desc"}
+        if filters.get("start"):
+            params["ts"] = f"gte.{filters['start']}"
+        for field in ("owner_id", "project", "client", "provider", "model"):
+            if filters.get(field):
+                params[field] = f"eq.{filters[field]}"
+
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page_params = {**params, "limit": "1000", "offset": str(offset)}
+            page = self._request("GET", "usage_log", params=page_params) or []
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += 1000
+
+        owner_ids = sorted({str(row.get("owner_id") or "") for row in rows
+                            if row.get("owner_id")})
+        emails: dict[str, str] = {}
+        if owner_ids:
+            safe_ids = [owner for owner in owner_ids
+                        if len(owner) == 36 and all(c.isalnum() or c == '-' for c in owner)]
+            if safe_ids:
+                profiles = self._request("GET", "profiles", params={
+                    "select": "id,email", "id": f"in.({','.join(safe_ids)})",
+                }) or []
+                emails = {str(profile.get("id")): str(profile.get("email") or "")
+                          for profile in profiles}
+        return {"totals": _stats(rows), "rows": _admin_breakdown(rows, emails)}
 
     def _legacy_group(self, key_hash: str, field: str, pipeline: str = "", rows=None) -> list:
         rows = rows if rows is not None else self._rows(key_hash)

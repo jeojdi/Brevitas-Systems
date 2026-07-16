@@ -26,6 +26,8 @@ const dashboardHeaders = [
   { key: "X-Robots-Tag", value: "noindex, nofollow" },
 ];
 const noIndexHeaders = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
+const posthogHost = (process.env.POSTHOG_HOST || "https://us.i.posthog.com").replace(/\/$/, "");
+const posthogAssetsHost = (process.env.POSTHOG_ASSETS_HOST || "https://us-assets.i.posthog.com").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   async headers() {
@@ -66,6 +68,10 @@ const nextConfig: NextConfig = {
         { source: '/orchestration', destination: '/orchestration.html' },
       ],
       afterFiles: [
+        // Keep the specific SDK asset paths before the catch-all ingestion proxy.
+        { source: '/ingest/static/:path*', destination: `${posthogAssetsHost}/static/:path*` },
+        { source: '/ingest/array/:path*', destination: `${posthogAssetsHost}/array/:path*` },
+        { source: '/ingest/:path*', destination: `${posthogHost}/:path*` },
         {
           source: '/v1/:path*',
           destination: `${process.env.API_URL || 'http://localhost:8000'}/v1/:path*`,

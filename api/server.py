@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests as _requests
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi import FastAPI, HTTPException, Header, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -547,6 +547,92 @@ def _admin_authenticated(request: Request) -> str:
     if metadata.get("brevitas_admin") is True or metadata.get("role") == "brevitas_admin":
         return str(identity.get("id") or "admin")
     raise HTTPException(status_code=403, detail="Admin access required")
+
+
+_POSTHOG_CACHE: dict[str, dict] = {}
+_POSTHOG_CACHE_TTL = 300
+
+
+def _posthog_query(hogql: str) -> list:
+    project_id = os.getenv("POSTHOG_PROJECT_ID", "")
+    personal_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    api_host = os.getenv("POSTHOG_API_HOST", "https://us.posthog.com").rstrip("/")
+    if not project_id or not personal_key:
+        raise HTTPException(status_code=503, detail="PostHog reporting is not configured")
+    try:
+        response = _requests.post(
+            f"{api_host}/api/projects/{project_id}/query/",
+            headers={"Authorization": f"Bearer {personal_key}", "Content-Type": "application/json"},
+            json={"query": {"kind": "HogQLQuery", "query": hogql}},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json().get("results") or []
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("PostHog admin summary unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Traffic analytics temporarily unavailable") from exc
+
+
+def _posthog_admin_summary(days: int) -> dict:
+    cache_key = str(days)
+    cached = _POSTHOG_CACHE.get(cache_key)
+    now = _time.time()
+    if cached and now - cached["time"] < _POSTHOG_CACHE_TTL:
+        return cached["value"]
+
+    interval = f"{days} DAY"
+    overview = _posthog_query(f"""
+        SELECT
+          countIf(event = '$pageview') AS pageviews,
+          uniqIf(distinct_id, event = '$pageview') AS visitors,
+          uniqIf(toString(properties.$session_id), event = '$pageview') AS sessions,
+          countIf(event = 'signup_started') AS signup_started,
+          countIf(event = 'signup_submitted') AS signup_submitted
+        FROM events
+        WHERE timestamp >= now() - INTERVAL {interval}
+    """)
+    session_rows = _posthog_query(f"""
+        SELECT round(avg(duration), 1), round(100 * avg(if(pageviews <= 1, 1, 0)), 1)
+        FROM (
+          SELECT dateDiff('second', min(timestamp), max(timestamp)) AS duration,
+                 countIf(event = '$pageview') AS pageviews
+          FROM events
+          WHERE timestamp >= now() - INTERVAL {interval}
+            AND notEmpty(toString(properties.$session_id))
+          GROUP BY toString(properties.$session_id)
+        )
+    """)
+    trend_rows = _posthog_query(f"""
+        SELECT toDate(timestamp) AS day,
+               uniqIf(distinct_id, event = '$pageview') AS visitors,
+               uniqIf(toString(properties.$session_id), event = '$pageview') AS sessions,
+               countIf(event = '$pageview') AS pageviews
+        FROM events
+        WHERE timestamp >= now() - INTERVAL {interval}
+        GROUP BY day ORDER BY day
+    """)
+    totals = overview[0] if overview else [0, 0, 0, 0, 0]
+    session_metrics = session_rows[0] if session_rows else [0, 0]
+    project_id = os.getenv("POSTHOG_PROJECT_ID", "")
+    ui_host = os.getenv("NEXT_PUBLIC_POSTHOG_UI_HOST", "https://us.posthog.com").rstrip("/")
+    result = {
+        "range_days": days,
+        "pageviews": int(totals[0] or 0),
+        "visitors": int(totals[1] or 0),
+        "sessions": int(totals[2] or 0),
+        "signup_started": int(totals[3] or 0),
+        "signup_submitted": int(totals[4] or 0),
+        "avg_session_duration_seconds": float(session_metrics[0] or 0),
+        "bounce_rate": float(session_metrics[1] or 0),
+        "trend": [{"date": str(row[0]), "visitors": int(row[1] or 0),
+                   "sessions": int(row[2] or 0), "pageviews": int(row[3] or 0)}
+                  for row in trend_rows],
+        "posthog_url": f"{ui_host}/project/{project_id}",
+    }
+    _POSTHOG_CACHE[cache_key] = {"time": now, "value": result}
+    return result
 
 
 # ── bvx browser authorization ────────────────────────────────────────────────
@@ -1411,9 +1497,47 @@ def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):
 
 @app.get("/v1/admin/stats/breakdown")
 @limiter.limit("60/minute")
-def admin_stats_breakdown(request: Request, _: str = Depends(_admin_authenticated)):
+def admin_stats_breakdown(
+    request: Request,
+    range: str = Query("30d", pattern=r"^(7d|30d|90d|all)$"),
+    account: str = Query("", max_length=128),
+    project: str = Query("", max_length=128),
+    client: str = Query("", max_length=128),
+    provider: str = Query("", max_length=64),
+    model: str = Query("", max_length=128),
+    sort: str = Query("actual_cost_usd", pattern=r"^(actual_cost_usd|baseline_cost_usd|verified_savings_usd|brevitas_fee_usd|calls|tokens_saved)$"),
+    direction: str = Query("desc", pattern=r"^(asc|desc)$"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _: str = Depends(_admin_authenticated),
+):
     logger.info("admin usage breakdown accessed actor=%s", _)
-    return {"rows": _store.get_admin_breakdown(), "totals": _store.get_admin_stats()}
+    start = ""
+    if range != "all":
+        days = int(range[:-1])
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    filters = {"start": start, "owner_id": account, "project": project,
+               "client": client, "provider": provider, "model": model}
+    report = (_store.get_admin_report(filters) if hasattr(_store, "get_admin_report") else
+              {"rows": _store.get_admin_breakdown(), "totals": _store.get_admin_stats()})
+    rows = report["rows"]
+    reverse = direction == "desc"
+    rows = sorted(rows, key=lambda row: (float(row.get(sort) or 0), row.get("account_id") or ""),
+                  reverse=reverse)
+    return {"rows": rows[offset:offset + limit], "totals": report["totals"],
+            "pagination": {"total": len(rows), "limit": limit, "offset": offset},
+            "range": range}
+
+
+@app.get("/v1/admin/analytics")
+@limiter.limit("30/minute")
+def admin_analytics(
+    request: Request,
+    range: str = Query("30d", pattern=r"^(7d|30d|90d)$"),
+    _: str = Depends(_admin_authenticated),
+):
+    logger.info("admin traffic analytics accessed actor=%s", _)
+    return _posthog_admin_summary(int(range[:-1]))
 
 
 @app.get("/v1/stats/pipelines")

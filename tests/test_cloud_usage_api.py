@@ -176,6 +176,76 @@ def test_repo_client_model_breakdown_reconciles(tmp_path):
     }
 
 
+def test_admin_financial_report_is_filtered_paginated_and_protected(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "admin.db"))
+    store.record_usage("a", 100, 70, owner_id="user-a", project="alpha", client="codex",
+                       provider="openai", model="gpt-4o-mini", baseline_cost_usd=.20,
+                       actual_cost_usd=.14, measured_savings_usd=.06,
+                       verified_savings_usd=.05, brevitas_fee_usd=.005)
+    store.record_usage("b", 200, 150, owner_id="user-b", project="beta", client="backend",
+                       provider="anthropic", model="claude", baseline_cost_usd=.40,
+                       actual_cost_usd=.30, measured_savings_usd=.10,
+                       verified_savings_usd=.08, brevitas_fee_usd=.008)
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setenv("BREVITAS_ADMIN_TOKEN", "admin-secret")
+    client = TestClient(server.app)
+
+    assert client.get("/v1/admin/stats/breakdown").status_code == 403
+    response = client.get(
+        "/v1/admin/stats/breakdown?range=all&account=user-a&limit=1",
+        headers={"X-Brevitas-Admin": "admin-secret"},
+    )
+    assert response.status_code == 200
+    report = response.json()
+    assert report["pagination"] == {"total": 1, "limit": 1, "offset": 0}
+    assert report["rows"][0]["account_id"] == "user-a"
+    assert report["rows"][0]["actual_cost_usd"] == .14
+    assert report["totals"]["total_actual_cost_usd"] == .14
+    assert client.get("/v1/admin/stats/breakdown?range=365d",
+                      headers={"X-Brevitas-Admin": "admin-secret"}).status_code == 422
+
+
+def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
+    import api.server as server
+
+    personal_key = "phx_" + "private"
+    monkeypatch.setenv("BREVITAS_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("POSTHOG_PROJECT_ID", "42")
+    monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", personal_key)
+    server._POSTHOG_CACHE.clear()
+    calls = []
+
+    class Response:
+        def __init__(self, results):
+            self._results = results
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"results": self._results}
+
+    results = [[[120, 80, 90, 12, 8]], [[45.5, 32.1]],
+               [["2026-07-15", 80, 90, 120]]]
+
+    def post(url, *, headers, json, timeout):
+        calls.append((url, headers, json, timeout))
+        return Response(results[len(calls) - 1])
+
+    monkeypatch.setattr(server._requests, "post", post)
+    response = TestClient(server.app).get(
+        "/v1/admin/analytics?range=30d",
+        headers={"X-Brevitas-Admin": "admin-secret"},
+    )
+    assert response.status_code == 200
+    assert response.json()["visitors"] == 80
+    assert response.json()["avg_session_duration_seconds"] == 45.5
+    assert all(call[1]["Authorization"] == f"Bearer {personal_key}" for call in calls)
+    assert personal_key not in response.text
+
+
 def _mock_client(monkeypatch, handler):
     import brevitas.proxy as proxy
     real = httpx.AsyncClient

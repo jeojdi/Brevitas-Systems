@@ -15,6 +15,7 @@
     "dotenv": "^17.4.2",
     "next": "16.2.10",
     "p-ratelimit": "^1.0.1",
+    "posthog-node": "^5.44.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },

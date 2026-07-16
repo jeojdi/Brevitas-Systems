@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { resendSignupConfirmation, supabase } from '../lib/supabase.js'
+import { capture } from '../lib/analytics.js'
 
 export default function Auth({ darkMode, onToggleDark, initialMode = 'login', onPasswordUpdated }) {
   const [mode, setMode]       = useState(initialMode)
@@ -24,16 +25,24 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
       if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
+        capture('login_completed')
       } else if (mode === 'signup') {
+        capture('signup_started')
         const { error } = await supabase.auth.signUp({
           email,
           password,
           options: {
             emailRedirectTo: `${window.location.origin}/email-confirmed`,
-            data: { accepted_terms_at: new Date().toISOString(), terms_version: '2026-07-14' },
+            data: {
+              accepted_terms_at: new Date().toISOString(),
+              terms_version: '2026-07-14',
+              privacy_version: '2026-07-15',
+              analytics_notice_acknowledged_at: new Date().toISOString(),
+            },
           },
         })
         if (error) throw error
+        capture('signup_submitted')
         setConfirmationEmail(email)
         setNotice('Request accepted. If this address needs confirmation, check your inbox or resend below. Already confirmed? Sign in or reset your password.')
         setMode('login')
@@ -42,6 +51,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
           redirectTo: `${window.location.origin}/dashboard`,
         })
         if (error) throw error
+        capture('password_reset_requested')
         setNotice('Password reset link sent — check your email.')
         setMode('login')
       } else if (mode === 'recovery') {
@@ -50,6 +60,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
         }
         const { error } = await supabase.auth.updateUser({ password })
         if (error) throw error
+        capture('password_updated')
         onPasswordUpdated?.()
       }
     } catch (err) {
@@ -139,7 +150,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
             </button>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
+          <form onSubmit={handleSubmit} className="space-y-3 ph-no-capture" data-ph-sensitive>
             {!isRecovery && <div>
               <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
                 Email
@@ -183,7 +194,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
                   className="mt-0.5 shrink-0 accent-brand-blue"
                 />
                 <span>
-                  I agree to the <a href="/terms" target="_blank" rel="noreferrer" className="text-brand-blue underline">Terms of Service</a>, including its arbitration and class-action waiver, and acknowledge the <a href="/privacy" target="_blank" rel="noreferrer" className="text-brand-blue underline">Privacy Policy</a>.
+                  I agree to the <a href="/terms" target="_blank" rel="noreferrer" className="text-brand-blue underline">Terms of Service</a>, including its arbitration and class-action waiver, and acknowledge the <a href="/privacy" target="_blank" rel="noreferrer" className="text-brand-blue underline">Privacy Policy</a>, including automatic analytics and strictly masked session replay with an anytime opt-out.
                 </span>
               </label>
             )}

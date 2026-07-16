@@ -18,4 +18,14 @@
   } catch (e) {
     // fail silently
   }
+
+  // Most marketing pages are static files served through Next.js rewrites. Load the
+  // shared analytics bootstrap here so they all receive the same privacy behavior.
+  if (!document.querySelector('script[data-brevitas-analytics]')) {
+    var analytics = document.createElement('script');
+    analytics.src = '/analytics.js';
+    analytics.defer = true;
+    analytics.dataset.brevitasAnalytics = 'true';
+    document.head.appendChild(analytics);
+  }
 })();

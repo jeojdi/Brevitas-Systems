@@ -74,7 +74,7 @@ export default function Billing({ apiKey, refreshTick }) {
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-10" data-ph-sensitive>
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={load} className="annotation hover:text-brand-blue">retry</button></div>}
       <div>
         <p className="annotation tracking-widest uppercase mb-4">Savings</p>

@@ -33,7 +33,8 @@ test('public discovery files contain only live public routes and assets', () => 
 })
 
 test('homepage install flow explicitly authenticates bvx before setup', () => {
-  assert.match(read('public/index.html'),
+  const homepageSource = `${read('public/index.html')}\n${read('public/components.jsx')}`
+  assert.match(homepageSource,
     /brew install brevitas-ai\/brevitas\/bvx && bvx login && bvx install ai/)
 })
 
@@ -94,4 +95,38 @@ test('legal acceptance migration backfills existing signup metadata', () => {
   assert.match(migration, /from auth\.users/i)
   assert.match(migration, /accepted_terms_at/)
   assert.match(migration, /on conflict \(user_id\) do nothing/i)
+})
+
+test('PostHog analytics is proxied, privacy controlled, and never exposes the personal key', () => {
+  const config = read('next.config.ts')
+  const analytics = read('public/analytics.js')
+  const publicConfig = read('src/app/api/analytics-config/route.ts')
+  assert.match(config, /source: '\/ingest\/static\/:path\*'/)
+  assert.match(config, /source: '\/ingest\/:path\*'/)
+  assert.match(analytics, /maskAllInputs: true/)
+  assert.match(analytics, /maskCapturedNetworkRequestFn/)
+  assert.match(analytics, /globalPrivacyControl/)
+  assert.match(analytics, /opt_out_capturing/)
+  assert.doesNotMatch(publicConfig, /POSTHOG_PERSONAL_API_KEY/)
+  assert.match(read('public/privacy.html'), /PostHog/)
+})
+
+test('new signup records the versioned analytics privacy notice', () => {
+  const auth = read('dashboard/src/components/Auth.jsx')
+  const migration = read('supabase/migrations/20260715_analytics_privacy.sql')
+  assert.match(auth, /privacy_version: '2026-07-15'/)
+  assert.match(auth, /analytics_notice_acknowledged_at/)
+  assert.match(migration, /add column if not exists privacy_version/i)
+  assert.match(migration, /Existing rows intentionally remain null/)
+})
+
+test('PostHog warehouse role can read only the approved analytics view', () => {
+  const migration = read('supabase/migrations/20260716_posthog_warehouse_view.sql')
+  assert.match(migration, /create role posthog_reader nologin/i)
+  assert.match(migration, /grant select on analytics\.posthog_usage to posthog_reader/i)
+  assert.doesNotMatch(migration, /grant select on (?:public|auth)\./i)
+  for (const sensitive of ['key_hash', 'provider_api_key', 'usage_raw', 'request_id']) {
+    const viewBody = migration.match(/create or replace view[\s\S]+?from public\.usage_log/i)?.[0] || ''
+    assert.doesNotMatch(viewBody, new RegExp(`\\b${sensitive}\\b`, 'i'))
+  }
 })

@@ -9,6 +9,7 @@ import Projects from './components/Projects.jsx'
 import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
+import { capture, identify, resetAnalytics } from './lib/analytics.js'
 
 const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
@@ -104,12 +105,26 @@ export default function App() {
   }, [session?.user?.app_metadata])
 
   useEffect(() => {
+    if (!session?.user?.id) return
+    identify(session.user.id, { email: session.user.email, account_type: isAdmin ? 'admin' : 'customer' })
+  }, [session?.user?.id, session?.user?.email, isAdmin])
+
+  useEffect(() => {
+    if (!session) return
+    capture('dashboard_tab_viewed', { tab: activeTab })
+  }, [session, activeTab])
+
+  useEffect(() => {
     if (!apiKey) return
     const timer = window.setInterval(() => setRefreshTick(tick => tick + 1), LIVE_REFRESH_MS)
     return () => window.clearInterval(timer)
   }, [apiKey])
 
-  const signOut = () => supabase.auth.signOut()
+  const signOut = () => {
+    capture('account_signed_out')
+    resetAnalytics()
+    return supabase.auth.signOut()
+  }
   const activateApiKey = async key => {
     setApiKey(key)
     try { await cacheApiKey(session.user.id, key) } catch { /* active for this session; next login self-heals */ }
@@ -205,7 +220,7 @@ export default function App() {
               >
                 {darkMode ? <SunIcon /> : <MoonIcon />}
               </button>
-              <span className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
+              <span data-ph-sensitive className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
                 {session.user.email}
               </span>
               <button

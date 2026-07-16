@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { streamPlaygroundChat, fetchProviders } from '../lib/api.js'
+import { capture } from '../lib/analytics.js'
 
 // Free zero-config default served by the Brevitas server (no key needed).
 const FREE_LABEL = 'hosted gemma2-9b-it · no key needed'
@@ -146,6 +147,7 @@ export default function Playground({ apiKey }) {
     abortRef.current = controller
 
     const priorContext = turns.map(t => t.content)   // whole conversation so far → gets pruned
+    capture('playground_message_sent', { mode, byok_provider: byokReady ? byokProvider : null, turn_index: turns.filter(t => t.role === 'user').length })
     setTurns(prev => [...prev, { role: 'user', content: message }])
     setInput('')
     setError('')
@@ -178,6 +180,7 @@ export default function Playground({ apiKey }) {
         } else if (event.stage === 'cached') {
           // Cache served this turn — flag it live so the badge appears immediately.
           lastMeta = { ...(lastMeta || {}), cacheHit: true, cacheKind: event.kind, cacheSimilarity: event.similarity }
+          capture('playground_cache_hit', { cache_kind: event.kind, similarity: event.similarity })
           setPending(lastMeta)
         } else if (event.stage === 'model_response') {
           replyText = event.text || ''
@@ -215,7 +218,7 @@ export default function Playground({ apiKey }) {
   const reset = () => { abortRef.current?.abort(); setTurns([]); setPending(null); setError(''); setStreaming(false) }
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-10 ph-no-capture" data-ph-sensitive>
       {/* ── Header ── */}
       <div>
         <p className="annotation tracking-widest uppercase mb-4">Playground</p>
@@ -236,7 +239,7 @@ export default function Playground({ apiKey }) {
           {[['free', 'Free default'], ['byok', 'Bring your own key']].map(([id, label]) => (
             <button
               key={id}
-              onClick={() => setMode(id)}
+              onClick={() => { setMode(id); capture('playground_mode_changed', { mode: id }) }}
               className={`font-mono text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                 mode === id
                   ? 'border-brand-blue bg-brand-blue text-white'

@@ -1,0 +1,23 @@
+#brevitas-privacy-controls { position: fixed; right: 16px; bottom: 14px; z-index: 2147483000; font: 13px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; color: #0d1530; }
+.bvt-privacy-button { border: 1px solid rgba(79,95,196,.35); border-radius: 999px; padding: 8px 12px; background: rgba(255,255,255,.96); color: #4f5fc4; box-shadow: 0 6px 24px rgba(13,21,48,.12); cursor: pointer; }
+.bvt-privacy-panel { position: absolute; right: 0; bottom: 44px; width: min(360px, calc(100vw - 24px)); padding: 18px; border: 1px solid #e2e4f0; border-radius: 14px; background: #fff; box-shadow: 0 18px 60px rgba(13,21,48,.18); }
+.bvt-privacy-panel strong { display: block; margin-bottom: 6px; font-size: 14px; }
+.bvt-privacy-panel p { margin: 0 0 12px; color: #687092; }
+.bvt-privacy-signal { color: #2d8a6e !important; }
+.bvt-privacy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bvt-privacy-actions button, .bvt-privacy-notice button { border: 0; border-radius: 8px; padding: 8px 10px; background: #4f5fc4; color: white; cursor: pointer; }
+.bvt-privacy-actions button[disabled] { opacity: .45; cursor: not-allowed; }
+.bvt-privacy-actions button:nth-child(2), .bvt-privacy-notice button[data-open] { background: #eef0f7; color: #0d1530; }
+.bvt-privacy-actions a { margin-left: auto; color: #4f5fc4; }
+.bvt-privacy-notice { position: absolute; right: 0; bottom: 44px; width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #e2e4f0; border-radius: 12px; background: #fff; box-shadow: 0 14px 42px rgba(13,21,48,.16); }
+.bvt-privacy-notice span { flex: 1; color: #4c5474; }
+@media (prefers-color-scheme: dark) {
+  .bvt-privacy-button, .bvt-privacy-panel, .bvt-privacy-notice { background: #171717; color: #eee; border-color: #333; }
+  .bvt-privacy-panel p, .bvt-privacy-notice span { color: #aaa; }
+  .bvt-privacy-actions button:nth-child(2), .bvt-privacy-notice button[data-open] { background: #292929; color: #eee; }
+}
+@media (max-width: 640px) {
+  #brevitas-privacy-controls { right: 10px; bottom: 10px; }
+  .bvt-privacy-notice { align-items: stretch; flex-wrap: wrap; }
+  .bvt-privacy-notice span { flex-basis: 100%; }
+}
