@@ -111,6 +111,19 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(read('public/privacy.html'), /PostHog/)
 })
 
+test('production build compiles the dashboard with Supabase public configuration', () => {
+  const pkg = JSON.parse(read('package.json'))
+  const vercel = JSON.parse(read('vercel.json'))
+  const builder = read('scripts/build-dashboard.mjs')
+
+  assert.match(pkg.scripts.build, /build:dashboard.*next build/)
+  assert.match(vercel.installCommand, /npm ci --prefix dashboard/)
+  assert.match(builder, /VITE_SUPABASE_URL/)
+  assert.match(builder, /VITE_SUPABASE_ANON_KEY/)
+  assert.match(builder, /NEXT_PUBLIC_SUPABASE_URL/)
+  assert.match(builder, /NEXT_PUBLIC_SUPABASE_ANON_KEY/)
+})
+
 test('new signup records the versioned analytics privacy notice', () => {
   const auth = read('dashboard/src/components/Auth.jsx')
   const migration = read('supabase/migrations/20260715_analytics_privacy.sql')

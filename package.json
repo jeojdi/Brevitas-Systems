@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "test": "node --test tests/deployment_config.test.mjs",
-    "build": "next build",
+    "build:dashboard": "node scripts/build-dashboard.mjs",
+    "build": "npm run build:dashboard && next build",
     "start": "next start",
     "lint": "eslint",
     "prepare": "husky"

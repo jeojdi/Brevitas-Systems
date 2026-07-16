@@ -30,19 +30,21 @@ jobs:
           api/requirements.txt
     - name: Install root dependencies
       run: npm ci
+    - name: Install dashboard dependencies
+      run: npm ci --prefix dashboard
     - name: Test, lint, and build root app
       env:
         API_URL: http://localhost:8000
         NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
+        VITE_SUPABASE_URL: https://example.supabase.co
+        VITE_SUPABASE_ANON_KEY: ci-placeholder
       run: |
         npm test
         npm run lint
         npm run build
-    - name: Install and test dashboard
-      run: |
-        npm ci --prefix dashboard
-        npm test --prefix dashboard
+    - name: Test dashboard
+      run: npm test --prefix dashboard
     - name: Build dashboard outside public/
       env:
         VITE_SUPABASE_URL: https://example.supabase.co
