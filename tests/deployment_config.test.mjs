@@ -132,9 +132,27 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(analytics, /globalPrivacyControl/)
   assert.match(analytics, /opt_out_capturing/)
   assert.match(analytics, /if \(notice\) notice\.hidden = open/)
+  assert.match(analytics, /data-close/)
+  assert.match(analytics, /toggle\(false\); button\.focus\(\)/)
   assert.match(read('public/analytics.css'), /\.bvt-privacy-notice\[hidden\] \{ display: none; \}/)
   assert.doesNotMatch(publicConfig, /POSTHOG_PERSONAL_API_KEY/)
   assert.match(read('public/privacy.html'), /PostHog/)
+})
+
+test('phone layouts replace the transcript and keep privacy controls out of content', () => {
+  const pipeline = read('public/pipeline-explorer.jsx')
+  const analyticsCss = read('public/analytics.css')
+  const responsiveCss = read('public/responsive.css')
+
+  assert.match(pipeline, /className="bv-mobile-summary"/)
+  assert.match(pipeline, /function MobilePipelineSummary\(\{ task, mode, phases \}\)/)
+  assert.match(pipeline, /const inputCosts = task\[mode\]/)
+  assert.match(pipeline, /@media \(max-width: 640px\)[\s\S]+\.bv-pipe-grid \{ display: none; \}/)
+  assert.match(pipeline, /\.bv-mobile-summary \{[\s\S]+display: block;/)
+  assert.match(pipeline, /\.section \.bv-cost-readout[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(analyticsCss, /@media \(max-width: 640px\)[\s\S]+#brevitas-privacy-controls \{[\s\S]+position: relative;/)
+  assert.match(analyticsCss, /\.bvt-privacy-panel \{[\s\S]+position: fixed;/)
+  assert.doesNotMatch(responsiveCss, /body \{[\s\S]{0,100}min-width: 320px;/)
 })
 
 test('production build compiles the dashboard with Supabase public configuration', () => {

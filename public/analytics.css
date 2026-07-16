@@ -8,6 +8,7 @@
 .bvt-privacy-actions button, .bvt-privacy-notice button { border: 0; border-radius: 8px; padding: 8px 10px; background: #4f5fc4; color: white; cursor: pointer; }
 .bvt-privacy-actions button[disabled] { opacity: .45; cursor: not-allowed; }
 .bvt-privacy-actions button:nth-child(2), .bvt-privacy-notice button[data-open] { background: #eef0f7; color: #0d1530; }
+.bvt-privacy-actions .bvt-privacy-close { background: transparent; color: #4f5fc4; border: 1px solid currentColor; }
 .bvt-privacy-actions a { margin-left: auto; color: #4f5fc4; }
 .bvt-privacy-notice { position: absolute; right: 0; bottom: 44px; width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #e2e4f0; border-radius: 12px; background: #fff; box-shadow: 0 14px 42px rgba(13,21,48,.16); }
 .bvt-privacy-notice[hidden] { display: none; }
@@ -16,9 +17,35 @@
   .bvt-privacy-button, .bvt-privacy-panel, .bvt-privacy-notice { background: #171717; color: #eee; border-color: #333; }
   .bvt-privacy-panel p, .bvt-privacy-notice span { color: #aaa; }
   .bvt-privacy-actions button:nth-child(2), .bvt-privacy-notice button[data-open] { background: #292929; color: #eee; }
+  .bvt-privacy-actions .bvt-privacy-close { background: transparent; color: #aaa; }
 }
 @media (max-width: 640px) {
-  #brevitas-privacy-controls { right: 10px; bottom: 10px; }
-  .bvt-privacy-notice { align-items: stretch; flex-wrap: wrap; }
+  #brevitas-privacy-controls {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+  }
+  .bvt-privacy-panel {
+    position: fixed;
+    inset: auto 12px 12px;
+    width: auto;
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+  }
+  .bvt-privacy-notice {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    order: -1;
+    width: 100%;
+    max-width: 560px;
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
   .bvt-privacy-notice span { flex-basis: 100%; }
 }

@@ -92,13 +92,14 @@
     wrapper.id = 'brevitas-privacy-controls';
     wrapper.innerHTML =
       '<button class="bvt-privacy-button" type="button" aria-expanded="false" aria-controls="brevitas-privacy-panel">Privacy choices</button>' +
-      '<section class="bvt-privacy-panel" id="brevitas-privacy-panel" hidden role="dialog" aria-label="Analytics privacy choices">' +
+      '<section class="bvt-privacy-panel" id="brevitas-privacy-panel" hidden role="dialog" aria-modal="true" aria-label="Analytics privacy choices">' +
         '<strong>Analytics &amp; masked replay</strong>' +
         '<p>We use PostHog to understand visits and improve Brevitas. Inputs, secrets, account details, and network contents are excluded or masked.</p>' +
         (signal ? '<p class="bvt-privacy-signal">Your browser privacy signal is active, so analytics is off.</p>' : '') +
         '<div class="bvt-privacy-actions">' +
           '<button type="button" data-choice="on"' + (signal ? ' disabled' : '') + '>Allow analytics</button>' +
           '<button type="button" data-choice="off">Turn off</button>' +
+          '<button class="bvt-privacy-close" type="button" data-close>Close</button>' +
           '<a href="/privacy">Privacy policy</a>' +
         '</div>' +
       '</section>' +
@@ -121,6 +122,9 @@
     button.addEventListener('click', function () { toggle(panel.hidden); });
     wrapper.querySelectorAll('[data-open]').forEach(function (node) {
       node.addEventListener('click', function () { toggle(true); });
+    });
+    wrapper.querySelectorAll('[data-close]').forEach(function (node) {
+      node.addEventListener('click', function () { toggle(false); button.focus(); });
     });
     wrapper.querySelectorAll('[data-choice]').forEach(function (node) {
       node.addEventListener('click', function () { setEnabled(node.dataset.choice === 'on'); });

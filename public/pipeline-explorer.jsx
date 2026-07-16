@@ -62,9 +62,9 @@ function PToken({ tok, mode, phase, onHover, charEaten }) {
         fontFamily: isStruct ? 'JetBrains Mono, monospace' : 'inherit',
         fontSize: isStruct ? '0.92em' : 'inherit',
         background: highlighted ? 'rgba(143,58,48,0.22)' : 'transparent',
-        padding: highlighted ? '1px 3px' : 0,
+        padding: 0,
         borderRadius: highlighted ? 2 : 0,
-        transition: 'color 250ms, background 250ms, padding 250ms',
+        transition: 'color 250ms, background 250ms',
         cursor: isDroppable || isKept ? 'help' : 'default',
         position: 'relative',
       }}
@@ -93,30 +93,42 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap }) {
   const shown = tokens.slice(0, reveal);
   const typing = phase === 'typing' && reveal < tokens.length;
   return (
-    <div style={{
+    <div className="bv-transcript" style={{
       fontFamily: 'Newsreader, serif',
-      fontSize: 14.5,
-      lineHeight: 1.75,
+      fontSize: 15.5,
+      lineHeight: 1.68,
       color: 'var(--bone)',
-      minHeight: 160,
+      display: 'grid',
     }}>
-      {shown.map((tok, i) => (
-        <React.Fragment key={i}>
-          <PToken tok={tok} mode={mode} phase={phase} onHover={onHover} charEaten={eatenMap ? eatenMap[i] : -1} />
-          {i < shown.length - 1 && tok.k !== 'space' && shown[i + 1]?.k !== 'space' ? ' ' : ''}
-        </React.Fragment>
-      ))}
-      {typing && (
-        <span style={{
-          display: 'inline-block',
-          width: 7,
-          height: 15,
-          background: 'var(--bronze)',
-          verticalAlign: 'text-bottom',
-          marginLeft: 2,
-          animation: 'bvCursorBlink 800ms steps(2) infinite',
-        }} />
-      )}
+      {/* The hidden full transcript reserves the final layout before typing
+          starts, so the animation never pushes the page downward. */}
+      <div aria-hidden="true" style={{ gridArea: '1 / 1', visibility: 'hidden', pointerEvents: 'none' }}>
+        {tokens.map((tok, i) => (
+          <React.Fragment key={i}>
+            <PToken tok={tok} mode="baseline" phase="done" charEaten={-1} />
+            {i < tokens.length - 1 && tok.k !== 'space' && tokens[i + 1]?.k !== 'space' ? ' ' : ''}
+          </React.Fragment>
+        ))}
+      </div>
+      <div style={{ gridArea: '1 / 1', alignSelf: 'start' }}>
+        {shown.map((tok, i) => (
+          <React.Fragment key={i}>
+            <PToken tok={tok} mode={mode} phase={phase} onHover={onHover} charEaten={eatenMap ? eatenMap[i] : -1} />
+            {i < shown.length - 1 && tok.k !== 'space' && shown[i + 1]?.k !== 'space' ? ' ' : ''}
+          </React.Fragment>
+        ))}
+        {typing && (
+          <span style={{
+            display: 'inline-block',
+            width: 7,
+            height: 15,
+            background: 'var(--bronze)',
+            verticalAlign: 'text-bottom',
+            marginLeft: 2,
+            animation: 'bvCursorBlink 800ms steps(2) infinite',
+          }} />
+        )}
+      </div>
     </div>
   );
 }
@@ -134,7 +146,7 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
       minWidth: 0,
       borderTop: active ? '2px solid var(--bronze)' : '2px solid transparent',
       background: active ? 'var(--graphite)' : 'transparent',
-      padding: '15px 20px 18px',
+      padding: '18px 22px 22px',
       transition: 'border-color 300ms, background 300ms, opacity 300ms',
       opacity: pending ? 0.4 : 1,
       position: 'relative',
@@ -142,16 +154,60 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
       flexDirection: 'column',
       gap: 12,
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
-        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 18, color: 'var(--bone)', letterSpacing: '-0.01em' }}>
-          {subtitle}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: 'var(--bronze)', letterSpacing: '0.12em', marginBottom: 4 }}>
+            {role}
+          </div>
+          <div style={{ fontFamily: 'Newsreader, serif', fontSize: 21, lineHeight: 1.2, color: 'var(--bone)', letterSpacing: '-0.01em' }}>
+            {subtitle}
+          </div>
         </div>
-        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: 'var(--stone-2)', flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--stone-2)', flex: '0 0 auto', whiteSpace: 'nowrap', paddingTop: 2 }}>
           in {inputCost} · out {outputCost}
         </div>
       </div>
 
       <TypingBlock tokens={tokens} reveal={reveal} mode={mode} phase={phase} onHover={onHover} eatenMap={eatenMap} />
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// MobilePipelineSummary — compact replacement for the animated
+// transcript. The full token stream is intentionally desktop-only:
+// on a phone it creates three unreadably narrow columns.
+// ------------------------------------------------------------
+function MobilePipelineSummary({ task, mode, phases }) {
+  const inputCosts = task[mode];
+  const hops = [
+    { number: '01', role: 'Architect', subtitle: 'Chooses the approach', input: inputCosts.call1, output: task.a1Tokens },
+    { number: '02', role: 'Builder', subtitle: 'Writes the implementation', input: inputCosts.call2, output: task.a2Tokens },
+    { number: '03', role: 'Reviewer', subtitle: 'Flags risks and approves', input: inputCosts.call3, output: task.a3Tokens },
+  ];
+
+  const stateLabel = phase => {
+    if (phase === 'done') return 'Done';
+    if (phase === 'pending') return 'Waiting';
+    return 'Running';
+  };
+
+  return (
+    <div className="bv-mobile-summary" aria-label="Agent pipeline summary">
+      {hops.map((hop, index) => {
+        const state = stateLabel(phases[index]);
+        return (
+          <div className="bv-mobile-hop" key={hop.number}>
+            <span className="bv-mobile-hop-number">{hop.number}</span>
+            <div className="bv-mobile-hop-copy">
+              <span className="bv-mobile-hop-role">{hop.role}</span>
+              <strong>{hop.subtitle}</strong>
+              <span>in {hop.input.toLocaleString()} · out {hop.output.toLocaleString()}</span>
+            </div>
+            <span className={`bv-mobile-hop-state is-${state.toLowerCase()}`}>{state}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -186,7 +242,7 @@ function CostReadout({ task, mode, progress }) {
   );
 
   return (
-    <div style={{
+    <div className="bv-cost-readout" style={{
       background: 'var(--graphite)',
       padding: '15px 20px 14px',
       marginTop: 12,
@@ -195,7 +251,7 @@ function CostReadout({ task, mode, progress }) {
       gap: 28,
       alignItems: 'center',
     }}>
-      <div style={{
+      <div className="bv-cost-heading" style={{
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: 10.5,
         letterSpacing: '0.14em',
@@ -206,7 +262,7 @@ function CostReadout({ task, mode, progress }) {
       </div>
 
       {/* Hop progress bars — aligned under the hop cards above */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="bv-cost-progress" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace', fontSize: 9, color: 'var(--stone)', letterSpacing: '0.12em' }}>
           <span>hop 1</span><span>hop 2</span><span>hop 3</span>
         </div>
@@ -235,7 +291,7 @@ function CostReadout({ task, mode, progress }) {
       <Cell label="with brevitas" value={optimizedCum.toLocaleString()} color={showingOptimized ? 'var(--bone)' : 'var(--stone-2)'} />
       <Cell label="Saved" value={saved > 0 ? `−${saved.toLocaleString()}` : '—'} color="var(--signal)" />
 
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+      <div className="bv-cost-percent" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
         <div style={{ fontFamily: 'Newsreader, serif', fontSize: 40, lineHeight: 1, color: 'var(--signal)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
           {pct}<span style={{ fontSize: 22, color: 'var(--stone-2)' }}>%</span>
         </div>
@@ -564,23 +620,103 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
   }, [isVisible, phases, activeHop]);
 
   return (
-    <div ref={rootRef} style={{ width: '100%', position: 'relative' }}>
+    <div ref={rootRef} className="bv-explorer" style={{ width: '100%', position: 'relative' }}>
       <PipelineFieldBg />
       <style>{`
         @keyframes bvCursorBlink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
-        .bv-ctl-btn { transition: border-color 160ms, color 160ms, background 160ms, transform 120ms; }
+        .bv-ctl-btn { transition: border-color 160ms, color 160ms, background 160ms, transform 120ms; white-space: nowrap; }
         .bv-ctl-btn:hover { border-color: var(--bronze) !important; background: var(--component-bg-dark-light) !important; }
         .bv-ctl-btn:active { transform: translateY(1px); }
+        .bv-ctl-btn:focus-visible, .bv-task-pill:focus-visible { outline: 2px solid var(--bronze); outline-offset: 3px; }
         .bv-task-pill { transition: color 160ms, background 160ms; }
         .bv-task-pill:hover { color: var(--bone); background: var(--component-bg-dark-light); }
+        .bv-task-tabs, .bv-prompt, .bv-pipe-grid, .bv-mobile-summary, .bv-cost-readout { position: relative; z-index: 1; }
+        .bv-keyboard-hint {
+          display: inline-flex; align-items: center; gap: 5px;
+          color: var(--stone-2); font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; letter-spacing: 0.06em; white-space: nowrap;
+        }
+        .bv-keyboard-hint kbd {
+          min-width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center;
+          border: 1px solid var(--line); border-bottom-color: var(--stone);
+          border-radius: 5px; background: var(--graphite); color: var(--bone);
+          font-family: inherit; font-size: 12px; line-height: 1;
+        }
         .bv-strip > div + div { border-left: 1px solid var(--line); }
         .bv-strip { scrollbar-width: thin; scrollbar-color: var(--stone) transparent; }
         .bv-strip::-webkit-scrollbar { height: 6px }
         .bv-strip::-webkit-scrollbar-track { background: transparent }
         .bv-strip::-webkit-scrollbar-thumb { background: var(--stone); border-radius: 4px }
+        .bv-mobile-summary { display: none; }
         @media (max-width: 900px) {
-          .bv-pipe-grid { grid-template-columns: 1fr !important; overflow-x: auto; }
-          .bv-strip { min-width: 540px; }
+          .bv-prompt { flex-wrap: wrap; align-items: flex-start !important; }
+          .bv-prompt-actions { width: 100%; justify-content: flex-end; }
+          .bv-keyboard-hint { display: none; }
+          .bv-pipe-grid { overflow-x: auto; overscroll-behavior-inline: contain; }
+          .bv-strip { min-width: 840px; }
+        }
+        @media (max-width: 640px) {
+          .bv-pipe-grid { display: none; }
+          .bv-mobile-summary {
+            display: block;
+            margin-top: 14px;
+            border-top: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+          }
+          .bv-mobile-hop {
+            display: grid;
+            grid-template-columns: 34px minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+            padding: 16px 2px;
+          }
+          .bv-mobile-hop + .bv-mobile-hop { border-top: 1px solid var(--line); }
+          .bv-mobile-hop-number,
+          .bv-mobile-hop-role,
+          .bv-mobile-hop-copy > span:last-child,
+          .bv-mobile-hop-state {
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+          }
+          .bv-mobile-hop-number { color: var(--bronze); font-size: 11px; letter-spacing: 0.12em; }
+          .bv-mobile-hop-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+          .bv-mobile-hop-copy strong {
+            color: var(--bone);
+            font-family: 'Newsreader', serif;
+            font-size: 18px;
+            font-weight: 400;
+            line-height: 1.2;
+          }
+          .bv-mobile-hop-role,
+          .bv-mobile-hop-copy > span:last-child { color: var(--stone-2); font-size: 9px; letter-spacing: 0.1em; }
+          .bv-mobile-hop-state {
+            color: var(--stone-2);
+            font-size: 9px;
+            letter-spacing: 0.08em;
+            white-space: nowrap;
+          }
+          .bv-mobile-hop-state.is-running { color: var(--signal); }
+          .bv-mobile-hop-state.is-done { color: var(--bone); }
+          .bv-prompt {
+            align-items: stretch !important;
+            flex-direction: column;
+            gap: 12px !important;
+          }
+          .bv-prompt-actions {
+            display: grid !important;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            width: 100%;
+          }
+          .bv-keyboard-hint { display: none; }
+          .bv-prompt-actions .bv-ctl-btn { width: 100%; }
+          .section .bv-cost-readout {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 18px 16px !important;
+            padding: 18px !important;
+          }
+          .bv-cost-heading,
+          .bv-cost-progress { grid-column: 1 / -1; }
+          .bv-cost-percent { align-items: flex-start !important; }
         }
         @keyframes bvFieldDrift { 0% { transform: translate(0,0) } 100% { transform: translate(-24px, -24px) } }
         @keyframes bvPulse { 0%, 100% { opacity: 0.25 } 50% { opacity: 0.75 } }
@@ -619,22 +755,26 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         }
         /* Ambient glow removed — no decorative gradients behind the tool */
         .bv-field-glow { display: none !important; }
+        @media (prefers-reduced-motion: reduce) {
+          .bv-field-grid, .bv-field-packet { animation: none !important; }
+          .bv-transcript span { animation-duration: 1ms !important; }
+        }
       `}</style>
 
 
       {/* Task tabs — active one is a quiet chip with a bronze underline */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', marginBottom: 14 }}>
+      <div className="bv-task-tabs" role="group" aria-label="Choose a demo task" style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 14 }}>
         {TASKS.map(t => {
           const active = t.id === activeId;
           return (
-            <button key={t.id} className="bv-task-pill" onClick={() => pickTask(t.id)}
+            <button key={t.id} className="bv-task-pill" aria-pressed={active} onClick={() => pickTask(t.id)}
               style={{
                 background: active ? 'var(--component-bg-dark-light)' : 'transparent',
                 color: active ? 'var(--bone)' : 'var(--stone-2)',
                 border: 'none',
                 boxShadow: active ? 'inset 0 -1.5px 0 var(--bronze)' : 'none',
-                padding: '6px 12px', fontFamily: 'JetBrains Mono, monospace',
-                fontSize: 11, letterSpacing: '0.04em', borderRadius: 3, cursor: 'pointer',
+                padding: '9px 14px', fontFamily: 'JetBrains Mono, monospace',
+                fontSize: 12.5, letterSpacing: '0.025em', borderRadius: 5, cursor: 'pointer',
                 fontWeight: active ? 600 : 400,
               }}>{t.label}</button>
           );
@@ -642,17 +782,20 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       </div>
 
       {/* User prompt — the request everything below is answering; a quiet surface, no outline */}
-      <div style={{
+      <div className="bv-prompt" style={{
         background: 'var(--component-bg-dark-light)',
-        padding: '13px 18px', borderRadius: 6, marginBottom: 14,
+        padding: '16px 18px', borderRadius: 7, marginBottom: 14,
         display: 'flex', alignItems: 'center', gap: 16,
       }}>
-        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 17, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
+        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 19, lineHeight: 1.4, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
           {task.user}
         </div>
-        <div style={{ display: 'flex', gap: 8, flex: '0 0 auto', alignItems: 'center' }}>
-          <button onClick={replay} className="bv-ctl-btn" style={btnStyle}>↻ Replay</button>
-          <button onClick={skipToEnd} className="bv-ctl-btn" style={btnStyle}>⇥ Skip</button>
+        <div className="bv-prompt-actions" style={{ display: 'flex', gap: 8, flex: '0 0 auto', alignItems: 'center' }}>
+          <span className="bv-keyboard-hint" aria-label="Use the left and right arrow keys to step through the animation">
+            <kbd>←</kbd><kbd>→</kbd><span>step</span>
+          </span>
+          <button onClick={replay} className="bv-ctl-btn" style={btnStyle} aria-label="Replay the animation">↻ Replay</button>
+          <button onClick={skipToEnd} className="bv-ctl-btn" style={btnStyle} aria-label="Skip the animation and show the final result">Skip to result →</button>
         </div>
       </div>
 
@@ -681,6 +824,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         </div>
       </div>
 
+      <MobilePipelineSummary task={task} mode={mode} phases={phases} />
       <CostReadout task={task} mode={mode} progress={costProgress} />
 
 
