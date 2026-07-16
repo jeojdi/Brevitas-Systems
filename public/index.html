@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
 <!-- Primary Meta Tags -->
 <title>Brevitas Systems — AI Agent Orchestration Platform | Reduce Multi-Agent Token Costs</title>
@@ -615,8 +615,10 @@ function LandingPage() {
     <>
       <Nav />
 
+      <main id="main">
+
       {/* S1 — Hero */}
-      <section className="section" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)', position: 'relative', overflow: 'hidden' }}>
+      <section className="section home-hero" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)', position: 'relative', overflow: 'hidden' }}>
         {/* Layer 0: background photo — swaps by theme */}
         <img className="hero-bg-dark"  src="/assets/brevitas.jpg"               alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
         <img className="hero-bg-light" src="/assets/light-mode-hero.jpg"    alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }} />
@@ -636,10 +638,7 @@ function LandingPage() {
             <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
             <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
           </div>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', justifyContent: 'center', marginBottom: 96 }}>
-            <InstallCommand />
-          </div>
-          <div className="fade-up delay-3 in" style={{
+          <div className="hero-stats fade-up delay-3 in" style={{
             display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
             paddingTop: 32, borderTop: '1px solid var(--line)', justifyContent: 'center'
           }}>
@@ -648,8 +647,11 @@ function LandingPage() {
             <StatCard variant="inline" value="99.6%" label="context retained" />
             <StatCard variant="inline" value="99%" label="quality parity" />
           </div>
-          <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
+          <div className="hero-benchmark-note t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
             first-run benchmark · agentbench task · real api calls
+          </div>
+          <div className="hero-install fade-up delay-4 in" style={{ display: 'flex', justifyContent: 'center', marginTop: 'clamp(36px, 6vh, 64px)' }}>
+            <InstallCommand />
           </div>
         </div>
       </section>
@@ -671,6 +673,7 @@ function LandingPage() {
                   darkSrc: '/assets/trusted-nvidia-dark-brevitas.svg',
                   alt: 'NVIDIA',
                 },
+                { brand: 'phia', src: '/assets/phia-logo.png', alt: 'Phia' },
                 {
                   brand: 'anthropic',
                   src: '/assets/trusted-anthropic-coral-brevitas.svg',
@@ -898,6 +901,8 @@ function LandingPage() {
           </div>
         </div>
       </section>
+
+      </main>
 
       <Footer />
     </>

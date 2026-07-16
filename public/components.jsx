@@ -23,6 +23,8 @@ function initMatrixCanvas(canvasId, opts) {
   // so the trail reads as a coherent flow (octant 0..7 = E, SE, S, SW, W, NW, N, NE; canvas y is down).
   const DIR_GLYPHS = ['>', '\\', 'v', '/', '<', '\\', '^', '/'];
   function dirGlyph(dx, dy) { let o = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)); if (o < 0) o += 8; return DIR_GLYPHS[o % 8]; }
+  const RING_GLYPHS = ['-', '\\', '|', '/', '-', '\\', '|', '/'];
+  function ringGlyph(dx, dy) { let o = Math.round((Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI / 4)); if (o < 0) o += 8; return RING_GLYPHS[o % 8]; }
   const FLOW_POOL = '.-_·:~';   // calm, sparse base field in cursor mode
   const baseChar = () => cursorFollow ? FLOW_POOL[Math.floor(Math.random() * FLOW_POOL.length)] : randChar();
 
@@ -31,7 +33,10 @@ function initMatrixCanvas(canvasId, opts) {
   const CURSOR_IDLE_MS = 650; const CURSOR_DASH_AT = 0.45;   // hold longer, then fade fast; below this glow glyphs resolve to '-'
   const FLOW_FREQ = 0.10; const FLOW_SPEED = 0.009; const FLOW_DEPTH = 0.38;
   const TRAIL_LEN = 34; const TRAIL_TAPER = 0.58; const TRAIL_WOBBLE = 8;   // curving, swaying tail
-  const CLICK_MAXR = 168; const CLICK_LIFE_MS = 1000; const CLICK_GROW_MS = 260; const CLICK_AMP = 1.0;
+  // Clicks travel through the glyph field as layered wave fronts instead of a filled flash.
+  const CLICK_MAXR = 228; const CLICK_LIFE_MS = 1300; const CLICK_AMP = 1.0;
+  const CLICK_RING_COUNT = 3; const CLICK_RING_GAP = 28; const CLICK_RING_THICKNESS = 16;
+  const CLICK_CENTER_LIFE_MS = 340; const CLICK_CENTER_MAXR = 58;
   let clickBursts = [];
   const AMBIENT = cursorFollow ? 0.07 : 1;   // ambient rings dialed down in cursor mode
 
@@ -113,12 +118,12 @@ function initMatrixCanvas(canvasId, opts) {
         if (trail.length) { trail.pop(); trail.pop(); }         // retract fast (two per frame) so the fade is short
         if (curGlow <= 0.01) { trail.length = 0; curX = null; }
       }
-      for (let i = clickBursts.length - 1; i >= 0; i--) {        // advance click bursts (filled discs)
+      for (let i = clickBursts.length - 1; i >= 0; i--) {        // advance click wave fronts
         const b = clickBursts[i], age = now - b.t0;
         if (age >= CLICK_LIFE_MS) { clickBursts.splice(i, 1); continue; }
-        const grow = Math.min(1, age / CLICK_GROW_MS);
-        b.radius = CLICK_MAXR * (1 - Math.pow(1 - grow, 3));
-        b.alpha = (1 - age / CLICK_LIFE_MS) * CLICK_AMP;
+        const progress = age / CLICK_LIFE_MS;
+        b.radius = CLICK_MAXR * (1 - Math.pow(1 - progress, 2.6));
+        b.alpha = Math.pow(1 - progress, 1.25) * CLICK_AMP;
       }
     }
     ctx.font = `${CELL - 2}px "JetBrains Mono","Courier New",monospace`;
@@ -165,11 +170,28 @@ function initMatrixCanvas(canvasId, opts) {
         let clkOp = 0;
         for (const b of clickBursts) {
           const bdx = px - b.x, bdy = py - b.y, bd = Math.sqrt(bdx * bdx + bdy * bdy);
-          if (bd < b.radius) {
-            const edge = bd > b.radius * 0.72 ? (b.radius - bd) / (b.radius * 0.28) : 1;
-            const c = edge * b.alpha;
-            if (c > clkOp) clkOp = c;
-            if (c > 0.15) cell.char = dirGlyph(bdx, bdy);
+          const age = now - b.t0;
+          let burstOp = 0;
+          for (let ring = 0; ring < CLICK_RING_COUNT; ring++) {
+            const ringRadius = b.radius - ring * CLICK_RING_GAP;
+            if (ringRadius <= 0) continue;
+            const edge = Math.abs(bd - ringRadius);
+            if (edge >= CLICK_RING_THICKNESS) continue;
+            const ringFade = 1 - ring / (CLICK_RING_COUNT + 1);
+            const ringOp = 0.5 * (1 + Math.cos(Math.PI * edge / CLICK_RING_THICKNESS)) * b.alpha * ringFade;
+            if (ringOp > burstOp) burstOp = ringOp;
+          }
+          if (age < CLICK_CENTER_LIFE_MS) {
+            const centerProgress = age / CLICK_CENTER_LIFE_MS;
+            const centerRadius = CLICK_CENTER_MAXR * (0.35 + centerProgress * 0.65);
+            if (bd < centerRadius) {
+              const centerOp = 0.5 * (1 + Math.cos(Math.PI * bd / centerRadius)) * (1 - centerProgress) * 0.72;
+              if (centerOp > burstOp) burstOp = centerOp;
+            }
+          }
+          if (burstOp > clkOp) {
+            clkOp = burstOp;
+            if (burstOp > 0.12) cell.char = ringGlyph(bdx, bdy);
           }
         }
         const glowOp = cell.pointOp + cell.curOp + clkOp;
@@ -211,12 +233,12 @@ function initMatrixCanvas(canvasId, opts) {
     curActive = true; lastMove = performance.now();
   };
   const onMouseOut = (e) => { if (!e.relatedTarget && !e.toElement) { curActive = false; curX = null; } };
-  const onMouseDown = (e) => {
+  const onPointerDown = (e) => {
     if (e.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
-    clickBursts.push({ x: x * (canvas.width / rect.width), y: y * (canvas.height / rect.height), t0: performance.now(), radius: 0, alpha: 1 });
+    clickBursts.push({ x: x * (canvas.width / rect.width), y: y * (canvas.height / rect.height), t0: performance.now(), radius: 0, alpha: CLICK_AMP });
     if (clickBursts.length > 6) clickBursts.shift();
   };
 
@@ -225,14 +247,14 @@ function initMatrixCanvas(canvasId, opts) {
   if (cursorFollow) {
     window.addEventListener('mousemove', onMouseMove, { passive: true });
     document.addEventListener('mouseout', onMouseOut);
-    window.addEventListener('mousedown', onMouseDown, { passive: true });
+    window.addEventListener('pointerdown', onPointerDown, { passive: true });
   }
   io.observe(canvas);
   init();
   if (!cursorFollow) pointRipples.push(new PointRipple());   // no big opening ring in cursor mode
   if (!reduceMotion) { schedulePointRipple(); start(); } else { draw(); }
 
-  return () => { stop(); io.disconnect(); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); document.removeEventListener('visibilitychange', onVisibility); if (cursorFollow) { window.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseout', onMouseOut); window.removeEventListener('mousedown', onMouseDown); } };
+  return () => { stop(); io.disconnect(); clearTimeout(spawnTimer); clearTimeout(resizeTimer); window.removeEventListener('resize', onResize); document.removeEventListener('visibilitychange', onVisibility); if (cursorFollow) { window.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseout', onMouseOut); window.removeEventListener('pointerdown', onPointerDown); } };
 }
 
 // --- utility hooks ---
@@ -502,7 +524,7 @@ function CodeBlockPy({ source, filename, copyable = true }) {
 // One-line install command — OS-tabbed, copyable mono pill for hero / CTA sections.
 // `commands`: [{ label, prompt, command }]. Falls back to a single `command` prop.
 const DEFAULT_INSTALL_COMMANDS = [
-  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login && bvx install ai' },
+  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login' },
   { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex' },
 ];
 
@@ -510,22 +532,34 @@ function InstallCommand({ commands, command }) {
   const list = commands || (command ? [{ label: '', prompt: '$', command }] : DEFAULT_INSTALL_COMMANDS);
   const [active, setActive] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [copyAnimation, setCopyAnimation] = useState(0);
+  const copyResetTimer = useRef(null);
   const current = list[active] || list[0];
-  const doCopy = () => {
+
+  useEffect(() => () => clearTimeout(copyResetTimer.current), []);
+
+  const doCopy = async () => {
     try {
-      navigator.clipboard.writeText(current.command);
+      await navigator.clipboard.writeText(current.command);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      setCopyAnimation((animation) => animation + 1);
+      clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = setTimeout(() => setCopied(false), 1600);
     } catch {}
   };
   return (
-    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 10, maxWidth: '100%' }}>
+    <div className="install-command" style={{ display: 'inline-flex', flexDirection: 'column', gap: 10, maxWidth: '100%' }}>
       {list.length > 1 && (
         <div className="t-mono" style={{ display: 'flex', gap: 10, fontSize: 16 }}>
           {list.map((c, i) => (
             <button
+              type="button"
               key={c.label}
-              onClick={() => { setActive(i); setCopied(false); }}
+              onClick={() => {
+                clearTimeout(copyResetTimer.current);
+                setActive(i);
+                setCopied(false);
+              }}
               style={{
                 background: i === active ? '#ffffff' : 'rgba(0,0,0,0.5)',
                 backdropFilter: 'blur(6px)',
@@ -546,9 +580,10 @@ function InstallCommand({ commands, command }) {
         </div>
       )}
       <button
+        type="button"
         onClick={doCopy}
-        className="t-mono"
-        title="Copy install command"
+        className="t-mono install-command-button"
+        title={copied ? 'Install command copied' : 'Copy install command'}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 18,
           maxWidth: '100%',
@@ -568,8 +603,17 @@ function InstallCommand({ commands, command }) {
       >
         <span aria-hidden="true" style={{ color: 'var(--bronze)', userSelect: 'none' }}>{current.prompt || '$'}</span>
         <span style={{ overflowX: 'auto', whiteSpace: 'nowrap' }}>{current.command}</span>
-        <span style={{ color: copied ? 'var(--signal)' : 'var(--stone-2)', userSelect: 'none', flexShrink: 0 }}>
-          {copied ? '✓ copied' : '⧉ copy'}
+        <span
+          key={copied ? `copied-${copyAnimation}` : 'copy'}
+          className={`install-command-copy-status${copied ? ' is-copied' : ''}`}
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {copied ? (
+            <><span className="install-command-copy-check" aria-hidden="true">✓</span> Copied!</>
+          ) : (
+            <><span aria-hidden="true">⧉</span> Copy</>
+          )}
         </span>
       </button>
     </div>
@@ -780,6 +824,7 @@ function ThemeToggle() {
 
   return (
     <button
+      type="button"
       onClick={toggleTheme}
       className="theme-toggle"
       aria-label="Toggle theme"
@@ -833,12 +878,29 @@ function ThemeToggle() {
 function Nav({ current }) {
   const [scrolled, setScrolled] = useState(false);
   const [sheet, setSheet] = useState(false);
+  const sheetCloseRef = useRef(null);
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 20);
     on();
     window.addEventListener('scroll', on, { passive: true });
     return () => window.removeEventListener('scroll', on);
   }, []);
+
+  useEffect(() => {
+    if (!sheet) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setSheet(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    const focusFrame = requestAnimationFrame(() => sheetCloseRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener('keydown', closeOnEscape);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [sheet]);
 
   const links = [
     { href: '/product', label: 'Product', k: 'product' },
@@ -862,14 +924,21 @@ function Nav({ current }) {
           </div>
           <ThemeToggle />
           <Button variant="primary" href="/login" className="nav-cta">Sign up</Button>
-          <button className="nav-hamburger" onClick={() => setSheet(true)} aria-label="Menu">
+          <button
+            type="button"
+            className="nav-hamburger"
+            onClick={() => setSheet(true)}
+            aria-label="Open menu"
+            aria-expanded={sheet}
+            aria-controls="mobile-navigation"
+          >
             <span/><span/><span/>
           </button>
         </div>
       </nav>
       {sheet && (
-        <div className="nav-sheet open" role="dialog" aria-modal="true">
-          <button className="nav-sheet-close" onClick={() => setSheet(false)} aria-label="Close">×</button>
+        <div id="mobile-navigation" className="nav-sheet open" role="dialog" aria-modal="true" aria-label="Mobile navigation">
+          <button ref={sheetCloseRef} type="button" className="nav-sheet-close" onClick={() => setSheet(false)} aria-label="Close menu">×</button>
           <div className="nav-sheet-links">
             {links.map(l => <a key={l.k} href={l.href}>{l.label}</a>)}
             <a href="/login" style={{ color: 'var(--bronze)' }}>Sign up →</a>
