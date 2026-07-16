@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <link rel="icon" href="/brevitas-mark.ico" sizes="any">
 <link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
@@ -51,7 +51,7 @@ const TECHNIQUE_CONTRIBUTION = [
 function ContributionChart() {
   const total = TECHNIQUE_CONTRIBUTION.reduce((s, x) => s + x.pct, 0);
   return (
-    <div style={{ width: '100%' }}>
+    <div className="benchmark-contribution" style={{ width: '100%' }}>
       {/* Stacked horizontal bar */}
       <div style={{ display: 'flex', width: '100%', height: 48, border: '1px solid var(--line)', background: 'var(--ink-2)', marginBottom: 32, borderRadius: 2, overflow: 'hidden' }}>
         {TECHNIQUE_CONTRIBUTION.map(t => (
@@ -106,7 +106,7 @@ function HistogramChart() {
   }
   const maxCount = Math.max(...bins.map(b => b.count));
   return (
-    <div style={{ padding: '32px 0' }}>
+    <div className="benchmark-histogram" style={{ padding: '32px 0' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 220, borderBottom: '1px solid var(--stone-2)' }}>
         {bins.map(b => (
           <div key={b.range} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
@@ -150,7 +150,7 @@ function CostTable() {
     ['Runs per task', '3 seeds · temperature=0.2'],
   ];
   return (
-    <table style={{
+    <table className="benchmark-table" style={{
       width: '100%',
       borderCollapse: 'collapse',
       fontSize: 14,
@@ -258,7 +258,7 @@ function BenchmarksPage() {
       {/* Headline stats */}
       <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 40 }}>
         <div className="container">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 0, border: '1px solid var(--line)' }}>
+          <div className="benchmark-headlines" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 0, border: '1px solid var(--line)' }}>
             {HEADLINES.map((h, i) => (
               <div key={h.label} style={{
                 padding: '40px 32px',

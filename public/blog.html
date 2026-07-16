@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Notes · Brevitas Systems</title>
 <meta name="description" content="Engineering notes from the Brevitas team on multi-agent inference economics.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -240,7 +240,7 @@ function BlogPage() {
       <Nav current="blog" />
 
       {/* Hero */}
-      <section style={{ padding: '96px 0 56px', borderBottom: '1px solid var(--line)' }}>
+      <section className="blog-hero" style={{ padding: '96px 0 56px', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <h1 className="serif" style={{ fontSize: 'clamp(48px, 7vw, 80px)', fontWeight: 300, letterSpacing: '-0.03em', lineHeight: 1, margin: '0 0 20px' }}>Notes.</h1>
           <p style={{ fontSize: 16, color: 'var(--stone-2)', maxWidth: 520, lineHeight: 1.6, margin: 0 }}>
@@ -250,7 +250,7 @@ function BlogPage() {
       </section>
 
       {/* Main content */}
-      <section style={{ padding: '60px 0 120px' }}>
+      <section className="blog-content" style={{ padding: '60px 0 120px' }}>
         <div className="container">
           <div className="blog-layout">
 
@@ -329,7 +329,7 @@ function BlogPage() {
       </section>
 
       {/* Bottom CTA */}
-      <section style={{ padding: '80px 0 100px', borderTop: '1px solid var(--line)' }}>
+      <section className="blog-cta" style={{ padding: '80px 0 100px', borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div className="blog-cta-grid">
             {/* Left: editorial CTA */}

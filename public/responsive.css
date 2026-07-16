@@ -1,133 +1,360 @@
-/* ==========================================================================
-   Brevitas Systems — mobile responsive layer
-   --------------------------------------------------------------------------
-   Loaded LAST on every page. Most page layout lives in inline style={{…}}
-   objects (fixed multi-column grids, large paddings/font sizes) which normal
-   CSS @media queries cannot override. This layer reaches them via
-   [style*="…"] attribute selectors + !important, scoped to content regions so
-   the (class-based) nav and footer are left untouched.
-   Uses only existing theme.css tokens — no new colors/fonts.
-   ========================================================================== */
+/* ========================================================================
+   Brevitas Systems — shared responsive layer
+   Loaded after theme.css on the public site. Page markup still contains a
+   number of inline layout declarations, so deliberate !important overrides
+   are used only inside breakpoints where those declarations must collapse.
+   ======================================================================== */
 
-/* ---- Global overflow safety (all viewports) ---------------------------- */
-/* Note: svg intentionally excluded — fixed-size logos/icons must keep dims. */
-html { overflow-x: clip; }
-body { min-width: 320px; }
-img, video, canvas, iframe, table { max-width: 100%; }
+/* Global resilience ----------------------------------------------------- */
+html {
+  width: 100%;
+  overflow-x: clip;
+  scroll-padding-top: 96px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  width: 100%;
+  min-width: 320px;
+  max-width: 100%;
+}
+#app, main, section, article, aside, nav, footer, .container, .section {
+  min-width: 0;
+}
+img, video, canvas, iframe, table, svg {
+  max-width: 100%;
+}
 img, video { height: auto; }
-pre, table, .code-block, .codeblock {
+pre, table, .code-block, .codeblock, .code-block-pre {
   max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
   -webkit-overflow-scrolling: touch;
 }
-main, section, article, .container, .section { min-width: 0; }
 button, input, select, textarea { min-width: 0; }
+button, a { touch-action: manipulation; }
+.t-body, .t-body-lg, .t-small, .t-mono, .mono, p, li, td, th {
+  overflow-wrap: break-word;
+}
+pre, pre code { overflow-wrap: normal; }
+section[id], [data-doc-section] { scroll-margin-top: 100px; }
 
-/* ======================= Phones (<= 640px) ============================== */
-@media (max-width: 640px) {
+@media (hover: none) {
+  .card:hover,
+  .stat-card:hover,
+  .agent-card:hover,
+  .btn:hover,
+  .btn-primary:hover,
+  .btn-secondary:hover {
+    transform: none;
+  }
+}
 
-  .container { padding-left: 18px !important; padding-right: 18px !important; }
+/* Tablets and compact laptops ------------------------------------------ */
+@media (max-width: 1024px) {
+  .container { padding-left: 28px; padding-right: 28px; }
+  .section { padding-top: 76px; padding-bottom: 76px; }
+  .pricing-hero { padding-top: 88px !important; }
+  .pricing-section { padding-bottom: 88px !important; }
+}
 
-  /* Collapse ad-hoc multi-column inline grids to a single column.
-     Scoped to content containers, so .nav-inner / .footer-grid are excluded. */
-  .section [style*="grid-template-columns"],
-  .container [style*="grid-template-columns"],
-  main [style*="grid-template-columns"] {
-    grid-template-columns: 1fr !important;
+@media (max-width: 900px) {
+  .container { padding-left: 24px; padding-right: 24px; }
+  .section { padding-top: 64px; padding-bottom: 64px; }
+
+  /* Navigation controls must remain pinned to the right when links hide. */
+  .nav-inner > a:first-child { min-width: 0; margin-right: auto; }
+
+  /* Documentation becomes content-first with a horizontally scrollable TOC. */
+  .docs-page { padding-top: 32px !important; }
+  .docs-shell { grid-template-columns: minmax(0, 1fr) !important; gap: 32px !important; }
+  .docs-side {
+    width: auto;
+    margin-left: -24px;
+    margin-right: -24px;
+    padding-left: 24px;
+    padding-right: 24px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .docs-side::-webkit-scrollbar { display: none; }
+  .docs-side-inner {
+    position: static !important;
+    width: max-content;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 0 24px 10px 0 !important;
+  }
+  .docs-side-inner > div:first-child,
+  .docs-side-inner > div:last-child { display: none !important; }
+  .docs-side-inner > div:not(:first-child):not(:last-child) { margin: 0 !important; }
+  .docs-side-inner > div:not(:first-child):not(:last-child) > .t-mono { display: none; }
+  .docs-side-inner ul { flex-direction: row !important; gap: 6px !important; }
+  .docs-toc-link {
+    min-height: 44px;
+    display: inline-flex !important;
+    align-items: center;
+    padding: 9px 12px !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .docs-toc-link.active {
+    border-color: var(--bronze) !important;
+    background: rgba(142, 166, 255, 0.08);
+  }
+  .docs-main { width: 100%; max-width: none !important; }
+
+  /* Named data/layout components get intentional tablet compositions. */
+  .matrix-row { grid-template-columns: minmax(0, 1fr) !important; gap: 14px !important; }
+  .product-move { grid-template-columns: minmax(0, 1fr) !important; gap: 20px !important; }
+  .benchmark-headlines { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .section .percall-row {
+    grid-template-columns: 44px minmax(0, 1fr) auto !important;
+    gap: 12px !important;
+  }
+  .section .percall-row > :nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
+  .section .percall-row > :nth-child(4) { grid-column: 3; grid-row: 1; }
+  .sth-detail-grid { grid-template-columns: 80px minmax(0, 1fr) !important; gap: 20px !important; }
+  .sth-detail-nav { display: none !important; }
+}
+
+/* Small tablets -------------------------------------------------------- */
+@media (max-width: 820px) {
+  .section [style*="repeat(3"],
+  .section [style*="repeat(4"],
+  .container [style*="repeat(3"],
+  .container [style*="repeat(4"] {
+    grid-template-columns: minmax(0, 1fr) !important;
     gap: 24px !important;
   }
 
-  /* Inline flex rows that act as multi-column layouts: let them wrap rather
-     than overflow. Column-direction stacks are already fine and untouched. */
+  .nav-links.desktop { display: none; }
+  .nav .btn-primary.nav-cta { display: none; }
+  .nav-hamburger { display: inline-flex; }
+  .nav-sheet { min-height: 100dvh; }
+}
+
+/* Phones --------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .container {
+    padding-left: calc(18px + env(safe-area-inset-left)) !important;
+    padding-right: calc(18px + env(safe-area-inset-right)) !important;
+  }
+
+  /* Inline grid declarations are widespread across the editorial pages. */
+  .section [style*="grid-template-columns"],
+  .container [style*="grid-template-columns"],
+  main [style*="grid-template-columns"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 24px !important;
+  }
   .section [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]),
   .container [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]),
   main [style*="display: flex"][style*="gap"]:not([style*="flex-direction: column"]) {
     flex-wrap: wrap;
   }
 
-  /* Trim the large inline section / card paddings */
   .section { padding-top: 52px !important; padding-bottom: 52px !important; }
-  .form-container, .success-container { padding: 28px 22px !important; }
-  .auth-card { padding: 32px 22px 28px !important; }
+  .section--tight { padding-top: 44px !important; padding-bottom: 44px !important; }
 
-  /* Display headings: scale with viewport so they never overflow */
-  .t-display-xl { font-size: clamp(34px, 10vw, 44px) !important; line-height: 1.08 !important; letter-spacing: 0 !important; }
-  .t-display-l  { font-size: clamp(29px, 8vw, 40px) !important; line-height: 1.12 !important; letter-spacing: 0 !important; }
-  .t-display    { font-size: clamp(27px, 7vw, 36px) !important; line-height: 1.15 !important; letter-spacing: 0 !important; }
-  .t-h1 { font-size: clamp(32px, 9vw, 42px) !important; letter-spacing: 0 !important; }
-  .t-h2 { font-size: clamp(28px, 8vw, 36px) !important; letter-spacing: 0 !important; }
-  .t-h3 { font-size: clamp(22px, 6vw, 28px) !important; letter-spacing: 0 !important; }
+  .t-display-xl { font-size: clamp(36px, 11.5vw, 48px) !important; line-height: 1.04 !important; letter-spacing: -0.015em !important; }
+  .t-display-l  { font-size: clamp(34px, 10vw, 44px) !important; line-height: 1.08 !important; letter-spacing: -0.01em !important; }
+  .t-display    { font-size: clamp(34px, 10vw, 44px) !important; line-height: 1.08 !important; letter-spacing: -0.01em !important; }
+  .t-h1 { font-size: clamp(32px, 9.5vw, 40px) !important; line-height: 1.08 !important; letter-spacing: -0.01em !important; }
+  .t-h2 { font-size: clamp(28px, 8.5vw, 36px) !important; line-height: 1.12 !important; letter-spacing: -0.005em !important; }
+  .t-h3 { font-size: clamp(22px, 6.5vw, 28px) !important; line-height: 1.16 !important; }
+  .t-body-lg { font-size: 18px !important; line-height: 1.55 !important; }
+  .t-body { font-size: 16px; line-height: 1.62; }
+  .t-overline { font-size: 10px; letter-spacing: 0.14em; }
 
-  /* Comfortable tap targets for primary controls */
   .btn, a.btn, .nav-link, button, input, select, textarea {
     min-height: 44px;
   }
   input, select, textarea { font-size: 16px !important; }
-
+  .btn {
+    max-width: 100%;
+    justify-content: center;
+    white-space: normal;
+    text-align: center;
+  }
   .hero-btn {
-    width: min(100%, 320px);
+    width: min(100%, 340px);
     justify-content: center;
     padding: 15px 20px;
     font-size: 16px;
   }
 
-  button[title="Copy install command"] {
+  /* Homepage hero: two readable metric columns followed by the installer. */
+  .home-hero { padding-top: 48px !important; padding-bottom: 56px !important; }
+  .home-hero .t-display-xl { margin-top: 8px !important; margin-bottom: 20px !important; }
+  .home-hero .t-body-lg { margin-bottom: 30px !important; }
+  .hero-stats {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 28px 16px !important;
+    width: 100%;
+    padding-top: 28px !important;
+  }
+  .hero-stats .stat-inline {
+    min-width: 0 !important;
+    align-items: center;
+    text-align: center;
+  }
+  .hero-stats .stat-inline .serif { font-size: clamp(29px, 9vw, 38px) !important; }
+  .hero-stats .stat-inline .t-mono { font-size: 10px; }
+  .hero-benchmark-note { font-size: 10px !important; line-height: 1.6; }
+  .hero-install { width: 100%; margin-top: 36px !important; }
+  .install-command { width: 100%; }
+  .install-command > .t-mono:first-child { width: 100%; }
+  .install-command > .t-mono:first-child button { flex: 1; padding: 10px 14px !important; }
+  .install-command-button {
     width: 100%;
     gap: 10px !important;
     padding: 13px 14px !important;
     font-size: 12px !important;
   }
-  button[title="Copy install command"] > span:nth-child(2) {
+  .install-command-button > span:nth-child(2) {
     min-width: 0;
     flex: 1;
   }
+  .install-command-copy-status { min-width: 78px; }
 
-  .bv-field-wrap { left: 0 !important; right: 0 !important; }
-
-  .waitlist-row { flex-direction: column; }
-  .waitlist-row .btn { width: 100%; justify-content: center; }
-
-  table { display: block; width: 100%; }
-
-  .nav.scrolled { padding: 8px; }
-  .nav-inner {
-    gap: 8px;
-    padding: 11px 16px;
+  /* Mobile data presentation. */
+  .benchmark-headlines { grid-template-columns: minmax(0, 1fr) !important; }
+  .benchmark-headlines > div {
+    padding: 26px 22px !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--line);
   }
+  .benchmark-headlines > div:last-child { border-bottom: 0; }
+  .benchmark-histogram { overflow-x: auto; }
+  .benchmark-histogram > div:last-child {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .benchmark-table,
+  .benchmark-table tbody,
+  .benchmark-table tr,
+  .benchmark-table td {
+    display: block;
+    width: 100% !important;
+  }
+  .benchmark-table tr { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  .benchmark-table td { border: 0 !important; padding: 0 !important; }
+  .benchmark-table td:first-child { margin-bottom: 5px; }
+  .section .percall-row {
+    grid-template-columns: 36px minmax(0, 1fr) auto !important;
+    gap: 10px !important;
+  }
+  table { display: block; width: 100%; }
+  .docs-table,
+  .cost-table {
+    display: block;
+    width: 100%;
+    min-width: 0 !important;
+    overflow-x: auto;
+  }
+  .docs-table thead,
+  .docs-table tbody,
+  .cost-table thead,
+  .cost-table tbody {
+    display: table;
+    width: 100%;
+    min-width: 620px;
+  }
+  .code-block-header { padding: 8px 12px !important; }
+  .code-block-pre { padding: 16px !important; font-size: 11px !important; }
+  [data-doc-section] { margin-bottom: 60px !important; }
+
+  .matrix-row { padding: 22px 0 !important; }
+  .product-move { padding: 30px 0 !important; }
+  .product-move .serif { font-size: 27px !important; }
+
+  .blog-hero { padding: 56px 0 40px !important; }
+  .blog-content { padding: 44px 0 72px !important; }
+  .blog-cta { padding: 56px 0 68px !important; }
+  .blog-sidebar {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .blog-sidebar > div:first-child { margin-bottom: 10px !important; }
+  .blog-sidebar > div:not(:first-child) > button:first-child { display: none !important; }
+  .blog-sidebar > div:not(:first-child) > div {
+    display: flex !important;
+    gap: 8px;
+    padding: 8px 0 12px !important;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .blog-sidebar > div:not(:first-child) > div::-webkit-scrollbar { display: none; }
+  .blog-sidebar > div:not(:first-child) > div > button {
+    width: auto !important;
+    flex: 0 0 auto;
+    display: inline-flex !important;
+    align-items: center;
+    padding: 8px 12px !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .blog-cta-grid > div:last-child { padding: 28px 22px !important; }
+
+  .form-container, .success-container { padding: 28px 22px !important; }
+  .auth-card { padding: 32px 22px 28px !important; }
+  .waitlist-row { flex-direction: column; width: 100%; }
+  .waitlist-row .btn { width: 100%; justify-content: center; }
+  .auth-shell, .waitlist-shell { padding-left: 18px !important; padding-right: 18px !important; }
+
+  /* Shared navigation and footer. */
+  .nav.scrolled { padding: 8px; }
+  .nav-inner { gap: 8px; padding: 10px 14px; }
   .nav.scrolled .nav-inner { border-radius: 16px; }
-  .nav-inner > a:first-child { min-width: 0; margin-right: auto; }
-  .nav-logo { max-width: min(148px, 44vw); height: auto !important; }
+  .nav-logo { max-width: min(142px, 42vw); height: auto !important; }
   .theme-toggle, .nav-hamburger {
-    width: 44px;
-    height: 44px;
+    width: 44px !important;
+    height: 44px !important;
+    padding: 8px !important;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
   }
   .nav-sheet {
-    padding: max(20px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+    padding: max(20px, env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
     overflow-y: auto;
   }
-  .nav-sheet-links a { font-size: clamp(34px, 11vw, 44px); }
+  .nav-sheet-links { margin-top: 12px; }
+  .nav-sheet-links a { min-height: 48px; display: flex; align-items: center; font-size: clamp(34px, 11vw, 44px); }
 
-  .footer { padding-top: 64px; padding-bottom: 32px; }
+  .footer { padding-top: 64px; padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
   .footer-cols { gap: 32px 24px; }
-  .footer-bottom { margin-top: 48px; align-items: flex-start; }
+  .footer-bottom { margin-top: 48px; align-items: flex-start; flex-wrap: wrap; gap: 18px; }
+  .footer-watermark { font-size: 132px; }
 
-  /* Keep wide auth/waitlist shells edge-friendly */
-  .auth-shell, .waitlist-shell { padding-left: 18px !important; padding-right: 18px !important; }
+  /* Standalone welcome page. */
+  .welcome-page { min-height: 100dvh; align-items: flex-start; }
+  .wrap { padding: 24px 16px !important; }
+  .wrap .logo { margin-bottom: 28px; }
+  .wrap .card { padding: 28px 22px !important; border-radius: 16px; }
+  .wrap .heading { font-size: clamp(34px, 10vw, 44px); }
+  .detail-row { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .detail-label { width: auto; }
+  .cta-row { width: 100%; }
+  .cta-row a { width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: center; }
 
-  /* The orchestration view has a separate shell from the shared React nav. */
-  .orch-nav {
-    min-height: 60px;
-    height: auto;
-    padding: 8px 16px !important;
-  }
+  /* Orchestration has its own shell and horizontal data surfaces. */
+  .orch-nav { min-height: 60px; height: auto; padding: 8px 16px !important; }
   .orch-nav-links { display: none !important; }
   .orch-nav-right { gap: 8px !important; }
-  .orch-nav-right .live-label,
-  .orch-nav-right .nav-time { display: none; }
-  .orch-ticker { padding: 10px 16px !important; gap: 28px !important; }
+  .orch-nav-right .live-label, .orch-nav-right .nav-time { display: none; }
+  .orch-ticker { padding: 10px 16px !important; gap: 28px !important; scroll-snap-type: x proximity; }
+  .ticker-item { scroll-snap-align: start; }
   .orch-main { padding: 28px 16px 64px !important; }
   .breadcrumb {
     margin-bottom: 0 !important;
@@ -143,28 +370,30 @@ button, input, select, textarea { min-width: 0; }
   }
   .tab-bar::-webkit-scrollbar { display: none; }
   .tab-btn { flex: 0 0 auto; padding-left: 14px !important; padding-right: 14px !important; }
-  .card, .stat-card, .agent-card, .chart-card, .cost-compare {
-    padding: 20px !important;
-  }
+  .card, .stat-card, .agent-card, .chart-card, .cost-compare { padding: 20px !important; }
+  .feed-item { padding-left: 0; padding-right: 0; flex-wrap: wrap; }
+  .feed-time { width: 100%; padding-left: 21px; }
   .pipeline-wrap { padding: 16px !important; }
-  .cost-table { min-width: 620px; }
+  .cost-row { align-items: flex-start; flex-wrap: wrap; }
+  .cost-row-label { width: 100%; }
   .pipe-log { overflow: auto !important; }
   .pipe-log-line { min-width: 480px; }
+  .pipe-status-text { flex-basis: 100%; }
+
+  .bv-field-wrap { left: 0 !important; right: 0 !important; }
+  .bv-task-pill { flex: 1 1 calc(50% - 4px); }
 }
 
-@media (max-width: 480px) {
-  .footer-cols { grid-template-columns: 1fr 1fr; }
-  .footer-watermark { font-size: 132px; }
-}
-
-/* ======================= Small tablets (<= 820px) ======================= */
-@media (max-width: 820px) {
-  /* Dense 3-/4-up inline grids collapse a little earlier to avoid cramping */
-  .section [style*="repeat(3"],
-  .section [style*="repeat(4"],
-  .container [style*="repeat(3"],
-  .container [style*="repeat(4"] {
-    grid-template-columns: 1fr !important;
-    gap: 24px !important;
+/* Narrow phones -------------------------------------------------------- */
+@media (max-width: 380px) {
+  .container {
+    padding-left: calc(16px + env(safe-area-inset-left)) !important;
+    padding-right: calc(16px + env(safe-area-inset-right)) !important;
   }
+  .nav-inner { padding-left: 10px; padding-right: 10px; }
+  .nav-logo { max-width: 128px; }
+  .theme-toggle, .nav-hamburger { width: 40px !important; height: 40px !important; }
+  .install-command-copy-status { min-width: 68px; font-size: 10px; }
+  .hero-stats { gap: 24px 10px !important; }
+  .footer-cols { grid-template-columns: 1fr 1fr; }
 }

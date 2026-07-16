@@ -32,10 +32,34 @@ test('public discovery files contain only live public routes and assets', () => 
   assert.doesNotMatch(read('public/pricing.html'), /site\.css/)
 })
 
-test('homepage install flow explicitly authenticates bvx before setup', () => {
+test('homepage install flow authenticates bvx after installing the CLI', () => {
   const homepageSource = `${read('public/index.html')}\n${read('public/components.jsx')}`
   assert.match(homepageSource,
-    /brew install brevitas-ai\/brevitas\/bvx && bvx login && bvx install ai/)
+    /brew install brevitas-ai\/brevitas\/bvx && bvx login/)
+  assert.doesNotMatch(homepageSource, /bvx install ai/)
+})
+
+test('public pages declare a safe mobile viewport and load responsive styles', () => {
+  for (const file of readdirSync(resolve(root, 'public')).filter(name => name.endsWith('.html'))) {
+    const html = read(`public/${file}`)
+    assert.match(html, /<meta name="viewport"[^>]+width=device-width/i, `${file}: mobile viewport`)
+    assert.match(html, /<meta name="viewport"[^>]+viewport-fit=cover/i, `${file}: safe-area viewport`)
+    if (/href=["'][^"']*theme\.css["']/.test(html)) {
+      assert.match(html, /href=["']\/responsive\.css["']/, `${file}: shared responsive stylesheet`)
+    }
+  }
+})
+
+test('mobile carousels never scroll the document on initial render', () => {
+  const techniques = read('public/six-techniques-hub.jsx')
+  assert.doesNotMatch(techniques, /\.scrollIntoView\(/)
+  assert.match(techniques, /targetLeft[\s\S]+strip\.scrollTo\(\{ left:/)
+
+  const responsive = read('public/responsive.css')
+  assert.match(responsive, /@media \(max-width: 640px\)/)
+  assert.match(responsive, /\.hero-stats[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(responsive, /\.docs-side[\s\S]+overflow-x: auto/)
+  assert.match(responsive, /\.benchmark-table[\s\S]+display: block/)
 })
 
 test('live HTML references only existing static assets', () => {
@@ -107,6 +131,8 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(analytics, /maskCapturedNetworkRequestFn/)
   assert.match(analytics, /globalPrivacyControl/)
   assert.match(analytics, /opt_out_capturing/)
+  assert.match(analytics, /if \(notice\) notice\.hidden = open/)
+  assert.match(read('public/analytics.css'), /\.bvt-privacy-notice\[hidden\] \{ display: none; \}/)
   assert.doesNotMatch(publicConfig, /POSTHOG_PERSONAL_API_KEY/)
   assert.match(read('public/privacy.html'), /PostHog/)
 })

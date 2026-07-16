@@ -91,8 +91,8 @@
     var wrapper = document.createElement('div');
     wrapper.id = 'brevitas-privacy-controls';
     wrapper.innerHTML =
-      '<button class="bvt-privacy-button" type="button" aria-expanded="false">Privacy choices</button>' +
-      '<section class="bvt-privacy-panel" hidden aria-label="Analytics privacy choices">' +
+      '<button class="bvt-privacy-button" type="button" aria-expanded="false" aria-controls="brevitas-privacy-panel">Privacy choices</button>' +
+      '<section class="bvt-privacy-panel" id="brevitas-privacy-panel" hidden role="dialog" aria-label="Analytics privacy choices">' +
         '<strong>Analytics &amp; masked replay</strong>' +
         '<p>We use PostHog to understand visits and improve Brevitas. Inputs, secrets, account details, and network contents are excluded or masked.</p>' +
         (signal ? '<p class="bvt-privacy-signal">Your browser privacy signal is active, so analytics is off.</p>' : '') +
@@ -108,9 +108,15 @@
 
     var button = wrapper.querySelector('.bvt-privacy-button');
     var panel = wrapper.querySelector('.bvt-privacy-panel');
+    var notice = wrapper.querySelector('.bvt-privacy-notice');
     function toggle(open) {
       panel.hidden = !open;
+      if (notice) notice.hidden = open;
       button.setAttribute('aria-expanded', String(open));
+      if (open) {
+        var firstAction = panel.querySelector('button:not([disabled]), a');
+        if (firstAction) firstAction.focus();
+      }
     }
     button.addEventListener('click', function () { toggle(panel.hidden); });
     wrapper.querySelectorAll('[data-open]').forEach(function (node) {

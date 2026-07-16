@@ -10,6 +10,7 @@
 .bvt-privacy-actions button:nth-child(2), .bvt-privacy-notice button[data-open] { background: #eef0f7; color: #0d1530; }
 .bvt-privacy-actions a { margin-left: auto; color: #4f5fc4; }
 .bvt-privacy-notice { position: absolute; right: 0; bottom: 44px; width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #e2e4f0; border-radius: 12px; background: #fff; box-shadow: 0 14px 42px rgba(13,21,48,.16); }
+.bvt-privacy-notice[hidden] { display: none; }
 .bvt-privacy-notice span { flex: 1; color: #4c5474; }
 @media (prefers-color-scheme: dark) {
   .bvt-privacy-button, .bvt-privacy-panel, .bvt-privacy-notice { background: #171717; color: #eee; border-color: #333; }

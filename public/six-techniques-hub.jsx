@@ -271,13 +271,15 @@ function SixTechniquesHub() {
     return () => window.removeEventListener('keydown', onKey);
   }, [isVisible]);
 
-  // Keep strip scrolled to the selected technique (loose snap)
+  // Keep the mobile strip centered horizontally without changing the page's
+  // vertical position. scrollIntoView() used to pull the whole document down
+  // to this below-the-fold component as soon as it mounted on a phone.
   useEfSTH(() => {
-    if (!stripRef.current) return;
-    const child = stripRef.current.children[selectedIdx];
-    if (child && child.scrollIntoView) {
-      child.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    }
+    const strip = stripRef.current;
+    const child = strip?.children[selectedIdx];
+    if (!strip || !child) return;
+    const targetLeft = child.offsetLeft - (strip.clientWidth - child.offsetWidth) / 2;
+    strip.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
   }, [selectedIdx]);
 
   const activeIdx = hoverIdx != null ? hoverIdx : selectedIdx;
