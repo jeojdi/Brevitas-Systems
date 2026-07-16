@@ -13,7 +13,7 @@ const { TASKS, dropReason } = window.BrevitasPipelineData;
 //   mode:  'baseline' | 'optimized'
 // ------------------------------------------------------------
 // charEaten: -1 = full word visible, 0..len = number of chars eaten from the right
-function PToken({ tok, mode, phase, onHover, charEaten }) {
+function PToken({ tok, mode, phase, onHover, charEaten, showRemoved = false }) {
   if (tok.k === 'space') return <span> </span>;
   const isKept = tok.k === 'kept';
   const isStruct = tok.k === 'structural';
@@ -43,6 +43,9 @@ function PToken({ tok, mode, phase, onHover, charEaten }) {
 
   // When fully eaten, render an invisible placeholder to preserve the "gap" — user asked for holes left behind
   if (fullyGone) {
+    if (showRemoved) {
+      return <span className="bv-token-removed">{tok.t}</span>;
+    }
     return (
       <span style={{
         fontFamily: isStruct ? 'JetBrains Mono, monospace' : 'inherit',
@@ -89,7 +92,7 @@ function PToken({ tok, mode, phase, onHover, charEaten }) {
 // TypingBlock — tokens up to `reveal`, with inter-token spaces,
 // plus a blinking cursor at the edge while still typing.
 // ------------------------------------------------------------
-function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap }) {
+function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap, showRemoved = false }) {
   const shown = tokens.slice(0, reveal);
   const typing = phase === 'typing' && reveal < tokens.length;
   return (
@@ -113,7 +116,7 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap }) {
       <div style={{ gridArea: '1 / 1', alignSelf: 'start' }}>
         {shown.map((tok, i) => (
           <React.Fragment key={i}>
-            <PToken tok={tok} mode={mode} phase={phase} onHover={onHover} charEaten={eatenMap ? eatenMap[i] : -1} />
+            <PToken tok={tok} mode={mode} phase={phase} onHover={onHover} charEaten={eatenMap ? eatenMap[i] : -1} showRemoved={showRemoved} />
             {i < shown.length - 1 && tok.k !== 'space' && shown[i + 1]?.k !== 'space' ? ' ' : ''}
           </React.Fragment>
         ))}
@@ -174,41 +177,109 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
 }
 
 // ------------------------------------------------------------
-// MobilePipelineSummary — compact replacement for the animated
-// transcript. The full token stream is intentionally desktop-only:
-// on a phone it creates three unreadably narrow columns.
+// MobilePipelineSlides — one full-width agent transcript at a time.
+// Removed tokens remain crossed out after the animation so the reduction
+// is still legible when users move backward through the slides.
 // ------------------------------------------------------------
-function MobilePipelineSummary({ task, mode, phases }) {
-  const inputCosts = task[mode];
+function MobilePipelineSlides({ task, mode, phases, reveals, eaten, slideIndex, setSlideIndex, onPrimary, onReplay }) {
   const hops = [
-    { number: '01', role: 'Architect', subtitle: 'Chooses the approach', input: inputCosts.call1, output: task.a1Tokens },
-    { number: '02', role: 'Builder', subtitle: 'Writes the implementation', input: inputCosts.call2, output: task.a2Tokens },
-    { number: '03', role: 'Reviewer', subtitle: 'Flags risks and approves', input: inputCosts.call3, output: task.a3Tokens },
+    { number: '01', role: 'Architect', subtitle: 'Chooses the approach', tokens: task.a1, output: task.a1Tokens },
+    { number: '02', role: 'Builder', subtitle: 'Writes the implementation', tokens: task.a2, output: task.a2Tokens },
+    { number: '03', role: 'Reviewer', subtitle: 'Flags risks and approves', tokens: task.a3, output: task.a3Tokens },
   ];
 
   const stateLabel = phase => {
-    if (phase === 'done') return 'Done';
+    if (phase === 'done') return 'Reduced';
     if (phase === 'pending') return 'Waiting';
-    return 'Running';
+    if (phase === 'typing') return 'Writing';
+    return 'Reducing';
   };
 
+  const hop = hops[slideIndex];
+  const phase = phases[slideIndex];
+  const removedCharacters = hop.tokens.reduce((total, token) => (
+    token.k === 'filler' || token.k === 'redundant' ? total + token.t.length : total
+  ), 0);
+  const reducedOutput = mode === 'optimized'
+    ? Math.max(0, hop.output - Math.ceil(removedCharacters / 4))
+    : hop.output;
+  const nextRole = hops[slideIndex + 1]?.role;
+  const primaryLabel = phase !== 'done'
+    ? 'Show reduction'
+    : nextRole ? `Next: ${nextRole}` : 'Replay demo';
+
   return (
-    <div className="bv-mobile-summary" aria-label="Agent pipeline summary">
-      {hops.map((hop, index) => {
-        const state = stateLabel(phases[index]);
-        return (
-          <div className="bv-mobile-hop" key={hop.number}>
-            <span className="bv-mobile-hop-number">{hop.number}</span>
-            <div className="bv-mobile-hop-copy">
-              <span className="bv-mobile-hop-role">{hop.role}</span>
-              <strong>{hop.subtitle}</strong>
-              <span>in {hop.input.toLocaleString()} · out {hop.output.toLocaleString()}</span>
-            </div>
-            <span className={`bv-mobile-hop-state is-${state.toLowerCase()}`}>{state}</span>
-          </div>
-        );
-      })}
-    </div>
+    <section className="bv-mobile-slides" aria-label="Agent pipeline slides">
+      <div className="bv-mobile-slide">
+        <div className="bv-mobile-slide-topline">
+          <span>{hop.number} / 03 · {hop.role}</span>
+          <span className={`bv-mobile-slide-state is-${phase}`} aria-live="polite">{stateLabel(phase)}</span>
+        </div>
+
+        <div className="bv-mobile-slide-heading">
+          <h3>{hop.subtitle}</h3>
+          <span>One agent at a time</span>
+        </div>
+
+        <div className="bv-mobile-token-stats" aria-label="Output token reduction">
+          <div><span>Original</span><strong>{hop.output.toLocaleString()}</strong></div>
+          <span className="bv-mobile-token-arrow" aria-hidden="true">→</span>
+          <div><span>After Brevitas</span><strong>{reducedOutput.toLocaleString()}</strong></div>
+          <div className="bv-mobile-token-saved"><span>Removed</span><strong>−{(hop.output - reducedOutput).toLocaleString()}</strong></div>
+        </div>
+
+        <div className="bv-mobile-transcript">
+          <TypingBlock
+            tokens={hop.tokens}
+            reveal={reveals[slideIndex]}
+            mode={mode}
+            phase={phase}
+            eatenMap={eaten[slideIndex]}
+            showRemoved
+          />
+        </div>
+
+        <div className="bv-mobile-legend" aria-hidden="true">
+          <span><i className="is-kept" />Kept</span>
+          <span><i className="is-removed" />Removed</span>
+        </div>
+
+        <div className="bv-mobile-slide-nav" aria-label="Choose an agent slide">
+          {hops.map((item, index) => (
+            <button
+              type="button"
+              key={item.number}
+              className={index === slideIndex ? 'is-active' : ''}
+              aria-current={index === slideIndex ? 'step' : undefined}
+              aria-label={`Show ${item.role} slide`}
+              disabled={phases[index] === 'pending' && index > slideIndex}
+              onClick={() => setSlideIndex(index)}
+            >
+              <span>{item.number}</span>{item.role}
+            </button>
+          ))}
+        </div>
+
+        <div className="bv-mobile-slide-actions">
+          <button
+            type="button"
+            className="bv-mobile-back"
+            disabled={slideIndex === 0}
+            onClick={() => setSlideIndex(index => Math.max(0, index - 1))}
+          >
+            ← Back
+          </button>
+          <button
+            type="button"
+            className="bv-mobile-next"
+            disabled={phase === 'pending'}
+            onClick={phase === 'done' && !nextRole ? onReplay : onPrimary}
+          >
+            {primaryLabel} →
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -364,6 +435,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
   const [runToken, setRunToken] = usePE(0); // bumps on reset to cancel old timers
   const [startHop, setStartHop] = usePE(0); // which hop to start the run at (0..2)
   const [isVisible, setIsVisible] = usePE(false);
+  const [mobileSlide, setMobileSlide] = usePE(0);
 
   // Imperative hooks for keyboard skip/back — updated by the run loop
   const skipRef = useRfPE({ finishCurrent: () => {}, advanceHop: () => {} });
@@ -550,12 +622,18 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
   function pickTask(id) {
     setActiveId(id);
+    setMobileSlide(0);
     setStartHop(0);
     setRunToken(n => n + 1);
   }
-  function replay() { setStartHop(0); setRunToken(n => n + 1); }
+  function replay() {
+    setMobileSlide(0);
+    setStartHop(0);
+    setRunToken(n => n + 1);
+  }
   function skipToEnd() {
     setRunToken(n => n + 10000); // cancel
+    setMobileSlide(2);
     setPhases(['done', 'done', 'done']);
     // Mark all droppable tokens as fully eaten so the final state looks correct
     if (mode === 'optimized') {
@@ -571,7 +649,18 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
   }
   function switchMode(m) {
     setMode(m);
+    setMobileSlide(0);
     setStartHop(0);
+    setRunToken(n => n + 1);
+  }
+  function advanceMobileSlide() {
+    if (phases[mobileSlide] !== 'done') {
+      skipRef.current.finishCurrent();
+      return;
+    }
+    const nextSlide = Math.min(2, mobileSlide + 1);
+    setMobileSlide(nextSlide);
+    setStartHop(nextSlide);
     setRunToken(n => n + 1);
   }
 
@@ -630,7 +719,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         .bv-ctl-btn:focus-visible, .bv-task-pill:focus-visible { outline: 2px solid var(--bronze); outline-offset: 3px; }
         .bv-task-pill { transition: color 160ms, background 160ms; }
         .bv-task-pill:hover { color: var(--bone); background: var(--component-bg-dark-light); }
-        .bv-task-tabs, .bv-prompt, .bv-pipe-grid, .bv-mobile-summary, .bv-cost-readout { position: relative; z-index: 1; }
+        .bv-task-tabs, .bv-prompt, .bv-pipe-grid, .bv-mobile-slides, .bv-cost-readout { position: relative; z-index: 1; }
         .bv-keyboard-hint {
           display: inline-flex; align-items: center; gap: 5px;
           color: var(--stone-2); font-family: 'JetBrains Mono', monospace;
@@ -647,7 +736,7 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         .bv-strip::-webkit-scrollbar { height: 6px }
         .bv-strip::-webkit-scrollbar-track { background: transparent }
         .bv-strip::-webkit-scrollbar-thumb { background: var(--stone); border-radius: 4px }
-        .bv-mobile-summary { display: none; }
+        .bv-mobile-slides { display: none; }
         @media (max-width: 900px) {
           .bv-prompt { flex-wrap: wrap; align-items: flex-start !important; }
           .bv-prompt-actions { width: 100%; justify-content: flex-end; }
@@ -657,55 +746,139 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         }
         @media (max-width: 640px) {
           .bv-pipe-grid { display: none; }
-          .bv-mobile-summary {
+          .bv-mobile-slides {
             display: block;
             margin-top: 14px;
+            margin-left: calc(-18px - env(safe-area-inset-left));
+            width: calc(100% + 36px + env(safe-area-inset-left) + env(safe-area-inset-right));
             border-top: 1px solid var(--line);
             border-bottom: 1px solid var(--line);
+            background: var(--graphite);
           }
-          .bv-mobile-hop {
-            display: grid;
-            grid-template-columns: 34px minmax(0, 1fr) auto;
-            gap: 12px;
-            align-items: center;
-            padding: 16px 2px;
+          .bv-mobile-slide {
+            min-height: 72svh;
+            padding: 22px calc(18px + env(safe-area-inset-right)) 20px calc(18px + env(safe-area-inset-left));
           }
-          .bv-mobile-hop + .bv-mobile-hop { border-top: 1px solid var(--line); }
-          .bv-mobile-hop-number,
-          .bv-mobile-hop-role,
-          .bv-mobile-hop-copy > span:last-child,
-          .bv-mobile-hop-state {
+          .bv-mobile-slide-topline,
+          .bv-mobile-slide-heading > span,
+          .bv-mobile-token-stats span,
+          .bv-mobile-legend,
+          .bv-mobile-slide-nav button,
+          .bv-mobile-slide-actions button {
             font-family: 'JetBrains Mono', monospace;
             text-transform: uppercase;
           }
-          .bv-mobile-hop-number { color: var(--bronze); font-size: 11px; letter-spacing: 0.12em; }
-          .bv-mobile-hop-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-          .bv-mobile-hop-copy strong {
+          .bv-mobile-slide-topline {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--bronze);
+            font-size: 10px;
+            letter-spacing: 0.12em;
+          }
+          .bv-mobile-slide-state { color: var(--stone-2); }
+          .bv-mobile-slide-state.is-typing,
+          .bv-mobile-slide-state.is-highlighting,
+          .bv-mobile-slide-state.is-deleting { color: var(--signal); }
+          .bv-mobile-slide-state.is-done { color: var(--bone); }
+          .bv-mobile-slide-heading { margin: 18px 0; }
+          .bv-mobile-slide-heading h3 {
+            margin: 0 0 5px;
             color: var(--bone);
             font-family: 'Newsreader', serif;
-            font-size: 18px;
+            font-size: clamp(28px, 9vw, 38px);
             font-weight: 400;
-            line-height: 1.2;
+            line-height: 1.02;
+            letter-spacing: -0.02em;
           }
-          .bv-mobile-hop-role,
-          .bv-mobile-hop-copy > span:last-child { color: var(--stone-2); font-size: 9px; letter-spacing: 0.1em; }
-          .bv-mobile-hop-state {
+          .bv-mobile-slide-heading > span { color: var(--stone-2); font-size: 9px; letter-spacing: 0.1em; }
+          .bv-mobile-token-stats {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            gap: 8px 12px;
+            align-items: center;
+            padding: 14px;
+            border: 1px solid var(--line);
+            background: var(--component-bg-dark);
+          }
+          .bv-mobile-token-stats > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+          .bv-mobile-token-stats span { color: var(--stone-2); font-size: 8px; letter-spacing: 0.1em; }
+          .bv-mobile-token-stats strong {
+            color: var(--bone);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+          }
+          .bv-mobile-token-arrow { color: var(--bronze) !important; font-size: 18px !important; }
+          .bv-mobile-token-saved {
+            grid-column: 1 / -1;
+            flex-direction: row !important;
+            justify-content: space-between;
+            align-items: baseline;
+            padding-top: 9px;
+            border-top: 1px solid var(--line);
+          }
+          .bv-mobile-token-saved strong { color: var(--signal); }
+          .bv-mobile-transcript {
+            height: clamp(330px, 50svh, 520px);
+            margin: 14px 0 10px;
+            padding: 18px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            border: 1px solid var(--line);
+            background: var(--component-bg-dark-light);
+            scrollbar-width: thin;
+            scrollbar-color: var(--stone) transparent;
+          }
+          .bv-mobile-transcript .bv-transcript { font-size: 17px !important; line-height: 1.7 !important; }
+          .bv-token-removed {
+            color: var(--oxblood) !important;
+            text-decoration: line-through;
+            text-decoration-thickness: 1px;
+            opacity: 0.62;
+          }
+          .bv-mobile-legend { display: flex; gap: 18px; color: var(--stone-2); font-size: 8px; letter-spacing: 0.1em; }
+          .bv-mobile-legend span { display: inline-flex; align-items: center; gap: 6px; }
+          .bv-mobile-legend i { width: 7px; height: 7px; border-radius: 50%; background: var(--bone); }
+          .bv-mobile-legend i.is-removed { background: var(--oxblood); }
+          .bv-mobile-slide-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 18px; }
+          .bv-mobile-slide-nav button {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 3px;
+            min-width: 0;
+            padding: 9px;
+            border: 1px solid var(--line);
+            border-radius: 4px;
+            background: transparent;
             color: var(--stone-2);
-            font-size: 9px;
-            letter-spacing: 0.08em;
-            white-space: nowrap;
+            font-size: 8px;
+            letter-spacing: 0.05em;
+            text-align: left;
           }
-          .bv-mobile-hop-state.is-running { color: var(--signal); }
-          .bv-mobile-hop-state.is-done { color: var(--bone); }
+          .bv-mobile-slide-nav button span { color: var(--bronze); font-size: 9px; }
+          .bv-mobile-slide-nav button.is-active { border-color: var(--bronze); color: var(--bone); background: var(--component-bg-dark-light); }
+          .bv-mobile-slide-nav button:disabled { opacity: 0.38; }
+          .bv-mobile-slide-actions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; margin-top: 10px; }
+          .bv-mobile-slide-actions button {
+            padding: 12px 14px;
+            border: 1px solid var(--stone);
+            border-radius: 5px;
+            font-size: 10px;
+            letter-spacing: 0.07em;
+          }
+          .bv-mobile-back { background: transparent; color: var(--stone-2); }
+          .bv-mobile-next { background: var(--signal); border-color: var(--signal) !important; color: var(--ink); }
+          .bv-mobile-slide-actions button:disabled { opacity: 0.38; }
           .bv-prompt {
             align-items: stretch !important;
             flex-direction: column;
             gap: 12px !important;
           }
           .bv-prompt-actions {
-            display: grid !important;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            width: 100%;
+            display: none !important;
           }
           .bv-keyboard-hint { display: none; }
           .bv-prompt-actions .bv-ctl-btn { width: 100%; }
@@ -824,7 +997,17 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         </div>
       </div>
 
-      <MobilePipelineSummary task={task} mode={mode} phases={phases} />
+      <MobilePipelineSlides
+        task={task}
+        mode={mode}
+        phases={phases}
+        reveals={reveals}
+        eaten={eaten}
+        slideIndex={mobileSlide}
+        setSlideIndex={setMobileSlide}
+        onPrimary={advanceMobileSlide}
+        onReplay={replay}
+      />
       <CostReadout task={task} mode={mode} progress={costProgress} />
 
 

@@ -139,16 +139,20 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(read('public/privacy.html'), /PostHog/)
 })
 
-test('phone layouts replace the transcript and keep privacy controls out of content', () => {
+test('phone layouts use full-width transcript slides and keep privacy controls out of content', () => {
   const pipeline = read('public/pipeline-explorer.jsx')
   const analyticsCss = read('public/analytics.css')
   const responsiveCss = read('public/responsive.css')
 
-  assert.match(pipeline, /className="bv-mobile-summary"/)
-  assert.match(pipeline, /function MobilePipelineSummary\(\{ task, mode, phases \}\)/)
-  assert.match(pipeline, /const inputCosts = task\[mode\]/)
+  assert.match(pipeline, /className="bv-mobile-slides"/)
+  assert.match(pipeline, /function MobilePipelineSlides\(/)
+  assert.match(pipeline, /showRemoved/)
+  assert.match(pipeline, /Show reduction/)
+  assert.match(pipeline, /Next: \$\{nextRole\}/)
+  assert.match(pipeline, /setStartHop\(nextSlide\)/)
   assert.match(pipeline, /@media \(max-width: 640px\)[\s\S]+\.bv-pipe-grid \{ display: none; \}/)
-  assert.match(pipeline, /\.bv-mobile-summary \{[\s\S]+display: block;/)
+  assert.match(pipeline, /\.bv-mobile-slides \{[\s\S]+display: block;/)
+  assert.match(pipeline, /\.bv-mobile-transcript \{[\s\S]+50svh/)
   assert.match(pipeline, /\.section \.bv-cost-readout[\s\S]+repeat\(2, minmax\(0, 1fr\)\)/)
   assert.match(analyticsCss, /@media \(max-width: 640px\)[\s\S]+#brevitas-privacy-controls \{[\s\S]+position: relative;/)
   assert.match(analyticsCss, /\.bvt-privacy-panel \{[\s\S]+position: fixed;/)
