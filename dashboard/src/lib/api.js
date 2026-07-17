@@ -32,6 +32,26 @@ export const fetchOllamaModels = (apiKey, options) => apiJson('/v1/ollama/models
 export const saveProvider = (apiKey, body, options = {}) => apiJson('/v1/provider', apiKey, {
   ...options, method: 'PUT', body,
 })
+
+async function billingJson(path, accessToken, { request = fetch, ...options } = {}) {
+  const response = await request(path, {
+    ...options,
+    headers: { Authorization: `Bearer ${accessToken}`, ...options.headers },
+  })
+  if (!response.ok) {
+    const error = await responseError(response)
+    error.status = response.status
+    throw error
+  }
+  return response.json()
+}
+
+export const fetchBillingStatus = (accessToken, options) =>
+  billingJson('/api/billing/status', accessToken, options)
+export const startBillingCheckout = (accessToken, options = {}) =>
+  billingJson('/api/billing/checkout', accessToken, { ...options, method: 'POST' })
+export const openBillingPortal = (accessToken, options = {}) =>
+  billingJson('/api/billing/portal', accessToken, { ...options, method: 'POST' })
 export const compress = (apiKey, body, options = {}) => apiJson('/v1/compress', apiKey, {
   ...options, method: 'POST', body,
 })

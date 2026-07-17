@@ -13,13 +13,14 @@ import { capture, identify, resetAnalytics } from './lib/analytics.js'
 
 const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
+const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-  && new URLSearchParams(window.location.search).get('preview') === 'dashboard'
+  && ['dashboard', 'billing'].includes(PREVIEW_SECTION)
 const PREVIEW_STATS = {
   total_calls: 128,
   total_tokens_saved: 84200,
   total_optimized_tokens: 60300,
-  total_measured_savings_usd: 38.42,
+  total_actual_cost_usd: 74.26,
   total_verified_savings_usd: 31.68,
   total_actual_tokens: 60300,
   unpriced_calls: 2,
@@ -37,6 +38,18 @@ const PREVIEW_STATS = {
     savings_pct: Number((((baseline_tokens - optimized_tokens) / baseline_tokens) * 100).toFixed(1)),
     project,
   })).reverse(),
+}
+const PREVIEW_BILLING = {
+  configured: true,
+  subscription_status: 'active',
+  current_period_end: '2026-08-16T00:00:00.000Z',
+  last_invoice_status: 'paid',
+  estimated_fee_usd: 3.168,
+  reported_fee_usd: 3.168,
+  monthly_safety_cap_usd: 100,
+  has_customer: true,
+  needs_review: 0,
+  capped_entries: 0,
 }
 
 function pendingDeviceCode() {
@@ -73,6 +86,7 @@ function SunIcon() {
 }
 
 function DashboardPreview({ darkMode, onToggleDark }) {
+  const billingPreview = PREVIEW_SECTION === 'billing'
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
       <div className="sticky top-0 z-50 px-2 sm:px-6 pt-2 sm:pt-5 pb-2 sm:pb-3">
@@ -98,13 +112,15 @@ function DashboardPreview({ darkMode, onToggleDark }) {
           </div>
           <nav className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3" aria-label="Dashboard preview section">
             <span className="inline-flex min-h-11 items-center px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue">
-              Overview
+              {billingPreview ? 'Savings' : 'Overview'}
             </span>
           </nav>
         </header>
       </div>
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
-        <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} />
+        {billingPreview
+          ? <Billing apiKey="preview" accessToken="preview" refreshTick={0} previewStats={PREVIEW_STATS} previewBilling={PREVIEW_BILLING} />
+          : <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} />}
       </main>
     </div>
   )
@@ -329,7 +345,7 @@ export default function App() {
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'Savings'    && <Billing apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}
         {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
       </main>
       <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">

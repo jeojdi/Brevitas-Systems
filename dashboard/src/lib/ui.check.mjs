@@ -4,9 +4,25 @@ import test from 'node:test'
 
 const source = name => readFile(new URL(`../components/${name}.jsx`, import.meta.url), 'utf8')
 
-test('savings UI makes no fee, payment, or amount-owed claim', async () => {
+test('savings UI explains Stripe-hosted billing and the exact fee boundary', async () => {
   const billing = await source('Billing')
-  assert.doesNotMatch(billing, /\b(fee|charged?|payment|owed?)\b/i)
+  assert.match(billing, /10% of verified savings/)
+  assert.match(billing, /Stripe hosts card collection/)
+  assert.match(billing, /monthly safety cap/)
+  assert.doesNotMatch(billing, /card(number|_number)|payment_method_data/i)
+})
+
+test('customer savings UI shows signed verified savings without a measured duplicate', async () => {
+  const [billing, overview, projects] = await Promise.all([
+    source('Billing'), source('Overview'), source('Projects'),
+  ])
+  for (const component of [billing, overview, projects]) {
+    assert.doesNotMatch(component, /Measured savings/i)
+    assert.doesNotMatch(component, /Math\.abs/)
+  }
+  assert.match(billing, /Verified savings/)
+  assert.match(overview, /verified savings/)
+  assert.match(projects, /Verified savings/)
 })
 
 test('dashboard navigation is separated and exposes its active section', async () => {
@@ -35,8 +51,9 @@ test('overview uses a cumulative saved and not-saved area chart', async () => {
 test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
   const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
   assert.match(app, /\['localhost', '127\.0\.0\.1'\]\.includes\(window\.location\.hostname\)/)
-  assert.match(app, /get\('preview'\) === 'dashboard'/)
+  assert.match(app, /\['dashboard', 'billing'\]\.includes\(PREVIEW_SECTION\)/)
   assert.match(app, /previewStats=\{PREVIEW_STATS\}/)
+  assert.match(app, /previewBilling=\{PREVIEW_BILLING\}/)
   assert.match(app, /if \(PREVIEW_MODE\) \{\s*return <DashboardPreview/)
   assert.match(app, /if \(!session\) \{\s*return <Auth/)
 })

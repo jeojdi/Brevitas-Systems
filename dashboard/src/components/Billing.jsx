@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStats } from '../lib/api.js'
+import { fetchStats, fetchBillingStatus, openBillingPortal, startBillingCheckout } from '../lib/api.js'
 
 function fmt(n, decimals = 2) {
   return Number(n || 0).toFixed(decimals)
@@ -21,13 +21,17 @@ function StatCard({ label, value, sub, accent = false }) {
   )
 }
 
-export default function Billing({ apiKey, refreshTick }) {
-  const [stats, setStats]   = useState(null)
-  const [loading, setLoading] = useState(true)
+export default function Billing({ apiKey, accessToken, refreshTick, previewStats, previewBilling }) {
+  const [stats, setStats]   = useState(previewStats || null)
+  const [billing, setBilling] = useState(previewBilling || null)
+  const [loading, setLoading] = useState(!previewStats)
   const [error, setError]   = useState('')
+  const [billingError, setBillingError] = useState('')
+  const [billingAction, setBillingAction] = useState('')
   const controllerRef = useRef(null)
 
   const load = useCallback(async () => {
+    if (previewStats) { setStats(previewStats); setLoading(false); return }
     if (!apiKey) return
     controllerRef.current?.abort()
     const controller = new AbortController()
@@ -41,12 +45,48 @@ export default function Billing({ apiKey, refreshTick }) {
     } finally {
       if (controllerRef.current === controller) setLoading(false)
     }
-  }, [apiKey])
+  }, [apiKey, previewStats])
 
   useEffect(() => {
     load()
     return () => controllerRef.current?.abort()
   }, [load, refreshTick])
+
+  const loadBilling = useCallback(async () => {
+    if (previewBilling) { setBilling(previewBilling); return }
+    if (!accessToken) return
+    try {
+      setBilling(await fetchBillingStatus(accessToken))
+    } catch (e) {
+      setBillingError(e.message)
+    }
+  }, [accessToken, previewBilling])
+
+  useEffect(() => { loadBilling() }, [loadBilling, refreshTick])
+
+  const goToStripe = async kind => {
+    setBillingAction(kind)
+    setBillingError('')
+    try {
+      const action = kind === 'checkout' ? startBillingCheckout : openBillingPortal
+      const { url } = await action(accessToken)
+      window.location.assign(url)
+    } catch (e) {
+      if (e.status === 409 && kind === 'checkout') {
+        try {
+          const { url } = await openBillingPortal(accessToken)
+          window.location.assign(url)
+          return
+        } catch (portalError) {
+          setBillingError(portalError.message)
+        }
+      } else {
+        setBillingError(e.message)
+      }
+    } finally {
+      setBillingAction('')
+    }
+  }
 
   if (!apiKey) return (
     <div className="pt-12 text-center">
@@ -67,11 +107,13 @@ export default function Billing({ apiKey, refreshTick }) {
     </div>
   )
 
-  const measuredSaved  = Number(stats?.total_measured_savings_usd || 0)
   const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
+  const providerSpend  = Number(stats?.total_actual_cost_usd || 0)
   const months         = stats?.billing_by_month || []
   const thisMonth      = months[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
+  const billingActive  = ['active', 'trialing'].includes(billing?.subscription_status)
+  const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'].includes(billing?.subscription_status)
 
   return (
     <div className="space-y-10" data-ph-sensitive>
@@ -82,8 +124,47 @@ export default function Billing({ apiKey, refreshTick }) {
           Track what Brevitas saves.
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-3 max-w-lg leading-relaxed">
-          Token and cost estimates from your recorded provider usage. Unpriced calls remain visible without a guessed dollar value.
+          Provider-receipt costs and quality-safe net savings. Unpriced calls remain visible without a guessed dollar value.
         </p>
+      </div>
+
+      {/* Stripe-hosted usage billing */}
+      <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 sm:p-8">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="max-w-2xl">
+            <div className="flex flex-wrap items-center gap-3 mb-3">
+              <p className="annotation tracking-widest uppercase">// secure billing</p>
+              {billing && (
+                <span className={`font-mono text-[10px] px-2 py-1 rounded-full ${billingActive ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600' : 'bg-brand-bg dark:bg-brand-dark-bg text-brand-muted'}`}>
+                  {billingActive ? 'active' : billing.subscription_status.replaceAll('_', ' ')}
+                </span>
+              )}
+            </div>
+            <h3 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">10% of verified savings. Nothing else.</h3>
+            <p className="text-sm text-brand-muted dark:text-brand-dark-muted mt-2 leading-relaxed">
+              Stripe hosts card collection and the billing portal; Brevitas never receives card details. Usage is floored to micro-dollars, deduplicated{billing?.monthly_safety_cap_usd ? `, and constrained by a $${fmt(billing.monthly_safety_cap_usd, 0)} monthly safety cap` : ''}.
+            </p>
+            {billing && (
+              <div className="flex flex-wrap gap-x-8 gap-y-2 mt-4 font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">
+                <span>Current estimate <strong className="text-brand-navy dark:text-brand-dark-navy">${fmt(billing.estimated_fee_usd, 6)}</strong></span>
+                <span>Reported to Stripe <strong className="text-brand-navy dark:text-brand-dark-navy">${fmt(billing.reported_fee_usd, 6)}</strong></span>
+              </div>
+            )}
+            {billingError && <p className="font-mono text-xs text-red-500 mt-4">{billingError}</p>}
+            {billing?.needs_review > 0 && <p className="font-mono text-xs text-amber-600 mt-4">A billing event is paused for manual review and will not be retried automatically.</p>}
+          </div>
+          <button
+            type="button"
+            disabled={Boolean(previewBilling) || !billing?.configured || Boolean(billingAction)}
+            onClick={() => goToStripe(billingManageable ? 'portal' : 'checkout')}
+            className="shrink-0 min-h-11 px-5 py-3 rounded-xl bg-brand-blue text-white font-mono text-[11px] tracking-widest uppercase disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
+          >
+            {billingAction ? 'Opening Stripe…' : billingManageable ? 'Manage billing' : 'Set up billing'}
+          </button>
+        </div>
+        {billing && !billing.configured && (
+          <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-4">Billing enrollment is not enabled in this environment.</p>
+        )}
       </div>
 
       {/* All-time stats */}
@@ -99,15 +180,14 @@ export default function Billing({ apiKey, refreshTick }) {
           sub="across all calls"
         />
         <StatCard
-          label="Measured savings"
-          value={allUnpriced ? 'Unpriced' : `$${fmt(measuredSaved, 4)}`}
-          sub="receipt-based estimate"
-          accent
+          label="Provider spend"
+          value={allUnpriced ? 'Unpriced' : `$${fmt(providerSpend, 4)}`}
+          sub="from provider receipts"
         />
         <StatCard
           label="Verified savings"
           value={`$${fmt(verifiedSaved, 4)}`}
-          sub="passed the quality gate"
+          sub="quality-safe methods only"
           accent
         />
       </div>
@@ -119,7 +199,7 @@ export default function Billing({ apiKey, refreshTick }) {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Calls"         value={fmtK(thisMonth.calls)} />
             <StatCard label="Tokens saved"  value={fmtK(thisMonth.tokens_saved)} />
-            <StatCard label="Measured savings" value={`$${fmt(thisMonth.measured_savings_usd ?? thisMonth.cost_saved_usd, 4)}`} accent />
+            <StatCard label="Provider spend" value={`$${fmt(thisMonth.actual_cost_usd, 4)}`} />
             <StatCard label="Verified savings" value={`$${fmt(thisMonth.verified_savings_usd ?? thisMonth.cost_saved_usd, 4)}`} accent />
           </div>
         </div>
@@ -131,7 +211,7 @@ export default function Billing({ apiKey, refreshTick }) {
           <p className="annotation tracking-widest uppercase mb-4">// monthly history</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
             <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Month', 'Calls', 'Tokens saved', 'Measured', 'Verified'].map(h => (
+              {['Month', 'Calls', 'Tokens saved', 'Provider spend', 'Verified savings'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
@@ -140,7 +220,7 @@ export default function Billing({ apiKey, refreshTick }) {
                 <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.month}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.tokens_saved)}</span>
-                <span className="font-mono text-xs text-brand-blue">${fmt(m.measured_savings_usd ?? m.cost_saved_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">${fmt(m.actual_cost_usd, 4)}</span>
                 <span className="font-mono text-xs text-brand-teal">${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}</span>
               </div>
             ))}
@@ -164,8 +244,8 @@ export default function Billing({ apiKey, refreshTick }) {
             ['Baseline tokens', 'What you would have sent to Anthropic/OpenAI without Brevitas'],
             ['Compressed tokens', 'What Brevitas actually sent after compression'],
             ['Tokens saved', 'The difference — real input tokens that never reached the provider'],
-            ['Measured savings', 'Receipt-based estimate using the recorded provider and model'],
-            ['Verified savings', 'Measured savings from calls that passed the quality gate'],
+            ['Provider spend', 'What provider receipts say the optimized calls actually cost'],
+            ['Verified savings', 'Positive savings from byte-preserving or workload-verified methods'],
           ].map(([term, def]) => (
             <div key={term} className="flex flex-col sm:flex-row gap-1 sm:gap-4">
               <span className="font-mono text-[11px] text-brand-blue shrink-0 sm:w-36">{term}</span>

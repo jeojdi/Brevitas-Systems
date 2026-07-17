@@ -137,8 +137,8 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
         <BigStat value={stats.total_calls} label="// ai calls" />
         <BigStat value={fmt(stats.total_tokens_saved)} label="// tokens saved" valueClass="text-brand-blue" />
-        <BigStat value={`$${Math.abs(Number(stats.total_measured_savings_usd || 0)).toFixed(2)}`} label="// measured savings" valueClass="text-brand-blue" />
-        <BigStat value={`$${Math.abs(Number(stats.total_verified_savings_usd || 0)).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
+        <BigStat value={`$${Number(stats.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
+        <BigStat value={`$${Number(stats.total_verified_savings_usd || 0).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
       </div>
 
       {/* ── Token flow summary ── */}

@@ -1,0 +1,82 @@
+import 'server-only';
+
+import Stripe from 'stripe';
+
+let stripeClient: Stripe | null = null;
+let validatedPrice: Promise<void> | null = null;
+
+export function billingConfig() {
+  const monthlyCapUsd = Number(process.env.BREVITAS_BILLING_MONTHLY_CAP_USD || 0);
+  return {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    cronSecret: process.env.CRON_SECRET || '',
+    priceId: process.env.STRIPE_PRICE_ID || '',
+    meterEventName: process.env.STRIPE_METER_EVENT_NAME || 'brevitas_fee_microusd',
+    publicUrl: (process.env.BREVITAS_PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
+    monthlyCapUsd,
+    automaticTax: process.env.STRIPE_AUTOMATIC_TAX === 'true',
+  };
+}
+
+export function billingIsConfigured(): boolean {
+  const config = billingConfig();
+  let safePublicUrl = false;
+  try {
+    const url = new URL(config.publicUrl);
+    safePublicUrl = url.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(url.hostname);
+  } catch {
+    safePublicUrl = false;
+  }
+  return Boolean(
+    config.secretKey &&
+    config.webhookSecret &&
+    config.cronSecret &&
+    config.priceId &&
+    config.meterEventName &&
+    Number.isFinite(config.monthlyCapUsd) &&
+    config.monthlyCapUsd > 0 &&
+    config.monthlyCapUsd <= 100_000 &&
+    safePublicUrl
+  );
+}
+
+export function getStripe(): Stripe {
+  const key = billingConfig().secretKey;
+  if (!key) throw new Error('Stripe billing is not configured');
+  stripeClient ??= new Stripe(key, {
+    appInfo: { name: 'Brevitas Systems', version: '1.0.0' },
+  });
+  return stripeClient;
+}
+
+export async function validateStripeCatalog(): Promise<void> {
+  validatedPrice ??= (async () => {
+    const config = billingConfig();
+    const stripe = getStripe();
+    const price = await stripe.prices.retrieve(config.priceId);
+    const meterId = price.recurring?.meter;
+    if (
+      !price.active ||
+      price.type !== 'recurring' ||
+      price.currency !== 'usd' ||
+      price.billing_scheme !== 'per_unit' ||
+      price.unit_amount_decimal?.toString() !== '0.0001' ||
+      price.recurring?.interval !== 'month' ||
+      price.recurring?.usage_type !== 'metered' ||
+      !meterId
+    ) {
+      throw new Error('Stripe Price does not match the Brevitas micro-dollar metered billing contract');
+    }
+    const meter = await stripe.billing.meters.retrieve(meterId);
+    if (meter.status !== 'active' || meter.event_name !== config.meterEventName) {
+      throw new Error('Stripe Price is attached to the wrong billing meter');
+    }
+  })();
+  try {
+    await validatedPrice;
+  } catch (error) {
+    validatedPrice = null;
+    throw error;
+  }
+}
