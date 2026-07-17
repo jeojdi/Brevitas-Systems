@@ -1,98 +1,15 @@
 // Brevitas — Pipeline Explorer (interactive, data-driven)
-// Phases per hop:
-//   Raw mode:      pending → typing → done
-//   Brevitas mode: pending → typing → highlighting → deleting → done
+// Phases per hop: pending → routing → typing → done.
+// Brevitas optimizes the INPUT path; agent outputs are rendered in full.
 // Depends on window.BrevitasPipelineData.
 
 const { useState: usePE, useEffect: useEfPE, useRef: useRfPE, useMemo: useMmPE } = React;
-const { TASKS, dropReason } = window.BrevitasPipelineData;
+const { TASKS } = window.BrevitasPipelineData;
 
 // ------------------------------------------------------------
-// PToken — one word with phase-aware styling.
-//   phase: 'typing' | 'highlighting' | 'deleting' | 'done'
-//   mode:  'baseline' | 'optimized'
+// TypingBlock — renders the complete agent response word by word.
 // ------------------------------------------------------------
-// charEaten: -1 = full word visible, 0..len = number of chars eaten from the right
-function PToken({ tok, mode, phase, onHover, charEaten, showRemoved = false }) {
-  if (tok.k === 'space') return <span> </span>;
-  const isKept = tok.k === 'kept';
-  const isStruct = tok.k === 'structural';
-  const isDroppable = tok.k === 'filler' || tok.k === 'redundant';
-
-  // Determine visual state
-  let highlighted = false; // red tint (marking for deletion)
-  let beingEaten = false;
-
-  if (mode === 'optimized' && isDroppable) {
-    if (phase === 'highlighting') highlighted = true;
-    else if (phase === 'deleting' || phase === 'done') { highlighted = true; beingEaten = true; }
-  }
-
-  // Character-level erase
-  let visibleText = tok.t;
-  let fullyGone = false;
-  if (beingEaten && charEaten != null && charEaten >= 0) {
-    const keep = Math.max(0, tok.t.length - charEaten);
-    visibleText = tok.t.slice(0, keep);
-    fullyGone = keep === 0;
-  }
-
-  const color = highlighted
-    ? 'var(--oxblood)'
-    : isKept ? 'var(--bone)' : isStruct ? 'var(--signal)' : 'var(--stone-2)';
-
-  // When fully eaten, render an invisible placeholder to preserve the "gap" — user asked for holes left behind
-  if (fullyGone) {
-    if (showRemoved) {
-      return <span className="bv-token-removed">{tok.t}</span>;
-    }
-    return (
-      <span style={{
-        fontFamily: isStruct ? 'JetBrains Mono, monospace' : 'inherit',
-        fontSize: isStruct ? '0.92em' : 'inherit',
-        color: 'transparent',
-        userSelect: 'none',
-      }}>{tok.t.replace(/./g, '\u00A0')}</span>
-    );
-  }
-
-  return (
-    <span
-      onMouseEnter={() => onHover && onHover({ tok })}
-      onMouseLeave={() => onHover && onHover(null)}
-      style={{
-        color,
-        fontFamily: isStruct ? 'JetBrains Mono, monospace' : 'inherit',
-        fontSize: isStruct ? '0.92em' : 'inherit',
-        background: highlighted ? 'rgba(143,58,48,0.22)' : 'transparent',
-        padding: 0,
-        borderRadius: highlighted ? 2 : 0,
-        transition: 'color 250ms, background 250ms',
-        cursor: isDroppable || isKept ? 'help' : 'default',
-        position: 'relative',
-      }}
-    >
-      {visibleText}
-      {beingEaten && !fullyGone && charEaten != null && charEaten > 0 && (
-        <span style={{
-          display: 'inline-block',
-          width: 6,
-          height: 14,
-          background: 'var(--oxblood)',
-          verticalAlign: 'text-bottom',
-          marginLeft: 1,
-          animation: 'bvCursorBlink 220ms steps(2) infinite',
-        }} />
-      )}
-    </span>
-  );
-}
-
-// ------------------------------------------------------------
-// TypingBlock — tokens up to `reveal`, with inter-token spaces,
-// plus a blinking cursor at the edge while still typing.
-// ------------------------------------------------------------
-function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap, showRemoved = false }) {
+function TypingBlock({ tokens, reveal, phase }) {
   const shown = tokens.slice(0, reveal);
   const typing = phase === 'typing' && reveal < tokens.length;
   return (
@@ -106,19 +23,11 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap, showRemov
       {/* The hidden full transcript reserves the final layout before typing
           starts, so the animation never pushes the page downward. */}
       <div aria-hidden="true" style={{ gridArea: '1 / 1', visibility: 'hidden', pointerEvents: 'none' }}>
-        {tokens.map((tok, i) => (
-          <React.Fragment key={i}>
-            <PToken tok={tok} mode="baseline" phase="done" charEaten={-1} />
-            {i < tokens.length - 1 && tok.k !== 'space' && tokens[i + 1]?.k !== 'space' ? ' ' : ''}
-          </React.Fragment>
-        ))}
+        {tokens.map((tok, i) => <React.Fragment key={i}>{tok.t}{i < tokens.length - 1 ? ' ' : ''}</React.Fragment>)}
       </div>
       <div style={{ gridArea: '1 / 1', alignSelf: 'start' }}>
         {shown.map((tok, i) => (
-          <React.Fragment key={i}>
-            <PToken tok={tok} mode={mode} phase={phase} onHover={onHover} charEaten={eatenMap ? eatenMap[i] : -1} showRemoved={showRemoved} />
-            {i < shown.length - 1 && tok.k !== 'space' && shown[i + 1]?.k !== 'space' ? ' ' : ''}
-          </React.Fragment>
+          <React.Fragment key={i}>{tok.t}{i < shown.length - 1 ? ' ' : ''}</React.Fragment>
         ))}
         {typing && (
           <span style={{
@@ -137,10 +46,40 @@ function TypingBlock({ tokens, reveal, mode, phase, onHover, eatenMap, showRemov
 }
 
 // ------------------------------------------------------------
-// HopCard — one agent hop. Uses hop phase for styling.
+// InputRoute — makes the actual optimization visible: the complete
+// context is sent, while a stable prefix is billed at the cache rate.
 // ------------------------------------------------------------
-function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCost, outputCost, eatenMap }) {
-  const active = phase === 'typing' || phase === 'highlighting' || phase === 'deleting';
+function InputRoute({ plan, phase }) {
+  const active = phase === 'routing';
+  const isRead = plan.cached > 0;
+  return (
+    <div style={{
+      padding: '11px 12px',
+      border: `1px solid ${active ? 'var(--signal)' : 'var(--line)'}`,
+      background: active ? 'rgba(141, 224, 207, 0.055)' : 'var(--component-bg-dark)',
+      borderRadius: 5,
+      transition: 'border-color 220ms, background 220ms',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9.5, letterSpacing: '0.12em', color: 'var(--signal)' }}>
+          {active ? 'ROUTER CHECKING' : plan.label}
+        </span>
+        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9.5, color: 'var(--stone-2)', whiteSpace: 'nowrap' }}>
+          {isRead ? `${plan.cached.toLocaleString()} cached · ${plan.fresh.toLocaleString()} fresh` : `${plan.total.toLocaleString()} sent in full`}
+        </span>
+      </div>
+      <div style={{ fontFamily: 'Newsreader, serif', fontSize: 13, lineHeight: 1.35, color: 'var(--stone-2)' }}>
+        {plan.detail}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// HopCard — one agent hop. The route happens before the response.
+// ------------------------------------------------------------
+function HopCard({ role, subtitle, tokens, reveal, phase, plan, outputCost }) {
+  const active = phase === 'routing' || phase === 'typing';
   const pending = phase === 'pending';
 
   return (
@@ -157,62 +96,57 @@ function HopCard({ role, subtitle, tokens, reveal, mode, phase, onHover, inputCo
       flexDirection: 'column',
       gap: 12,
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: 'var(--bronze)', letterSpacing: '0.12em', marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+          <div style={{ fontFamily: 'Inter Tight, system-ui, sans-serif', fontSize: 14.5, fontWeight: 500, color: 'var(--bronze)', letterSpacing: '0.035em', marginBottom: 5 }}>
             {role}
           </div>
-          <div style={{ fontFamily: 'Newsreader, serif', fontSize: 21, lineHeight: 1.2, color: 'var(--bone)', letterSpacing: '-0.01em' }}>
+          <div style={{ fontFamily: 'Inter Tight, system-ui, sans-serif', fontSize: 23, fontWeight: 500, lineHeight: 1.15, color: 'var(--bone)', letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
             {subtitle}
           </div>
         </div>
         <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--stone-2)', flex: '0 0 auto', whiteSpace: 'nowrap', paddingTop: 2 }}>
-          in {inputCost} · out {outputCost}
+          in {plan.total.toLocaleString()} · out {outputCost}
         </div>
       </div>
 
-      <TypingBlock tokens={tokens} reveal={reveal} mode={mode} phase={phase} onHover={onHover} eatenMap={eatenMap} />
+      <InputRoute plan={plan} phase={phase} />
+
+      <TypingBlock tokens={tokens} reveal={reveal} phase={phase} />
     </div>
   );
 }
 
 // ------------------------------------------------------------
-// MobilePipelineSlides — one full-width agent transcript at a time.
-// Removed tokens remain crossed out after the animation so the reduction
-// is still legible when users move backward through the slides.
+// MobilePipelineSlides — one full-width agent response at a time.
 // ------------------------------------------------------------
-function MobilePipelineSlides({ task, mode, phases, reveals, eaten, slideIndex, setSlideIndex, onPrimary, onReplay }) {
+function MobilePipelineSlides({ task, phases, reveals, slideIndex, setSlideIndex, onPrimary, onReplay }) {
   const hops = [
-    { number: '01', role: 'Architect', subtitle: 'Chooses the approach', tokens: task.a1, output: task.a1Tokens },
-    { number: '02', role: 'Builder', subtitle: 'Writes the implementation', tokens: task.a2, output: task.a2Tokens },
-    { number: '03', role: 'Reviewer', subtitle: 'Flags risks and approves', tokens: task.a3, output: task.a3Tokens },
+    { number: '01', role: 'Architect', subtitle: 'Chooses the approach', tokens: task.a1, output: task.a1Tokens, plan: task.cachePlan[0] },
+    { number: '02', role: 'Builder', subtitle: 'Writes the implementation', tokens: task.a2, output: task.a2Tokens, plan: task.cachePlan[1] },
+    { number: '03', role: 'Reviewer', subtitle: 'Flags risks and approves', tokens: task.a3, output: task.a3Tokens, plan: task.cachePlan[2] },
   ];
 
   const stateLabel = phase => {
-    if (phase === 'done') return 'Reduced';
+    if (phase === 'done') return 'Complete';
     if (phase === 'pending') return 'Waiting';
+    if (phase === 'routing') return 'Routing';
     if (phase === 'typing') return 'Writing';
-    return 'Reducing';
+    return 'Working';
   };
 
   const hop = hops[slideIndex];
   const phase = phases[slideIndex];
-  const removedCharacters = hop.tokens.reduce((total, token) => (
-    token.k === 'filler' || token.k === 'redundant' ? total + token.t.length : total
-  ), 0);
-  const reducedOutput = mode === 'optimized'
-    ? Math.max(0, hop.output - Math.ceil(removedCharacters / 4))
-    : hop.output;
   const nextRole = hops[slideIndex + 1]?.role;
   const primaryLabel = phase !== 'done'
-    ? 'Show reduction'
+    ? 'Finish this hop'
     : nextRole ? `Next: ${nextRole}` : 'Replay demo';
 
   return (
     <section className="bv-mobile-slides" aria-label="Agent pipeline slides">
       <div className="bv-mobile-slide">
         <div className="bv-mobile-slide-topline">
-          <span>{hop.number} / 03 · {hop.role}</span>
+          <span>Agent {hop.number}: {hop.role}</span>
           <span className={`bv-mobile-slide-state is-${phase}`} aria-live="polite">{stateLabel(phase)}</span>
         </div>
 
@@ -221,27 +155,21 @@ function MobilePipelineSlides({ task, mode, phases, reveals, eaten, slideIndex, 
           <span>One agent at a time</span>
         </div>
 
-        <div className="bv-mobile-token-stats" aria-label="Output token reduction">
-          <div><span>Original</span><strong>{hop.output.toLocaleString()}</strong></div>
+        <div className="bv-mobile-token-stats" aria-label="Input cache usage">
+          <div><span>Full input</span><strong>{hop.plan.total.toLocaleString()}</strong></div>
           <span className="bv-mobile-token-arrow" aria-hidden="true">→</span>
-          <div><span>After Brevitas</span><strong>{reducedOutput.toLocaleString()}</strong></div>
-          <div className="bv-mobile-token-saved"><span>Removed</span><strong>−{(hop.output - reducedOutput).toLocaleString()}</strong></div>
+          <div><span>Cached</span><strong>{hop.plan.cached.toLocaleString()}</strong></div>
+          <div className="bv-mobile-token-saved"><span>Fresh input</span><strong>{hop.plan.fresh.toLocaleString()}</strong></div>
         </div>
+
+        <InputRoute plan={hop.plan} phase={phase} />
 
         <div className="bv-mobile-transcript">
           <TypingBlock
             tokens={hop.tokens}
             reveal={reveals[slideIndex]}
-            mode={mode}
             phase={phase}
-            eatenMap={eaten[slideIndex]}
-            showRemoved
           />
-        </div>
-
-        <div className="bv-mobile-legend" aria-hidden="true">
-          <span><i className="is-kept" />Kept</span>
-          <span><i className="is-removed" />Removed</span>
         </div>
 
         <div className="bv-mobile-slide-nav" aria-label="Choose an agent slide">
@@ -284,26 +212,25 @@ function MobilePipelineSlides({ task, mode, phases, reveals, eaten, slideIndex, 
 }
 
 // ------------------------------------------------------------
-// CostReadout — right column. progress: 0..3 full-hop completions.
+// CostReadout — cache-adjusted INPUT cost. Full context is still sent.
 // ------------------------------------------------------------
-function CostReadout({ task, mode, progress }) {
+function CostReadout({ task, progress }) {
   const baselineCum = useMmPE(() => {
     if (progress <= 0) return 0;
     if (progress === 1) return task.baseline.call1;
     if (progress === 2) return task.baseline.call1 + task.baseline.call2;
     return task.baseline.total;
   }, [task, progress]);
-  const optimizedCum = useMmPE(() => {
-    if (progress <= 0) return 0;
-    if (progress === 1) return task.optimized.call1;
-    if (progress === 2) return task.optimized.call1 + task.optimized.call2;
-    return task.optimized.total;
-  }, [task, progress]);
+  const actualCum = useMmPE(() => (
+    task.cachePlan.slice(0, progress).reduce((sum, hop) => sum + hop.cost, 0)
+  ), [task, progress]);
+  const cachedCum = useMmPE(() => (
+    task.cachePlan.slice(0, progress).reduce((sum, hop) => sum + hop.cached, 0)
+  ), [task, progress]);
 
-  const showingOptimized = mode === 'optimized';
-  const shownCum = showingOptimized ? optimizedCum : baselineCum;
-  const saved = baselineCum - optimizedCum;
-  const pct = baselineCum ? Math.round((saved / baselineCum) * 100) : 0;
+  const withPct = baselineCum ? Math.round((actualCum / baselineCum) * 100) : 100;
+  const pct = 100 - withPct;
+  const saving = pct >= 0;
 
   const Cell = ({ label, value, color, bold }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
@@ -329,7 +256,10 @@ function CostReadout({ task, mode, progress }) {
         textTransform: 'uppercase',
         color: 'var(--bronze)',
       }}>
-        tokens in
+        input billing
+        <div style={{ color: 'var(--stone)', fontSize: 8.5, letterSpacing: '0.06em', marginTop: 3 }}>
+          full context stays intact
+        </div>
       </div>
 
       {/* Hop progress bars — aligned under the hop cards above */}
@@ -340,8 +270,8 @@ function CostReadout({ task, mode, progress }) {
         <div style={{ display: 'flex', gap: 10, height: 10 }}>
           {[1, 2, 3].map(n => {
             const b = task.baseline['call' + n];
-            const o = task.optimized['call' + n];
-            const pctBar = showingOptimized ? Math.round((o / b) * 100) : 100;
+            const o = task.cachePlan[n - 1].cost;
+            const pctBar = Math.min(100, Math.round((o / b) * 100));
             const reached = progress >= n;
             return (
               <div key={n} style={{ flex: 1, background: 'rgba(166,159,147,0.15)', position: 'relative', overflow: 'hidden' }}>
@@ -349,7 +279,7 @@ function CostReadout({ task, mode, progress }) {
                   position: 'absolute',
                   inset: 0,
                   width: reached ? pctBar + '%' : 0,
-                  background: 'var(--signal)',
+                  background: o > b ? 'var(--bronze)' : 'var(--signal)',
                   transition: 'width 900ms cubic-bezier(.4,0,.2,1)',
                 }} />
               </div>
@@ -358,16 +288,16 @@ function CostReadout({ task, mode, progress }) {
         </div>
       </div>
 
-      <Cell label="without" value={baselineCum.toLocaleString()} color={showingOptimized ? 'var(--stone-2)' : 'var(--bone)'} />
-      <Cell label="with brevitas" value={optimizedCum.toLocaleString()} color={showingOptimized ? 'var(--bone)' : 'var(--stone-2)'} />
-      <Cell label="Saved" value={saved > 0 ? `−${saved.toLocaleString()}` : '—'} color="var(--signal)" />
+      <Cell label="Context sent" value={baselineCum.toLocaleString()} color="var(--bone)" />
+      <Cell label="Read from cache" value={cachedCum.toLocaleString()} color="var(--signal)" />
+      <Cell label="Relative input cost" value={progress ? `${withPct}%` : '—'} color={saving ? 'var(--bone)' : 'var(--bronze)'} />
 
       <div className="bv-cost-percent" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 40, lineHeight: 1, color: 'var(--signal)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-          {pct}<span style={{ fontSize: 22, color: 'var(--stone-2)' }}>%</span>
+        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 40, lineHeight: 1, color: saving ? 'var(--signal)' : 'var(--bronze)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+          {progress ? Math.abs(pct) : 0}<span style={{ fontSize: 22, color: 'var(--stone-2)' }}>%</span>
         </div>
         <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--stone-2)' }}>
-          fewer tokens
+          {saving ? 'lower input cost' : 'cache warm-up'}
         </div>
       </div>
     </div>
@@ -419,19 +349,15 @@ function PipelineFieldBg() {
 // Main component — drives phases for all 3 hops with a simple
 // state machine and timers.
 // ------------------------------------------------------------
-function PipelineExplorer({ defaultMode = 'optimized' }) {
+function PipelineExplorer() {
   const [activeId, setActiveId] = usePE('rate-limiter');
-  const [mode, setMode] = usePE(defaultMode);
-  const [hover, setHover] = usePE(null);
 
-  // Active hop (0, 1, 2) — the one currently typing or compressing
+  // Active hop (0, 1, 2) — the one currently being routed or answered.
   const [activeHop, setActiveHop] = usePE(0);
   // Reveal count for the active hop's typing phase
   const [reveal, setReveal] = usePE(0);
-  // Per-hop phase: 'pending' | 'typing' | 'highlighting' | 'deleting' | 'done'
+  // Per-hop phase: 'pending' | 'routing' | 'typing' | 'done'
   const [phases, setPhases] = usePE(['pending', 'pending', 'pending']);
-  // Per-hop per-token char-erase counts: { [tokenIndex]: charsEatenFromRight }
-  const [eaten, setEaten] = usePE([{}, {}, {}]);
   const [runToken, setRunToken] = usePE(0); // bumps on reset to cancel old timers
   const [startHop, setStartHop] = usePE(0); // which hop to start the run at (0..2)
   const [isVisible, setIsVisible] = usePE(false);
@@ -444,10 +370,10 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
   const task = useMmPE(() => TASKS.find(t => t.id === activeId), [activeId]);
 
   // ---------- Run pipeline ----------
-  // Each time runToken or activeId or mode changes, kick off a fresh run.
+  // Each time runToken or activeId changes, kick off a fresh run.
   useEfPE(() => {
     let cancelled = false;
-    let skipCurrent = false;   // finish typing + deletion for current hop instantly
+    let skipCurrent = false;   // finish routing + typing for current hop instantly
     let advanceNow = false;    // skip to next hop
     const timers = [];
     const push = (fn, ms) => {
@@ -469,13 +395,15 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       const hopTokens = [task.a1, task.a2, task.a3][h];
       setActiveHop(h);
       setReveal(0);
+      setPhases(p => { const n = [...p]; n[h] = 'routing'; return n; });
+      await wait(skipCurrent ? 80 : 850);
+      if (cancelled) return;
+
       setPhases(p => { const n = [...p]; n[h] = 'typing'; return n; });
-      // Clear eaten state for this hop
-      setEaten(e => { const n = [...e]; n[h] = {}; return n; });
 
       // Type out word by word
       const total = hopTokens.length;
-      const perTok = Math.max(42, Math.min(85, 7500 / total));
+      const perTok = Math.max(30, Math.min(70, 5600 / total));
       for (let i = 0; i <= total; i++) {
         if (cancelled) return;
         if (skipCurrent) { setReveal(total); break; }
@@ -483,72 +411,6 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         await wait(perTok);
       }
       if (cancelled) return;
-
-      if (mode === 'optimized') {
-        // Highlighting phase — quick flash of red to mark all droppable tokens
-        setPhases(p => { const n = [...p]; n[h] = 'highlighting'; return n; });
-        await wait(skipCurrent ? 250 : 950);
-        if (cancelled) return;
-
-        // Deleting phase — CHAR-BY-CHAR backspace in a wave, ~1.1s total
-        setPhases(p => { const n = [...p]; n[h] = 'deleting'; return n; });
-
-        // Collect droppable token indices in reading order
-        const droppable = [];
-        for (let idx = 0; idx < hopTokens.length; idx++) {
-          const k = hopTokens[idx].k;
-          if (k === 'filler' || k === 'redundant') droppable.push(idx);
-        }
-
-        if (droppable.length > 0) {
-          // Target: finish all deletions in ~1000ms, with a wavy overlap so you
-          // see multiple words being backspaced at once.
-          const targetMs = skipCurrent ? 180 : 1350;
-          const maxLen = Math.max(...droppable.map(i => hopTokens[i].t.length));
-          // Start-stagger between words: small to make the wave feel dense & urgent
-          const staggerStep = Math.max(24, (targetMs - 200) / Math.max(1, droppable.length));
-          // Char tick: backspace speed
-          const charTick = Math.max(28, Math.min(72, 720 / maxLen));
-
-          // Each word's animation: start at its stagger offset, then tick each char
-          const wordPromises = droppable.map((tokIdx, orderI) => new Promise((resolve) => {
-            const len = hopTokens[tokIdx].t.length;
-            const startDelay = orderI * staggerStep;
-            const startId = setTimeout(() => {
-              if (cancelled) return resolve();
-              let step = 0;
-              const iv = setInterval(() => {
-                if (cancelled || skipCurrent) {
-                  clearInterval(iv);
-                  setEaten(e => {
-                    const n = [...e];
-                    n[h] = { ...n[h], [tokIdx]: len };
-                    return n;
-                  });
-                  return resolve();
-                }
-                step++;
-                setEaten(e => {
-                  const n = [...e];
-                  n[h] = { ...n[h], [tokIdx]: step };
-                  return n;
-                });
-                if (step >= len) {
-                  clearInterval(iv);
-                  resolve();
-                }
-              }, charTick);
-              timers.push(iv);
-            }, startDelay);
-            timers.push(startId);
-          }));
-
-          await Promise.all(wordPromises);
-        }
-
-        if (cancelled) return;
-        await wait(skipCurrent ? 80 : 380);
-      }
 
       setPhases(p => { const n = [...p]; n[h] = 'done'; return n; });
       // Small pause between hops — but if user pressed →, skip it
@@ -559,21 +421,11 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
       // Pre-fill any hops before startHop as 'done' so the UI shows the
       // state you'd be in if those had already played.
       const initPhases = ['pending', 'pending', 'pending'];
-      const initEaten = [{}, {}, {}];
       const hopTokArr = [task.a1, task.a2, task.a3];
       for (let i = 0; i < startHop; i++) {
         initPhases[i] = 'done';
-        if (mode === 'optimized') {
-          // Mark all droppable tokens as fully eaten
-          const map = {};
-          hopTokArr[i].forEach((tk, idx) => {
-            if (tk.k === 'filler' || tk.k === 'redundant') map[idx] = tk.t.length;
-          });
-          initEaten[i] = map;
-        }
       }
       setPhases(initPhases);
-      setEaten(initEaten);
       setReveal(startHop < 3 ? 0 : hopTokArr[2].length);
       setActiveHop(Math.min(startHop, 2));
       await wait(250);
@@ -585,17 +437,18 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
     return () => {
       cancelled = true;
-      timers.forEach(id => { clearTimeout(id); clearInterval(id); });
+      timers.forEach(id => clearTimeout(id));
     };
-  }, [activeId, mode, runToken, task]);
+  }, [activeId, runToken, task]);
 
   // Per-hop reveal counts (only the active hop is actively advancing)
   const reveals = useMmPE(() => {
     const lens = [task.a1.length, task.a2.length, task.a3.length];
     return [0, 1, 2].map(h => {
       if (phases[h] === 'pending') return 0;
+      if (phases[h] === 'routing') return 0;
       if (phases[h] === 'typing')  return h === activeHop ? reveal : 0;
-      return lens[h]; // highlighting/deleting/done: all tokens placed
+      return lens[h];
     });
   }, [phases, activeHop, reveal, task]);
 
@@ -632,26 +485,10 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
     setRunToken(n => n + 1);
   }
   function skipToEnd() {
-    setRunToken(n => n + 10000); // cancel
     setMobileSlide(2);
+    setStartHop(3);
     setPhases(['done', 'done', 'done']);
-    // Mark all droppable tokens as fully eaten so the final state looks correct
-    if (mode === 'optimized') {
-      const finalEaten = [task.a1, task.a2, task.a3].map(toks => {
-        const map = {};
-        toks.forEach((tk, idx) => {
-          if (tk.k === 'filler' || tk.k === 'redundant') map[idx] = tk.t.length;
-        });
-        return map;
-      });
-      setEaten(finalEaten);
-    }
-  }
-  function switchMode(m) {
-    setMode(m);
-    setMobileSlide(0);
-    setStartHop(0);
-    setRunToken(n => n + 1);
+    setRunToken(n => n + 10000); // cancel the current run and restart at the completed state
   }
   function advanceMobileSlide() {
     if (phases[mobileSlide] !== 'done') {
@@ -687,11 +524,11 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
         // If all hops are done, do nothing
         const allDone = phases.every(p => p === 'done');
         if (allDone) return;
-        // If the active hop is mid-typing, finish typing first (one press = finish current step).
+        // If the active hop is routing or typing, finish it first.
         // If the active hop is fully done ('done'), advance to next hop (the run loop already advances on its own,
         // but pressing here shortcuts the inter-hop pause).
         const curPhase = phases[activeHop];
-        if (curPhase === 'typing' || curPhase === 'highlighting' || curPhase === 'deleting') {
+        if (curPhase === 'routing' || curPhase === 'typing') {
           skipRef.current.finishCurrent();
         } else {
           skipRef.current.advanceHop();
@@ -759,10 +596,8 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
             min-height: 72svh;
             padding: 22px calc(18px + env(safe-area-inset-right)) 20px calc(18px + env(safe-area-inset-left));
           }
-          .bv-mobile-slide-topline,
           .bv-mobile-slide-heading > span,
           .bv-mobile-token-stats span,
-          .bv-mobile-legend,
           .bv-mobile-slide-nav button,
           .bv-mobile-slide-actions button {
             font-family: 'JetBrains Mono', monospace;
@@ -773,21 +608,23 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
             justify-content: space-between;
             gap: 12px;
             color: var(--bronze);
-            font-size: 10px;
-            letter-spacing: 0.12em;
+            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 0.035em;
           }
           .bv-mobile-slide-state { color: var(--stone-2); }
+          .bv-mobile-slide-state.is-routing,
           .bv-mobile-slide-state.is-typing,
-          .bv-mobile-slide-state.is-highlighting,
-          .bv-mobile-slide-state.is-deleting { color: var(--signal); }
+          .bv-mobile-slide-state.is-working { color: var(--signal); }
           .bv-mobile-slide-state.is-done { color: var(--bone); }
           .bv-mobile-slide-heading { margin: 18px 0; }
           .bv-mobile-slide-heading h3 {
             margin: 0 0 5px;
             color: var(--bone);
-            font-family: 'Newsreader', serif;
-            font-size: clamp(28px, 9vw, 38px);
-            font-weight: 400;
+            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-size: clamp(27px, 8vw, 36px);
+            font-weight: 500;
             line-height: 1.02;
             letter-spacing: -0.02em;
           }
@@ -832,16 +669,6 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
             scrollbar-color: var(--stone) transparent;
           }
           .bv-mobile-transcript .bv-transcript { font-size: 17px !important; line-height: 1.7 !important; }
-          .bv-token-removed {
-            color: var(--oxblood) !important;
-            text-decoration: line-through;
-            text-decoration-thickness: 1px;
-            opacity: 0.62;
-          }
-          .bv-mobile-legend { display: flex; gap: 18px; color: var(--stone-2); font-size: 8px; letter-spacing: 0.1em; }
-          .bv-mobile-legend span { display: inline-flex; align-items: center; gap: 6px; }
-          .bv-mobile-legend i { width: 7px; height: 7px; border-radius: 50%; background: var(--bone); }
-          .bv-mobile-legend i.is-removed { background: var(--oxblood); }
           .bv-mobile-slide-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 18px; }
           .bv-mobile-slide-nav button {
             display: flex;
@@ -978,19 +805,14 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
           display: 'flex', gap: 0, minWidth: 0, alignItems: 'stretch',
         }}>
           {[
-            { role: '01 · ARCHITECT', subtitle: 'Chooses the approach', toks: task.a1, out: task.a1Tokens,
-              inB: task.baseline.call1, inO: task.optimized.call1 },
-            { role: '02 · BUILDER', subtitle: 'Writes the implementation', toks: task.a2, out: task.a2Tokens,
-              inB: task.baseline.call2, inO: task.optimized.call2 },
-            { role: '03 · REVIEWER', subtitle: 'Flags risks · approves', toks: task.a3, out: task.a3Tokens,
-              inB: task.baseline.call3, inO: task.optimized.call3 },
+            { role: 'Agent 01: Architect', subtitle: 'Chooses the approach', toks: task.a1, out: task.a1Tokens, plan: task.cachePlan[0] },
+            { role: 'Agent 02: Builder', subtitle: 'Writes the implementation', toks: task.a2, out: task.a2Tokens, plan: task.cachePlan[1] },
+            { role: 'Agent 03: Reviewer', subtitle: 'Flags risks · approves', toks: task.a3, out: task.a3Tokens, plan: task.cachePlan[2] },
           ].map((h, i) => (
             <HopCard key={i}
               role={h.role} subtitle={h.subtitle}
-              tokens={h.toks} reveal={reveals[i]} mode={mode} phase={phases[i]}
-              onHover={setHover}
-              eatenMap={eaten[i]}
-              inputCost={(mode === 'optimized' ? h.inO : h.inB).toLocaleString()}
+              tokens={h.toks} reveal={reveals[i]} phase={phases[i]}
+              plan={h.plan}
               outputCost={h.out.toLocaleString()}
             />
           ))}
@@ -999,32 +821,14 @@ function PipelineExplorer({ defaultMode = 'optimized' }) {
 
       <MobilePipelineSlides
         task={task}
-        mode={mode}
         phases={phases}
         reveals={reveals}
-        eaten={eaten}
         slideIndex={mobileSlide}
         setSlideIndex={setMobileSlide}
         onPrimary={advanceMobileSlide}
         onReplay={replay}
       />
-      <CostReadout task={task} mode={mode} progress={costProgress} />
-
-
-      {/* Hover tooltip */}
-      {hover && hover.tok && dropReason[hover.tok.k] && (
-        <div style={{
-          marginTop: 12, padding: '10px 14px', background: 'var(--component-bg-dark)',
-          borderRadius: 6,
-          fontFamily: 'Newsreader, serif', fontSize: 13.5, color: 'var(--stone-2)', fontStyle: 'italic',
-        }}>
-          <span style={{
-            fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.14em',
-            color: 'var(--bronze)', fontStyle: 'normal', textTransform: 'uppercase', marginRight: 10,
-          }}>{hover.tok.k}</span>
-          {dropReason[hover.tok.k]}
-        </div>
-      )}
+      <CostReadout task={task} progress={costProgress} />
     </div>
   );
 }

@@ -4,64 +4,92 @@
 const { useState: useStateA, useEffect: useEffectA, useRef: useRefA, useCallback: useCallbackA } = React;
 
 // ============================================================
-// A — Compression Sequence
+// A — Context Handoff (inter-agent compression)
 // ============================================================
-// Natural paragraph → compressed form. Kept words highlight; dropped words ghost out.
+// Agent 1's output is handed to Agent 2. Context Agent 2 already has is pruned,
+// verbose notes are compressed, and genuinely new information survives.
 
-const COMPRESSION_WORDS = [
-  // [word, kept]
-  ['The', false], ['architecture', true], ['should', false], ['follow', false], ['a', false],
-  ['three-layer', true], ['pattern', true], ['comprising', false], ['a', false],
-  ['presentation', true], ['layer,', false], ['a', false], ['business', true], ['logic', true],
-  ['layer,', false], ['and', false], ['a', false], ['persistence', true], ['layer.', false],
-  ['The', false], ['presentation', true], ['layer', false], ['handles', false], ['user-facing', true],
-  ['concerns', false], ['and', false], ['renders', false], ['the', false], ['UI', true],
-  ['based', false], ['on', false], ['props', false], ['passed', false], ['down', false],
-  ['from', false], ['the', false], ['business', true], ['logic', true], ['layer.', false],
-  ['The', false], ['business', false], ['logic', false], ['layer', false], ['encapsulates', false],
-  ['domain', true], ['operations', true], ['and', false], ['should', false], ['be', false],
-  ['written', false], ['in', false], ['pure', true], ['functions', true], ['where', false],
-  ['possible.', false], ['The', false], ['persistence', true], ['layer', false],
-  ['mediates', false], ['reads', true], ['and', false], ['writes', true], ['against', false],
-  ['the', false], ['database.', true],
+const HANDOFF_CHUNKS = [
+  // { tag: 'new' | 'seen' | 'trim', text, short? }
+  { tag: 'new',  text: 'Task — limit each person to 100 requests per minute, using Redis to track usage.' },
+  { tag: 'seen', text: 'The app has three parts: the interface, business logic, and data storage.' },
+  { tag: 'seen', text: 'All database activity goes through the data layer.' },
+  { tag: 'new',  text: 'Apply the limit safely in Redis so requests arriving at the same time are counted correctly.' },
+  { tag: 'trim', text: 'Check the limit before routing, rather than waiting until a blocked request reaches the app and does unnecessary work, so blocked requests stop immediately.', short: 'Check the limit before routing, so blocked requests stop immediately.' },
+  { tag: 'seen', text: 'The project uses Python 3.13, Redis, and pytest.' },
 ];
+
+const SIMPLIFY_WORDS = [
+  ['Check', true], ['the', true], ['limit', true], ['before', true], ['routing,', true],
+  ['rather', false], ['than', false], ['waiting', false], ['until', false], ['a', false],
+  ['blocked', false], ['request', false], ['reaches', false], ['the', false], ['app', false],
+  ['and', false], ['does', false], ['unnecessary', false], ['work,', false],
+  ['so', true], ['blocked', true], ['requests', true], ['stop', true], ['immediately.', true],
+];
+
+function SimplifyingChunk({ phase, simplified }) {
+  if (phase === 'done') return <span>{simplified}</span>;
+
+  const dropping = phase === 'dropout';
+  return (
+    <span>
+      {SIMPLIFY_WORDS.map(([word, kept], i) => (
+        <span key={i} style={{
+          display: 'inline-block',
+          marginRight: 4,
+          opacity: dropping && !kept ? 0.12 : 1,
+          color: dropping ? (kept ? 'var(--signal)' : 'var(--stone)') : 'inherit',
+          textDecoration: dropping && !kept ? 'line-through' : 'none',
+          textDecorationColor: 'var(--stone)',
+          textDecorationThickness: '1px',
+          transition: `opacity 280ms var(--ease-out-soft) ${i * 18}ms, color 300ms var(--ease-out-soft) ${i * 18}ms`,
+        }}>
+          {word}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 function CompressionSequence() {
   const [phase, setPhase] = useStateA('idle'); // idle, typing, hold, dropout, done
   const [visibleCount, setVisibleCount] = useStateA(0);
-  const [tokens, setTokens] = useStateA(1000);
+  const [tokens, setTokens] = useStateA(2400);
   const [key, setKey] = useStateA(0);
   const [ref, inView] = useInView({ threshold: 0.35 });
   const reduced = useReducedMotion();
 
+  const total = HANDOFF_CHUNKS.length;
+
   useEffectA(() => {
     if (!inView) return;
-    if (reduced) { setPhase('done'); setVisibleCount(COMPRESSION_WORDS.length); setTokens(300); return; }
+    if (reduced) { setPhase('done'); setVisibleCount(total); setTokens(900); return; }
     let timers = [];
     setPhase('typing');
-    // Type all words in quickly (800ms total)
-    const total = COMPRESSION_WORDS.length;
+    setVisibleCount(0);
+    setTokens(2400);
+    // Reveal each context chunk in turn
     for (let i = 1; i <= total; i++) {
-      timers.push(setTimeout(() => setVisibleCount(i), (i / total) * 900 + 100));
+      timers.push(setTimeout(() => setVisibleCount(i), (i / total) * 1000 + 120));
     }
-    timers.push(setTimeout(() => setPhase('hold'), 1200));
-    timers.push(setTimeout(() => setPhase('dropout'), 2000));
-    // Animate token counter down
+    timers.push(setTimeout(() => setPhase('hold'), 1500));
+    timers.push(setTimeout(() => setPhase('dropout'), 2300));
+    // Animate token counter down as redundant context is pruned + trimmed
     timers.push(setTimeout(() => {
       const t0 = performance.now();
       const tick = (now) => {
         const p = Math.min(1, (now - t0) / 1400);
         const eased = p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2,2)/2;
-        setTokens(Math.round(1000 - 700 * eased));
+        setTokens(Math.round(2400 - 1500 * eased));
         if (p < 1) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
-    }, 2000));
-    timers.push(setTimeout(() => setPhase('done'), 3500));
+    }, 2300));
+    timers.push(setTimeout(() => setPhase('done'), 3800));
     return () => timers.forEach(clearTimeout);
-  }, [inView, key, reduced]);
+  }, [inView, key, reduced, total]);
 
-  const replay = () => { setVisibleCount(0); setTokens(1000); setPhase('idle'); setKey(k => k+1); };
+  const replay = () => { setVisibleCount(0); setTokens(2400); setPhase('idle'); setKey(k => k+1); };
 
   const isAfter = phase === 'dropout' || phase === 'done';
 
@@ -74,11 +102,11 @@ function CompressionSequence() {
         gap: 16, flexWrap: 'wrap',
       }}>
         <div className="t-overline" style={{ color: 'var(--stone-2)' }}>
-          {isAfter ? 'COMPRESSED' : 'AGENT 1 OUTPUT'}
+          {isAfter ? 'WHAT AGENT 2 RECEIVES' : 'AGENT 1 SHARES NOTES WITH AGENT 2'}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div className="t-mono tabular" style={{ color: isAfter ? 'var(--signal)' : 'var(--oxblood)' }}>
-            {tokens.toLocaleString()} tokens
+            {tokens.toLocaleString()} tokens to process
           </div>
           {isAfter && (
             <div className="t-mono" style={{
@@ -88,39 +116,83 @@ function CompressionSequence() {
               borderRadius: 2,
               fontSize: 11,
             }}>
-              −70%
+              62% less
             </div>
           )}
         </div>
       </div>
       <div style={{
-        padding: '28px 28px 24px',
+        padding: '24px 26px 20px',
         minHeight: 260,
-        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
-        fontSize: 14,
-        lineHeight: 1.85,
-        color: 'var(--bone-dim)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
       }}>
-        {COMPRESSION_WORDS.map(([w, kept], i) => {
+        {HANDOFF_CHUNKS.map((c, i) => {
           const visible = i < visibleCount;
-          const dropout = isAfter && !kept;
-          const highlight = isAfter && kept;
+          const pruned = isAfter && c.tag === 'seen';
+          const kept = isAfter && c.tag === 'new';
+          const chipLabel = isAfter
+            ? { new: 'KEPT', seen: 'REMOVED', trim: 'SIMPLIFIED' }[c.tag]
+            : { new: 'NEW', seen: 'REPEATED', trim: 'WORDY' }[c.tag];
+          const chipColor = c.tag === 'new'
+            ? 'var(--signal)'
+            : c.tag === 'trim' ? 'var(--bronze)' : 'var(--stone)';
           return (
-            <span
+            <div
               key={i}
               style={{
-                opacity: visible ? (dropout ? 0.12 : 1) : 0,
-                color: highlight ? 'var(--signal)' : (dropout ? 'var(--stone)' : 'var(--bone-dim)'),
-                transition: `opacity 280ms var(--ease-out-soft) ${i * 18}ms, color 300ms var(--ease-out-soft) ${i * 18}ms`,
-                textDecoration: dropout ? 'line-through' : 'none',
-                textDecorationColor: 'var(--stone)',
-                textDecorationThickness: '1px',
-                marginRight: 6,
-                display: 'inline-block',
+                display: 'flex',
+                gap: 12,
+                alignItems: 'flex-start',
+                opacity: visible ? (pruned ? 0.3 : 1) : 0,
+                transform: visible ? 'translateY(0)' : 'translateY(4px)',
+                transition: `opacity 320ms var(--ease-out-soft) ${i * 30}ms, transform 320ms var(--ease-out-soft) ${i * 30}ms`,
               }}
             >
-              {w}
-            </span>
+              <span className="t-mono" style={{
+                flex: '0 0 68px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: 6,
+                color: chipColor,
+                fontSize: 8.5,
+                letterSpacing: '0.08em',
+                opacity: 0.66,
+                whiteSpace: 'nowrap',
+              }}>
+                <span aria-hidden="true" style={{
+                  width: 4,
+                  height: 4,
+                  borderRadius: '50%',
+                  background: 'currentColor',
+                  flexShrink: 0,
+                }} />
+                {chipLabel}
+              </span>
+              <span style={{
+                flex: 1,
+                fontSize: 13.5,
+                lineHeight: 1.6,
+                color: kept ? 'var(--signal)' : (pruned ? 'var(--stone)' : 'var(--bone-dim)'),
+                transition: 'color 300ms var(--ease-out-soft)',
+              }}>
+                <span style={{
+                  textDecoration: pruned ? 'line-through' : 'none',
+                  textDecorationColor: 'var(--stone)',
+                }}>
+                  {c.tag === 'trim'
+                    ? <SimplifyingChunk phase={phase} simplified={c.short} />
+                    : c.text}
+                </span>
+                {pruned && (
+                  <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginLeft: 8, whiteSpace: 'nowrap' }}>
+                    · already known
+                  </span>
+                )}
+              </span>
+            </div>
           );
         })}
       </div>
@@ -128,17 +200,18 @@ function CompressionSequence() {
         padding: '12px 24px',
         borderTop: '1px solid var(--line)',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        gap: 12, flexWrap: 'wrap',
         background: 'rgba(0,0,0,0.15)',
       }}>
         <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>
-          inter-agent.compress()
+          Repeated details removed automatically
         </div>
         <button onClick={replay} className="t-mono" style={{
           background: 'transparent', border: '1px solid var(--line)',
           color: 'var(--fg-dim)', padding: '4px 10px', borderRadius: 2,
-          cursor: 'pointer', fontSize: 12,
+          cursor: 'pointer', fontSize: 12, marginLeft: 'auto',
         }}>
-          Replay ↻
+          Watch again ↻
         </button>
       </div>
     </div>

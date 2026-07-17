@@ -141,7 +141,10 @@ html, body {
   transition: background-color 300ms ease, color 300ms ease;
 }
 
-body { overflow-x: hidden; }
+/* Use `clip`, not `hidden`: `overflow-x: hidden` forces overflow-y to `auto`,
+   making <body> a scroll container and breaking `position: sticky` on the nav.
+   `clip` still prevents horizontal scroll without creating a scroll container. */
+body { overflow-x: clip; }
 
 ::selection { background: rgba(142, 166, 255, 0.32); color: var(--bone); }
 

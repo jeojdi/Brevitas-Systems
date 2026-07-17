@@ -139,15 +139,17 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(read('public/privacy.html'), /PostHog/)
 })
 
-test('phone layouts use full-width transcript slides and keep privacy controls out of content', () => {
+test('phone layouts show full lossless pipeline responses and keep privacy controls out of content', () => {
   const pipeline = read('public/pipeline-explorer.jsx')
   const analyticsCss = read('public/analytics.css')
   const responsiveCss = read('public/responsive.css')
 
   assert.match(pipeline, /className="bv-mobile-slides"/)
   assert.match(pipeline, /function MobilePipelineSlides\(/)
-  assert.match(pipeline, /showRemoved/)
-  assert.match(pipeline, /Show reduction/)
+  assert.match(pipeline, /function InputRoute\(/)
+  assert.doesNotMatch(pipeline, /NO WORDS REMOVED/)
+  assert.doesNotMatch(pipeline, /showRemoved/)
+  assert.match(pipeline, /Finish this hop/)
   assert.match(pipeline, /Next: \$\{nextRole\}/)
   assert.match(pipeline, /setStartHop\(nextSlide\)/)
   assert.match(pipeline, /@media \(max-width: 640px\)[\s\S]+\.bv-pipe-grid \{ display: none; \}/)

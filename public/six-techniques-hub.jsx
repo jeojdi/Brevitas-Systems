@@ -11,46 +11,46 @@ const { useState: useSTH, useEffect: useEfSTH, useRef: useRfSTH, useMemo: useMmS
 const TECHNIQUES = [
   {
     n: '01',
-    title: 'Inter-agent message compression',
-    short: 'Compress',
-    body: "Each agent's output is compressed before being passed downstream. Redundant sentences removed, task-relevant structure preserved. Compression ratio tunable per pipeline.",
-    tag: 'Per-hop',
+    title: 'Provider-native prompt caching',
+    short: 'Cache',
+    body: 'Repeated system instructions, tools, and conversation history stay intact and are billed at the provider’s cache rate. Brevitas places Anthropic breakpoints automatically; OpenAI and DeepSeek cache stable prefixes natively.',
+    tag: 'Lossless',
     demo: '/product',
   },
   {
     n: '02',
-    title: 'Shared memory with content-addressed references',
-    short: 'Reference',
-    body: 'Agent outputs are stored once in session-scoped memory. Downstream agents receive stable references — IDs, not re-serialized content.',
-    tag: 'Session-scoped',
+    title: 'Byte-stable prefix preservation',
+    short: 'Stabilize',
+    body: 'Reusable context stays in the same order and the newest message stays at the end. Brevitas does not rewrite the stable prefix, protecting cache hits that ordinary prompt mutation would destroy.',
+    tag: 'Byte-stable',
   },
   {
     n: '03',
-    title: 'Delta mode',
-    short: 'Delta',
-    body: 'After the first full context pass, subsequent agent calls receive only the changes to shared state. Analogous to how version control stopped sending full file copies.',
-    tag: 'State-diff',
+    title: 'Shared-prefix layout across agents',
+    short: 'Share',
+    body: 'When context is proven identical across agents, Brevitas can move that shared block into a common leading position. It only does this when the new layout increases the cacheable prefix; the content itself is unchanged.',
+    tag: 'Multi-agent',
   },
   {
     n: '04',
-    title: 'Smart context pruning',
-    short: 'Prune',
-    body: 'A relevance pass drops sections of inter-agent context unlikely to be used by the next agent, based on task class and agent role.',
-    tag: 'Role-aware',
+    title: 'Accuracy-first context retrieval',
+    short: 'Retrieve',
+    body: 'For opted-in workloads with long histories, dense and lexical retrieval select relevant context while preserving conversation structure. Low confidence, an empty index, or an oversized session falls back to full context.',
+    tag: 'Opt-in',
   },
   {
     n: '05',
-    title: 'Compact message protocol',
-    short: 'Protocol',
-    body: 'A structured schema replaces free-form prose for inter-agent messages, reducing syntactic overhead by 20–40% in current tests.',
-    tag: 'Schema',
+    title: 'Provider-reported savings measurement',
+    short: 'Measure',
+    body: 'Brevitas reads the provider’s real cache-hit, cache-write, input, and output fields. The router learns from observed results, and savings are reported from actual billing behavior rather than guessed token deletion.',
+    tag: 'Receipts',
   },
   {
     n: '06',
-    title: 'Task-aware routing',
+    title: 'Cost-aware, do-no-harm routing',
     short: 'Route',
-    body: 'Determines which of the above to apply per call based on task class and pipeline shape. Not every call needs every optimization.',
-    tag: 'Orchestrator',
+    body: 'Every call is priced across cache-only, retrieval, and untouched pass-through paths. If an optimization lacks evidence, confidence, or real savings, Brevitas sends the original request unchanged.',
+    tag: 'Per-call',
   },
 ];
 
@@ -207,13 +207,13 @@ function HubCenter({ isHovered }) {
         lineHeight: 1.15,
         color: 'var(--bone)',
         marginBottom: 8,
-      }}><em style={{ fontStyle: 'italic' }}>Task-aware routing</em></div>
+      }}><em style={{ fontStyle: 'italic' }}>Cost-aware routing</em></div>
       <div style={{
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: 9.5,
         letterSpacing: '0.08em',
         color: 'var(--stone-2)',
-      }}>decides which to apply<br/>per call</div>
+      }}>cache · retrieve ·<br/>pass through</div>
     </div>
   );
 }
