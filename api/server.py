@@ -1343,6 +1343,7 @@ _BYTE_PRESERVING_STRATEGIES = (
     "exact_cache", "native_cache", "cache_only", "passthrough", "byte_preserving",
     "lossless",
 )
+BREVITAS_FEE_RATE = 0.25
 
 
 def _verification_mode(strategy: str) -> str:
@@ -1413,7 +1414,7 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         else:
             quality_status = "verified" if body.quality_verified else "failed"
     verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0
-    fee = round(verified * 0.10, 10)
+    fee = round(verified * BREVITAS_FEE_RATE, 10)
 
     inserted = _store.record_usage(
         key_hash=kh,

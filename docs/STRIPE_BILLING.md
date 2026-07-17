@@ -1,11 +1,11 @@
 # Stripe billing setup
 
-Brevitas uses Stripe Checkout and Stripe Billing meters for its existing pricing model: 10% of verified savings, billed monthly. Card details stay on Stripe-hosted pages.
+Brevitas uses Stripe Checkout and Stripe Billing meters for its pricing model: 25% of verified savings, billed monthly. Card details stay on Stripe-hosted pages.
 
 ## Safety model
 
 - The browser sends no product, price, quantity, amount, or return URL. The server selects the only allowed Stripe Price.
-- A database trigger caps every ledger entry at 10% of positive verified savings and floors it to whole micro-dollars.
+- A database trigger caps every ledger entry at 25% of positive verified savings and floors it to whole micro-dollars.
 - Only usage created after an `active` or `trialing` subscription begins enters the append-only ledger. There is no retroactive charge.
 - Each Stripe meter event has a stable ledger identifier and API idempotency key.
 - An ambiguous Stripe response moves the entry to `review` and is never retried automatically. This intentionally prefers undercharging to a duplicate charge.
@@ -15,7 +15,8 @@ Brevitas uses Stripe Checkout and Stripe Billing meters for its existing pricing
 
 ## Sandbox setup
 
-1. Apply `supabase/migrations/20260716_stripe_billing.sql` to the Supabase project.
+1. Apply `supabase/migrations/20260716_stripe_billing.sql` and `supabase/migrations/20260716_stripe_billing_rate_25pct.sql` to the Supabase project.
+   Existing installations that already have Stripe billing need only the `20260716_stripe_billing_rate_25pct.sql` migration. Historical ledger entries are not repriced.
 2. Use a Stripe sandbox secret key to create the meter, product, and micro-dollar metered Price:
 
    ```bash

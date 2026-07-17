@@ -22,11 +22,28 @@ test('checkout accepts no client amount and uses the server price', () => {
 
 test('billing ledger fails safe against rounding, duplicates, and cap races', () => {
   const migration = read('supabase/migrations/20260716_stripe_billing.sql')
+  const rateMigration = read('supabase/migrations/20260716_stripe_billing_rate_25pct.sql')
   assert.match(migration, /floor\(safe_fee \* 1000000\)/)
-  assert.match(migration, /verified_savings_usd[^;]+\* 0\.10/s)
+  assert.match(migration, /verified_savings_usd[^;]+\* 0\.25/s)
+  assert.match(rateMigration, /verified_savings_usd[^;]+\* 0\.25/s)
+  assert.match(rateMigration, /create or replace function public\.queue_brevitas_fee/)
   assert.match(migration, /unique references public\.usage_log/)
   assert.match(migration, /pg_advisory_xact_lock/)
   assert.match(migration, /committed \+ entry\.fee_microusd > p_cap_microusd/)
+})
+
+test('Stripe setup presents the 25% verified-savings model', () => {
+  const setup = read('scripts/setup-stripe-billing.mjs')
+  assert.match(setup, /25% of verified savings/)
+  assert.match(setup, /nickname: '25% verified savings/)
+  assert.match(setup, /stripe\.products\.update/)
+  assert.match(setup, /stripe\.prices\.update/)
+})
+
+test('usage accounting charges 25% of verified savings', () => {
+  const server = read('api/server.py')
+  assert.match(server, /BREVITAS_FEE_RATE = 0\.25/)
+  assert.match(server, /fee = round\(verified \* BREVITAS_FEE_RATE, 10\)/)
 })
 
 test('meter failures require review instead of automatic retry', () => {

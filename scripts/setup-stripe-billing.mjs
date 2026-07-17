@@ -34,8 +34,8 @@ let price = prices.data[0]
 if (!price) {
   const product = await stripe.products.create({
     name: 'Brevitas verified-savings billing',
-    description: '10% of verified savings; no subscription or seat fee.',
-    metadata: { brevitas_billing_model: 'verified_savings_v1' },
+    description: '25% of verified savings; no subscription or seat fee.',
+    metadata: { brevitas_billing_model: 'verified_savings_25pct' },
   }, { idempotencyKey: 'brevitas-billing-product-v1' })
   price = await stripe.prices.create({
     product: product.id,
@@ -46,13 +46,22 @@ if (!price) {
     recurring: { interval: 'month', usage_type: 'metered', meter: meter.id },
     lookup_key: lookupKey,
     tax_behavior: 'exclusive',
-    nickname: '10% verified savings (micro-USD units)',
+    nickname: '25% verified savings (micro-USD units)',
   }, { idempotencyKey: 'brevitas-billing-price-v1' })
 }
 
 if (price.recurring?.meter !== meter.id || price.unit_amount_decimal?.toString() !== '0.0001') {
   throw new Error('Existing Stripe lookup-key price does not match the Brevitas meter or micro-USD unit price.')
 }
+
+const productId = typeof price.product === 'string' ? price.product : price.product.id
+await stripe.products.update(productId, {
+  description: '25% of verified savings; no subscription or seat fee.',
+  metadata: { brevitas_billing_model: 'verified_savings_25pct' },
+})
+await stripe.prices.update(price.id, {
+  nickname: '25% verified savings (micro-USD units)',
+})
 
 console.log(`STRIPE_METER_EVENT_NAME=${eventName}`)
 console.log(`STRIPE_PRICE_ID=${price.id}`)

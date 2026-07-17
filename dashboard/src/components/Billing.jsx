@@ -140,7 +140,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
                 </span>
               )}
             </div>
-            <h3 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">10% of verified savings. Nothing else.</h3>
+            <h3 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">25% of verified savings. Nothing else.</h3>
             <p className="text-sm text-brand-muted dark:text-brand-dark-muted mt-2 leading-relaxed">
               Stripe hosts card collection and the billing portal; Brevitas never receives card details. Usage is floored to micro-dollars, deduplicated{billing?.monthly_safety_cap_usd ? `, and constrained by a $${fmt(billing.monthly_safety_cap_usd, 0)} monthly safety cap` : ''}.
             </p>

@@ -205,6 +205,9 @@ def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeyp
     })
     assert paired.json()["quality_status"] == "verified"
     assert paired.json()["verified_savings_usd"] > 0
+    assert paired.json()["brevitas_fee_usd"] == round(
+        paired.json()["verified_savings_usd"] * 0.25, 8
+    )
 
     # A provider/local tokenizer mismatch with no transformation is zero
     # savings, not a fabricated win or loss.

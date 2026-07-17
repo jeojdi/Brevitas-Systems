@@ -1,7 +1,7 @@
 -- Stripe billing state and an append-only, fail-safe usage ledger.
 --
 -- Money sent to Stripe is represented as whole micro-dollars. The trigger floors
--- each fee and caps it at 10% of verified savings, so rounding and corrupted
+-- each fee and caps it at 25% of verified savings, so rounding and corrupted
 -- application values can never increase a customer's charge.
 
 create table if not exists public.billing_accounts (
@@ -78,7 +78,7 @@ begin
 
     safe_fee := least(
         greatest(coalesce(new.brevitas_fee_usd, 0), 0),
-        greatest(coalesce(new.verified_savings_usd, 0), 0) * 0.10
+        greatest(coalesce(new.verified_savings_usd, 0), 0) * 0.25
     );
 
     insert into public.billing_ledger (usage_log_id, user_id, occurred_at, fee_microusd)

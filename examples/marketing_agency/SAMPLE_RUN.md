@@ -28,7 +28,7 @@ Context accumulates down the pipeline, so baseline grows hop to hop.
 
 ## Per-agent savings + billing (measured)
 
-| Agent          | Baseline tok | Optimized tok | Saved | Cost saved (USD) | Brevitas fee (10%) |
+| Agent          | Baseline tok | Optimized tok | Saved | Cost saved (USD) | Brevitas fee (25%) |
 |----------------|-------------:|--------------:|------:|-----------------:|-------------------:|
 | intake         |          240 |           188 |    52 |     $0.00001404 |       $0.00000140 |
 | researcher     |          776 |           724 |    52 |     $0.00002860 |       $0.00000286 |
@@ -42,7 +42,7 @@ Context accumulates down the pipeline, so baseline grows hop to hop.
 **Verified empirically against `usage_log`:**
 - Exactly **7 rows** (one per agent — no double-recording).
 - All rows `provider = "deepseek"` → correct price table applied.
-- `cost_saved_usd > 0` and `brevitas_fee_usd > 0`; fee = exactly 10% of cost saved.
+- `cost_saved_usd > 0` and `brevitas_fee_usd > 0`; fee = exactly 25% of cost saved.
 - Σ(per-agent saved) = 4,681 = pipeline total. Attribution reconciles.
 
 The dollar figures are small by design: DeepSeek input pricing is ~$0.27/1M tokens and

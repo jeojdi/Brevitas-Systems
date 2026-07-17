@@ -5,8 +5,11 @@ import test from 'node:test'
 const source = name => readFile(new URL(`../components/${name}.jsx`, import.meta.url), 'utf8')
 
 test('savings UI explains Stripe-hosted billing and the exact fee boundary', async () => {
-  const billing = await source('Billing')
-  assert.match(billing, /10% of verified savings/)
+  const [billing, app] = await Promise.all([
+    source('Billing'), readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
+  ])
+  assert.match(billing, /25% of verified savings/)
+  assert.match(app, /estimated_fee_usd: 7\.92/)
   assert.match(billing, /Stripe hosts card collection/)
   assert.match(billing, /monthly safety cap/)
   assert.doesNotMatch(billing, /card(number|_number)|payment_method_data/i)
