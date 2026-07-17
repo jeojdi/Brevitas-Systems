@@ -18,7 +18,7 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from .api_adapter import retrieval_select
-from .provider_cache import apply_anthropic_cache, savings_from_usage
+from .provider_cache import apply_anthropic_cache, count_cache_control, savings_from_usage
 from .router import BrevitasRouter
 
 # Cache-stable retrieval layout (brief b1): per session, the set of retrieved context
@@ -83,6 +83,8 @@ def _accumulate_retrieved(session_id: str, selected: List[str]) -> List[str]:
 def _msg_text(content: Any) -> str:
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        return _msg_text(content.get("text", content.get("content", "")))
     if isinstance(content, list):
         return " ".join(b.get("text", "") for b in content
                         if isinstance(b, dict) and b.get("type") == "text")
@@ -143,6 +145,16 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     system = body.get("system")
     stable = _stable_context(messages, system)
     query = _msg_text(messages[-1].get("content", "")) if messages else ""
+    # A common first-turn shape puts a large reusable document and a short
+    # question in separate blocks of the final user message. Treat every block
+    # except the last as stable so ROI/retrieval decisions see the same cacheable
+    # prefix that apply_anthropic_cache can mark.
+    if messages:
+        final_content = messages[-1].get("content")
+        if isinstance(final_content, list) and len(final_content) >= 2:
+            stable.extend(_msg_text(block) for block in final_content[:-1]
+                          if _msg_text(block))
+            query = _msg_text(final_content[-1])
 
     decision = router.decide(session_id, stable, query)
 
@@ -245,11 +257,28 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
         # survive restarts.
         gap = router.session_gap(session_id)
         ttl = "1h" if 300.0 < gap <= 3600.0 else ""
-        plan = apply_anthropic_cache(body, ttl=ttl)
-        meta["cache_breakpoints"] = plan.breakpoints
-        meta["cached_prefix_tokens"] = plan.cached_prefix_tokens
-        if plan.ttl:
-            meta["cache_ttl"] = plan.ttl
+        existing = count_cache_control(body)
+        if existing:
+            # Respect caller-owned cache policy. It is not Brevitas-attributable
+            # and must not be stripped/re-priced as our optimization.
+            meta["cache_breakpoints"] = existing
+            meta["cache_control_owner"] = "caller"
+        else:
+            if gap > 3600.0:
+                allowed, roi_reason = False, "reuse_outside_cache_ttl"
+            else:
+                allowed, roi_reason = router.cache_write_allowed(session_id, ttl)
+            meta["cache_roi"] = roi_reason
+            if allowed:
+                plan = apply_anthropic_cache(body, ttl=ttl)
+                meta["cache_breakpoints"] = plan.breakpoints
+                meta["cached_prefix_tokens"] = plan.cached_prefix_tokens
+                meta["cache_control_owner"] = "brevitas"
+                if plan.ttl:
+                    meta["cache_ttl"] = plan.ttl
+            else:
+                meta["cache_breakpoints"] = 0
+                meta["cached_prefix_tokens"] = 0
     # OpenAI/DeepSeek: caching is automatic if prefix is byte-identical — we DON'T mutate it.
     return meta
 
@@ -264,7 +293,15 @@ def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id:
                  + usage.get("cache_read_input_tokens", 0)
     else:
         prompt = usage.get("prompt_tokens", 0)
-    router.observe_usage(session_id, prompt, s.cached_tokens)
+    creation = usage.get("cache_creation") or {}
+    if not isinstance(creation, dict):
+        creation = {}
+    router.observe_usage(
+        session_id, prompt, s.cached_tokens,
+        cache_write_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        cache_write_5m_tokens=int(creation.get("ephemeral_5m_input_tokens", 0) or 0),
+        cache_write_1h_tokens=int(creation.get("ephemeral_1h_input_tokens", 0) or 0),
+    )
 
     # b9 counterfactual check: is the pipeline caching WORSE since we reordered?
     if pipeline and prompt > 0:

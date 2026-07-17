@@ -53,11 +53,13 @@ def report_receipt(provider: str, model: str, baseline_tokens: int, usage: dict,
     session.last_quality = quality_score
     # If a provider exposes no token receipt, still count the call without inventing
     # savings: use the local baseline as actual input and leave receipt categories absent.
-    actual_input = receipt.input_tokens if receipt.total_tokens else baseline_tokens
     receipt_meta = receipt.as_dict() if receipt.total_tokens else {}
-    report_usage(provider, model, baseline_tokens, actual_input, session,
+    # This hook observes a provider call; it did not transform the request. Use
+    # the same local count on both sides so provider-tokenizer differences cannot
+    # masquerade as savings. The receipt still anchors actual billed usage/cost.
+    report_usage(provider, model, baseline_tokens, baseline_tokens, session,
                  pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
-                 usage_raw=usage, strategy="external_receipt",
+                 usage_raw=usage, strategy="passthrough:external_receipt",
                  metadata={**labels, **receipt_meta, "operation": operation,
                            "receipt_available": bool(receipt.total_tokens),
                            "receipt_source": "manual"})

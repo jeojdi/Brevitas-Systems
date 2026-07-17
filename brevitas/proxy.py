@@ -207,12 +207,15 @@ async def _report_cache_hit(request: Request, provider: str, model: str, hit,
     baseline = int(hit.prompt_tokens) + int(hit.completion_tokens)
     if baseline > 0:
         session.last_quality = float(getattr(hit, "similarity", 1.0))
+        kind = str(getattr(hit, "kind", "semantic") or "semantic").lower()
+        strategy = "exact_cache" if kind == "exact" else "semantic_cache"
         await _emit_usage(request, {"provider": provider, "model": model,
             "operation": "chat", "baseline_tokens": int(hit.prompt_tokens),
             "baseline_output_tokens": int(hit.completion_tokens), "compressed_tokens": 0,
             "fresh_input_tokens": 0, "cached_input_tokens": 0, "cache_write_tokens": 0,
             "output_tokens": 0, "quality_score": session.last_quality,
-            "request_id": _request_id(request), "strategy": "semantic_cache",
+            "cache_attributable": True,
+            "request_id": _request_id(request), "strategy": strategy,
             "session_id": session.session_id, "receipt_source": "proxy", **labels})
 
 
@@ -265,6 +268,10 @@ def _router_usage(receipt: TokenReceipt, provider: str) -> dict:
         return {"input_tokens": receipt.fresh_input_tokens,
                 "cache_read_input_tokens": receipt.cached_input_tokens,
                 "cache_creation_input_tokens": receipt.cache_write_tokens,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": receipt.cache_write_5m_tokens,
+                    "ephemeral_1h_input_tokens": receipt.cache_write_1h_tokens,
+                },
                 "output_tokens": receipt.output_tokens}
     return {"prompt_tokens": receipt.input_tokens,
             "prompt_tokens_details": {"cached_tokens": receipt.cached_input_tokens},
@@ -275,7 +282,8 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
                           baseline: int, receipt: TokenReceipt, session: BrevitasSession,
                           router: BrevitasRouter, labels: dict, optimized: bool,
                           response_id: str = "", strategy: str = "native_cache",
-                          fleet_pipe: str = "") -> None:
+                          fleet_pipe: str = "", cache_attributable: bool = False,
+                          optimized_tokens: int | None = None) -> None:
     has_receipt = receipt.total_tokens > 0
     usage = _router_usage(receipt, provider) if has_receipt else {}
     if has_receipt:
@@ -288,8 +296,12 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
     await _emit_usage(request, {
         "provider": provider, "model": model, "operation": operation,
         "baseline_tokens": baseline,
-        "compressed_tokens": receipt.input_tokens if has_receipt else baseline,
+        # Both values use the same local counter and therefore provide only a
+        # transformation delta. The API anchors the optimized side to the
+        # authoritative provider receipt (including tools/system/tokenizer).
+        "compressed_tokens": baseline if optimized_tokens is None else optimized_tokens,
         **receipt_fields, "quality_score": session.last_quality,
+        "cache_attributable": cache_attributable,
         "receipt_available": has_receipt,
         "request_id": _request_id(request, response_id),
         "strategy": (strategy if has_receipt else f"{strategy}:missing_receipt")[:64],
@@ -487,10 +499,13 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     optimized = not _passthrough_mode()
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
     strategy = "passthrough"
+    cache_attributable = False
     if optimized:
         meta = optimize_request(body, "anthropic", router, session.session_id,
                                 pipeline=fleet_pipe, agent=fleet_agent)
         strategy = meta.get("strategy", "native_cache")
+        cache_attributable = meta.get("cache_control_owner") == "brevitas"
+    optimized_tokens = count_request_tokens(body, "messages")
 
     bg_sig, bg_role = None, "free"
     if optimized and _BG_ON:
@@ -537,6 +552,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                     await _record_receipt(
                         request, "anthropic", model, "messages", baseline, parser.finish(),
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
+                        cache_attributable=cache_attributable,
+                        optimized_tokens=optimized_tokens,
                     )
                     session.advance()
 
@@ -564,6 +581,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             request, "anthropic", model, "messages", baseline,
             normalize_usage(data.get("usage"), "anthropic"), session, router, labels,
             optimized, str(data.get("id") or ""), strategy, fleet_pipe,
+            cache_attributable=cache_attributable,
+            optimized_tokens=optimized_tokens,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -609,6 +628,7 @@ async def proxy_openai_chat(request: Request) -> Any:
         meta = optimize_request(body, provider, router, session.session_id,
                                 pipeline=fleet_pipe, agent=fleet_agent)
         strategy = meta.get("strategy", "native_cache")
+    optimized_tokens = count_request_tokens(body, "chat.completions")
 
     # pathfinder gate — signature computed AFTER optimization (the bytes actually sent)
     bg_sig, bg_role = None, "free"
@@ -664,6 +684,7 @@ async def proxy_openai_chat(request: Request) -> Any:
                     await _record_receipt(
                         request, provider, model, "chat.completions", baseline, parser.finish(),
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
+                        optimized_tokens=optimized_tokens,
                     )
                     session.advance()
 
@@ -691,6 +712,7 @@ async def proxy_openai_chat(request: Request) -> Any:
             request, provider, model, "chat.completions", baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             optimized, str(data.get("id") or ""), strategy, fleet_pipe,
+            optimized_tokens=optimized_tokens,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -731,6 +753,7 @@ async def proxy_openai_responses(request: Request) -> Any:
         body_changed = body["input"] != response_input
         optimized = body_changed
         strategy = meta.get("strategy", "native_cache")
+    optimized_tokens = count_request_tokens(body, "responses")
 
     base = get_openai_compatible_upstream(
         model, request.headers.get("x-brevitas-upstream"), provider
@@ -768,6 +791,7 @@ async def proxy_openai_responses(request: Request) -> Any:
                         request, provider, model, "responses", baseline, parser.finish(),
                         session, router, labels, optimized, parser.response_id, strategy,
                         labels.get("pipeline", ""),
+                        optimized_tokens=optimized_tokens,
                     )
                     session.advance()
 
@@ -786,6 +810,7 @@ async def proxy_openai_responses(request: Request) -> Any:
             request, provider, model, "responses", baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             optimized, str(data.get("id") or ""), strategy, labels.get("pipeline", ""),
+            optimized_tokens=optimized_tokens,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,

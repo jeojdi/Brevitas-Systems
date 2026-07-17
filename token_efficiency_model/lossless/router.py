@@ -14,7 +14,7 @@ What grounds the model (no hand-rolled guesses):
     (The old whole-context hash called any append "no repeat" — the root cause of
     token-savings ≠ dollar-savings on caching providers.)
   * Cost rates come from provider_cache._RATES (cache_read / cache_write / output
-    relative to fresh input; e.g. DeepSeek read 0.259, Anthropic read 0.10 with a
+    relative to fresh input; e.g. DeepSeek V4 Flash read 0.02, Anthropic read 0.10 with a
     1.25× write premium) — one table, synced with the savings accounting.
   * Provider caches expire: TTL per provider (Anthropic ~5 min per docs; conservative
     defaults elsewhere). An expired prefix re-bills as a write.
@@ -35,6 +35,7 @@ actual/estimated ratio from provider usage (cl100k ≠ other providers' tokenize
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import time
 from collections import OrderedDict
@@ -89,6 +90,15 @@ class _SessionState:
     # observed inter-arrival gap between calls (seconds, EWMA) — drives the Anthropic
     # cache-TTL tier choice for spaced/repeated runs (cross-run lever)
     gap_ewma: float = -1.0
+    # Cache economics. We require observed prefix reuse before paying an
+    # Anthropic cache-write premium, and temporarily stop writing after repeated
+    # paid writes fail to produce reads.
+    repeat_observations: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_net_units: float = 0.0
+    cache_negative_writes: int = 0
+    cache_blocked_until: float = 0.0
 
 
 class _BoundedSessionDict:
@@ -153,7 +163,9 @@ class BrevitasRouter:
         return CACHE_TTL_S.get(self.provider.lower(), CACHE_TTL_S["default"])
 
     # ------------------------------------------------------------- observation
-    def observe_usage(self, session_id: str, prompt_tokens: int, cached_tokens: int) -> None:
+    def observe_usage(self, session_id: str, prompt_tokens: int, cached_tokens: int,
+                      cache_write_tokens: int = 0, cache_write_5m_tokens: int = 0,
+                      cache_write_1h_tokens: int = 0) -> None:
         """Feed back REAL provider usage so the router learns the provider's actual
         cache-hit rate (advertised discounts don't always activate). EWMA of
         cached/prompt fraction."""
@@ -169,6 +181,29 @@ class BrevitasRouter:
             if 0.25 <= ratio <= 4.0:   # ignore wild mismatches (request was transformed)
                 st.tok_ratio = ratio if st.tok_ratio < 0 else 0.5 * st.tok_ratio + 0.5 * ratio
 
+        if self.provider.lower() == "anthropic":
+            write = max(0, int(cache_write_tokens or 0))
+            write_5m = max(0, int(cache_write_5m_tokens or 0))
+            write_1h = max(0, int(cache_write_1h_tokens or 0))
+            if write_5m + write_1h > write:
+                write_5m = write_1h = 0
+            unspecified = write - write_5m - write_1h
+            read_gain = (1.0 - self._rates()["cache_read"]) * max(0, cached_tokens)
+            write_premium = ((self._rates()["cache_write"] - 1.0)
+                             * (unspecified + write_5m) + write_1h)
+            st.cache_read_tokens += max(0, cached_tokens)
+            st.cache_write_tokens += write
+            st.cache_net_units += read_gain - write_premium
+            if write > 0 and cached_tokens <= 0:
+                st.cache_negative_writes += 1
+            elif cached_tokens > 0:
+                st.cache_negative_writes = 0
+            if st.cache_negative_writes >= 2 and st.cache_net_units < 0:
+                # Match the tier that incurred the premium; retrying a failed
+                # one-hour write after only five minutes would simply repay it.
+                cooldown = 3600.0 if write_1h > 0 else self._ttl()
+                st.cache_blocked_until = time.time() + cooldown
+
     def observed_cache(self, session_id: str) -> tuple[float, int]:
         """Return (observed cache-hit fraction, observation count) for a session.
         Used by the cache-aware b9 gate to estimate the currently-cached prefix so it
@@ -177,6 +212,26 @@ class BrevitasRouter:
         if st is None or st.obs_hit < 0:
             return 0.0, 0
         return st.obs_hit, st.obs_count
+
+    def cache_write_allowed(self, session_id: str, ttl: str = "") -> tuple[bool, str]:
+        """Return whether an Anthropic cache write has evidence it can break even.
+
+        A 5-minute write premium needs one later read to recover; a 1-hour write
+        needs two. We require that many observed prefix repetitions before the
+        first paid write and cool down a prefix after two writes without a read.
+        """
+        st = self._sessions._sessions.get(session_id) if session_id in self._sessions else None
+        if st is None:
+            return False, "reuse_unproven"
+        now = time.time()
+        if st.cache_blocked_until > now:
+            return False, "negative_roi_cooldown"
+        read_gain = max(0.000001, 1.0 - self._rates()["cache_read"])
+        write_premium = 1.0 if ttl == "1h" else max(0.0, self._rates()["cache_write"] - 1.0)
+        hits_to_break_even = max(1, math.ceil(write_premium / read_gain))
+        if st.repeat_observations < hits_to_break_even:
+            return False, f"reuse_unproven:{st.repeat_observations}/{hits_to_break_even}"
+        return True, "break_even_supported"
 
     def observe_retrieval(self, session_id: str, baseline_tokens: int,
                           optimized_tokens: int) -> None:
@@ -212,7 +267,15 @@ class BrevitasRouter:
             gap = now - st.last_ts
             st.gap_ewma = gap if st.gap_ewma < 0 else 0.5 * st.gap_ewma + 0.5 * gap
         st.msg_hashes, st.msg_tokens, st.last_ts = hashes, tokens, now
-        return 0.0 if expired else lcp_frac
+        effective_lcp = 0.0 if expired else lcp_frac
+        # Cross-run repetition is still evidence for the 1-hour cache tier even
+        # when the default 5-minute cache has expired. Routing uses effective_lcp;
+        # the ROI gate uses the raw content repetition history.
+        if lcp_frac > 0:
+            st.repeat_observations += 1
+        else:
+            st.repeat_observations = 0
+        return effective_lcp
 
     # ------------------------------------------------------------------ decide
     def decide(self, session_id: str, stable_context: Sequence[str],

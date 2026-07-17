@@ -94,4 +94,4 @@ def test_engine_requires_explicit_retrieval_opt_in(monkeypatch):
 
 def _retrieve_decision():
     from token_efficiency_model.lossless.router import RouteDecision
-    return RouteDecision("retrieve", "forced", 100.0, 10.0, 0.5, 0.259, 0.5, False)
+    return RouteDecision("retrieve", "forced", 100.0, 10.0, 0.5, 0.02, 0.5, False)

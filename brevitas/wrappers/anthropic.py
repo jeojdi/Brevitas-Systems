@@ -33,47 +33,62 @@ class _BrevitasMessages:
         labels = resolve_labels(kwargs.pop("_brevitas_meta", None))
         body = {"messages": list(messages), "model": model, **kwargs}
         baseline = count_request_tokens(body, "messages")
-        optimize_request(body, _PROVIDER, self._router, sid)   # lossless, in-place
-        return body, sid, labels, baseline
+        meta = optimize_request(body, _PROVIDER, self._router, sid)   # in-place
+        compressed = count_request_tokens(body, "messages")
+        return body, sid, labels, baseline, compressed, meta
 
     def create(self, *, messages: list[dict], model: str = "", **kwargs: Any) -> Any:
-        body, sid, labels, baseline = self._optimize(messages, model, kwargs)
+        body, sid, labels, baseline, compressed, meta = self._optimize(messages, model, kwargs)
         response = self._orig.create(**body)
         try:
             block = response.content[0]
             self._session.record_response(getattr(block, "text", ""))
-            u = response.usage
-            fresh = getattr(u, "input_tokens", 0)
-            write = getattr(u, "cache_creation_input_tokens", 0)
-            read = getattr(u, "cache_read_input_tokens", 0)
-            usage = {"input_tokens": fresh, "cache_creation_input_tokens": write,
-                     "cache_read_input_tokens": read,
-                     "output_tokens": getattr(u, "output_tokens", 0)}
+            usage = _usage_dict(response.usage)
             record_usage(usage, _PROVIDER, self._router, sid)
             receipt = normalize_usage(usage, _PROVIDER)
-            report_usage(_PROVIDER, model, baseline, receipt.input_tokens, self._session,
+            report_usage(_PROVIDER, model, baseline, compressed, self._session,
                          pipeline=labels["pipeline"], agent=labels["agent"],
-                         run_id=labels["run_id"], usage_raw=usage, strategy="native_cache",
-                         metadata={**labels, **receipt.as_dict(), "operation": "messages"})
+                         run_id=labels["run_id"], usage_raw=usage,
+                         strategy=meta.get("strategy", "passthrough"),
+                         metadata={**labels, **receipt.as_dict(), "operation": "messages",
+                                   "cache_attributable":
+                                       meta.get("cache_control_owner") == "brevitas"})
         except (AttributeError, IndexError):
             pass
         self._session.advance()
         return response
 
     def stream(self, *, messages: list[dict], model: str = "", **kwargs: Any):
-        body, sid, labels, baseline = self._optimize(messages, model, kwargs)
+        body, sid, labels, baseline, compressed, meta = self._optimize(messages, model, kwargs)
         return _MeteredAnthropicStream(self._orig.stream(**body), model, baseline,
-                                       self._session, self._router, sid, labels)
+                                       compressed, self._session, self._router, sid,
+                                       labels, meta)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._orig, name)
 
 
+def _usage_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        data = dict(value)
+    elif hasattr(value, "model_dump"):
+        data = value.model_dump()
+    else:
+        data = {name: getattr(value, name) for name in (
+            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+            "output_tokens", "cache_creation") if hasattr(value, name)}
+    if hasattr(data.get("cache_creation"), "model_dump"):
+        data["cache_creation"] = data["cache_creation"].model_dump()
+    return data
+
+
 class _MeteredAnthropicStream:
-    def __init__(self, manager, model, baseline, session, router, sid, labels):
+    def __init__(self, manager, model, baseline, compressed, session, router, sid, labels, meta):
         self._manager, self._active = manager, None
-        self._model, self._baseline, self._session = model, baseline, session
+        self._model, self._baseline, self._compressed = model, baseline, compressed
+        self._session = session
         self._router, self._sid, self._labels = router, sid, labels
+        self._meta = meta
         self._done = False
 
     def __enter__(self):
@@ -92,18 +107,16 @@ class _MeteredAnthropicStream:
         self._done = True
         try:
             message = self._active.get_final_message()
-            usage_obj = message.usage
-            usage = usage_obj.model_dump() if hasattr(usage_obj, "model_dump") else {
-                name: getattr(usage_obj, name, 0) for name in (
-                    "input_tokens", "cache_creation_input_tokens",
-                    "cache_read_input_tokens", "output_tokens")}
+            usage = _usage_dict(message.usage)
             receipt = normalize_usage(usage, _PROVIDER)
             record_usage(usage, _PROVIDER, self._router, self._sid)
-            report_usage(_PROVIDER, self._model, self._baseline, receipt.input_tokens,
+            report_usage(_PROVIDER, self._model, self._baseline, self._compressed,
                 self._session, pipeline=self._labels["pipeline"], agent=self._labels["agent"],
-                run_id=self._labels["run_id"], usage_raw=usage, strategy="native_cache",
+                run_id=self._labels["run_id"], usage_raw=usage,
+                strategy=self._meta.get("strategy", "passthrough"),
                 metadata={**self._labels, **receipt.as_dict(), "operation": "messages",
-                          "is_stream": True})
+                          "is_stream": True, "cache_attributable":
+                              self._meta.get("cache_control_owner") == "brevitas"})
         except (AttributeError, TypeError):
             pass
         self._session.advance()

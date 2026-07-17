@@ -72,4 +72,4 @@ def test_below_min_is_passthrough():
 
 def test_deepseek_discount_is_real_rate_not_90pct():
     from token_efficiency_model.lossless.router import CACHE_DISCOUNT
-    assert abs(CACHE_DISCOUNT["deepseek"] - 0.259) < 1e-6   # not 0.10
+    assert abs(CACHE_DISCOUNT["deepseek"] - 0.02) < 1e-6

@@ -32,22 +32,25 @@ class _BrevitasCompletions:
         provider = canonical_provider("openai", model)
         body = {"messages": list(messages), "model": model, **kwargs}
         baseline = count_request_tokens(body, "chat.completions")
-        optimize_request(body, provider, self._router, sid)   # lossless, in-place
+        meta = optimize_request(body, provider, self._router, sid)   # in-place
+        compressed = count_request_tokens(body, "chat.completions")
+        strategy = meta.get("strategy", "passthrough")
         if body.get("stream") and provider in ("openai", "deepseek"):
             body.setdefault("stream_options", {}).setdefault("include_usage", True)
         response = self._orig.create(**body)
         if body.get("stream"):
-            return _MeteredOpenAIStream(response, provider, model, baseline, self._session,
-                                        self._router, sid, labels, "chat.completions")
+            return _MeteredOpenAIStream(response, provider, model, baseline, compressed,
+                                        self._session, self._router, sid, labels,
+                                        "chat.completions", strategy)
         try:
             text = response.choices[0].message.content or ""
             self._session.record_response(text)
             usage = _model_dict(response.usage)
             receipt = normalize_usage(usage, provider)
             s = record_usage(usage, provider, self._router, sid)
-            report_usage(provider, model, baseline, receipt.input_tokens, self._session,
+            report_usage(provider, model, baseline, compressed, self._session,
                          pipeline=labels["pipeline"], agent=labels["agent"],
-                         run_id=labels["run_id"], usage_raw=usage, strategy="native_cache",
+                         run_id=labels["run_id"], usage_raw=usage, strategy=strategy,
                          metadata={**labels, **receipt.as_dict(), "operation": "chat.completions"})
         except (AttributeError, IndexError):
             pass
@@ -75,7 +78,8 @@ def _model_dict(value: Any) -> dict:
     else:
         data = {name: getattr(value, name) for name in (
             "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
-            "prompt_tokens_details", "input_tokens_details") if hasattr(value, name)}
+            "prompt_tokens_details", "input_tokens_details", "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens") if hasattr(value, name)}
     for name in ("prompt_tokens_details", "input_tokens_details"):
         if hasattr(data.get(name), "model_dump"):
             data[name] = data[name].model_dump()
@@ -83,10 +87,13 @@ def _model_dict(value: Any) -> dict:
 
 
 class _MeteredOpenAIStream:
-    def __init__(self, stream, provider, model, baseline, session, router, sid, labels, operation):
+    def __init__(self, stream, provider, model, baseline, compressed, session, router, sid,
+                 labels, operation, strategy):
         self._stream, self._provider, self._model = stream, provider, model
-        self._baseline, self._session, self._router = baseline, session, router
-        self._sid, self._labels, self._operation = sid, labels, operation
+        self._baseline, self._compressed = baseline, compressed
+        self._session, self._router = session, router
+        self._sid, self._labels, self._operation, self._strategy = (
+            sid, labels, operation, strategy)
         self._usage = {}
         self._done = False
 
@@ -109,9 +116,9 @@ class _MeteredOpenAIStream:
         receipt = normalize_usage(self._usage, self._provider)
         if receipt.total_tokens:
             record_usage(self._usage, self._provider, self._router, self._sid)
-            report_usage(self._provider, self._model, self._baseline, receipt.input_tokens,
+            report_usage(self._provider, self._model, self._baseline, self._compressed,
                 self._session, pipeline=self._labels["pipeline"], agent=self._labels["agent"],
-                run_id=self._labels["run_id"], usage_raw=self._usage, strategy="native_cache",
+                run_id=self._labels["run_id"], usage_raw=self._usage, strategy=self._strategy,
                 metadata={**self._labels, **receipt.as_dict(), "operation": self._operation,
                           "is_stream": True})
         self._session.advance()
@@ -141,21 +148,25 @@ class _BrevitasResponses:
         provider = canonical_provider("openai", model)
         body = {"model": model, "input": input, **kwargs}
         baseline = count_request_tokens(body, "responses")
+        strategy = "passthrough"
         if isinstance(input, list) and all(isinstance(item, dict) and "role" in item for item in input):
             temporary = {"model": model, "messages": list(input)}
-            optimize_request(temporary, provider, self._router, sid)
+            meta = optimize_request(temporary, provider, self._router, sid)
             body["input"] = temporary["messages"]
+            strategy = meta.get("strategy", "passthrough")
+        compressed = count_request_tokens(body, "responses")
         response = self._orig.create(**body)
         if body.get("stream"):
-            return _MeteredOpenAIStream(response, provider, model, baseline, self._session,
-                                        self._router, sid, labels, "responses")
+            return _MeteredOpenAIStream(response, provider, model, baseline, compressed,
+                                        self._session, self._router, sid, labels,
+                                        "responses", strategy)
         usage = _model_dict(getattr(response, "usage", {}))
         receipt = normalize_usage(usage, provider)
         if receipt.total_tokens:
             record_usage(_router_compatible_usage(receipt), provider, self._router, sid)
-            report_usage(provider, model, baseline, receipt.input_tokens, self._session,
+            report_usage(provider, model, baseline, compressed, self._session,
                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
-                usage_raw=usage, strategy="native_cache",
+                usage_raw=usage, strategy=strategy,
                 metadata={**labels, **receipt.as_dict(), "operation": "responses"})
         self._session.advance()
         return response
@@ -178,13 +189,14 @@ class _BrevitasPlainResource:
         baseline = count_request_tokens(body, self._operation)
         response = self._orig.create(**body)
         if body.get("stream"):
-            return _MeteredOpenAIStream(response, provider, model, baseline, self._session,
-                                        self._router, sid, labels, self._operation)
+            return _MeteredOpenAIStream(response, provider, model, baseline, baseline,
+                                        self._session, self._router, sid, labels,
+                                        self._operation, "passthrough")
         usage = _model_dict(getattr(response, "usage", {}))
         receipt = normalize_usage(usage, provider)
         if receipt.total_tokens:
             record_usage(_router_compatible_usage(receipt), provider, self._router, sid)
-            report_usage(provider, model, baseline, receipt.input_tokens, self._session,
+            report_usage(provider, model, baseline, baseline, self._session,
                 pipeline=labels["pipeline"], agent=labels["agent"], run_id=labels["run_id"],
                 usage_raw=usage, strategy="passthrough",
                 metadata={**labels, **receipt.as_dict(), "operation": self._operation})

@@ -194,6 +194,7 @@ def report_usage(
             "agent": agent,
             "run_id": run_id,
             "quality_score": session.last_quality,
+            "quality_verified": labels.get("quality_verified"),
             "request_id": labels.get("request_id") or uuid.uuid4().hex,
             "usage_raw": usage_raw,
             "strategy": strategy,
@@ -208,9 +209,11 @@ def report_usage(
             "operation": labels.get("operation") or "chat",
             "receipt_source": labels.get("receipt_source") or "sdk",
             "receipt_available": bool(labels.get("receipt_available", True)),
+            "cache_attributable": bool(labels.get("cache_attributable", False)),
             "is_stream": bool(labels.get("is_stream")),
         }
-        for name in ("fresh_input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens"):
+        for name in ("fresh_input_tokens", "cached_input_tokens", "cache_write_tokens",
+                     "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens"):
             if name in labels:
                 payload[name] = labels[name]
         httpx.post(

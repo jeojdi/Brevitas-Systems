@@ -10,10 +10,11 @@ This finishes the native-caching lever from REVAMP_PLAN.md:
 2. savings_from_usage(): read the REAL cache fields from the provider response and compute
    honest savings = (what uncached would cost) vs (actual billed cost with cache discount):
      * Anthropic: cache_read_input_tokens (~0.1x), cache_creation_input_tokens (~1.25x)
-     * OpenAI/DeepSeek: usage.prompt_tokens_details.cached_tokens (~0.5x)
+     * OpenAI/DeepSeek: cached-token receipt fields (model-specific rates)
 
 Provider facts (docs): Anthropic min cacheable 1024 tok, cache read ~10% of input price;
-OpenAI automatic >=1024 tok, cached input ~50% off.
+OpenAI automatic >=1024 tok with model-specific discounts; DeepSeek V4 Flash cache
+hits cost 2% of fresh input at the 2026-07-16 list price.
 """
 
 from __future__ import annotations
@@ -233,6 +234,23 @@ def _strip_cache_control(body: dict) -> None:
             _strip(m.get("content"))
 
 
+def count_cache_control(body: dict) -> int:
+    """Count caller-supplied cache markers without reading or changing content."""
+    if not isinstance(body, dict):
+        return 0
+    total = 0
+    for blocks in (body.get("tools"), body.get("system")):
+        if isinstance(blocks, list):
+            total += sum(1 for block in blocks
+                         if isinstance(block, dict) and "cache_control" in block)
+    for message in body.get("messages", []) or []:
+        blocks = message.get("content") if isinstance(message, dict) else None
+        if isinstance(blocks, list):
+            total += sum(1 for block in blocks
+                         if isinstance(block, dict) and "cache_control" in block)
+    return total
+
+
 def _mark_block(block: dict, ttl: str = "") -> bool:
     """Attach cache_control to a specific content block (stable blocks inside the last
     user message). Never called on the final (volatile) block."""
@@ -260,11 +278,11 @@ def _mark_tools(body: dict, ttl: str = "") -> bool:
 #   cache_read  = cached-input price / fresh-input price
 #   cache_write = (anthropic only) cache-creation surcharge
 #   output      = output price / fresh-input price
-# DeepSeek deepseek-chat: in $0.27, cache-hit $0.07, out $1.10/1M -> cache_read .259, output 4.07
+# DeepSeek V4 Flash:      in $0.14, cache-hit $0.0028, out $0.28/1M -> .02, 2.0
 # OpenAI gpt-4o-mini:     in $0.15, cached   $0.075, out $0.60/1M -> cache_read .50,  output 4.0
 # Anthropic Sonnet:       in $3.00, cache-rd $0.30,  out $15.0/1M -> cache_read .10,  output 5.0
 _RATES = {
-    "deepseek":  {"cache_read": 0.259, "cache_write": 1.0, "output": 4.07},
+    "deepseek":  {"cache_read": 0.02,  "cache_write": 1.0, "output": 2.0},
     "openai":    {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0},
     "anthropic": {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0},
     "groq":      {"cache_read": 1.00,  "cache_write": 1.0, "output": 4.0},
@@ -275,14 +293,17 @@ _DEFAULT_RATES = {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}
 # rows above are the fallback, but ratios genuinely differ per model — e.g. the gpt-4.1
 # family caches at 25% of input price where gpt-4o caches at 50% — and %-of-savings
 # billing must use the ratios of the model that was actually called.
-#   deepseek-chat:     in $0.27,  hit $0.07,  out $1.10 /1M
-#   deepseek-reasoner: in $0.55,  hit $0.14,  out $2.19 /1M
+#   DeepSeek V4 Flash: in $0.14,  hit $0.0028, out $0.28 /1M
+#   DeepSeek V4 Pro:   in $0.435, hit $0.003625, out $0.87 /1M
 #   gpt-4o(-mini):     cached = 50% of input; out = 4x input
 #   gpt-4.1(-mini/nano): cached = 25% of input; out = 4x input
 #   claude (all):      cache read 10%, write 1.25x, out = 5x input
 _MODEL_RATES = [
-    ("deepseek-reasoner", {"cache_read": 0.255, "cache_write": 1.0, "output": 3.98}),
-    ("deepseek-chat",     {"cache_read": 0.259, "cache_write": 1.0, "output": 4.07}),
+    ("deepseek-v4-pro",   {"cache_read": 1 / 120, "cache_write": 1.0, "output": 2.0}),
+    ("deepseek-v4-flash", {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
+    ("deepseek-reasoner", {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
+    ("deepseek-chat",     {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
+    ("o4-mini",           {"cache_read": 0.25, "cache_write": 1.0, "output": 4.0}),
     ("gpt-4.1",           {"cache_read": 0.25,  "cache_write": 1.0, "output": 4.0}),
     ("gpt-4o",            {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0}),
     ("claude",            {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0}),
@@ -343,7 +364,10 @@ def savings_from_usage(usage: dict, provider: str, model: str = "") -> Savings:
         prompt = int(usage.get("prompt_tokens", 0))
         details = usage.get("prompt_tokens_details", {}) or {}
         cached = int(details.get("cached_tokens", 0) or usage.get("prompt_cache_hit_tokens", 0))
-        fresh = prompt - cached
+        if prompt == 0 and ("prompt_cache_hit_tokens" in usage
+                            or "prompt_cache_miss_tokens" in usage):
+            prompt = cached + int(usage.get("prompt_cache_miss_tokens", 0) or 0)
+        fresh = max(0, prompt - cached)
         write = 0
         output = int(usage.get("completion_tokens", 0))
         in_uncached = prompt * 1.0

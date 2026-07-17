@@ -81,7 +81,7 @@ def _any_marker(body: dict) -> bool:
 # --------------------------------------------------------------------------- #
 # engine.optimize_request: markers on EVERY path
 # --------------------------------------------------------------------------- #
-def test_engine_marks_anthropic_on_retrieve_path(monkeypatch):
+def test_engine_marks_anthropic_on_retrieve_path_after_reuse_is_observed(monkeypatch):
     ctx1, ctx2 = _huge_text(1400), _huge_text(1500)
 
     def fake_select(task, prior_context, k=8, min_top_score=0.2, use_adaptive=False):
@@ -91,28 +91,39 @@ def test_engine_marks_anthropic_on_retrieve_path(monkeypatch):
 
     monkeypatch.setattr(eng, "retrieval_select", fake_select)
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
-    body = {"model": "claude-sonnet-4-6",
-            "messages": [{"role": "user", "content": ctx1},
-                         {"role": "assistant", "content": "noted"},
-                         {"role": "user", "content": ctx2},
-                         {"role": "user", "content": "final question?"}]}
+    def request_body():
+        return {"model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": ctx1},
+                             {"role": "assistant", "content": "noted"},
+                             {"role": "user", "content": ctx2},
+                             {"role": "user", "content": "final question?"}]}
     router = BrevitasRouter(provider="anthropic", retrieve_keep_frac=0.6)
+    cold = request_body()
+    cold_meta = eng.optimize_request(cold, "anthropic", router, "s1")
+    assert cold_meta.get("cache_breakpoints", 0) == 0
+    assert cold_meta.get("cache_roi", "").startswith("reuse_unproven")
+    body = request_body()
     meta = eng.optimize_request(body, "anthropic", router, "s1")
     assert meta["strategy"] == "retrieve"
     assert "cache_breakpoints" in meta
     assert _any_marker(body), "retrieve path must still place Anthropic cache markers"
 
 
-def test_engine_marks_anthropic_on_passthrough_with_big_last_message():
-    # Stable prefix (system+prior msgs) is tiny -> router says passthrough; the big
-    # context block rides INSIDE the last message and must still get marked.
-    body = {"model": "claude-sonnet-4-6",
-            "messages": [{"role": "user",
-                          "content": [{"type": "text", "text": _huge_text()},
-                                      {"type": "text", "text": "What is X?"}]}]}
+def test_engine_marks_anthropic_document_block_after_reuse():
+    # The reusable document rides inside the final user message. The engine must
+    # recognize it as stable, wait for observed reuse, then cache it.
+    def request_body():
+        return {"model": "claude-sonnet-4-6",
+                "messages": [{"role": "user",
+                              "content": [{"type": "text", "text": _huge_text()},
+                                          {"type": "text", "text": "What is X?"}]}]}
     router = BrevitasRouter(provider="anthropic")
+    cold = request_body()
+    cold_meta = eng.optimize_request(cold, "anthropic", router, "s2")
+    assert cold_meta.get("cache_breakpoints", 0) == 0
+    body = request_body()
     meta = eng.optimize_request(body, "anthropic", router, "s2")
-    assert meta["strategy"] == "passthrough"
+    assert meta["strategy"] == "cache_only"
     assert meta.get("cache_breakpoints", 0) >= 1
     assert _any_marker(body)
 

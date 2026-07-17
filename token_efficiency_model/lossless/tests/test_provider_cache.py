@@ -94,12 +94,14 @@ def test_no_cache_means_no_savings():
 
 
 def test_deepseek_cache_discount_is_real_rate_not_90pct():
-    """Regression: DeepSeek cache-hit input is ~26% of fresh ($0.07 vs $0.27 = ~74% off),
-    NOT 90%. 80% cached -> ~59.3% total saving (no output)."""
+    """DeepSeek V4 Flash cache hits cost 2% of fresh input.
+
+    At 80% cached, the current official rate yields 78.4% input savings.
+    """
     usage = {"prompt_tokens": 10000, "prompt_tokens_details": {"cached_tokens": 8000}}
     ds = savings_from_usage(usage, "deepseek").savings_pct
     oa = savings_from_usage(usage, "openai").savings_pct
-    assert abs(ds - 59.3) < 0.5    # 2000*1 + 8000*0.259 = 4072 -> 59.3% saved
+    assert abs(ds - 78.4) < 0.5    # 2000*1 + 8000*0.02 = 2160 -> 78.4% saved
     assert abs(oa - 40.0) < 0.5    # 2000*1 + 8000*0.5   = 6000 -> 40% saved
     assert ds > oa
 
@@ -124,7 +126,8 @@ def test_rates_for_model_overrides_provider_row():
     assert rates_for("openai", "gpt-4.1-mini")["cache_read"] == 0.25   # 4.1 family: 25%
     assert rates_for("openai", "gpt-4o-mini")["cache_read"] == 0.50    # 4o family: 50%
     assert rates_for("openai", "")["cache_read"] == 0.50               # provider fallback
-    assert rates_for("deepseek", "deepseek-chat")["cache_read"] == 0.259
+    assert rates_for("deepseek", "deepseek-chat")["cache_read"] == 0.02
+    assert rates_for("deepseek", "deepseek-v4-pro")["cache_read"] == 1 / 120
     assert rates_for("anthropic", "claude-sonnet-4-5")["cache_write"] == 1.25
     assert rates_for("unknown", "mystery-model")["cache_read"] == 0.50  # safe default
 

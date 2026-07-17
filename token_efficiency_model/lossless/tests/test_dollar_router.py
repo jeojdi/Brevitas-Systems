@@ -81,11 +81,12 @@ def test_observed_keep_fraction_reprices_retrieve_arm():
     r.decide("s", [A, B, C], "q1")
     base = r.decide("s", [A, B, C], "q2")   # identical: cache_only clearly wins
     assert base.strategy == "cache_only"
-    # observed retrieval keeps only 5% → retrieve arm becomes ~0.05x
-    r.observe_retrieval("s", 10_000, 500)
+    # DeepSeek V4 cache hits cost only 2% of fresh input, so switching layouts
+    # is worthwhile only for an even smaller measured retrieval result.
+    r.observe_retrieval("s", 10_000, 100)
     d = r.decide("s", [A, B, C], "q3")
     assert d.est_cost_retrieve < base.est_cost_retrieve
-    assert d.strategy == "retrieve", d.reason  # 0.05 < lcp-based cache cost (~0.26)
+    assert d.strategy == "retrieve", d.reason  # 0.01 < the warm full-prefix cost (0.02)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +122,7 @@ def test_exploration_only_on_near_ties_and_cold_sessions():
 
 
 def test_cache_discount_export_synced_with_rates():
-    assert CACHE_DISCOUNT["deepseek"] == _RATES["deepseek"]["cache_read"] == 0.259
+    assert CACHE_DISCOUNT["deepseek"] == _RATES["deepseek"]["cache_read"] == 0.02
     assert CACHE_DISCOUNT["anthropic"] == _RATES["anthropic"]["cache_read"]
 
 
@@ -136,3 +137,40 @@ def test_session_gap_tracks_spacing():
     gap = r.session_gap("g")
     assert 590 <= gap <= 620, f"gap EWMA should be ~600s, got {gap}"
     assert r.session_gap("unknown-session") == -1.0
+
+
+def test_cache_write_requires_enough_observed_reuse_to_break_even():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("roi", [A, B], "q1")
+    allowed, reason = r.cache_write_allowed("roi")
+    assert not allowed and reason.startswith("reuse_unproven")
+
+    r.decide("roi", [A, B], "q2")
+    assert r.cache_write_allowed("roi") == (True, "break_even_supported")
+
+    # A 1-hour write has a full 1x premium and needs two 0.9x reads.
+    allowed, reason = r.cache_write_allowed("roi", "1h")
+    assert not allowed and reason == "reuse_unproven:1/2"
+    r.decide("roi", [A, B], "q3")
+    assert r.cache_write_allowed("roi", "1h") == (True, "break_even_supported")
+
+
+def test_repeated_unrecovered_cache_writes_trigger_cooldown():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("loss", [A, B], "q1")
+    r.decide("loss", [A, B], "q2")
+    r.observe_usage("loss", 2400, 0, cache_write_tokens=2000)
+    r.observe_usage("loss", 2400, 0, cache_write_tokens=2000)
+    allowed, reason = r.cache_write_allowed("loss")
+    assert not allowed and reason == "negative_roi_cooldown"
+
+
+def test_cross_run_reuse_can_qualify_for_one_hour_tier():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("hourly", [A, B], "q1")
+    r._sessions["hourly"].last_ts -= 600
+    r.decide("hourly", [A, B], "q2")
+    assert r.cache_write_allowed("hourly", "1h")[0] is False
+    r._sessions["hourly"].last_ts -= 600
+    r.decide("hourly", [A, B], "q3")
+    assert r.cache_write_allowed("hourly", "1h") == (True, "break_even_supported")
