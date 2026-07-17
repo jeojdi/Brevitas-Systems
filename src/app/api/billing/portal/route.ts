@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 
 import { billingConfig, getStripe } from '@/lib/billing/config';
 import { authenticatedBillingUser, getBillingAccount } from '@/lib/billing/supabase';
+import { captureServerEvent } from '@/lib/posthog-server';
 import { RATE_LIMITS, withRateLimit } from '@/lib/rate-limiter';
 
 export const runtime = 'nodejs';
@@ -19,6 +20,10 @@ export async function POST(request: NextRequest) {
       const session = await getStripe().billingPortal.sessions.create({
         customer: account.stripe_customer_id,
         return_url: `${billingConfig().publicUrl}/dashboard`,
+      });
+      await captureServerEvent({
+        distinctId: user.id,
+        event: 'billing_portal_opened',
       });
       return Response.json({ url: session.url });
     } catch (error) {

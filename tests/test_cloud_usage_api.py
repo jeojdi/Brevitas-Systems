@@ -112,6 +112,41 @@ def test_api_keys_create_list_and_revoke_for_account_and_legacy_keys(tmp_path, m
     assert client.post("/v1/keys", json={"name": "anonymous"}).status_code == 401
 
 
+def test_repo_registration_and_admin_key_inventory_are_tenant_safe(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "repos.db"))
+    raw_key = "bvt_repo_key"
+    key_hash = hash_key(raw_key)
+    store.create_key(key_hash, "CLI key", owner_id="user-1")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    client = TestClient(server.app)
+
+    registered = client.post("/v1/repositories", headers={"X-Brevitas-Key": raw_key},
+                             json={"repo": "/private/customer/checkout.git", "source": "bvx"})
+    assert registered.status_code == 200
+    assert registered.json()["repo"] == "checkout"
+    store.record_usage(key_hash, 100, 80, owner_id="user-1", repo="runtime-repo")
+
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "regular-user", "app_metadata": {}})
+    assert client.get("/v1/admin/keys").status_code == 403
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
+    response = client.get("/v1/admin/keys", headers={
+        "Authorization": BEARER + " test-admin-session"})
+    assert response.status_code == 200
+    inventory = response.json()
+    assert inventory["total_keys"] == 1
+    assert inventory["total_repositories"] == 2
+    assert inventory["keys"][0]["key_name"] == "CLI key"
+    assert {repo["name"] for repo in inventory["keys"][0]["repositories"]} == {
+        "checkout", "runtime-repo"}
+    assert raw_key not in response.text
+    assert inventory["keys"][0]["key_id"] == key_hash[:12]
+
+
 def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     import api.server as server
     store = UsageStore(str(tmp_path / "api.db"))
@@ -336,6 +371,39 @@ def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
     assert response.json()["avg_session_duration_seconds"] == 45.5
     assert all(call[1]["Authorization"] == f"Bearer {personal_key}" for call in calls)
     assert personal_key not in response.text
+
+
+def test_admin_posthog_summary_reports_rejected_credentials(monkeypatch):
+    import api.server as server
+
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
+    monkeypatch.setenv("POSTHOG_PROJECT_ID", "42")
+    monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_rejected")
+    server._POSTHOG_CACHE.clear()
+
+    class Response:
+        status_code = 403
+
+        def raise_for_status(self):
+            raise AssertionError("credential rejection should be handled first")
+
+        def json(self):
+            return {"detail": "invalid personal API key"}
+
+    def post(url, *, headers, json, timeout):
+        return Response()
+
+    monkeypatch.setattr(server._requests, "post", post)
+    response = TestClient(server.app).get(
+        "/v1/admin/analytics?range=30d",
+        headers={"Authorization": "Bearer " + "test-admin-session"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "PostHog reporting credentials were rejected; "
+        "update POSTHOG_PERSONAL_API_KEY"
+    )
 
 
 def _mock_client(monkeypatch, handler):

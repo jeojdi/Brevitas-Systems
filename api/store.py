@@ -247,6 +247,51 @@ def _admin_breakdown(rows: list[dict[str, Any]], emails: dict[str, str] | None =
             for item in _breakdown(account_rows)]
 
 
+def _admin_key_inventory(keys: list[dict[str, Any]], repositories: list[dict[str, Any]],
+                         usage: list[dict[str, Any]], emails: dict[str, str] | None = None) -> dict[str, Any]:
+    """Build an admin-safe key-to-repository view without exposing raw credentials."""
+    emails = emails or {}
+    repos_by_key: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+
+    def add_repo(key_hash: str, name: str, installed_at: str = "", last_seen: str = "",
+                 source: str = "usage") -> None:
+        name = str(name or "").strip()
+        if not key_hash or not name:
+            return
+        current = repos_by_key[key_hash].get(name, {})
+        repos_by_key[key_hash][name] = {
+            "name": name,
+            "source": current.get("source") or source,
+            "installed_at": current.get("installed_at") or installed_at,
+            "last_seen": max(str(current.get("last_seen") or ""), str(last_seen or installed_at or "")),
+        }
+
+    for row in repositories:
+        add_repo(str(row.get("key_hash") or ""), str(row.get("repo") or ""),
+                 str(row.get("installed_at") or ""), str(row.get("last_seen") or ""),
+                 str(row.get("source") or "bvx"))
+    for row in usage:
+        add_repo(str(row.get("key_hash") or ""),
+                 str(row.get("repo") or row.get("project") or ""),
+                 last_seen=str(row.get("ts") or ""))
+
+    records = []
+    for key in keys:
+        key_hash = str(key.get("key_hash") or "")
+        owner_id = str(key.get("owner_id") or "")
+        records.append({
+            "account_id": owner_id or "Unattributed",
+            "account_email": emails.get(owner_id, ""),
+            "key_id": key_hash[:12],
+            "key_name": str(key.get("name") or "unnamed"),
+            "created": str(key.get("created") or ""),
+            "repositories": sorted(repos_by_key.get(key_hash, {}).values(), key=lambda row: row["name"].lower()),
+        })
+    records.sort(key=lambda row: (row["account_email"] or row["account_id"], row["created"]), reverse=True)
+    return {"keys": records, "total_keys": len(records),
+            "total_repositories": sum(len(row["repositories"]) for row in records)}
+
+
 def _filter_admin_rows(rows: list[dict[str, Any]], filters: dict[str, str]) -> list[dict[str, Any]]:
     start = filters.get("start", "")
     result = []
@@ -280,6 +325,7 @@ class UsageStore:
                 db.execute("ALTER TABLE api_keys ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE TABLE IF NOT EXISTS provider_config (key_hash TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'ollama', provider_api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT 'llama3.2')")
             db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
+            db.execute("CREATE TABLE IF NOT EXISTS key_repositories (key_hash TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'bvx', installed_at TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (key_hash, repo))")
             device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
             if "key_hash" not in device_cols:
                 db.execute("ALTER TABLE bvx_device_auth ADD COLUMN key_hash TEXT NOT NULL DEFAULT ''")
@@ -364,6 +410,27 @@ class UsageStore:
             else:
                 rows = db.execute("SELECT key_hash,name,created FROM api_keys ORDER BY created DESC").fetchall()
         return [{"id": r[0], "name": r[1], "created": r[2]} for r in rows]
+
+    def register_repository(self, key_hash: str, repo: str, source: str = "bvx") -> None:
+        owner = self.key_owner(key_hash)
+        now = _now()
+        with self._conn() as db:
+            db.execute(
+                "INSERT INTO key_repositories(key_hash,owner_id,repo,source,installed_at,last_seen) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(key_hash,repo) DO UPDATE SET "
+                "owner_id=excluded.owner_id,source=excluded.source,last_seen=excluded.last_seen",
+                (key_hash, owner, repo, source, now, now),
+            )
+
+    def get_admin_key_inventory(self) -> dict[str, Any]:
+        with self._conn() as db:
+            keys = [dict(row) for row in db.execute(
+                "SELECT key_hash,name,created,owner_id FROM api_keys ORDER BY created DESC")]
+            repositories = [dict(row) for row in db.execute(
+                "SELECT key_hash,owner_id,repo,source,installed_at,last_seen FROM key_repositories")]
+            usage = [dict(row) for row in db.execute(
+                "SELECT key_hash,owner_id,repo,project,ts FROM usage_log")]
+        return _admin_key_inventory(keys, repositories, usage)
 
     def delete_key(self, current_key_hash: str, target_key_hash: str) -> bool:
         owner = self.key_owner(current_key_hash)
@@ -522,6 +589,45 @@ class SupabaseUsageStore:
             params["key_hash"] = f"eq.{key_hash}"
         return [{"id": row["key_hash"], "name": row["name"], "created": row["created"]}
                 for row in (self._request("GET", "api_keys", params=params) or [])]
+
+    def register_repository(self, key_hash: str, repo: str, source: str = "bvx") -> None:
+        now = _now()
+        self._request("POST", "key_repositories", params={"on_conflict": "key_hash,repo"}, data={
+            "key_hash": key_hash, "owner_id": self.key_owner(key_hash), "repo": repo,
+            "source": source, "installed_at": now, "last_seen": now,
+        }, prefer="resolution=merge-duplicates,return=representation")
+
+    def get_admin_key_inventory(self) -> dict[str, Any]:
+        keys = self._request("GET", "api_keys", params={
+            "select": "key_hash,name,created,owner_id", "order": "created.desc",
+        }) or []
+        repositories = self._request("GET", "key_repositories", params={
+            "select": "key_hash,owner_id,repo,source,installed_at,last_seen",
+        }) or []
+        usage: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._request("GET", "usage_log", params={
+                "select": "key_hash,owner_id,repo,project,ts", "order": "ts.desc",
+                "limit": "1000", "offset": str(offset),
+            }) or []
+            usage.extend(page)
+            if len(page) < 1000:
+                break
+            offset += 1000
+
+        owner_ids = sorted({str(key.get("owner_id") or "") for key in keys
+                            if key.get("owner_id")})
+        emails: dict[str, str] = {}
+        safe_ids = [owner for owner in owner_ids
+                    if len(owner) == 36 and all(c.isalnum() or c == '-' for c in owner)]
+        if safe_ids:
+            profiles = self._request("GET", "profiles", params={
+                "select": "id,email", "id": f"in.({','.join(safe_ids)})",
+            }) or []
+            emails = {str(profile.get("id")): str(profile.get("email") or "")
+                      for profile in profiles}
+        return _admin_key_inventory(keys, repositories, usage, emails)
 
     def delete_key(self, current_key_hash: str, target_key_hash: str) -> bool:
         owner = self.key_owner(current_key_hash)

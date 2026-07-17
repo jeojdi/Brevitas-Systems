@@ -63,6 +63,7 @@ test('dashboard preview is restricted to localhost and keeps production auth int
 
 test('admin UI combines protected PostHog and financial operations without secrets', async () => {
   const admin = await source('Admin')
+  assert.match(admin, /\/v1\/admin\/keys/)
   assert.match(admin, /\/v1\/admin\/analytics/)
   assert.match(admin, /\/v1\/admin\/stats\/breakdown/)
   assert.match(admin, /\/v1\/admin\/billing/)

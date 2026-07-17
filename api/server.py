@@ -561,6 +561,15 @@ def _posthog_query(hogql: str) -> list:
             json={"query": {"kind": "HogQLQuery", "query": hogql}},
             timeout=10,
         )
+        if getattr(response, "status_code", 200) in (401, 403):
+            logger.warning(
+                "PostHog reporting credentials rejected status=%s",
+                response.status_code,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="PostHog reporting credentials were rejected; update POSTHOG_PERSONAL_API_KEY",
+            )
         response.raise_for_status()
         return response.json().get("results") or []
     except HTTPException:
@@ -751,6 +760,29 @@ def revoke_key(request: Request, key_id: str, kh: str = Depends(_authenticated))
     with _valid_key_lock:
         _valid_key_cache.pop(key_id, None)
     return {"revoked": True}
+
+
+class RegisterRepositoryRequest(BaseModel):
+    repo: str = Field(min_length=1, max_length=512)
+    source: str = Field(default="bvx", max_length=32, pattern=r"^[A-Za-z0-9._-]+$")
+
+    @field_validator("repo")
+    @classmethod
+    def safe_repo_name(cls, value: str) -> str:
+        name = value.strip().replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        if not name or len(name) > 128 or any(ord(char) < 32 for char in name):
+            raise ValueError("repo must contain a safe repository name")
+        return name
+
+
+@app.post("/v1/repositories")
+@limiter.limit("30/minute")
+def register_repository(request: Request, body: RegisterRepositoryRequest,
+                        kh: str = Depends(_authenticated)):
+    _store.register_repository(kh, body.repo, body.source)
+    return {"registered": True, "repo": body.repo}
 
 
 # ── Provider config ───────────────────────────────────────────────────────────
@@ -1540,6 +1572,13 @@ def stats_breakdown(request: Request, kh: str = Depends(_authenticated)):
 def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):
     logger.info("admin usage overview accessed actor=%s", _)
     return _store.get_admin_stats()
+
+
+@app.get("/v1/admin/keys")
+@limiter.limit("60/minute")
+def admin_keys(request: Request, _: str = Depends(_admin_authenticated)):
+    logger.info("admin key inventory accessed actor=%s", _)
+    return _store.get_admin_key_inventory()
 
 
 @app.get("/v1/admin/stats/breakdown")

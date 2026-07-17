@@ -27,6 +27,8 @@ export default function Admin({ accessToken, refreshTick }) {
   const [range, setRange] = useState('30d')
   const [filters, setFilters] = useState({ account: '', project: '', client: '', provider: '', model: '' })
   const [data, setData] = useState(null)
+  const [keyInventory, setKeyInventory] = useState(null)
+  const [keyError, setKeyError] = useState('')
   const [traffic, setTraffic] = useState(null)
   const [error, setError] = useState('')
   const [trafficError, setTrafficError] = useState('')
@@ -55,6 +57,15 @@ export default function Admin({ accessToken, refreshTick }) {
       .catch(error => { if (error.name !== 'AbortError') setError(error.message) })
     return () => controller.abort()
   }, [accessToken, query, refreshTick])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setKeyError('')
+    adminJson('/v1/admin/keys', accessToken, controller.signal)
+      .then(setKeyInventory)
+      .catch(error => { if (error.name !== 'AbortError') setKeyError(error.message) })
+    return () => controller.abort()
+  }, [accessToken, refreshTick])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -99,6 +110,25 @@ export default function Admin({ accessToken, refreshTick }) {
           className={`px-3 py-2 rounded-xl font-mono text-xs ${range === value ? 'bg-brand-blue text-white' : 'border border-brand-border dark:border-brand-dark-border text-brand-muted'}`}>{value}</button>)}
       </div>
     </div>
+
+    <section className="space-y-4">
+      <div><p className="annotation tracking-widest uppercase">Accounts and access</p><h3 className="font-serif text-2xl mt-1">API keys and connected repositories.</h3><p className="text-sm text-brand-muted mt-2">Only key names and SHA-256 fingerprints are shown. Raw API keys are never available here.</p></div>
+      {keyError ? <p className="font-mono text-xs text-red-500">{keyError}</p> : !keyInventory ? <p className="annotation">// loading key inventory…</p> : <>
+        <div className="grid grid-cols-2 gap-4 max-w-xl">
+          <StatCard label="Active API keys" value={num(keyInventory.total_keys)} />
+          <StatCard label="Connected repositories" value={num(keyInventory.total_repositories)} accent="text-brand-teal" />
+        </div>
+        <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
+          <table className="w-full min-w-[820px] text-left"><thead><tr>{['Account', 'API key', 'Connected repositories', 'Created'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
+            <tbody>{keyInventory.keys.length ? keyInventory.keys.map(key => <tr key={`${key.account_id}-${key.key_id}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
+              <td className="font-mono text-xs px-4 py-3"><span>{key.account_email || 'No email'}</span><br/><span className="text-brand-muted">{key.account_id}</span></td>
+              <td className="font-mono text-xs px-4 py-3"><span className="text-brand-navy dark:text-brand-dark-navy">{key.key_name}</span><br/><span className="text-brand-muted">sha256:{key.key_id}</span></td>
+              <td className="font-mono text-xs px-4 py-3">{key.repositories.length ? <div className="flex flex-wrap gap-2">{key.repositories.map(repo => <span key={repo.name} title={repo.last_seen ? `Last seen ${new Date(repo.last_seen).toLocaleString()}` : ''} className="rounded-lg bg-brand-teal-dim dark:bg-brand-dark-teal-dim text-brand-teal px-2 py-1">{repo.name}</span>)}</div> : <span className="text-brand-muted">No repositories yet</span>}</td>
+              <td className="font-mono text-xs px-4 py-3 text-brand-muted">{key.created ? new Date(key.created).toLocaleDateString() : 'Unknown'}</td>
+            </tr>) : <tr><td colSpan="4" className="annotation px-4 py-5">No API keys have been created.</td></tr>}</tbody></table>
+        </div>
+      </>}
+    </section>
 
     <section className="space-y-4">
       <div className="flex items-center justify-between gap-4"><div><p className="annotation tracking-widest uppercase">Site traffic</p><h3 className="font-serif text-2xl mt-1">PostHog summary.</h3></div>{traffic?.posthog_url && <a href={traffic.posthog_url} target="_blank" rel="noreferrer" className="text-xs text-brand-blue">Open detailed analytics ↗</a>}</div>

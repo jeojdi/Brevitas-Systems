@@ -12,6 +12,7 @@ import {
   stripeId,
   subscriptionPeriod,
 } from '@/lib/billing/stripe-state';
+import { captureServerEvent } from '@/lib/posthog-server';
 
 export const runtime = 'nodejs';
 
@@ -40,9 +41,9 @@ async function accountForCustomer(customerId: string) {
 
 async function applySubscription(subscription: Stripe.Subscription, eventCreated: number) {
   const customerId = stripeId(subscription.customer);
-  if (!customerId) return;
+  if (!customerId) return null;
   const account = await accountForCustomer(customerId);
-  if (!account) return;
+  if (!account) return null;
   if (
     account.stripe_subscription_id &&
     account.stripe_subscription_id !== subscription.id &&
@@ -51,7 +52,7 @@ async function applySubscription(subscription: Stripe.Subscription, eventCreated
     if (BILLABLE_SUBSCRIPTION_STATUSES.has(subscription.status)) {
       await getStripe().subscriptions.cancel(subscription.id, { prorate: false });
     }
-    return;
+    return null;
   }
   await saveSubscriptionState(account.user_id, {
     stripe_subscription_id: subscription.id,
@@ -59,6 +60,7 @@ async function applySubscription(subscription: Stripe.Subscription, eventCreated
     billing_started_at: account.billing_started_at || new Date(subscription.created * 1000).toISOString(),
     ...subscriptionPeriod(subscription),
   }, eventCreated);
+  return account.user_id as string;
 }
 
 async function applyCheckout(session: Stripe.Checkout.Session, eventCreated: number) {
@@ -80,23 +82,24 @@ async function applyCheckout(session: Stripe.Checkout.Session, eventCreated: num
     // A second Checkout can complete only during a narrow concurrency race.
     // Cancel it immediately so a user can never retain two billable subscriptions.
     await getStripe().subscriptions.cancel(subscriptionId, { prorate: false });
-    return;
+    return null;
   }
 
   const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-  await applySubscription(subscription, eventCreated);
+  return applySubscription(subscription, eventCreated);
 }
 
 async function applyInvoice(invoice: Stripe.Invoice, eventType: string, eventCreated: number) {
   const customerId = stripeId(invoice.customer);
-  if (!customerId) return;
+  if (!customerId) return null;
   const account = await accountForCustomer(customerId);
-  if (!account) return;
+  if (!account) return null;
   const invoiceStatus = eventType === 'invoice.payment_failed' ? 'payment_failed' : invoice.status;
   await saveInvoiceState(account.user_id, {
     last_invoice_id: invoice.id,
     last_invoice_status: invoiceStatus,
   }, eventCreated);
+  return account.user_id as string;
 }
 
 export async function POST(request: Request) {
@@ -119,18 +122,48 @@ export async function POST(request: Request) {
     if (!await claimEvent(event)) return Response.json({ received: true, duplicate: true });
 
     switch (event.type) {
-      case 'checkout.session.completed':
-        await applyCheckout(event.data.object, event.created);
+      case 'checkout.session.completed': {
+        const userId = await applyCheckout(event.data.object, event.created);
+        if (userId) {
+          await captureServerEvent({
+            distinctId: userId,
+            event: 'billing_checkout_completed',
+            properties: { source: 'stripe_webhook' },
+          });
+        }
         break;
+      }
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
-      case 'customer.subscription.deleted':
-        await applySubscription(event.data.object, event.created);
+      case 'customer.subscription.deleted': {
+        const userId = await applySubscription(event.data.object, event.created);
+        if (userId) {
+          await captureServerEvent({
+            distinctId: userId,
+            event: 'billing_subscription_updated',
+            properties: {
+              event_type: event.type,
+              subscription_status: event.data.object.status,
+            },
+          });
+        }
         break;
+      }
       case 'invoice.paid':
-      case 'invoice.payment_failed':
-        await applyInvoice(event.data.object, event.type, event.created);
+      case 'invoice.payment_failed': {
+        const userId = await applyInvoice(event.data.object, event.type, event.created);
+        if (userId) {
+          await captureServerEvent({
+            distinctId: userId,
+            event: 'billing_invoice_updated',
+            properties: {
+              event_type: event.type,
+              payment_outcome: event.type === 'invoice.paid' ? 'paid' : 'failed',
+            },
+          });
+        }
         break;
+      }
       default:
         break;
     }

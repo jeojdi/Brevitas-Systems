@@ -7,6 +7,7 @@ import {
   saveBillingAccount,
 } from '@/lib/billing/supabase';
 import { BILLABLE_SUBSCRIPTION_STATUSES, subscriptionPeriod } from '@/lib/billing/stripe-state';
+import { captureServerEvent } from '@/lib/posthog-server';
 import { RATE_LIMITS, withRateLimit } from '@/lib/rate-limiter';
 
 export const runtime = 'nodejs';
@@ -43,6 +44,11 @@ export async function POST(request: NextRequest) {
       if (account?.checkout_session_id) {
         const prior = await stripe.checkout.sessions.retrieve(account.checkout_session_id);
         if (prior.status === 'open' && prior.url) {
+          await captureServerEvent({
+            distinctId: user.id,
+            event: 'billing_checkout_started',
+            properties: { session_reused: true },
+          });
           return Response.json({ url: prior.url });
         }
       }
@@ -79,6 +85,11 @@ export async function POST(request: NextRequest) {
 
       if (!session.url) throw new Error('Stripe did not return a Checkout URL');
       await saveBillingAccount(user.id, { checkout_session_id: session.id });
+      await captureServerEvent({
+        distinctId: user.id,
+        event: 'billing_checkout_started',
+        properties: { session_reused: false },
+      });
       return Response.json({ url: session.url });
     } catch (error) {
       console.error('Stripe checkout creation failed', error instanceof Error ? error.message : 'unknown error');
