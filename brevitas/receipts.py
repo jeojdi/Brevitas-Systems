@@ -14,6 +14,11 @@ class TokenReceipt:
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
     output_tokens: int = 0
+    # Anthropic reports these as a breakdown of cache_write_tokens. They are
+    # tracked separately because 5-minute writes cost 1.25x input while 1-hour
+    # writes cost 2x. They must never be added to input_tokens a second time.
+    cache_write_5m_tokens: int = 0
+    cache_write_1h_tokens: int = 0
 
     @property
     def input_tokens(self) -> int:
@@ -50,18 +55,25 @@ def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
 
     billed = usage.get("billed_units") or {}
     if isinstance(billed, dict) and billed:
-        return TokenReceipt(_int(billed.get("input_tokens")), 0, 0,
-                            _int(billed.get("output_tokens")))
+        return TokenReceipt(
+            fresh_input_tokens=_int(billed.get("input_tokens")),
+            output_tokens=_int(billed.get("output_tokens")),
+        )
 
     # Anthropic Messages.
     if provider.lower() == "anthropic" or any(
         key in usage for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
     ):
+        creation = usage.get("cache_creation") or {}
+        if not isinstance(creation, dict):
+            creation = {}
         return TokenReceipt(
-            _int(usage.get("input_tokens")),
-            _int(usage.get("cache_read_input_tokens")),
-            _int(usage.get("cache_creation_input_tokens")),
-            _int(usage.get("output_tokens")),
+            fresh_input_tokens=_int(usage.get("input_tokens")),
+            cached_input_tokens=_int(usage.get("cache_read_input_tokens")),
+            cache_write_tokens=_int(usage.get("cache_creation_input_tokens")),
+            output_tokens=_int(usage.get("output_tokens")),
+            cache_write_5m_tokens=_int(creation.get("ephemeral_5m_input_tokens")),
+            cache_write_1h_tokens=_int(creation.get("ephemeral_1h_input_tokens")),
         )
 
     # OpenAI Responses.
@@ -71,7 +83,11 @@ def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
         total_input = _int(usage.get("input_tokens"))
         # Cohere v2 puts authoritative counts under billed_units.
         output = _int(usage.get("output_tokens"))
-        return TokenReceipt(max(0, total_input - cached), cached, 0, output)
+        return TokenReceipt(
+            fresh_input_tokens=max(0, total_input - cached),
+            cached_input_tokens=cached,
+            output_tokens=output,
+        )
 
     # OpenAI-compatible Chat Completions.
     if "prompt_tokens" in usage or "completion_tokens" in usage:
@@ -79,38 +95,55 @@ def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
         cached = _int(details.get("cached_tokens")) if isinstance(details, dict) else 0
         cached = cached or _int(usage.get("prompt_cache_hit_tokens"))
         prompt = _int(usage.get("prompt_tokens"))
-        return TokenReceipt(max(0, prompt - cached), cached, 0,
-                            _int(usage.get("completion_tokens")))
+        if prompt == 0 and ("prompt_cache_hit_tokens" in usage
+                            or "prompt_cache_miss_tokens" in usage):
+            prompt = cached + _int(usage.get("prompt_cache_miss_tokens"))
+        return TokenReceipt(
+            fresh_input_tokens=max(0, prompt - cached),
+            cached_input_tokens=cached,
+            output_tokens=_int(usage.get("completion_tokens")),
+        )
 
     # Gemini / Vertex usageMetadata.
     if "promptTokenCount" in usage or "candidatesTokenCount" in usage:
         prompt = _int(usage.get("promptTokenCount"))
         cached = _int(usage.get("cachedContentTokenCount"))
-        return TokenReceipt(max(0, prompt - cached), cached, 0,
-                            _int(usage.get("candidatesTokenCount")))
+        return TokenReceipt(
+            fresh_input_tokens=max(0, prompt - cached),
+            cached_input_tokens=cached,
+            output_tokens=_int(usage.get("candidatesTokenCount")),
+        )
 
     # Bedrock Converse and invoke-model normalized receipts.
     if "inputTokens" in usage or "outputTokens" in usage:
-        return TokenReceipt(_int(usage.get("inputTokens")), 0, 0,
-                            _int(usage.get("outputTokens")))
+        return TokenReceipt(
+            fresh_input_tokens=_int(usage.get("inputTokens")),
+            output_tokens=_int(usage.get("outputTokens")),
+        )
 
     tokens = usage.get("tokens") or {}
     if isinstance(tokens, dict):
-        receipt = TokenReceipt(_int(tokens.get("input_tokens")), 0, 0,
-                               _int(tokens.get("output_tokens")))
+        receipt = TokenReceipt(
+            fresh_input_tokens=_int(tokens.get("input_tokens")),
+            output_tokens=_int(tokens.get("output_tokens")),
+        )
         if receipt.total_tokens:
             return receipt
 
     # Ollama and several local OpenAI-compatible runtimes.
     if "prompt_eval_count" in usage or "eval_count" in usage:
-        return TokenReceipt(_int(usage.get("prompt_eval_count")), 0, 0,
-                            _int(usage.get("eval_count")))
+        return TokenReceipt(
+            fresh_input_tokens=_int(usage.get("prompt_eval_count")),
+            output_tokens=_int(usage.get("eval_count")),
+        )
 
     # Replicate and other hosted inference receipts commonly use this spelling.
     metrics = usage.get("metrics") if isinstance(usage.get("metrics"), dict) else usage
     if "input_token_count" in metrics or "output_token_count" in metrics:
-        return TokenReceipt(_int(metrics.get("input_token_count")), 0, 0,
-                            _int(metrics.get("output_token_count")))
+        return TokenReceipt(
+            fresh_input_tokens=_int(metrics.get("input_token_count")),
+            output_tokens=_int(metrics.get("output_token_count")),
+        )
     return TokenReceipt()
 
 
@@ -168,9 +201,10 @@ class SSEUsageParser:
                 )
 
 
-# Standard/global on-demand USD per million tokens, verified 2026-07-10. Costs are
-# snapshotted into each event at ingestion; unknown IDs intentionally have no fallback.
-PRICING_VERSION = "2026-07-10"
+# Standard/global on-demand USD per million tokens, verified 2026-07-16. Costs are
+# snapshotted into each event at ingestion; unknown model families intentionally
+# remain unpriced rather than inheriting a possibly-wrong generic fallback.
+PRICING_VERSION = "2026-07-16"
 MODEL_PRICES: dict[tuple[str, str], dict[str, float]] = {
     ("anthropic", "claude-opus-4-8"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
     ("anthropic", "claude-opus-4-7"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
@@ -179,7 +213,11 @@ MODEL_PRICES: dict[tuple[str, str], dict[str, float]] = {
     ("anthropic", "claude-haiku-4-5-20251001"): {"input": 1.0, "cached": .1, "write": 1.25, "output": 5.0},
     ("openai", "gpt-4o"): {"input": 2.5, "cached": 1.25, "write": 2.5, "output": 10.0},
     ("openai", "gpt-4o-mini"): {"input": .15, "cached": .075, "write": .15, "output": .6},
+    ("openai", "gpt-4.1"): {"input": 2.0, "cached": .5, "write": 2.0, "output": 8.0},
+    ("openai", "gpt-4.1-mini"): {"input": .4, "cached": .1, "write": .4, "output": 1.6},
+    ("openai", "gpt-4.1-nano"): {"input": .1, "cached": .025, "write": .1, "output": .4},
     ("openai", "o3-mini"): {"input": 1.1, "cached": .55, "write": 1.1, "output": 4.4},
+    ("openai", "o4-mini"): {"input": 1.1, "cached": .275, "write": 1.1, "output": 4.4},
     ("deepseek", "deepseek-chat"): {"input": .14, "cached": .0028, "write": .14, "output": .28},
     ("deepseek", "deepseek-reasoner"): {"input": .14, "cached": .0028, "write": .14, "output": .28},
     ("deepseek", "deepseek-v4-flash"): {"input": .14, "cached": .0028, "write": .14, "output": .28},
@@ -198,24 +236,58 @@ def canonical_provider(provider: str, model: str) -> str:
     return {"azure_openai": "openai"}.get(p, p)
 
 
+def model_price(provider: str, model: str) -> dict[str, float] | None:
+    """Resolve exact aliases and their dated snapshots without guessing families."""
+    normalized_model = (model or "").strip().lower()
+    normalized_provider = canonical_provider(provider, normalized_model)
+    exact = MODEL_PRICES.get((normalized_provider, normalized_model))
+    if exact:
+        return exact
+    # A snapshot such as gpt-4.1-mini-2025-04-14 has the alias price. Longest
+    # match is essential because gpt-4.1-mini is more specific than gpt-4.1.
+    candidates = (
+        (known_model, price)
+        for (known_provider, known_model), price in MODEL_PRICES.items()
+        if known_provider == normalized_provider
+        and normalized_model.startswith(f"{known_model}-")
+    )
+    return max(candidates, key=lambda item: len(item[0]), default=("", None))[1]
+
+
 def calculate_costs(provider: str, model: str, baseline_input_tokens: int,
-                    receipt: TokenReceipt, baseline_output_tokens: int | None = None) -> dict[str, Any]:
+                    receipt: TokenReceipt, baseline_output_tokens: int | None = None,
+                    cache_attributable: bool = True) -> dict[str, Any]:
     provider = canonical_provider(provider, model)
-    price = MODEL_PRICES.get((provider, model))
+    price = model_price(provider, model)
     if not price:
         return {"pricing_status": "unpriced", "baseline_cost_usd": None,
                 "actual_cost_usd": None, "measured_savings_usd": None,
                 "pricing_version": "", "prices": {}}
     million = 1_000_000
     baseline_output = receipt.output_tokens if baseline_output_tokens is None else max(0, baseline_output_tokens)
-    baseline = (max(0, baseline_input_tokens) * price["input"]
-                + baseline_output * price["output"]) / million
-    actual = (
+    write_5m = receipt.cache_write_5m_tokens
+    write_1h = receipt.cache_write_1h_tokens
+    tiered_write = write_5m + write_1h
+    if tiered_write > receipt.cache_write_tokens:
+        # Malformed or partially cumulative receipts must not double-count.
+        write_5m = write_1h = tiered_write = 0
+    unspecified_write = receipt.cache_write_tokens - tiered_write
+    actual_input = (
         receipt.fresh_input_tokens * price["input"]
         + receipt.cached_input_tokens * price["cached"]
-        + receipt.cache_write_tokens * price["write"]
-        + receipt.output_tokens * price["output"]
-    ) / million
+        + unspecified_write * price["write"]
+        + write_5m * price["write"]
+        + write_1h * price.get("write_1h", price["input"] * 2.0)
+    )
+    actual = (actual_input + receipt.output_tokens * price["output"]) / million
+    if cache_attributable:
+        baseline_input = max(0, baseline_input_tokens) * price["input"]
+    else:
+        # Preserve cache discounts/writes the client or provider would have had
+        # without Brevitas. Only the measured input-token delta is attributable.
+        delta = baseline_input_tokens - receipt.input_tokens
+        baseline_input = max(0.0, actual_input + delta * price["input"])
+    baseline = (baseline_input + baseline_output * price["output"]) / million
     return {
         "pricing_status": "priced",
         "baseline_cost_usd": round(baseline, 10),
@@ -230,24 +302,34 @@ def count_request_tokens(body: dict, operation: str = "") -> int:
     """Local baseline count; provider receipt remains authoritative for actual usage."""
     chunks: list[str] = []
 
-    def add_content(value: Any) -> None:
+    def content_text(value: Any) -> str:
         if isinstance(value, str):
-            chunks.append(value)
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    if item.get("type") in ("text", "input_text", "output_text"):
-                        add_content(item.get("text"))
-                    elif "content" in item:
-                        add_content(item.get("content"))
-                elif isinstance(item, str):
-                    chunks.append(item)
-        elif isinstance(value, dict):
-            add_content(value.get("content"))
+            return value
+        if isinstance(value, list):
+            # Text-block boundaries are structural metadata, not textual input.
+            # Joining them prevents a byte-preserving system-prompt split from
+            # creating a fake local token delta due to BPE boundary effects.
+            return "".join(content_text(item) for item in value)
+        if isinstance(value, dict):
+            if value.get("type") in ("text", "input_text", "output_text"):
+                return content_text(value.get("text"))
+            return content_text(value.get("content"))
+        return ""
+
+    def add_content(value: Any) -> None:
+        text = content_text(value)
+        if text:
+            chunks.append(text)
 
     add_content(body.get("system"))
     add_content(body.get("instructions"))
-    add_content(body.get("input"))
+    input_value = body.get("input")
+    if (isinstance(input_value, list)
+            and any(isinstance(item, dict) and "role" in item for item in input_value)):
+        for item in input_value:
+            add_content(item.get("content") if isinstance(item, dict) else item)
+    else:
+        add_content(input_value)
     add_content(body.get("prompt"))
     for message in body.get("messages") or []:
         if isinstance(message, dict):

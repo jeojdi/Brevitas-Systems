@@ -123,6 +123,7 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
         "baseline_tokens": 100, "compressed_tokens": 80,
         "fresh_input_tokens": 60, "cached_input_tokens": 20, "output_tokens": 10,
         "quality_score": .95, "request_id": "same", "project": "/private/work/backend-app",
+        "strategy": "native_cache",
         "environment": "prod", "source": "worker", "client": "python-sdk",
         "call_site_id": "call_abc", "receipt_source": "sdk",
         "usage_raw": {"prompt": "must never be stored", "response": "also private"},
@@ -157,6 +158,77 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
         "Authorization": "Bearer " + "test-admin-session"})
     assert admin.status_code == 200
     assert admin.json()["total_calls"] == 2
+
+
+def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "accounting.db"))
+    store.create_key(hash_key("bvt_accounting"), "accounting")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+    headers = {"X-Brevitas-Key": "bvt_accounting"}
+
+    # The optimizer saw 100 -> 80 message tokens, while the authoritative
+    # provider receipt includes another 920 system/tool/cache tokens. The API
+    # must preserve only the 20-token delta and report 1020 -> 1000.
+    base = {
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 100, "compressed_tokens": 80,
+        "fresh_input_tokens": 600, "cached_input_tokens": 400,
+        "output_tokens": 10, "receipt_available": True,
+    }
+    safe = client.post("/v1/usage", headers=headers, json={
+        **base, "request_id": "safe", "strategy": "native_cache",
+        "cache_attributable": False,
+    })
+    assert safe.status_code == 200
+    assert safe.json()["baseline_tokens"] == 1020
+    assert safe.json()["compressed_tokens"] == 1000
+    assert safe.json()["tokens_saved"] == 20
+    assert safe.json()["quality_status"] == "verified"
+    # OpenAI's automatic cache discount is not credited to Brevitas; only the
+    # 20 removed tokens are measured (20 * $0.15 / 1M).
+    assert safe.json()["measured_savings_usd"] == 0.000003
+
+    retrieval = client.post("/v1/usage", headers=headers, json={
+        **base, "request_id": "retrieval", "strategy": "retrieve",
+        "quality_score": .99,
+    })
+    assert retrieval.json()["quality_status"] == "unverified"
+    assert retrieval.json()["verified_savings_usd"] == 0
+
+    paired = client.post("/v1/usage", headers=headers, json={
+        **base, "request_id": "paired", "strategy": "retrieve",
+        "quality_score": .72, "quality_verified": True,
+    })
+    assert paired.json()["quality_status"] == "verified"
+    assert paired.json()["verified_savings_usd"] > 0
+
+    # A provider/local tokenizer mismatch with no transformation is zero
+    # savings, not a fabricated win or loss.
+    unchanged = client.post("/v1/usage", headers=headers, json={
+        **base, "request_id": "unchanged", "strategy": "passthrough",
+        "baseline_tokens": 100, "compressed_tokens": 100,
+    })
+    assert unchanged.json()["baseline_tokens"] == 1000
+    assert unchanged.json()["compressed_tokens"] == 1000
+    assert unchanged.json()["measured_savings_usd"] == 0
+
+    # An attributable 1-hour cache write can be a real temporary loss. Keep it
+    # signed for auditability, but never verify it or charge a savings fee.
+    write = client.post("/v1/usage", headers=headers, json={
+        "provider": "anthropic", "model": "claude-sonnet-4-6",
+        "baseline_tokens": 100, "compressed_tokens": 100,
+        "cache_write_tokens": 100, "cache_write_1h_tokens": 100,
+        "output_tokens": 0, "receipt_available": True,
+        "cache_attributable": True, "request_id": "cache-write",
+        "strategy": "cache_only",
+    })
+    assert write.json()["measured_savings_usd"] == -0.0003
+    assert write.json()["verified_savings_usd"] == 0
+    assert write.json()["brevitas_fee_usd"] == 0
 
 
 def test_repo_client_model_breakdown_reconciles(tmp_path):

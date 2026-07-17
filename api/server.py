@@ -1289,8 +1289,15 @@ class UsageReportRequest(BaseModel):
     fresh_input_tokens: Optional[int] = Field(default=None, ge=0)
     cached_input_tokens: Optional[int] = Field(default=None, ge=0)
     cache_write_tokens: Optional[int] = Field(default=None, ge=0)
+    cache_write_5m_tokens: Optional[int] = Field(default=None, ge=0)
+    cache_write_1h_tokens: Optional[int] = Field(default=None, ge=0)
     output_tokens: Optional[int] = Field(default=None, ge=0)
+    cache_attributable: bool = False
     quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Paired workload evaluation result for quality-affecting methods. A score is
+    # observational only; verification is an explicit pass/fail decision rather
+    # than an arbitrary global numeric threshold.
+    quality_verified: Optional[bool] = None
     request_id: str = Field(default="", max_length=128)
     usage_raw: Optional[dict] = None  # parsed then discarded; never persisted
     strategy: str = Field(default="", max_length=64)
@@ -1329,6 +1336,25 @@ class UsageReportRequest(BaseModel):
         return name
 
 
+_QUALITY_AFFECTING_STRATEGIES = (
+    "retrieve", "retrieval", "llmlingua", "lossy", "semantic_cache", "compress",
+)
+_BYTE_PRESERVING_STRATEGIES = (
+    "exact_cache", "native_cache", "cache_only", "passthrough", "byte_preserving",
+    "lossless",
+)
+
+
+def _verification_mode(strategy: str) -> str:
+    """Classify quality by what the optimizer did, never by an invented score."""
+    value = (strategy or "").strip().lower()
+    if any(marker in value for marker in _QUALITY_AFFECTING_STRATEGIES):
+        return "quality_affecting"
+    if any(marker in value for marker in _BYTE_PRESERVING_STRATEGIES):
+        return "byte_preserving"
+    return "unknown"
+
+
 def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
     if body.request_id and _store.has_request(kh, body.request_id):
         return {"duplicate": True, "request_id": body.request_id,
@@ -1337,20 +1363,36 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
 
     parsed = normalize_usage(body.usage_raw, body.provider)
     if any(value is not None for value in (body.fresh_input_tokens, body.cached_input_tokens,
-                                            body.cache_write_tokens, body.output_tokens)):
+                                            body.cache_write_tokens, body.cache_write_5m_tokens,
+                                            body.cache_write_1h_tokens, body.output_tokens)):
         receipt = TokenReceipt(
-            body.fresh_input_tokens or 0, body.cached_input_tokens or 0,
-            body.cache_write_tokens or 0, body.output_tokens or 0,
+            fresh_input_tokens=body.fresh_input_tokens or 0,
+            cached_input_tokens=body.cached_input_tokens or 0,
+            cache_write_tokens=body.cache_write_tokens or 0,
+            output_tokens=body.output_tokens or 0,
+            cache_write_5m_tokens=body.cache_write_5m_tokens or 0,
+            cache_write_1h_tokens=body.cache_write_1h_tokens or 0,
         )
     elif parsed.total_tokens:
         receipt = parsed
     else:
         receipt = TokenReceipt(fresh_input_tokens=body.compressed_tokens)
 
-    tokens_saved = body.baseline_tokens - body.compressed_tokens
-    savings_pct = round((tokens_saved / max(1, body.baseline_tokens)) * 100, 2)
-    costs = (calculate_costs(body.provider, body.model, body.baseline_tokens, receipt,
-                             body.baseline_output_tokens)
+    # The provider receipt is authoritative for the optimized request, including
+    # system prompts, tool schemas, cache categories, and provider-tokenizer
+    # overhead. The local tokenizer is used only for the before/after DELTA, where
+    # its bias cancels. This keeps baseline and actual costs on the same basis.
+    reported_delta = body.baseline_tokens - body.compressed_tokens
+    if body.receipt_available:
+        optimized_tokens = receipt.input_tokens
+        baseline_tokens = max(0, optimized_tokens + reported_delta)
+    else:
+        baseline_tokens = body.baseline_tokens
+        optimized_tokens = body.compressed_tokens
+    tokens_saved = baseline_tokens - optimized_tokens
+    savings_pct = round((tokens_saved / max(1, baseline_tokens)) * 100, 2)
+    costs = (calculate_costs(body.provider, body.model, baseline_tokens, receipt,
+                             body.baseline_output_tokens, body.cache_attributable)
              if body.receipt_available else {
                  "pricing_status": "unpriced", "baseline_cost_usd": None,
                  "actual_cost_usd": None, "measured_savings_usd": None,
@@ -1358,26 +1400,26 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
              })
     measured = costs["measured_savings_usd"]
 
-    quality_floor = float(os.getenv("BREVITAS_QUALITY_FLOOR", "0.8"))
+    mode = _verification_mode(body.strategy)
     stream = _seq_stream(kh)
-    if body.quality_score is not None:
-        stream.update(body.quality_score >= quality_floor)
-    if stream.state.tripped:
-        quality_status = "stream_tripped"
-    elif body.quality_score is None:
-        quality_status = "unverified"
-    elif body.quality_score >= quality_floor:
+    if mode == "byte_preserving":
         quality_status = "verified"
+    elif body.quality_verified is None:
+        quality_status = "unverified"
     else:
-        quality_status = "failed"
+        stream.update(body.quality_verified)
+        if stream.state.tripped:
+            quality_status = "stream_tripped"
+        else:
+            quality_status = "verified" if body.quality_verified else "failed"
     verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0
     fee = round(verified * 0.10, 10)
 
     inserted = _store.record_usage(
         key_hash=kh,
         owner_id=_store.key_owner(kh),
-        baseline_tokens=body.baseline_tokens,
-        optimized_tokens=body.compressed_tokens,
+        baseline_tokens=baseline_tokens,
+        optimized_tokens=optimized_tokens,
         tokens_saved=tokens_saved,
         savings_pct=savings_pct,
         quality_proxy=body.quality_score,
@@ -1387,6 +1429,9 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         fresh_input_tokens=receipt.fresh_input_tokens,
         cached_input_tokens=receipt.cached_input_tokens,
         cache_write_tokens=receipt.cache_write_tokens,
+        cache_write_5m_tokens=receipt.cache_write_5m_tokens,
+        cache_write_1h_tokens=receipt.cache_write_1h_tokens,
+        cache_attributable=body.cache_attributable,
         output_tokens=receipt.output_tokens,
         baseline_cost_usd=costs["baseline_cost_usd"],
         actual_cost_usd=costs["actual_cost_usd"],
@@ -1420,6 +1465,8 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
     return {
         "tokens_saved": tokens_saved,
         "savings_pct": savings_pct,
+        "baseline_tokens": baseline_tokens,
+        "compressed_tokens": optimized_tokens,
         "baseline_cost_usd": costs["baseline_cost_usd"],
         "actual_cost_usd": costs["actual_cost_usd"],
         "measured_savings_usd": measured,

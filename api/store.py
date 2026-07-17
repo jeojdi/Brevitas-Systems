@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 import requests
 
-from brevitas.receipts import MODEL_PRICES, canonical_provider
+from brevitas.receipts import MODEL_PRICES, canonical_provider, model_price
 
 
 PROVIDER_COSTS_PER_1M: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
@@ -23,7 +23,7 @@ def infer_provider(model: str, given: str = "") -> str:
 
 
 def cost_for_tokens(provider: str, model: str, tokens: int) -> float:
-    price = MODEL_PRICES.get((canonical_provider(provider, model), model))
+    price = model_price(provider, model)
     return 0.0 if not price else max(0, tokens) * price["input"] / 1_000_000
 
 
@@ -48,6 +48,9 @@ _USAGE_COLUMNS: dict[str, str] = {
     "fresh_input_tokens": "INTEGER NOT NULL DEFAULT 0",
     "cached_input_tokens": "INTEGER NOT NULL DEFAULT 0",
     "cache_write_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_write_5m_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_write_1h_tokens": "INTEGER NOT NULL DEFAULT 0",
+    "cache_attributable": "INTEGER NOT NULL DEFAULT 0",
     "output_tokens": "INTEGER NOT NULL DEFAULT 0",
     "baseline_cost_usd": "REAL",
     "actual_cost_usd": "REAL",
@@ -107,6 +110,9 @@ def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
         "fresh_input_tokens": int(values.get("fresh_input_tokens") or 0),
         "cached_input_tokens": int(values.get("cached_input_tokens") or values.get("cached_tokens") or 0),
         "cache_write_tokens": int(values.get("cache_write_tokens") or 0),
+        "cache_write_5m_tokens": int(values.get("cache_write_5m_tokens") or 0),
+        "cache_write_1h_tokens": int(values.get("cache_write_1h_tokens") or 0),
+        "cache_attributable": bool(values.get("cache_attributable")),
         "output_tokens": int(values.get("output_tokens") or 0),
         "baseline_cost_usd": values.get("baseline_cost_usd"),
         "actual_cost_usd": values.get("actual_cost_usd"),
@@ -153,10 +159,12 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         month = str(row.get("ts") or "")[:7]
         bucket = months.setdefault(month, {"month": month, "calls": 0, "tokens_saved": 0,
+            "actual_cost_usd": 0.0,
             "measured_savings_usd": 0.0, "verified_savings_usd": 0.0,
             "cost_saved_usd": 0.0, "brevitas_fee_usd": 0.0})
         bucket["calls"] += 1
         bucket["tokens_saved"] += _i(row.get("tokens_saved"))
+        bucket["actual_cost_usd"] += _f(row.get("actual_cost_usd"))
         bucket["measured_savings_usd"] += _f(row.get("measured_savings_usd"))
         v = _f(row.get("verified_savings_usd", row.get("cost_saved_usd")))
         bucket["verified_savings_usd"] += v

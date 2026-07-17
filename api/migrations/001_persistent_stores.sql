@@ -50,6 +50,9 @@ create table if not exists public.usage_log (
     fresh_input_tokens bigint not null default 0,
     cached_input_tokens bigint not null default 0,
     cache_write_tokens bigint not null default 0,
+    cache_write_5m_tokens bigint not null default 0,
+    cache_write_1h_tokens bigint not null default 0,
+    cache_attributable boolean not null default false,
     output_tokens bigint not null default 0,
     baseline_cost_usd numeric(18,10),
     actual_cost_usd numeric(18,10),
@@ -92,6 +95,9 @@ alter table public.usage_log add column if not exists savings_pct double precisi
 alter table public.usage_log add column if not exists fresh_input_tokens bigint not null default 0;
 alter table public.usage_log add column if not exists cached_input_tokens bigint not null default 0;
 alter table public.usage_log add column if not exists cache_write_tokens bigint not null default 0;
+alter table public.usage_log add column if not exists cache_write_5m_tokens bigint not null default 0;
+alter table public.usage_log add column if not exists cache_write_1h_tokens bigint not null default 0;
+alter table public.usage_log add column if not exists cache_attributable boolean not null default false;
 alter table public.usage_log add column if not exists output_tokens bigint not null default 0;
 alter table public.usage_log add column if not exists baseline_cost_usd numeric(18,10);
 alter table public.usage_log add column if not exists actual_cost_usd numeric(18,10);

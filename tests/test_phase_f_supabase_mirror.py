@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.import_usage import import_sqlite
 from api.store import SupabaseUsageStore, UsageStore, make_store
-from brevitas.receipts import SSEUsageParser, calculate_costs, normalize_usage
+from brevitas.receipts import (SSEUsageParser, calculate_costs, count_request_tokens,
+                               normalize_usage)
 
 
 def test_provider_receipt_categories():
@@ -18,6 +19,8 @@ def test_provider_receipt_categories():
                     "completion_tokens": 8}, (18, 12, 0, 8)),
         ("openai", {"input_tokens": 40, "input_tokens_details": {"cached_tokens": 15},
                     "output_tokens": 9}, (25, 15, 0, 9)),
+        ("deepseek", {"prompt_cache_hit_tokens": 45, "prompt_cache_miss_tokens": 5,
+                      "completion_tokens": 6}, (5, 45, 0, 6)),
         ("google_gemini", {"promptTokenCount": 50, "cachedContentTokenCount": 10,
                            "candidatesTokenCount": 11}, (40, 10, 0, 11)),
         ("bedrock", {"inputTokens": 60, "outputTokens": 12}, (60, 0, 0, 12)),
@@ -31,6 +34,25 @@ def test_provider_receipt_categories():
         assert (receipt.fresh_input_tokens, receipt.cached_input_tokens,
                 receipt.cache_write_tokens, receipt.output_tokens) == expected
 
+    tiered = normalize_usage({
+        "input_tokens": 0,
+        "cache_creation_input_tokens": 100,
+        "cache_creation": {"ephemeral_5m_input_tokens": 40,
+                           "ephemeral_1h_input_tokens": 60},
+    }, "anthropic")
+    assert tiered.cache_write_5m_tokens == 40
+    assert tiered.cache_write_1h_tokens == 60
+
+
+def test_one_hour_cache_writes_use_two_x_price():
+    from brevitas.receipts import TokenReceipt
+
+    receipt = TokenReceipt(cache_write_tokens=100, cache_write_1h_tokens=100)
+    costs = calculate_costs("anthropic", "claude-sonnet-4-6", 100, receipt)
+    assert costs["baseline_cost_usd"] == 0.0003
+    assert costs["actual_cost_usd"] == 0.0006
+    assert costs["measured_savings_usd"] == -0.0003
+
 
 def test_stream_parser_handles_split_final_events():
     parser = SSEUsageParser("openai")
@@ -43,6 +65,7 @@ def test_stream_parser_handles_split_final_events():
     assert parser.response_id == "resp_1"
     assert receipt.as_dict() == {"fresh_input_tokens": 60, "cached_input_tokens": 40,
                                  "cache_write_tokens": 0, "output_tokens": 20,
+                                 "cache_write_5m_tokens": 0, "cache_write_1h_tokens": 0,
                                  "input_tokens": 100, "total_tokens": 120}
 
     anthropic = SSEUsageParser("anthropic")
@@ -59,6 +82,35 @@ def test_unknown_model_is_unpriced():
     assert costs["pricing_status"] == "unpriced"
     assert costs["actual_cost_usd"] is None
     assert costs["measured_savings_usd"] is None
+
+
+def test_dated_snapshot_uses_most_specific_alias_price():
+    receipt = normalize_usage({
+        "prompt_tokens": 1_000_000,
+        "prompt_tokens_details": {"cached_tokens": 500_000},
+    }, "openai")
+    costs = calculate_costs(
+        "openai", "gpt-4.1-mini-2025-04-14", 1_000_000, receipt,
+        cache_attributable=False,
+    )
+    assert costs["pricing_status"] == "priced"
+    assert costs["actual_cost_usd"] == .25
+    assert costs["baseline_cost_usd"] == .25
+    assert costs["prices"]["input"] == .4
+
+
+def test_byte_preserving_text_block_split_has_zero_local_delta():
+    text = "stable system prompt with tokenizer boundaries " * 20
+    whole = count_request_tokens({"system": text, "messages": []})
+    split = count_request_tokens({
+        "system": [
+            {"type": "text", "text": text[:137]},
+            {"type": "text", "text": text[137:],
+             "cache_control": {"type": "ephemeral"}},
+        ],
+        "messages": [],
+    })
+    assert whole == split
 
 
 def test_cloud_configuration_selects_supabase_and_sqlite_is_explicit_fallback(monkeypatch, tmp_path):
