@@ -3,6 +3,6 @@
   "installCommand": "npm ci && npm ci --prefix dashboard",
   "buildCommand": "npm run build",
   "crons": [
-    { "path": "/api/billing/sync", "schedule": "17 * * * *" }
+    { "path": "/api/billing/sync", "schedule": "17 8 * * *" }
   ]
 }
