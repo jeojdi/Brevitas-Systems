@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats } from '../lib/api.js'
 import InstallCommand from './InstallCommand.jsx'
 import {
-  AreaChart, Area,
+  ComposedChart, Area, Line,
   XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts'
@@ -83,26 +83,32 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
       const baseline = Math.max(0, Number(h.baseline_tokens) || 0)
       const notSaved = Math.max(0, Number(h.optimized_tokens) || 0)
       const saved = Math.max(0, baseline - notSaved)
+      const freshInput = Math.max(0, Number(h.fresh_input_tokens) || 0)
+      const cachedInput = Math.max(0, Number(h.cached_input_tokens) || 0)
+      const measuredInput = freshInput + cachedInput
 
       return {
         call: i + 1,
         saved,
         notSaved,
-        savingsRate: baseline > 0 ? (saved / baseline) * 100 : 0,
+        freshInput,
+        cachedInput,
+        cachedInputRate: measuredInput > 0 ? (cachedInput / measuredInput) * 100 : null,
         repo: h.repo || h.project || 'Unattributed',
       }
     })
 
   const recentSaved = recentCalls.reduce((total, row) => total + row.saved, 0)
-  const recentNotSaved = recentCalls.reduce((total, row) => total + row.notSaved, 0)
+  const recentFreshInput = recentCalls.reduce((total, row) => total + row.freshInput, 0)
+  const recentCachedInput = recentCalls.reduce((total, row) => total + row.cachedInput, 0)
   const chartData = recentCalls
-  const recentSavingsRate = recentSaved + recentNotSaved > 0
-    ? (recentSaved / (recentSaved + recentNotSaved)) * 100
-    : 0
+  const measuredInput = recentFreshInput + recentCachedInput
+  const cachedInputRate = measuredInput > 0 ? (recentCachedInput / measuredInput) * 100 : null
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
   const savedColor   = '#4f5fc4'
+  const cacheColor   = '#2d8a6e'
   const pointRingColor = darkMode ? '#141414' : '#ffffff'
   const tooltipStyle = getTooltipStyle(darkMode)
   const tooltipLabel = (call, payload) => {
@@ -139,17 +145,6 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
         <BigStat value={`$${Number(stats.total_verified_savings_usd || 0).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
       </div>
 
-      {/* ── Token flow summary ── */}
-      {stats.total_calls > 0 && (
-        <div className="text-center space-y-2">
-          <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid">
-            {fmt(stats.total_actual_tokens)} tokens consumed,{' '}
-            <em className="font-serif italic text-brand-blue">{fmt(stats.total_tokens_saved)} saved.</em>
-          </p>
-          <p className="annotation">// provider receipts · {stats.unpriced_calls || 0} unpriced calls</p>
-        </div>
-      )}
-
       {chartData.length === 0 ? (
         <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-10 sm:p-20 text-center">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-3">No data yet.</p>
@@ -162,9 +157,8 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
         <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8 overflow-hidden">
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-6">
             <div>
-              <p className="annotation tracking-widest uppercase mb-1">Token savings trend</p>
               <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
-                tokens <em className="italic text-brand-blue">saved</em> on each call
+                <em className="italic text-brand-blue">savings</em> and cached input on each call
               </p>
               <p className="annotation mt-2">// last {chartData.length} calls · based on provider receipts</p>
             </div>
@@ -177,15 +171,17 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
               </div>
               <div className="rounded-xl border border-brand-teal/20 bg-brand-teal/5 dark:bg-brand-teal/10 px-4 py-3">
                 <p className="annotation flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-brand-teal" /> savings rate
+                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: cacheColor }} /> cached input rate
                 </p>
-                <p className="font-mono text-xl sm:text-2xl text-brand-teal tabular-nums mt-1">{recentSavingsRate.toFixed(1)}%</p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-teal tabular-nums mt-1">
+                  {cachedInputRate == null ? '—' : `${cachedInputRate.toFixed(1)}%`}
+                </p>
               </div>
             </div>
           </div>
-          <div role="img" aria-label="Area chart showing tokens saved on each recent call">
+          <div role="img" aria-label="Chart showing tokens saved and cached input rate on each recent call">
             <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
+              <ComposedChart data={chartData} margin={{ top: 12, right: 4, left: 8, bottom: 4 }}>
                 <defs>
                   <linearGradient id="savedArea" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
@@ -200,6 +196,7 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                   axisLine={false}
                 />
                 <YAxis
+                  yAxisId="tokens"
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={fmtAxis}
                   tickLine={false}
@@ -208,15 +205,26 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                   domain={[0, 'auto']}
                   allowDecimals={false}
                 />
+                <YAxis
+                  yAxisId="cache"
+                  orientation="right"
+                  domain={[0, 100]}
+                  ticks={[0, 25, 50, 75, 100]}
+                  tick={{ fill: cacheColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                  tickFormatter={(value) => `${value}%`}
+                  tickLine={false}
+                  axisLine={false}
+                  width={44}
+                />
                 <Tooltip
                   {...tooltipStyle}
                   labelFormatter={tooltipLabel}
-                  formatter={(value, name, item) => [
-                    `${Number(value).toLocaleString()} tokens · ${Number(item?.payload?.savingsRate || 0).toFixed(1)}% of input`,
-                    name,
-                  ]}
+                  formatter={(value, name) => name === 'Cached input rate'
+                    ? [`${Number(value).toFixed(1)}%`, name]
+                    : [`${Number(value).toLocaleString()} tokens`, name]}
                 />
                 <Area
+                  yAxisId="tokens"
                   type="monotone"
                   dataKey="saved"
                   name="Tokens saved"
@@ -226,7 +234,18 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                   dot={{ r: 5.5, fill: savedColor, stroke: pointRingColor, strokeWidth: 2 }}
                   activeDot={{ r: 7.5, stroke: pointRingColor, strokeWidth: 2.5 }}
                 />
-              </AreaChart>
+                <Line
+                  yAxisId="cache"
+                  type="monotone"
+                  dataKey="cachedInputRate"
+                  name="Cached input rate"
+                  stroke={cacheColor}
+                  strokeWidth={2.5}
+                  connectNulls={false}
+                  dot={{ r: 4, fill: cacheColor, stroke: pointRingColor, strokeWidth: 2 }}
+                  activeDot={{ r: 6, stroke: pointRingColor, strokeWidth: 2.5 }}
+                />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>

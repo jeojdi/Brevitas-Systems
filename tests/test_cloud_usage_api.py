@@ -173,6 +173,11 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     overview = client.get("/v1/stats", headers=headers).json()
     breakdown = client.get("/v1/stats/breakdown", headers=headers).json()["rows"]
     assert overview["total_calls"] == sum(row["calls"] for row in breakdown) == 1
+    assert overview["total_fresh_input_tokens"] == 60
+    assert overview["total_cached_input_tokens"] == 20
+    assert overview["cached_input_rate_pct"] == 25.0
+    assert overview["history"][0]["fresh_input_tokens"] == 60
+    assert overview["history"][0]["cached_input_tokens"] == 20
     assert breakdown[0]["project"] == "backend-app"
     assert breakdown[0]["repo"] == "backend-app"
     assert breakdown[0]["source"] == "worker"

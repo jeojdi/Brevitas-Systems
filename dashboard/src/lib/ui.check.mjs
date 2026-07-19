@@ -36,17 +36,19 @@ test('dashboard navigation is separated and exposes its active section', async (
 
 test('overview uses a savings-focused per-call area chart', async () => {
   const overview = await source('Overview')
-  assert.match(overview, /AreaChart, Area/)
+  assert.match(overview, /ComposedChart, Area, Line/)
   assert.match(overview, /dataKey="saved"/)
-  assert.match(overview, /savingsRate/)
+  assert.match(overview, /dataKey="cachedInputRate"/)
+  assert.match(overview, /cached input rate/i)
   assert.match(overview, /fill="url\(#savedArea\)"/)
   assert.doesNotMatch(overview, /notSavedArea|totalNotSaved/)
-  assert.equal((overview.match(/type="monotone"/g) || []).length, 1)
+  assert.equal((overview.match(/type="monotone"/g) || []).length, 2)
   assert.match(overview, /dot=\{\{ r: 5\.5,/)
   assert.match(overview, /fmtAxis/)
   assert.match(overview, /width=\{58\}/)
   assert.match(overview, /const savedColor\s*=\s*'#4f5fc4'/)
-  assert.doesNotMatch(overview, /BarChart|LineChart|<Bar\b|<Line\b/)
+  assert.match(overview, /const cacheColor\s*=\s*'#2d8a6e'/)
+  assert.doesNotMatch(overview, /BarChart|LineChart|<Bar\b/)
 })
 
 test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
