@@ -161,23 +161,25 @@ async def optimize_prompt(
         raise HTTPException(status_code=400, detail="prompt cannot be empty")
 
     try:
-        # Always apply lossless normalization first
-        normalized = normalize_prompt(request.prompt)
         tokens_before = count_tokens(request.prompt)
 
-        # Check if we should try lossy compression
+        # Lossless MUST be byte-identical. The old path ran normalize_prompt here, which
+        # collapsed whitespace outside code fences and corrupted indentation-significant
+        # content (YAML, Python, Makefiles, Markdown). Lossless now returns the input
+        # verbatim; whitespace normalization is only ever a lossy-path pre-step.
         if request.rate >= 1.0 or _LLMLINGUA is None:
-            # Lossless only
-            tokens_after = count_tokens(normalized)
-            saved_pct = round(100 * (1 - tokens_after / max(1, tokens_before)), 2)
             return OptimizeResponse(
-                compressed_prompt=normalized,
+                compressed_prompt=request.prompt,
                 tokens_before=tokens_before,
-                tokens_after=tokens_after,
-                saved_pct=saved_pct,
+                tokens_after=tokens_before,
+                saved_pct=0.0,
                 method="lossless",
                 lossy=False
             )
+
+        # Lossy path: normalization is allowed here because the caller opted into a
+        # lossy rewrite (rate < 1.0) and LLMLingua-2 is available.
+        normalized = normalize_prompt(request.prompt)
 
         # Try lossy compression with LLMLingua-2
         try:
@@ -190,19 +192,15 @@ async def optimize_prompt(
             compressed = result.get("compressed_prompt", normalized)
         except Exception as e:
             logger.error(f"LLMLingua-2 compression failed: {e}")
-            # Fall back to lossless
-            compressed = normalized
-            method = "lossless"
-            lossy = False
-            tokens_after = count_tokens(compressed)
-            saved_pct = round(100 * (1 - tokens_after / max(1, tokens_before)), 2)
+            # Fall back to lossless — return the ORIGINAL bytes, never the normalized form.
+            tokens_after = tokens_before
             return OptimizeResponse(
-                compressed_prompt=compressed,
+                compressed_prompt=request.prompt,
                 tokens_before=tokens_before,
                 tokens_after=tokens_after,
-                saved_pct=saved_pct,
-                method=method,
-                lossy=lossy
+                saved_pct=0.0,
+                method="lossless",
+                lossy=False
             )
 
         # Lossy compression succeeded

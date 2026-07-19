@@ -163,7 +163,11 @@ class BM25Retriever:
         # Stable full sort is intentional: context collections are small, and deterministic
         # ties matter for reproducible quality experiments.
         ranked = np.argsort(-scores, kind="stable")[:limit]
-        return [(self._ids[i], self._chunks[i], float(scores[i])) for i in ranked]
+        # Drop docs with no lexical overlap (score <= 0). A zero-score doc shares no query
+        # term, so including it just to fill k feeds irrelevant chunks into rank fusion and
+        # can pull real evidence out of the retained set.
+        return [(self._ids[i], self._chunks[i], float(scores[i]))
+                for i in ranked if scores[i] > 0.0]
 
 
 def reciprocal_rank_fusion(

@@ -41,6 +41,7 @@ from token_efficiency_model.lossless import state_store
 from token_efficiency_model.lossless.batch_group import BatchGroupGate
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
+from token_efficiency_model.quality.gate import lever_allowed
 
 # Batch prefix grouping (pathfinder gate, CR1): concurrent same-prefix requests wait
 # for the first one's prefill to write the provider cache, then read it instead of all
@@ -163,8 +164,22 @@ def _cache_lookup(cache, body: dict, provider: str, model: str):
         return None
 
 
+def _response_complete(data: dict, provider: str) -> bool:
+    """Only a naturally-complete response is cacheable — never a truncated one
+    (finish_reason/stop_reason of max_tokens/length), which is a partial answer."""
+    try:
+        if provider == "anthropic":
+            return str((data or {}).get("stop_reason") or "") in ("end_turn", "stop_sequence")
+        choices = (data or {}).get("choices") or []
+        return bool(choices) and str(choices[0].get("finish_reason") or "") == "stop"
+    except Exception:
+        return False
+
+
 def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> None:
     try:
+        if not _response_complete(data, provider):
+            return                 # never cache a truncated / incomplete response
         p, c = _usage_tokens(data, provider)
         cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c)
     except Exception:
@@ -223,16 +238,26 @@ proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
 
 
 def _provider_for(model: str, explicit: str = "") -> str:
+    # An explicit provider (x-brevitas-provider header or BREVITAS_PROVIDER env) ALWAYS
+    # wins — model-name guessing is only a fallback. DeepSeek drop-in users who point
+    # OPENAI_BASE_URL at the proxy should set the provider so routing is never guessed.
     if explicit in _UPSTREAMS:
         return explicit
     value = (model or "").lower()
-    if value.startswith("deepseek"):
+    if "deepseek" in value:                 # substring, not just prefix: catch ds-* aliases
         return "deepseek"
     if value.startswith(("grok", "xai")):
         return "xai"
     if value.startswith("mistral") or value.startswith("codestral"):
         return "mistral"
     return "openai"
+
+
+def _explicit_provider(request: Request) -> str:
+    """Caller-declared provider: the x-brevitas-provider header, else BREVITAS_PROVIDER env.
+    Used so OpenAI-compatible drop-in traffic (DeepSeek, Groq, …) routes to the right
+    upstream even when the model name is ambiguous."""
+    return request.headers.get("x-brevitas-provider", "") or os.getenv("BREVITAS_PROVIDER", "")
 
 
 def _request_id(request: Request, provider_id: str = "") -> str:
@@ -483,13 +508,15 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     baseline = count_request_tokens(body, "messages")
     brevitas_key = request.headers.get("x-brevitas-key", "")
     identity = brevitas_key or api_key
-    sess_key = f"ant:{_key_id(identity)}:{_agent_label(labels, body)}"
+    # Key state by tenant + provider + exact model + operation + agent so a router (whose
+    # provider/economics are fixed at construction) never mixes providers or models.
+    sess_key = f"ant:{_key_id(identity)}:anthropic:{model}:messages:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
     cache = _get_cache()
     cache_body = _cache_body(body, request, brevitas_key, api_key) if cache is not None else None
-    if cache is not None:
+    if cache is not None and lever_allowed("semantic_cache"):
         hit = _cache_lookup(cache, cache_body, "anthropic", model)
         if hit is not None:
             await _report_cache_hit(request, "anthropic", model, hit, session, labels)
@@ -500,11 +527,15 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
     strategy = "passthrough"
     cache_attributable = False
+    # Faithful means the request we forward is byte-faithful to the original, so its
+    # response is valid to cache under the original key. Retrieval/reorder set it False.
+    response_faithful = True
     if optimized:
         meta = optimize_request(body, "anthropic", router, session.session_id,
                                 pipeline=fleet_pipe, agent=fleet_agent)
         strategy = meta.get("strategy", "native_cache")
         cache_attributable = meta.get("cache_control_owner") == "brevitas"
+        response_faithful = bool(meta.get("response_faithful", True))
     optimized_tokens = count_request_tokens(body, "messages")
 
     bg_sig, bg_role = None, "free"
@@ -575,7 +606,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             session.record_response(data["content"][0]["text"])
         except (KeyError, IndexError, TypeError):
             pass
-        if cache is not None and data:
+        # Only cache when the forwarded request was byte-faithful to the original —
+        # never store an answer produced from retrieval-pruned or reordered context.
+        if cache is not None and data and response_faithful:
             _cache_store(cache, cache_body, "anthropic", model, data)
         await _record_receipt(
             request, "anthropic", model, "messages", baseline,
@@ -598,20 +631,22 @@ async def proxy_openai_chat(request: Request) -> Any:
     _, body = await _json_object(request)
     model: str = body.get("model", "")
     auth = request.headers.get("authorization", "")
-    provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
+    provider = _provider_for(model, _explicit_provider(request))
     labels = parse_brevitas_headers(request.headers)
     labels["gateway"] = labels.get("gateway") or (provider if provider == "openrouter" else "")
     baseline = count_request_tokens(body, "chat.completions")
     brevitas_key = request.headers.get("x-brevitas-key", "")
     identity = brevitas_key or auth
-    sess_key = f"oai:{_key_id(identity)}:{_agent_label(labels, body)}"
+    # Key by tenant + provider + exact model + operation + agent (see anthropic handler):
+    # this is what stops DeepSeek/OpenAI economics from mixing in one shared-key fleet.
+    sess_key = f"oai:{_key_id(identity)}:{provider}:{model}:chat.completions:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
 
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
     cache = _get_cache()
     cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
-    if cache is not None:
+    if cache is not None and lever_allowed("semantic_cache"):
         hit = _cache_lookup(cache, cache_body, provider, model)
         if hit is not None:
             await _report_cache_hit(request, provider, model, hit, session, labels)
@@ -624,10 +659,12 @@ async def proxy_openai_chat(request: Request) -> Any:
     optimized = not _passthrough_mode()
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, auth, body)
     strategy = "passthrough"
+    response_faithful = True
     if optimized:
         meta = optimize_request(body, provider, router, session.session_id,
                                 pipeline=fleet_pipe, agent=fleet_agent)
         strategy = meta.get("strategy", "native_cache")
+        response_faithful = bool(meta.get("response_faithful", True))
     optimized_tokens = count_request_tokens(body, "chat.completions")
 
     # pathfinder gate — signature computed AFTER optimization (the bytes actually sent)
@@ -706,7 +743,9 @@ async def proxy_openai_chat(request: Request) -> Any:
             session.record_response(data["choices"][0]["message"]["content"] or "")
         except (KeyError, IndexError, TypeError):
             pass
-        if cache is not None and data:
+        # Only cache when the forwarded request was byte-faithful to the original —
+        # never store an answer produced from retrieval-pruned or reordered context.
+        if cache is not None and data and response_faithful:
             _cache_store(cache, cache_body, provider, model, data)
         await _record_receipt(
             request, provider, model, "chat.completions", baseline,
@@ -727,12 +766,12 @@ async def proxy_openai_chat(request: Request) -> Any:
 async def proxy_openai_responses(request: Request) -> Any:
     raw_body, body = await _json_object(request)
     model = str(body.get("model") or "")
-    provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
+    provider = _provider_for(model, _explicit_provider(request))
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, "responses")
     auth = request.headers.get("authorization", "")
     identity = request.headers.get("x-brevitas-key") or auth
-    sess_key = f"responses:{_key_id(identity)}:{_agent_label(labels, body)}"
+    sess_key = f"responses:{_key_id(identity)}:{provider}:{model}:responses:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
     optimized = False
@@ -821,11 +860,11 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
     """Meter OpenAI-compatible endpoints that do not need message optimization."""
     _, body = await _json_object(request)
     model = str(body.get("model") or "")
-    provider = _provider_for(model, request.headers.get("x-brevitas-provider", ""))
+    provider = _provider_for(model, _explicit_provider(request))
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, operation)
     identity = request.headers.get("x-brevitas-key") or request.headers.get("authorization", "")
-    sess_key = f"{operation}:{_key_id(identity)}"
+    sess_key = f"{operation}:{_key_id(identity)}:{provider}:{model}"
     session, router = _session_for(sess_key), _router_for(sess_key, provider)
     base = get_openai_compatible_upstream(
         model, request.headers.get("x-brevitas-upstream"), provider

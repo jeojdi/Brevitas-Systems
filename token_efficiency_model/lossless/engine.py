@@ -49,6 +49,26 @@ def _retrieval_enabled() -> bool:
     }
 
 
+def _reorder_enabled() -> bool:
+    """Message reordering (b9 shared-prefix promotion) is OFF by default: it can change
+    a causal conversation's meaning and it can bust the provider's own prefix cache.
+    Opt in explicitly with BREVITAS_MESSAGE_REORDER=1."""
+    return os.environ.get("BREVITAS_MESSAGE_REORDER", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _lever_allowed(lever: str) -> bool:
+    """Fail-closed gate check: a tripped/failed/missing quality gate returns False so we
+    fall back to full context. Any import/eval error also returns False (safe: the lever
+    it guards is opt-in, so disabling it never breaks the lossless default path)."""
+    try:
+        from token_efficiency_model.quality.gate import lever_allowed
+        return lever_allowed(lever)
+    except Exception:
+        return False
+
+
 def _b9_state(pipeline: str) -> dict:
     st = _b9_pipes.get(pipeline)
     if st is None:
@@ -112,9 +132,17 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     prompts differ — lossless (reorder only, proven-shared content only)."""
     messages = body.get("messages", []) or []
     if not messages:
-        return {"strategy": "passthrough", "reason": "no messages"}
+        return {"strategy": "passthrough", "reason": "no messages",
+                "response_faithful": True}
     if body.get("model"):
         router.model = str(body["model"])   # per-model rates in the router's cost model
+
+    # response_faithful: True only while the request we send stays byte-faithful to the
+    # ORIGINAL (so its answer is valid for the original request key). Any content-changing
+    # transform — retrieval pruning or a message reorder — flips this to False, and the
+    # proxy then refuses to cache the response. Byte-lossless additions (Anthropic
+    # cache_control markers, template split) keep it True.
+    response_faithful = True
 
     # b9 (cache-aware): promote shared context to a cacheable leading prefix for
     # multi-agent pipelines — but ONLY once we've OBSERVED that the provider is NOT
@@ -122,7 +150,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # would cache MORE tokens than it already does. This prevents the regression where
     # a blind reorder breaks a cache the provider was already serving (Don't Break the
     # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
-    if pipeline:
+    if pipeline and _reorder_enabled():
         st9 = _b9_state(pipeline)
         if not st9["locked"]:
             from .provider_cache import count_tokens as _ct
@@ -137,10 +165,14 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                 pipeline, agent or session_id, messages,
                 natural_cached_tokens=natural_cached, count_tokens=_ct)
             body["messages"] = messages = new_msgs
-            if reordered and not st9["reordered"]:
-                # counterfactual baseline: the natural hit rate BEFORE we touched anything
-                st9["reordered"] = True
-                st9["pre_hit"] = obs_hit if obs_count >= 1 else 0.0
+            if reordered:
+                # reordering context can change a causal conversation's answer, so the
+                # response is no longer valid under the original request key.
+                response_faithful = False
+                if not st9["reordered"]:
+                    # counterfactual baseline: natural hit rate BEFORE we touched anything
+                    st9["reordered"] = True
+                    st9["pre_hit"] = obs_hit if obs_count >= 1 else 0.0
 
     system = body.get("system")
     stable = _stable_context(messages, system)
@@ -165,6 +197,16 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
         meta = {
             "strategy": "cache_only",
             "reason": "retrieval_opt_in_required",
+            "router_recommendation": "retrieve",
+            "quality_status": "byte_preserving",
+        }
+    elif strategy == "retrieve" and not _lever_allowed("retrieval"):
+        # Quality gate tripped/failed/missing → force the original full context.
+        strategy = "cache_only"
+        router.note_strategy(session_id, "cache_only")
+        meta = {
+            "strategy": "cache_only",
+            "reason": "retrieval_gate_tripped",
             "router_recommendation": "retrieve",
             "quality_status": "byte_preserving",
         }
@@ -207,6 +249,8 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
 
             new_msgs.append(messages[-1])
             body["messages"] = new_msgs
+            # Context was dropped: the answer is NOT valid under the original request key.
+            response_faithful = False
             meta = {"strategy": "retrieve", "reason": decision.reason,
                     "kept": len(new_msgs), "of": len(messages),
                     "baseline_tokens": sel["baseline_tokens"],
@@ -247,7 +291,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             b9boundary = default_miner.observe_boundary(f"tm:{session_id}", sysv)
             if 0 < b9boundary < len(sysv):
                 meta["template_volatile_at"] = b9boundary
-                if _os.environ.get("BREVITAS_TEMPLATE_SPLIT", "1") not in ("0", "false", "no"):
+                if _os.environ.get("BREVITAS_TEMPLATE_SPLIT", "0") not in ("0", "false", "no"):
                     body["system"] = [{"type": "text", "text": sysv[:b9boundary]},
                                       {"type": "text", "text": sysv[b9boundary:]}]
         # TTL tier by observed run spacing (cross-run lever): calls spaced past the
@@ -280,6 +324,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                 meta["cache_breakpoints"] = 0
                 meta["cached_prefix_tokens"] = 0
     # OpenAI/DeepSeek: caching is automatic if prefix is byte-identical — we DON'T mutate it.
+    meta["response_faithful"] = response_faithful
     return meta
 
 

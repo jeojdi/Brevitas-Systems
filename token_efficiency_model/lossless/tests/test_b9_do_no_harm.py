@@ -21,6 +21,10 @@ from token_efficiency_model.lossless.router import BrevitasRouter
 @pytest.fixture(autouse=True)
 def _no_real_retrieval(monkeypatch):
     """b9 runs BEFORE the strategy branch; stub retrieval so no encoder loads."""
+    # Message reordering (b9) is opt-in since the safety remediation; this suite exists
+    # specifically to exercise the reorder do-no-harm lock, so enable it here.
+    monkeypatch.setenv("BREVITAS_MESSAGE_REORDER", "1")
+
     def _stub(task, prior_context, k=8, use_adaptive=True, **kw):
         base = len(" ".join(prior_context).split())
         return {"selected_context": list(prior_context), "baseline_tokens": base,

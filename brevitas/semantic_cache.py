@@ -171,13 +171,39 @@ class SemanticCache:
         return ""
 
     # -- policy -------------------------------------------------------------
+    @staticmethod
+    def _text_only_user_messages(messages: list) -> bool:
+        """True only when every user message is plain text (or a list of text blocks).
+        Multimodal/structured content (images, audio, tool_use blocks) can differ while
+        hashing identically at the text layer, so such requests are never cacheable."""
+        for m in messages or []:
+            if not isinstance(m, dict):
+                return False
+            if m.get("role") != "user":
+                continue
+            content = m.get("content", "")
+            if isinstance(content, str):
+                continue
+            if isinstance(content, list):
+                if any(not (isinstance(b, dict) and b.get("type") == "text")
+                       for b in content):
+                    return False
+                continue
+            return False           # unknown content shape → not cacheable
+        return True
+
     def cacheable(self, body: dict) -> bool:
         if body.get("stream"):
             return False           # streamed responses handled separately (later)
         if body.get("tools"):
             return False           # tool calls may encode per-request/user args
-        if self._effective_temp(body) > self.max_temperature:
-            return False           # intentionally random — don't reuse
+        # Temperature must be EXPLICITLY 0. An unset or non-zero temperature means the
+        # caller may expect fresh sampling, so replaying a stored answer would be wrong.
+        temp = body.get("temperature")
+        if temp is None or float(temp) != 0.0:
+            return False
+        if not self._text_only_user_messages(body.get("messages", [])):
+            return False           # text-only user content, per the semantic-cache safety rule
         return True
 
     # -- lookup / store -----------------------------------------------------
@@ -252,6 +278,15 @@ class SemanticCache:
                 )
         except Exception:
             pass  # observability only; never fail a hit over a counter
+
+    def purge(self) -> int:
+        """Delete every cached row and return the count removed. Used after a safety
+        incident where a row's origin is unknown — some may have been produced from
+        retrieval-pruned or lossily-compressed context and must not be replayed."""
+        with self._conn() as db:
+            n = int(db.execute("SELECT COUNT(*) FROM semantic_cache").fetchone()[0])
+            db.execute("DELETE FROM semantic_cache")
+        return n
 
 
 class SupabaseSemanticCache(SemanticCache):
@@ -345,6 +380,16 @@ class SupabaseSemanticCache(SemanticCache):
         except Exception:
             pass  # hit-count is observability only
 
+    def purge(self) -> int:
+        """Delete every cached row (see SemanticCache.purge). Returns rows removed
+        (best-effort — Supabase returns the deleted rows only when configured to)."""
+        try:
+            # A delete needs a filter; exact_hash is never empty, so this matches all rows.
+            res = self._c.table("semantic_cache").delete().neq("exact_hash", "").execute()
+            return len(getattr(res, "data", None) or [])
+        except Exception:
+            return 0
+
 
 def _iso(ts: float) -> str:
     from datetime import datetime, timezone
@@ -379,7 +424,8 @@ def _demo() -> None:
     c = SemanticCache(db, default_ttl_s=3600)
     resp = {"content": [{"type": "text", "text": "Paris"}]}
 
-    body = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "capital of France?"}]}
+    body = {"model": "claude-sonnet-4-6", "temperature": 0,
+            "messages": [{"role": "user", "content": "capital of France?"}]}
     assert c.lookup(body, "anthropic", "claude-sonnet-4-6") is None, "cold miss expected"
     c.store(body, "anthropic", "claude-sonnet-4-6", resp, prompt_tokens=10, completion_tokens=1)
 
@@ -407,7 +453,7 @@ def _demo() -> None:
 
     # TTL expiry: a row already past expiry is ignored
     c2 = SemanticCache(db, default_ttl_s=-10)  # expires in the past
-    b2 = {"model": "m", "messages": [{"role": "user", "content": "stale?"}]}
+    b2 = {"model": "m", "temperature": 0, "messages": [{"role": "user", "content": "stale?"}]}
     c2.store(b2, "openai", "m", {"x": 1}, prompt_tokens=1, completion_tokens=1)
     assert c2.lookup(b2, "openai", "m") is None, "expired row must not hit"
 
@@ -425,17 +471,17 @@ def _demo() -> None:
         try:
             cs = SemanticCache(tempfile.mktemp(suffix=".db"), similarity_threshold=0.97,
                                semantic_enabled=True)
-            base = {"model": "claude-sonnet-4-6",
+            base = {"model": "claude-sonnet-4-6", "temperature": 0,
                     "messages": [{"role": "user", "content": "how do refunds work"}]}
             cs.store(base, "anthropic", "claude-sonnet-4-6", resp, prompt_tokens=5, completion_tokens=1)
 
-            near = {"model": "claude-sonnet-4-6",
+            near = {"model": "claude-sonnet-4-6", "temperature": 0,
                     "messages": [{"role": "user", "content": "what is the refund policy"}]}
             h = cs.lookup(near, "anthropic", "claude-sonnet-4-6")
             assert h and h.kind == "semantic", "reworded query should hit semantically"
             assert h.similarity >= 0.97, h.similarity
 
-            far = {"model": "claude-sonnet-4-6",
+            far = {"model": "claude-sonnet-4-6", "temperature": 0,
                    "messages": [{"role": "user", "content": "how tall is everest"}]}
             assert cs.lookup(far, "anthropic", "claude-sonnet-4-6") is None, "unrelated query must miss"
             print("semantic layer ok (reworded hit, unrelated miss)")

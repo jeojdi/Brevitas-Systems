@@ -254,13 +254,30 @@ def _build_backend(config: dict | None):
 
 
 def _compress_pipeline(task: str, messages: list[str], prior_context: list[str],
-                       prune_budget: int, lossy: bool) -> dict:
+                       prune_budget: int, lossy: bool, retrieval: bool = False) -> dict:
     """Shared context-reduction core used by /v1/compress, /v1/compress/stream and
     /v1/playground/stream. Messages pass through unchanged except the volatile LAST message,
     which is lossily shrunk when `lossy` is on and the remote compressor is available.
-    prior_context is retrieval-pruned to the chunks relevant to `task`. All savings use the
-    real tokenizer; no quality number is ever fabricated (quality_sim is None unless measured)."""
-    sel = retrieval_select(task, prior_context, k=prune_budget, use_adaptive=True)
+    prior_context is retrieval-pruned to the chunks relevant to `task` ONLY when `retrieval`
+    is explicitly enabled; otherwise it passes through whole. All savings use the real
+    tokenizer; no quality number is ever fabricated (quality_sim is None unless measured).
+
+    Reports `faithful`: True only when the returned request is byte-identical to the input
+    (no lossy rewrite, no pruning), so callers know whether the answer is safe to cache."""
+    from token_efficiency_model.quality.gate import lever_allowed
+    # A tripped/failed/missing quality gate forces full-context fallback for that lever.
+    if retrieval and not lever_allowed("retrieval"):
+        retrieval = False
+    if lossy and not lever_allowed("compression"):
+        lossy = False
+    if retrieval:
+        sel = retrieval_select(task, prior_context, k=prune_budget, use_adaptive=True)
+    else:
+        # Retrieval off (default): send the full prior context, byte-identical.
+        ctx_tokens = estimate_tokens_many(prior_context)
+        sel = {"selected_context": list(prior_context), "baseline_tokens": ctx_tokens,
+               "optimized_tokens": ctx_tokens, "fallback_applied": True,
+               "reason": "retrieval_disabled"}
     baseline_msg_tokens = estimate_tokens_many(messages)
 
     out_messages = list(messages)
@@ -286,9 +303,14 @@ def _compress_pipeline(task: str, messages: list[str], prior_context: list[str],
     baseline_tokens = baseline_msg_tokens + sel["baseline_tokens"]
     output_tokens = optimized_msg_tokens + sel["optimized_tokens"]
     actual_savings = round(max(0.0, (1 - output_tokens / max(1, baseline_tokens)) * 100), 2)
+    # Byte-faithful iff nothing was rewritten or dropped: the last message is unchanged
+    # AND the context we return equals the full input context.
+    faithful = (out_messages == list(messages)
+                and sel["selected_context"] == list(prior_context))
     return {
         "out_messages":       out_messages,
         "selected_context":   sel["selected_context"],
+        "faithful":           faithful,
         "baseline_tokens":    baseline_tokens,
         "optimized_tokens":   output_tokens,
         "savings_pct":        actual_savings,
@@ -863,7 +885,8 @@ class CompressRequest(BaseModel):
     urgency:           float     = Field(default=0.5, ge=0.0, le=1.0)
     compression_level: int       = Field(default=2, ge=1, le=3)
     prune_budget:      int       = Field(default=8, ge=1, le=50)
-    lossy:             bool       = Field(default=True)   # compress the volatile last message (LLMLingua-2)
+    lossy:             bool       = Field(default=False)  # off by default: lossy last-message rewrite is opt-in
+    retrieval:         bool       = Field(default=False)  # off by default: context pruning can drop evidence
     delta_mode:        str       = Field(default="off", pattern="^(off|on)$")
     wire_mode:         str       = Field(default="json", pattern="^(json|msgpack)$")
     pipeline:          str       = Field(default="", max_length=100)
@@ -895,7 +918,8 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     # Baseline is measured against the ORIGINAL messages + full prior context; the volatile
     # LAST message may be lossily shrunk while earlier messages stay byte-identical so the
     # provider cache still hits the stable prefix.
-    pipe = _compress_pipeline(task, body.messages, body.prior_context, body.prune_budget, body.lossy)
+    pipe = _compress_pipeline(task, body.messages, body.prior_context, body.prune_budget,
+                              body.lossy, retrieval=body.retrieval)
     out_messages = pipe["out_messages"]
     model_result = _run_configured_model(
         kh, out_messages, pipe["selected_context"], task,
@@ -1034,7 +1058,7 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 return
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
-                                      body.prune_budget, body.lossy)
+                                      body.prune_budget, body.lossy, retrieval=body.retrieval)
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1124,6 +1148,8 @@ class PlaygroundChatRequest(BaseModel):
     task:              str       = Field(default="", max_length=2000)
     compression_level: int       = Field(default=2, ge=1, le=3)
     prune_budget:      int       = Field(default=5, ge=1, le=50)
+    lossy:             bool       = Field(default=False)  # opt-in lossy last-message rewrite
+    retrieval:         bool       = Field(default=False)  # opt-in context pruning
     # Bring-your-own key: request-scoped only. NEVER stored, NEVER logged.
     byok_provider:     str       = Field(default="", max_length=32)
     byok_model:        str       = Field(default="", max_length=128)
@@ -1164,7 +1190,8 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 return
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
-                                      body.prune_budget, lossy=True)
+                                      body.prune_budget, lossy=body.lossy,
+                                      retrieval=body.retrieval)
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1194,7 +1221,8 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 cbody = {"messages": [{"role": "user", "content": prompt}],
                          "temperature": 0, "_brevitas_cache_namespace": kh}
                 hit = None
-                if cache is not None:
+                from token_efficiency_model.quality.gate import lever_allowed
+                if cache is not None and lever_allowed("semantic_cache"):
                     try:
                         hit = cache.lookup(cbody, provider, model)
                     except Exception:
@@ -1213,7 +1241,10 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                                      "similarity": cache_similarity, "tokens_saved": cache_saved_tokens})
                 else:
                     model_response = backend(prompt, model)
-                    if cache is not None:
+                    # Only cache when the prompt we answered was byte-faithful to the
+                    # original (no lossy compression, no retrieval pruning); otherwise a
+                    # repeat would replay a degraded-context answer as a verified hit.
+                    if cache is not None and pipe.get("faithful", True):
                         try:
                             cache.store(cbody, provider, model, {"text": model_response},
                                         prompt_tokens=count_tokens(prompt),
@@ -1443,6 +1474,11 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         stream.update(body.quality_verified)
         if stream.state.tripped:
             quality_status = "stream_tripped"
+            # A tripped stream must stop the request path from applying ANY unproven
+            # lever — not just stop billing. Force full-context fallback going forward.
+            from token_efficiency_model.quality.gate import trip_lever
+            for _lever in ("retrieval", "compression", "semantic_cache"):
+                trip_lever(_lever)
         else:
             quality_status = "verified" if body.quality_verified else "failed"
     verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0

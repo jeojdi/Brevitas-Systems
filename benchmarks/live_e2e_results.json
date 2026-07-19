@@ -1,79 +1,5 @@
 {
   "scenario": "agent",
-  "anthropic": {
-    "result": {
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "turns": [
-        {
-          "turn": 1,
-          "correct": true,
-          "expect_any": [
-            "cache_only"
-          ],
-          "input_fresh": 10013,
-          "input_cached": 0,
-          "output_tokens": 83,
-          "cached_tokens": 0,
-          "input_savings_pct": -24.94,
-          "savings_pct": -23.95,
-          "retrieval_applied": false,
-          "answer_head": "Based on the `decide()` method in `BrevitasRouter`, the strategy strings that can be returned are:  "
-        },
-        {
-          "turn": 2,
-          "correct": true,
-          "expect_any": [
-            "1024"
-          ],
-          "input_fresh": 130,
-          "input_cached": 9990,
-          "output_tokens": 162,
-          "cached_tokens": 9990,
-          "input_savings_pct": 88.59,
-          "savings_pct": 82.02,
-          "retrieval_applied": false,
-          "answer_head": "The value of `MIN_CACHEABLE` in router.py is:  ```python MIN_CACHEABLE = 1024 ```  It represents the"
-        },
-        {
-          "turn": 3,
-          "correct": true,
-          "expect_any": [
-            "cache_read_input_tokens"
-          ],
-          "input_fresh": 211,
-          "input_cached": 10094,
-          "output_tokens": 67,
-          "cached_tokens": 10094,
-          "input_savings_pct": 87.71,
-          "savings_pct": 84.94,
-          "retrieval_applied": false,
-          "answer_head": "In `savings_from_usage()`, Anthropic's cached-read tokens are held in the usage field:  ```python re"
-        },
-        {
-          "turn": 4,
-          "correct": true,
-          "expect_any": [
-            "encoder_unavailable",
-            "full context",
-            "fallback",
-            "falls back",
-            "fail-safe"
-          ],
-          "input_fresh": 119,
-          "input_cached": 10280,
-          "output_tokens": 146,
-          "cached_tokens": 10280,
-          "input_savings_pct": 88.75,
-          "savings_pct": 82.93,
-          "retrieval_applied": false,
-          "answer_head": "If the sentence-transformer encoder fails to load, the fallback behavior is:  ```python return {\"sel"
-        }
-      ],
-      "errors": []
-    },
-    "fails": []
-  },
   "openai": {
     "result": {
       "provider": "openai",
@@ -85,14 +11,14 @@
           "expect_any": [
             "cache_only"
           ],
-          "input_fresh": 8355,
+          "input_fresh": 11828,
           "input_cached": 0,
-          "output_tokens": 32,
+          "output_tokens": 34,
           "cached_tokens": 0,
           "input_savings_pct": 0.0,
           "savings_pct": 0.0,
           "retrieval_applied": false,
-          "answer_head": "BrevitasRouter.decide() can return the following strategy strings:  1. \"passthrough\" 2. \"retrieve\" 3"
+          "answer_head": "The strategy strings that `BrevitasRouter.decide()` can return are:  1. `\"cache_only\"` 2. `\"retrieve"
         },
         {
           "turn": 2,
@@ -100,14 +26,14 @@
           "expect_any": [
             "1024"
           ],
-          "input_fresh": 93,
-          "input_cached": 8320,
-          "output_tokens": 27,
-          "cached_tokens": 8320,
-          "input_savings_pct": 49.45,
-          "savings_pct": 48.82,
+          "input_fresh": 112,
+          "input_cached": 11776,
+          "output_tokens": 33,
+          "cached_tokens": 11776,
+          "input_savings_pct": 49.53,
+          "savings_pct": 48.99,
           "retrieval_applied": false,
-          "answer_head": "The value of MIN_CACHEABLE in router.py is `1024`. It represents the provider minimum cacheable pref"
+          "answer_head": "The value of `MIN_CACHEABLE` in `router.py` is `1024`. It represents the provider's minimum cacheabl"
         },
         {
           "turn": 3,
@@ -115,14 +41,14 @@
           "expect_any": [
             "cache_read_input_tokens"
           ],
-          "input_fresh": 144,
-          "input_cached": 8320,
-          "output_tokens": 23,
-          "cached_tokens": 8320,
-          "input_savings_pct": 49.15,
-          "savings_pct": 48.62,
+          "input_fresh": 169,
+          "input_cached": 11776,
+          "output_tokens": 26,
+          "cached_tokens": 11776,
+          "input_savings_pct": 49.29,
+          "savings_pct": 48.87,
           "retrieval_applied": false,
-          "answer_head": "In savings_from_usage(), Anthropic's cached-read tokens are held in the usage field `cache_read_inpu"
+          "answer_head": "In `savings_from_usage()`, Anthropic's cached-read tokens are held in the usage field `cache_read_in"
         },
         {
           "turn": 4,
@@ -134,14 +60,14 @@
             "falls back",
             "fail-safe"
           ],
-          "input_fresh": 68,
-          "input_cached": 8448,
-          "output_tokens": 72,
-          "cached_tokens": 8448,
+          "input_fresh": 96,
+          "input_cached": 11904,
+          "output_tokens": 95,
+          "cached_tokens": 11904,
           "input_savings_pct": 49.6,
-          "savings_pct": 47.98,
+          "savings_pct": 48.08,
           "retrieval_applied": false,
-          "answer_head": "In retrieval_select(), if the sentence-transformer encoder fails to load, the fallback behavior is: "
+          "answer_head": "In `retrieval_select()`, if the sentence-transformer encoder fails to load, the fallback behavior is"
         }
       ],
       "errors": []
@@ -159,14 +85,14 @@
           "expect_any": [
             "cache_only"
           ],
-          "input_fresh": 8935,
+          "input_fresh": 12643,
           "input_cached": 0,
           "output_tokens": 41,
           "cached_tokens": 0,
           "input_savings_pct": 0.0,
           "savings_pct": 0.0,
           "retrieval_applied": false,
-          "answer_head": "The `BrevitasRouter.decide()` method can return exactly three strategy strings:  1. `\"passthrough\"` "
+          "answer_head": "Based on the `BrevitasRouter.decide()` method in `token_efficiency_model/lossless/router.py`:  ``` \""
         },
         {
           "turn": 2,
@@ -174,14 +100,14 @@
           "expect_any": [
             "1024"
           ],
-          "input_fresh": 39,
-          "input_cached": 8960,
-          "output_tokens": 21,
-          "cached_tokens": 8960,
-          "input_savings_pct": 73.78,
-          "savings_pct": 73.08,
+          "input_fresh": 35,
+          "input_cached": 12672,
+          "output_tokens": 57,
+          "cached_tokens": 12672,
+          "input_savings_pct": 97.73,
+          "savings_pct": 96.86,
           "retrieval_applied": false,
-          "answer_head": "`MIN_CACHEABLE = 1024` represents the provider minimum cacheable prefix (in tokens)."
+          "answer_head": "In `token_efficiency_model/lossless/router.py`, line 13: ```python MIN_CACHEABLE = 1024     # provid"
         },
         {
           "turn": 3,
@@ -189,14 +115,14 @@
           "expect_any": [
             "cache_read_input_tokens"
           ],
-          "input_fresh": 81,
-          "input_cached": 8960,
-          "output_tokens": 35,
-          "cached_tokens": 8960,
-          "input_savings_pct": 73.44,
-          "savings_pct": 72.3,
+          "input_fresh": 113,
+          "input_cached": 12672,
+          "output_tokens": 37,
+          "cached_tokens": 12672,
+          "input_savings_pct": 97.13,
+          "savings_pct": 96.57,
           "retrieval_applied": false,
-          "answer_head": "In `savings_from_usage()`, the usage field for Anthropic's cached-read tokens is `usage.get(\"cache_r"
+          "answer_head": "In `token_efficiency_model/lossless/provider_cache.py`, line 145: ```python read = int(usage.get(\"ca"
         },
         {
           "turn": 4,
@@ -208,14 +134,14 @@
             "falls back",
             "fail-safe"
           ],
-          "input_fresh": 142,
-          "input_cached": 8960,
-          "output_tokens": 82,
-          "cached_tokens": 8960,
-          "input_savings_pct": 72.94,
-          "savings_pct": 70.36,
+          "input_fresh": 48,
+          "input_cached": 12800,
+          "output_tokens": 104,
+          "cached_tokens": 12800,
+          "input_savings_pct": 97.63,
+          "savings_pct": 96.08,
           "retrieval_applied": false,
-          "answer_head": "In `retrieval_select()`, if the encoder fails to load, the function returns the full context:  ```py"
+          "answer_head": "From `token_efficiency_model/lossless/api_adapter.py`, lines 107\u2013109:  ```python if enc is None:    "
         }
       ],
       "errors": []

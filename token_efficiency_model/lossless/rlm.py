@@ -32,9 +32,11 @@ from typing import Callable, Dict, List, Optional
 
 @dataclass
 class REPLState:
-    """Persistent REPL environment. `P` is the long prompt as a variable; `Final` is the
-    output slot; `env` holds intermediate variables the model builds up."""
+    """Persistent REPL environment. `P` is the long prompt as a variable; `question` is the
+    query being answered (the emitted code references it); `Final` is the output slot; `env`
+    holds intermediate variables the model builds up."""
     P: str
+    question: str = ""
     env: Dict[str, object] = field(default_factory=dict)
     final: Optional[str] = None
 
@@ -116,6 +118,7 @@ class RLM:
         ns.update({
             "P": state.P,
             "prompt": state.P,
+            "question": state.question,   # the emitted code references `question` directly
             "sub_llm": self._sub_llm,
             "set_final": set_final,
             "grep": grep,
@@ -130,13 +133,14 @@ class RLM:
             buf.write(f"\n<error: {type(e).__name__}: {e}>")
         # persist intermediate variables (excluding the injected handles)
         for k, v in ns.items():
-            if k not in ("P", "prompt", "sub_llm", "set_final", "grep", "peek", "__builtins__"):
+            if k not in ("P", "prompt", "question", "sub_llm", "set_final",
+                         "grep", "peek", "__builtins__"):
                 state.env[k] = v
         return buf.getvalue()
 
     def run(self, prompt: str, question: str) -> "RLMResult":
         """Run the RLM loop over a long `prompt` (the environment) to answer `question`."""
-        state = REPLState(P=prompt)
+        state = REPLState(P=prompt, question=question)
         # Root sees only constant-size metadata about P — never P itself.
         hist: List[str] = [
             "You are a Recursive Language Model. The long input is stored in the REPL "

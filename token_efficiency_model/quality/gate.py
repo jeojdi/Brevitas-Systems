@@ -24,6 +24,46 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
+# ── Lever kill state (P0.6) ───────────────────────────────────────────────────
+# A failed, missing, or tripped quality gate must force the request path back to the
+# original FULL-context request — never keep applying a lever whose quality is unproven.
+# This registry is the single fail-closed gate the request paths consult before applying
+# retrieval / compression / semantic-cache. Trips are sticky within a process and can also
+# be set cross-process via BREVITAS_TRIPPED_LEVERS (comma-separated) for the local proxy,
+# which runs separately from the hosted mSPRT stream.
+_LEVERS = ("retrieval", "compression", "semantic_cache", "reorder")
+_tripped_levers: set[str] = set()
+
+
+def _env_tripped_levers() -> set[str]:
+    raw = os.environ.get("BREVITAS_TRIPPED_LEVERS", "")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def trip_lever(lever: str) -> None:
+    """Sticky-disable a lever (e.g. when the mSPRT quality stream trips). Persists for the
+    process lifetime; reset explicitly via reset_lever after investigation."""
+    if lever:
+        _tripped_levers.add(lever.strip().lower())
+
+
+def reset_lever(lever: str) -> None:
+    _tripped_levers.discard((lever or "").strip().lower())
+
+
+def lever_allowed(lever: str) -> bool:
+    """True only when `lever` is safe to apply. FAILS CLOSED: any tripped state (in-process
+    or via BREVITAS_TRIPPED_LEVERS) or any error returns False, so the caller falls back to
+    the original full-context request instead of a quality-unproven optimization."""
+    try:
+        name = (lever or "").strip().lower()
+        if not name:
+            return False
+        return name not in _tripped_levers and name not in _env_tripped_levers()
+    except Exception:
+        return False
+
+
 def _load_key(names=("Deepseek_api_key", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")) -> tuple[str, str, str]:
     """Return (key, base_url, model) for the cheapest configured judge backend."""
     env = dict(os.environ)

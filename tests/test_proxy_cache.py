@@ -43,9 +43,12 @@ class _FakeAsyncClient:
 
     async def post(self, url, headers=None, json=None):
         _FakeAsyncClient.calls += 1
+        # A COMPLETE response — finish_reason "stop". The cache now refuses to store
+        # truncated responses, so the fake must look like a naturally-finished one.
         return _FakeResp({
             "id": "chatcmpl-1",
-            "choices": [{"message": {"role": "assistant", "content": "42"}}],
+            "choices": [{"message": {"role": "assistant", "content": "42"},
+                         "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 3},
         })
 
@@ -131,6 +134,69 @@ def test_hosted_cache_varies_by_provider_credential(monkeypatch):
     assert client.post("/v1/chat/completions", json=req,
                        headers={**common, "Authorization": "Bearer provider-b"}).status_code == 200
     assert _FakeAsyncClient.calls == 2
+
+
+class _IncompleteClient(_FakeAsyncClient):
+    async def post(self, url, headers=None, json=None):
+        _FakeAsyncClient.calls += 1
+        return _FakeResp({                       # truncated: finish_reason "length"
+            "id": "chatcmpl-x",
+            "choices": [{"message": {"role": "assistant", "content": "partial..."},
+                         "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 3},
+        })
+
+
+def _fresh_client(monkeypatch, fake=_FakeAsyncClient):
+    monkeypatch.setattr(httpx, "AsyncClient", fake)
+    proxy._cache_init_done = False
+    proxy._cache_singleton = None
+    _FakeAsyncClient.calls = 0
+    return TestClient(proxy.proxy_app)
+
+
+def test_retrieval_answer_is_not_cached(monkeypatch):
+    """The audit's P0 reproduction: an answer produced from a NON-faithful (retrieval/
+    reorder) request must never be stored, so a second identical request re-hits upstream
+    instead of replaying the degraded answer as a verified cache hit."""
+    client = _fresh_client(monkeypatch)
+
+    real_optimize = proxy.optimize_request
+
+    def _prune(body, provider, router, session_id, **kw):
+        meta = real_optimize(body, provider, router, session_id, **kw)
+        meta["response_faithful"] = False        # simulate retrieval having dropped context
+        return meta
+    monkeypatch.setattr(proxy, "optimize_request", _prune)
+
+    req = {"model": "gpt-4o-mini", "temperature": 0,
+           "messages": [{"role": "user", "content": "summarize the doc"}]}
+    client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-p0"})
+    client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-p0"})
+    assert _FakeAsyncClient.calls == 2, "non-faithful answer must not be cached"
+
+
+def test_incomplete_response_not_cached(monkeypatch):
+    client = _fresh_client(monkeypatch, _IncompleteClient)
+    req = {"model": "gpt-4o-mini", "temperature": 0,
+           "messages": [{"role": "user", "content": "long answer please"}]}
+    client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-inc"})
+    client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-inc"})
+    assert _FakeAsyncClient.calls == 2, "truncated response must not be cached"
+
+
+def test_tripped_semantic_cache_lever_skips_hits(monkeypatch):
+    from token_efficiency_model.quality import gate
+    client = _fresh_client(monkeypatch)
+    gate.trip_lever("semantic_cache")
+    try:
+        req = {"model": "gpt-4o-mini", "temperature": 0,
+               "messages": [{"role": "user", "content": "same question twice"}]}
+        client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-lv"})
+        client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-lv"})
+        assert _FakeAsyncClient.calls == 2, "tripped cache lever must not serve hits"
+    finally:
+        gate.reset_lever("semantic_cache")
 
 
 if __name__ == "__main__":
