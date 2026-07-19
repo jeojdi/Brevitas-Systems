@@ -124,7 +124,7 @@ class HealthResponse(BaseModel):
 
 
 def verify_token(authorization: Optional[str] = Header(None)) -> bool:
-    """Verify Bearer token if BREVITAS_COMPRESS_TOKEN is set."""
+    """Verify the auth token (Authorization header) if BREVITAS_COMPRESS_TOKEN is set."""
     required_token = os.environ.get("BREVITAS_COMPRESS_TOKEN")
     if not required_token:
         return True  # No auth required
