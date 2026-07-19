@@ -8,6 +8,12 @@ import {
 } from 'recharts'
 
 const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+const fmtAxis = (n) => {
+  const value = Number(n) || 0
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`
+  if (value >= 1000) return `${Math.round(value / 1000)}k`
+  return String(Math.round(value))
+}
 
 function getTooltipStyle(dark) {
   return {
@@ -82,29 +88,21 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
         call: i + 1,
         saved,
         notSaved,
+        savingsRate: baseline > 0 ? (saved / baseline) * 100 : 0,
         repo: h.repo || h.project || 'Unattributed',
       }
     })
 
   const recentSaved = recentCalls.reduce((total, row) => total + row.saved, 0)
   const recentNotSaved = recentCalls.reduce((total, row) => total + row.notSaved, 0)
-  const savedBeforeRange = Math.max(0, Number(stats?.total_tokens_saved || 0) - recentSaved)
-  const notSavedBeforeRange = Math.max(0, Number(stats?.total_optimized_tokens || 0) - recentNotSaved)
-  const chartData = recentCalls.reduce((rows, row) => {
-    const previous = rows.at(-1)
-    rows.push({
-      ...row,
-      totalSaved: (previous?.totalSaved ?? savedBeforeRange) + row.saved,
-      totalNotSaved: (previous?.totalNotSaved ?? notSavedBeforeRange) + row.notSaved,
-    })
-    return rows
-  }, [])
-  const chartTotals = chartData.at(-1)
+  const chartData = recentCalls
+  const recentSavingsRate = recentSaved + recentNotSaved > 0
+    ? (recentSaved / (recentSaved + recentNotSaved)) * 100
+    : 0
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
   const savedColor   = '#4f5fc4'
-  const notSavedColor = darkMode ? '#737373' : '#9ca3af'
   const pointRingColor = darkMode ? '#141414' : '#ffffff'
   const tooltipStyle = getTooltipStyle(darkMode)
   const tooltipLabel = (call, payload) => {
@@ -164,38 +162,34 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
         <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8 overflow-hidden">
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-6">
             <div>
-              <p className="annotation tracking-widest uppercase mb-1">Total token outcome</p>
+              <p className="annotation tracking-widest uppercase mb-1">Token savings trend</p>
               <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
-                running total <em className="italic text-brand-blue">saved</em> vs not saved
+                tokens <em className="italic text-brand-blue">saved</em> on each call
               </p>
-              <p className="annotation mt-2">// cumulative totals through the last {chartData.length} calls</p>
+              <p className="annotation mt-2">// last {chartData.length} calls · based on provider receipts</p>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:gap-3 min-w-0 sm:min-w-[320px]">
               <div className="rounded-xl border border-brand-blue/20 bg-brand-blue/5 dark:bg-brand-dark-blue-dim/40 px-4 py-3">
                 <p className="annotation flex items-center gap-2">
-                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> saved
+                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> saved in range
                 </p>
-                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(chartTotals.totalSaved)}</p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(recentSaved)}</p>
               </div>
-              <div className="rounded-xl border border-neutral-300/50 dark:border-neutral-700/50 bg-neutral-100/60 dark:bg-neutral-800/30 px-4 py-3">
+              <div className="rounded-xl border border-brand-teal/20 bg-brand-teal/5 dark:bg-brand-teal/10 px-4 py-3">
                 <p className="annotation flex items-center gap-2">
-                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: notSavedColor }} /> not saved
+                  <span className="w-2 h-2 rounded-full bg-brand-teal" /> savings rate
                 </p>
-                <p className="font-mono text-xl sm:text-2xl text-neutral-500 dark:text-neutral-400 tabular-nums mt-1">{fmt(chartTotals.totalNotSaved)}</p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-teal tabular-nums mt-1">{recentSavingsRate.toFixed(1)}%</p>
               </div>
             </div>
           </div>
-          <div role="img" aria-label="Layered area chart comparing cumulative tokens saved and not saved">
+          <div role="img" aria-label="Area chart showing tokens saved on each recent call">
             <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 0, bottom: 4 }}>
+              <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
                 <defs>
                   <linearGradient id="savedArea" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
                     <stop offset="100%" stopColor={savedColor} stopOpacity={0.03} />
-                  </linearGradient>
-                  <linearGradient id="notSavedArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={notSavedColor} stopOpacity={0.24} />
-                    <stop offset="100%" stopColor={notSavedColor} stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
@@ -207,30 +201,25 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                 />
                 <YAxis
                   tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                  tickFormatter={fmt}
+                  tickFormatter={fmtAxis}
                   tickLine={false}
                   axisLine={false}
-                  width={46}
+                  width={58}
+                  domain={[0, 'auto']}
+                  allowDecimals={false}
                 />
                 <Tooltip
                   {...tooltipStyle}
                   labelFormatter={tooltipLabel}
-                  formatter={(value, name) => [`${Number(value).toLocaleString()} tokens`, name]}
+                  formatter={(value, name, item) => [
+                    `${Number(value).toLocaleString()} tokens · ${Number(item?.payload?.savingsRate || 0).toFixed(1)}% of input`,
+                    name,
+                  ]}
                 />
                 <Area
                   type="monotone"
-                  dataKey="totalNotSaved"
-                  name="Not saved total"
-                  stroke={notSavedColor}
-                  fill="url(#notSavedArea)"
-                  strokeWidth={2}
-                  dot={{ r: 5, fill: notSavedColor, stroke: pointRingColor, strokeWidth: 2 }}
-                  activeDot={{ r: 7, stroke: pointRingColor, strokeWidth: 2.5 }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="totalSaved"
-                  name="Saved total"
+                  dataKey="saved"
+                  name="Tokens saved"
                   stroke={savedColor}
                   fill="url(#savedArea)"
                   strokeWidth={3}

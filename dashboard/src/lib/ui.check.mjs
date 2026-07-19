@@ -34,20 +34,18 @@ test('dashboard navigation is separated and exposes its active section', async (
   assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
 })
 
-test('overview uses a cumulative saved and not-saved area chart', async () => {
+test('overview uses a savings-focused per-call area chart', async () => {
   const overview = await source('Overview')
   assert.match(overview, /AreaChart, Area/)
-  assert.match(overview, /dataKey="totalSaved"/)
-  assert.match(overview, /dataKey="totalNotSaved"/)
+  assert.match(overview, /dataKey="saved"/)
+  assert.match(overview, /savingsRate/)
   assert.match(overview, /fill="url\(#savedArea\)"/)
-  assert.match(overview, /fill="url\(#notSavedArea\)"/)
-  assert.equal((overview.match(/type="monotone"/g) || []).length, 2)
-  assert.match(overview, /dot=\{\{ r: 5,/)
+  assert.doesNotMatch(overview, /notSavedArea|totalNotSaved/)
+  assert.equal((overview.match(/type="monotone"/g) || []).length, 1)
   assert.match(overview, /dot=\{\{ r: 5\.5,/)
-  assert.match(overview, /savedBeforeRange/)
-  assert.match(overview, /notSavedBeforeRange/)
+  assert.match(overview, /fmtAxis/)
+  assert.match(overview, /width=\{58\}/)
   assert.match(overview, /const savedColor\s*=\s*'#4f5fc4'/)
-  assert.match(overview, /const notSavedColor\s*=\s*darkMode \? '#737373' : '#9ca3af'/)
   assert.doesNotMatch(overview, /BarChart|LineChart|<Bar\b|<Line\b/)
 })
 
