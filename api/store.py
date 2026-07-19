@@ -149,8 +149,6 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     baseline = sum(_i(r.get("baseline_tokens")) for r in rows)
     optimized = sum(_i(r.get("optimized_tokens")) for r in rows)
     saved = sum(_i(r.get("tokens_saved")) for r in rows)
-    fresh_input = sum(_i(r.get("fresh_input_tokens")) for r in rows)
-    cached_input = sum(_i(r.get("cached_input_tokens")) for r in rows)
     measured = sum(_f(r.get("measured_savings_usd")) for r in rows)
     verified = sum(_f(r.get("verified_savings_usd", r.get("cost_saved_usd"))) for r in rows)
     actual_cost = sum(_f(r.get("actual_cost_usd")) for r in rows)
@@ -179,10 +177,6 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_optimized_tokens": optimized,
         "total_actual_tokens": sum(_i(r.get(k)) for r in rows for k in
                                    ("fresh_input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens")),
-        "total_fresh_input_tokens": fresh_input,
-        "total_cached_input_tokens": cached_input,
-        "cached_input_rate_pct": round(100 * cached_input / (fresh_input + cached_input), 2)
-                                 if fresh_input + cached_input else 0.0,
         "total_tokens_saved": saved,
         "avg_savings_pct": round(100 * saved / baseline, 2) if baseline else 0.0,
         "avg_quality_proxy": round(sum(quality) / len(quality), 4) if quality else 0.0,
@@ -196,8 +190,6 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "history": [{
             "timestamp": r.get("ts"), "baseline_tokens": _i(r.get("baseline_tokens")),
             "optimized_tokens": _i(r.get("optimized_tokens")),
-            "fresh_input_tokens": _i(r.get("fresh_input_tokens")),
-            "cached_input_tokens": _i(r.get("cached_input_tokens")),
             "savings_pct": _f(r.get("savings_pct")), "quality_proxy": r.get("quality_proxy"),
             "project": r.get("project") or "Unattributed", "environment": r.get("environment") or "Unattributed",
             "source": r.get("source") or "Unattributed", "provider": r.get("provider") or "",

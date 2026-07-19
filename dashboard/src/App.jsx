@@ -32,14 +32,6 @@ const PREVIEW_STATS = {
     [1880, 840, 'research-pipeline'], [1360, 720, 'agent-platform'],
     [1120, 610, 'support-bot'], [1640, 760, 'research-pipeline'],
   ].map(([baseline_tokens, optimized_tokens, project], index) => ({
-    ...(() => {
-      const shares = [0, .32, .47, .58, .41, .66, .52, .71, .63, .76, .69, .81]
-      const cached_input_tokens = Math.round(optimized_tokens * shares[index])
-      return {
-        cached_input_tokens,
-        fresh_input_tokens: optimized_tokens - cached_input_tokens,
-      }
-    })(),
     timestamp: new Date(Date.UTC(2026, 6, 16, 12, index * 5)).toISOString(),
     baseline_tokens,
     optimized_tokens,

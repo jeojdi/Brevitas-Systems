@@ -129,7 +129,7 @@ def test_duplicate_and_breakdown_reconcile(tmp_path):
     common = dict(key_hash="key", baseline_tokens=100, optimized_tokens=75,
                   provider="openai", model="gpt-4o-mini", project="app",
                   environment="prod", source="api", request_id="request-1",
-                  fresh_input_tokens=55, cached_input_tokens=20, output_tokens=10,
+                  fresh_input_tokens=75, output_tokens=10,
                   measured_savings_usd=.01, verified_savings_usd=.008,
                   pricing_status="priced")
     assert store.record_usage(**common)
@@ -138,10 +138,6 @@ def test_duplicate_and_breakdown_reconcile(tmp_path):
     rows = store.get_breakdown("key")
     assert totals["total_calls"] == sum(row["calls"] for row in rows) == 1
     assert totals["total_tokens_saved"] == sum(row["tokens_saved"] for row in rows) == 25
-    assert totals["total_fresh_input_tokens"] == 55
-    assert totals["total_cached_input_tokens"] == 20
-    assert totals["cached_input_rate_pct"] == 26.67
-    assert totals["history"][0]["cached_input_tokens"] == 20
     assert totals["total_measured_savings_usd"] == sum(row["measured_savings_usd"] for row in rows)
     with sqlite3.connect(store.db_path) as db:
         assert db.execute("select usage_raw from usage_log").fetchone()[0] == ""
