@@ -1,0 +1,149 @@
+{
+  "groups": [
+    {
+      "name": "brevitas-slo-burn-rates",
+      "interval": "30s",
+      "rules": [
+        {
+          "alert": "ExternalApiAvailabilityFastBurn",
+          "expr": "(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[1h])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[1h])), 0.000001) > (14.4 * 0.001)) and (sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[5m])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[5m])), 0.000001) > (14.4 * 0.001))",
+          "for": "2m",
+          "labels": {"severity": "page", "slo": "external-api-99.9"},
+          "annotations": {"summary": "External API is rapidly consuming its 99.9% monthly SLA budget", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "ExternalApiAvailabilitySlowBurn",
+          "expr": "(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[6h])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[6h])), 0.000001) > (6 * 0.001)) and (sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[30m])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[30m])), 0.000001) > (6 * 0.001))",
+          "for": "15m",
+          "labels": {"severity": "ticket", "slo": "external-api-99.9"},
+          "annotations": {"summary": "External API is steadily consuming its 99.9% monthly SLA budget", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "ExternalApiMonthlySLABreach",
+          "expr": "sum(increase(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[30d])) / clamp_min(sum(increase(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[30d])), 1) > 0.001",
+          "for": "5m",
+          "labels": {"severity": "page", "slo": "external-api-99.9"},
+          "annotations": {"summary": "External API is below its 99.9% monthly availability target", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "InternalAvailabilityFastBurn",
+          "expr": "(sum(rate(brevitas_service_operations_total{surface=\"internal\",outcome=~\"server_error|unavailable|failed\"}[1h])) / clamp_min(sum(rate(brevitas_service_operations_total{surface=\"internal\"}[1h])), 0.000001) > (14.4 * 0.0005)) and (sum(rate(brevitas_service_operations_total{surface=\"internal\",outcome=~\"server_error|unavailable|failed\"}[5m])) / clamp_min(sum(rate(brevitas_service_operations_total{surface=\"internal\"}[5m])), 0.000001) > (14.4 * 0.0005))",
+          "for": "2m",
+          "labels": {"severity": "page", "slo": "internal-99.95"},
+          "annotations": {"summary": "Internal services are rapidly consuming their 99.95% availability budget", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "InternalAvailabilitySlowBurn",
+          "expr": "(sum(rate(brevitas_service_operations_total{surface=\"internal\",outcome=~\"server_error|unavailable|failed\"}[6h])) / clamp_min(sum(rate(brevitas_service_operations_total{surface=\"internal\"}[6h])), 0.000001) > (6 * 0.0005)) and (sum(rate(brevitas_service_operations_total{surface=\"internal\",outcome=~\"server_error|unavailable|failed\"}[30m])) / clamp_min(sum(rate(brevitas_service_operations_total{surface=\"internal\"}[30m])), 0.000001) > (6 * 0.0005))",
+          "for": "15m",
+          "labels": {"severity": "ticket", "slo": "internal-99.95"},
+          "annotations": {"summary": "Internal services are steadily consuming their 99.95% availability budget", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        }
+      ]
+    },
+    {
+      "name": "brevitas-service-health",
+      "interval": "30s",
+      "rules": [
+        {
+          "alert": "ExternalApiOperationalFailureRate",
+          "expr": "sum(rate(brevitas_api_requests_total{surface=\"external\",outcome=~\"server_error|unavailable\"}[10m])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\"}[10m])), 0.000001) > 0.02",
+          "for": "10m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "All-domain external API failure ratio exceeds 2%, including SLA-excluded faults", "runbook": "docs/OBSERVABILITY.md#api-errors-and-latency"}
+        },
+        {
+          "alert": "ExternalApiHighLatency",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(brevitas_api_request_duration_seconds_bucket{surface=\"external\"}[10m]))) > 2",
+          "for": "10m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "External API p95 latency exceeds two seconds", "runbook": "docs/OBSERVABILITY.md#api-errors-and-latency"}
+        },
+        {
+          "alert": "ProviderFailureRateHigh",
+          "expr": "sum by (provider) (rate(brevitas_provider_requests_total{outcome!=\"success\"}[10m])) / clamp_min(sum by (provider) (rate(brevitas_provider_requests_total[10m])), 0.000001) > 0.10",
+          "for": "10m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "A provider failure rate exceeds 10%", "runbook": "docs/OBSERVABILITY.md#provider-degradation"}
+        },
+        {
+          "alert": "ProviderCircuitOpen",
+          "expr": "sum by (provider) (increase(brevitas_provider_circuit_total{state=\"open\"}[5m])) > 0",
+          "for": "1m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "A provider circuit breaker opened", "runbook": "docs/OBSERVABILITY.md#provider-degradation"}
+        },
+        {
+          "alert": "DurableJobDead",
+          "expr": "sum(increase(brevitas_jobs_total{status=\"dead\"}[10m])) > 0",
+          "for": "1m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "A durable job entered the dead state", "runbook": "docs/OBSERVABILITY.md#jobs-and-queue"}
+        },
+        {
+          "alert": "DurableJobQueueLag",
+          "expr": "max(brevitas_queue_lag_seconds{queue=\"jobs\"}) > 300",
+          "for": "5m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "Durable job queue lag exceeds five minutes", "runbook": "docs/OBSERVABILITY.md#jobs-and-queue"}
+        },
+        {
+          "alert": "BillingQueueLag",
+          "expr": "max(brevitas_billing_queue_lag_seconds) > 300",
+          "for": "5m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "Billing recovery lag exceeds five minutes", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "BillingEntriesRequireReview",
+          "expr": "max(brevitas_billing_review) >= 1",
+          "for": "1m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "Billing ledger contains entries requiring review", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "BillingDeadOrStale",
+          "expr": "max(brevitas_billing_dead) >= 1 or max(brevitas_billing_stale) >= 1",
+          "for": "1m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "Billing ledger has dead entries or stale sending leases", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "BillingCatalogContractInvalid",
+          "expr": "min(brevitas_billing_catalog_contract) < 1",
+          "for": "1m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "At least one billing-worker replica reports an invalid Stripe catalog contract", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "BillingCatalogContractMissing",
+          "expr": "absent(brevitas_billing_catalog_contract) == 1",
+          "for": "5m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "No authoritative billing loop is reporting catalog contract health", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "PostgresDegraded",
+          "expr": "sum(rate(brevitas_dependency_operations_total{dependency=\"postgres\",outcome!=\"success\"}[5m])) > 0",
+          "for": "5m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "Authoritative Postgres dependency is degraded", "runbook": "docs/OBSERVABILITY.md#dependencies"}
+        },
+        {
+          "alert": "RedisDegraded",
+          "expr": "sum(rate(brevitas_dependency_operations_total{dependency=\"redis\",outcome!=\"success\"}[5m])) > 0",
+          "for": "5m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "Redis coordination dependency is degraded", "runbook": "docs/OBSERVABILITY.md#dependencies"}
+        },
+        {
+          "alert": "CompressorDegraded",
+          "expr": "sum(rate(brevitas_dependency_operations_total{dependency=\"compressor\",outcome!=\"success\"}[5m])) / clamp_min(sum(rate(brevitas_dependency_operations_total{dependency=\"compressor\"}[5m])), 0.000001) > 0.05",
+          "for": "5m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "Private compressor error ratio exceeds 5%", "runbook": "docs/OBSERVABILITY.md#dependencies"}
+        }
+      ]
+    }
+  ]
+}

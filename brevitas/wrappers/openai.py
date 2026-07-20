@@ -240,5 +240,22 @@ class BrevitasOpenAIClient:
         if hasattr(self._client, "completions"):
             self.completions = _BrevitasPlainResource(self._client.completions, self._session, self._router, "completions")
 
+    def close(self) -> None:
+        """Deterministically close the wrapped SDK's connection pool."""
+        self._client.close()
+
+    def __enter__(self) -> "BrevitasOpenAIClient":
+        enter = getattr(self._client, "__enter__", None)
+        if enter is not None:
+            enter()
+        return self
+
+    def __exit__(self, *args: Any) -> Any:
+        exit_method = getattr(self._client, "__exit__", None)
+        if exit_method is not None:
+            return exit_method(*args)
+        self.close()
+        return None
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)

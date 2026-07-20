@@ -1,0 +1,4 @@
+# Local-policy Semgrep is installed from a fully hashed tool lock.
+semgrep==1.136.0
+# Semgrep's pysemgrep path imports pkg_resources, removed in setuptools 82+.
+setuptools==80.9.0

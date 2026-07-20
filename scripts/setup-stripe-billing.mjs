@@ -4,7 +4,7 @@ import Stripe from 'stripe'
 const secretKey = process.env.STRIPE_SECRET_KEY || ''
 const allowLive = process.argv.includes('--live')
 const eventName = process.env.STRIPE_METER_EVENT_NAME || 'brevitas_fee_microusd'
-const lookupKey = 'brevitas_verified_savings_fee_v1'
+const lookupKey = 'brevitas_verified_savings_fee_weekly_v2'
 
 if (!secretKey) {
   console.error('Set STRIPE_SECRET_KEY to a Stripe sandbox secret key first.')
@@ -35,29 +35,40 @@ if (!price) {
   const product = await stripe.products.create({
     name: 'Brevitas verified-savings billing',
     description: '25% of verified savings; no subscription or seat fee.',
-    metadata: { brevitas_billing_model: 'verified_savings_25pct' },
-  }, { idempotencyKey: 'brevitas-billing-product-v1' })
+    metadata: {
+      brevitas_billing_model: 'verified_savings_25pct',
+      brevitas_billing_interval: 'week',
+    },
+  }, { idempotencyKey: 'brevitas-billing-product-weekly-v2' })
   price = await stripe.prices.create({
     product: product.id,
     currency: 'usd',
     billing_scheme: 'per_unit',
     // Stripe decimal amounts are in cents: 0.0001 cent = USD 0.000001.
     unit_amount_decimal: '0.0001',
-    recurring: { interval: 'month', usage_type: 'metered', meter: meter.id },
+    recurring: { interval: 'week', usage_type: 'metered', meter: meter.id },
     lookup_key: lookupKey,
     tax_behavior: 'exclusive',
     nickname: '25% verified savings (micro-USD units)',
-  }, { idempotencyKey: 'brevitas-billing-price-v1' })
+  }, { idempotencyKey: 'brevitas-billing-price-weekly-v2' })
 }
 
-if (price.recurring?.meter !== meter.id || price.unit_amount_decimal?.toString() !== '0.0001') {
-  throw new Error('Existing Stripe lookup-key price does not match the Brevitas meter or micro-USD unit price.')
+if (
+  price.recurring?.meter !== meter.id ||
+  price.recurring?.interval !== 'week' ||
+  price.recurring?.usage_type !== 'metered' ||
+  price.unit_amount_decimal?.toString() !== '0.0001'
+) {
+  throw new Error('Existing Stripe lookup-key price does not match the weekly Brevitas meter contract.')
 }
 
 const productId = typeof price.product === 'string' ? price.product : price.product.id
 await stripe.products.update(productId, {
   description: '25% of verified savings; no subscription or seat fee.',
-  metadata: { brevitas_billing_model: 'verified_savings_25pct' },
+  metadata: {
+    brevitas_billing_model: 'verified_savings_25pct',
+    brevitas_billing_interval: 'week',
+  },
 })
 await stripe.prices.update(price.id, {
   nickname: '25% verified savings (micro-USD units)',

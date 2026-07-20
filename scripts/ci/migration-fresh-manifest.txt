@@ -1,0 +1,28 @@
+# Complete deployable Supabase chain for a fresh database. Same-date migrations
+# use the explicit lexical order below; never infer order from filesystem APIs.
+# Frozen security/compliance bodies are pinned in migration-frozen-checksums.txt.
+supabase/migrations/20260611_create_user_keys.sql
+supabase/migrations/20260624_create_profiles.sql
+supabase/migrations/20260626_create_billing.sql
+supabase/migrations/20260627_add_tracking_labels.sql
+supabase/migrations/20260710_cloud_usage.sql
+supabase/migrations/20260711_bvx_device_auth.sql
+supabase/migrations/20260714_legal_acceptances.sql
+supabase/migrations/20260715_analytics_privacy.sql
+supabase/migrations/20260716_bvx_repository_registry.sql
+supabase/migrations/20260716_posthog_warehouse_view.sql
+supabase/migrations/20260716_stripe_billing.sql
+supabase/migrations/20260716_stripe_billing_rate_25pct.sql
+supabase/migrations/202607170001_enterprise_tenancy.sql
+supabase/migrations/202607170002_cache_security.sql
+supabase/migrations/202607170003_durable_jobs.sql
+supabase/migrations/202607170004_billing_recovery.sql
+supabase/migrations/202607170005_company_administration.sql
+supabase/migrations/202607170006_database_scaling.sql
+supabase/migrations/202607170007_compliance_workflows.sql
+supabase/migrations/202607170008_atomic_key_audit.sql
+supabase/migrations/202607170009_key_listing_security.sql
+supabase/migrations/202607170010_device_delivery_idempotency.sql
+supabase/migrations/202607170011_active_memberships.sql
+supabase/migrations/202607170012_receipt_accounting_alignment.sql
+supabase/migrations/202607170013_active_company_selection.sql

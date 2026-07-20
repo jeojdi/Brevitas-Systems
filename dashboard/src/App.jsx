@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react'
-import { authModeForPath, cacheApiKey, supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supabase.js'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { authModeForPath, cacheApiKey, clearSessionKeyCache, supabase, supabaseMisconfigured, getOrCreateApiKey } from './lib/supabase.js'
+import { activateCompany, fetchCompanyContext, normalizeCompanyContext } from './lib/company-context.js'
+import { bootstrapWorkspace } from './lib/onboarding-api.js'
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
 import Playground from './components/Playground.jsx'
@@ -9,13 +11,16 @@ import Projects from './components/Projects.jsx'
 import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
+import CompanyAdministration from './components/CompanyAdministration.jsx'
+import OnboardingWorkspaceChoice from './components/OnboardingWorkspaceChoice.jsx'
+import InvitationAcceptance, { hasPendingCompanyInvitation } from './components/InvitationAcceptance.jsx'
 import { capture, identify, resetAnalytics } from './lib/analytics.js'
 
-const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Playground', 'Docs', 'Savings']
+const BASE_TABS = ['Overview', 'Repositories', 'API Keys', 'Company', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
 const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-  && ['dashboard', 'billing'].includes(PREVIEW_SECTION)
+  && ['dashboard', 'billing', 'onboarding', 'invitation'].includes(PREVIEW_SECTION)
 const PREVIEW_STATS = {
   total_calls: 128,
   total_tokens_saved: 84200,
@@ -24,6 +29,10 @@ const PREVIEW_STATS = {
   total_verified_savings_usd: 31.68,
   total_actual_tokens: 60300,
   unpriced_calls: 2,
+  billing_by_week: [
+    { week_start: '2026-07-13', calls: 82, tokens_saved: 52600, actual_cost_usd: 46.12, verified_savings_usd: 20.40 },
+    { week_start: '2026-07-06', calls: 46, tokens_saved: 31600, actual_cost_usd: 28.14, verified_savings_usd: 11.28 },
+  ],
   history: [
     [1180, 690, 'agent-platform'], [1320, 710, 'agent-platform'],
     [980, 520, 'support-bot'], [1540, 770, 'agent-platform'],
@@ -42,15 +51,21 @@ const PREVIEW_STATS = {
 const PREVIEW_BILLING = {
   configured: true,
   subscription_status: 'active',
-  current_period_end: '2026-08-16T00:00:00.000Z',
+  billing_period: 'weekly',
+  current_period_start: '2026-07-16T00:00:00.000Z',
+  current_period_end: '2026-07-23T00:00:00.000Z',
+  period_tracking_valid: true,
   last_invoice_status: 'paid',
   estimated_fee_usd: 7.92,
   reported_fee_usd: 7.92,
-  monthly_safety_cap_usd: 100,
+  weekly_safety_cap_usd: 100,
   has_customer: true,
   needs_review: 0,
   capped_entries: 0,
 }
+const emptyCompanyContext = (loading = false) => ({
+  companies: [], activeCompanyId: '', selectedCompanyId: '', loading, error: '', needsOnboarding: false,
+})
 
 function pendingDeviceCode() {
   const match = window.location.hash.match(/^#bvx=([A-Za-z0-9_-]{40,128})$/)
@@ -87,6 +102,24 @@ function SunIcon() {
 
 function DashboardPreview({ darkMode, onToggleDark }) {
   const billingPreview = PREVIEW_SECTION === 'billing'
+  if (PREVIEW_SECTION === 'onboarding') {
+    return <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg px-4 py-10 sm:px-6 sm:py-16">
+      <OnboardingWorkspaceChoice onContinue={async () => {}} />
+    </div>
+  }
+  if (PREVIEW_SECTION === 'invitation') {
+    return <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg">
+      <InvitationAcceptance
+        invitationToken={`bvi_${'x'.repeat(43)}`}
+        accessToken="preview-authenticated-session"
+        request={async () => Response.json({
+          company_id: '11111111-1111-4111-8111-111111111111',
+          role: 'member',
+          status: 'accepted',
+        })}
+      />
+    </div>
+  }
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
       <div className="sticky top-0 z-50 px-2 sm:px-6 pt-2 sm:pt-5 pb-2 sm:pb-3">
@@ -138,6 +171,12 @@ export default function App() {
   const [isAdmin, setIsAdmin]     = useState(false)
   const [refreshTick, setRefreshTick] = useState(0)
   const [deviceCode, setDeviceCode] = useState(pendingDeviceCode)
+  const [companyContext, setCompanyContext] = useState(emptyCompanyContext)
+  const [companyRefreshTick, setCompanyRefreshTick] = useState(0)
+  const [companySwitching, setCompanySwitching] = useState(false)
+  const [companySwitchError, setCompanySwitchError] = useState('')
+  const [pendingCompanyInvitation, setPendingCompanyInvitation] = useState(hasPendingCompanyInvitation)
+  const credentialUserId = useRef('')
 
   const toggleDark = () => {
     const next = !darkMode
@@ -162,22 +201,130 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
       if (event === 'PASSWORD_RECOVERY') setRecoveringPassword(true)
-      if (!session) setApiKey('')
+      if (!session) {
+        clearSessionKeyCache()
+        setApiKey('')
+        setCompanyContext(emptyCompanyContext())
+      }
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
+  useEffect(() => {
+    const nextUserId = session?.user?.id || ''
+    if (!nextUserId || credentialUserId.current !== nextUserId) {
+      clearSessionKeyCache()
+      setApiKey('')
+      setCompanyContext(emptyCompanyContext())
+    }
+    credentialUserId.current = nextUserId
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.id || !session.access_token) return
+    const controller = new AbortController()
+    setCompanyContext(current => ({ ...current, loading: true, error: '' }))
+    fetchCompanyContext(session.access_token, { signal: controller.signal })
+      .then(context => setCompanyContext(current => ({
+        ...context,
+        selectedCompanyId: context.companies.some(
+          company => company.company_id === current.selectedCompanyId)
+          ? current.selectedCompanyId
+          : context.activeCompanyId,
+        loading: false,
+        error: '',
+        needsOnboarding: false,
+      })))
+      .catch(reason => {
+        if (reason?.name !== 'AbortError') {
+          setCompanyContext(reason?.status === 403
+            ? { ...emptyCompanyContext(), needsOnboarding: true }
+            : { ...emptyCompanyContext(), error: reason?.message || 'Company access unavailable' })
+        }
+      })
+    return () => controller.abort()
+  }, [session?.user?.id, session?.access_token, apiKey, companyRefreshTick])
+
+  const acceptCompanyCapabilities = useCallback(payload => {
+    if (!session?.user?.id || credentialUserId.current !== session.user.id) return
+    try {
+      const context = normalizeCompanyContext(payload)
+      setCompanyContext(current => ({
+        ...context,
+        selectedCompanyId: context.companies.some(
+          company => company.company_id === current.selectedCompanyId)
+          ? current.selectedCompanyId
+          : context.activeCompanyId,
+        loading: false,
+        error: '',
+        needsOnboarding: false,
+      }))
+    } catch {
+      setCompanyContext({ ...emptyCompanyContext(), error: 'Company access unavailable' })
+    }
+  }, [session?.user?.id])
+
+  const selectDeviceCompany = useCallback(companyId => {
+    setCompanyContext(current => current.companies.some(
+      company => company.company_id === companyId)
+      ? { ...current, selectedCompanyId: companyId }
+      : current)
+  }, [])
+
+  const setupWorkspace = useCallback(async selection => {
+    if (!session?.access_token) throw new Error('Sign in again to create a workspace.')
+    await bootstrapWorkspace(session.access_token, selection)
+    setCompanyContext({ ...emptyCompanyContext(true), needsOnboarding: false })
+    setCompanyRefreshTick(value => value + 1)
+  }, [session?.access_token])
+
+  const switchCompany = useCallback(async companyId => {
+    if (!session?.access_token || companyId === companyContext.activeCompanyId || companySwitching) return
+    setCompanySwitching(true)
+    setCompanySwitchError('')
+    try {
+      await activateCompany(session.access_token, companyId)
+      clearSessionKeyCache()
+      setApiKey('')
+      setCompanyContext(current => ({
+        ...current,
+        activeCompanyId: companyId,
+        selectedCompanyId: companyId,
+        loading: true,
+        error: '',
+      }))
+      setCompanyRefreshTick(value => value + 1)
+    } catch (reason) {
+      setCompanySwitchError(reason?.message || 'Could not switch company')
+    } finally {
+      setCompanySwitching(false)
+    }
+  }, [companyContext.activeCompanyId, companySwitching, session?.access_token])
+
+  const acceptedCompanyInvitation = useCallback(result => {
+    setCompanyContext({ ...emptyCompanyContext(true), needsOnboarding: false })
+    clearSessionKeyCache()
+    setApiKey('')
+    Promise.resolve()
+      .then(() => activateCompany(session?.access_token || '', result?.company_id || ''))
+      .then(() => setCompanyRefreshTick(value => value + 1))
+      .catch(reason => setCompanyContext({
+        ...emptyCompanyContext(),
+        error: reason?.message || 'You joined the company, but it could not be selected.',
+      }))
+  }, [session?.access_token])
+
   // When a session exists, fetch or create the user's Brevitas API key
   useEffect(() => {
-    if (!session) return
+    if (!session || pendingCompanyInvitation || !companyContext.activeCompanyId || companyContext.loading || companySwitching) return
     setKeyLoading(true)
     setKeyError('')
     getOrCreateApiKey(session.user.id, session.access_token)
       .then(key => setApiKey(key))
       .catch(err => setKeyError(err.message))
       .finally(() => setKeyLoading(false))
-  }, [session?.user?.id, session?.access_token])
+  }, [session?.user?.id, session?.access_token, pendingCompanyInvitation, companyContext.activeCompanyId, companyContext.loading, companySwitching])
 
   useEffect(() => {
     const metadata = session?.user?.app_metadata || {}
@@ -203,6 +350,9 @@ export default function App() {
   const signOut = () => {
     capture('account_signed_out')
     resetAnalytics()
+    clearSessionKeyCache()
+    setApiKey('')
+    setCompanyContext(emptyCompanyContext())
     return supabase.auth.signOut()
   }
   const activateApiKey = async key => {
@@ -246,13 +396,77 @@ export default function App() {
     return <Auth darkMode={darkMode} onToggleDark={toggleDark} initialMode={authModeForPath(window.location.pathname)} />
   }
 
+  if (pendingCompanyInvitation) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg">
+        <InvitationAcceptance
+          accessToken={session.access_token}
+          onAccepted={acceptedCompanyInvitation}
+          onDismiss={() => setPendingCompanyInvitation(false)}
+          onUseDifferentAccount={signOut}
+        />
+      </div>
+    )
+  }
+
+  if (companyContext.needsOnboarding) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg px-4 py-10 sm:px-6 sm:py-16">
+        <div className="mb-8 flex items-center justify-between max-w-5xl mx-auto">
+          <a href="/" aria-label="Brevitas Systems home">
+            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-8 w-auto dark:hidden" />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-8 w-auto hidden dark:block" />
+          </a>
+          <div className="flex items-center gap-2">
+            <button onClick={toggleDark} className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted" aria-label="Toggle dark mode">
+              {darkMode ? <SunIcon /> : <MoonIcon />}
+            </button>
+            <button onClick={signOut} className="min-h-10 px-2 text-[11px] text-brand-muted hover:text-brand-navy dark:text-brand-dark-muted dark:hover:text-brand-dark-navy">
+              Sign out
+            </button>
+          </div>
+        </div>
+        <OnboardingWorkspaceChoice onContinue={setupWorkspace} />
+      </div>
+    )
+  }
+
+  if (companyContext.error) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center flex-col gap-4 px-6 text-center">
+        <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">Workspace access is unavailable.</p>
+        <p className="text-sm text-red-500">{companyContext.error}</p>
+        <div className="flex gap-4">
+          <button onClick={() => setCompanyRefreshTick(value => value + 1)} className="font-mono text-[11px] tracking-widest uppercase text-brand-blue">Retry</button>
+          <button onClick={signOut} className="font-mono text-[11px] tracking-widest uppercase text-brand-muted">Sign out</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!companyContext.activeCompanyId || companyContext.loading || companySwitching) {
+    return (
+      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
+        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
+          {companySwitching ? 'Switching company…' : 'Loading your workspace…'}
+        </span>
+      </div>
+    )
+  }
+
   if (deviceCode) {
     const done = () => {
       sessionStorage.removeItem('bvx_device_code')
       setDeviceCode('')
     }
     return <DeviceConnect accessToken={session.access_token} deviceCode={deviceCode}
-                          email={session.user.email} onDone={done} />
+                          email={session.user.email} companies={companyContext.companies}
+                          selectedCompanyId={companyContext.selectedCompanyId}
+                          companyLoading={companyContext.loading}
+                          companyError={companyContext.error}
+                          onSelectCompany={selectDeviceCompany}
+                          onRefreshCompanies={() => setCompanyRefreshTick(value => value + 1)}
+                          onDone={done} />
   }
 
   if (keyLoading) {
@@ -304,6 +518,25 @@ export default function App() {
               >
                 {darkMode ? <SunIcon /> : <MoonIcon />}
               </button>
+              {companyContext.companies.length > 1 ? (
+                <label className="hidden md:block">
+                  <span className="sr-only">Active company</span>
+                  <select
+                    value={companyContext.activeCompanyId}
+                    onChange={event => switchCompany(event.target.value)}
+                    disabled={companySwitching}
+                    className="max-w-52 rounded-lg border border-brand-border bg-brand-bg px-2 py-2 text-[11px] text-brand-navy dark:border-brand-dark-border dark:bg-brand-dark-bg dark:text-brand-dark-navy"
+                  >
+                    {companyContext.companies.map(company => (
+                      <option key={company.company_id} value={company.company_id}>{company.company_name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <span className="hidden md:block max-w-44 truncate text-[11px] text-brand-muted dark:text-brand-dark-muted">
+                  {companyContext.companies[0]?.company_name}
+                </span>
+              )}
               <span data-ph-sensitive className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
                 {session.user.email}
               </span>
@@ -340,9 +573,14 @@ export default function App() {
 
       {/* ── Page content ── */}
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+        {companySwitchError && <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-red-200 px-4 py-3 text-xs text-red-500 dark:border-red-900/40">
+          <span>{companySwitchError}</span>
+          <button type="button" onClick={() => setCompanySwitchError('')} className="font-mono uppercase tracking-wider">Dismiss</button>
+        </div>}
         {activeTab === 'Overview'   && <Overview     apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} />}
         {activeTab === 'Repositories' && <Projects   apiKey={apiKey} refreshTick={refreshTick} />}
-        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} onApiKeyChange={activateApiKey} />}
+        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
+        {activeTab === 'Company'    && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {activeTab === 'Docs'       && <Docs />}
         {activeTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}

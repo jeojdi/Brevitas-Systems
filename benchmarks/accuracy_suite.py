@@ -41,6 +41,7 @@ for ln in (ROOT / ".env.local").read_text().splitlines():
         k, _, v = ln.partition("="); os.environ.setdefault(k.strip(), v.strip())
 
 from token_efficiency_model.lossless.dropin import BrevitasDropIn  # noqa: E402
+from brevitas.resource_bounds import safe_close_resource  # noqa: E402
 sys.path.insert(0, str(ROOT / "benchmarks" / "levers"))
 from bench_humaneval_swe import extract_code, passes  # reuse the executed grader  # noqa: E402
 
@@ -150,10 +151,7 @@ def _mc_correct(text, gold):
     return letter == goldletter
 
 
-def run_arm(p, name, sysmsg, items, kind, optimized):
-    client = BrevitasDropIn(base_url=PROV[p]["base"] or "https://api.openai.com/v1",
-                            provider=p, api_key=os.environ[PROV[p]["key"]]) if optimized \
-        else raw_client(p)
+def _run_arm_with_client(p, name, sysmsg, items, kind, optimized, client):
     sid = f"bench-{p}-{name}-{'b' if optimized else 'r'}"
     correct = 0; usd = 0.0; ptok = 0; cached = 0; n = 0
     mx = 600 if kind == "code" else 400
@@ -177,6 +175,18 @@ def run_arm(p, name, sysmsg, items, kind, optimized):
         time.sleep(0.3)
     return {"n": n, "accuracy": round(correct/max(1, n), 4), "usd": round(usd, 6),
             "prompt_tokens": ptok, "cached_tokens": cached}
+
+
+def run_arm(p, name, sysmsg, items, kind, optimized):
+    client = BrevitasDropIn(base_url=PROV[p]["base"] or "https://api.openai.com/v1",
+                            provider=p, api_key=os.environ[PROV[p]["key"]]) if optimized \
+        else raw_client(p)
+    try:
+        return _run_arm_with_client(
+            p, name, sysmsg, items, kind, optimized, client
+        )
+    finally:
+        safe_close_resource(client)
 
 
 def main():

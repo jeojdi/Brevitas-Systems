@@ -29,7 +29,7 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 # DeepSeek client (OpenAI-compatible)
 # ---------------------------------------------------------------------------
-ds = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
+ds = None
 
 # ---------------------------------------------------------------------------
 # Brevitas pipeline
@@ -37,6 +37,7 @@ ds = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
 sys.path.insert(0, str(ROOT))
 from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
 from token_efficiency_model.common.metrics import estimate_tokens, estimate_tokens_many
+from brevitas.resource_bounds import safe_close_resource
 
 pipeline = TokenEfficientPipeline(model_backend=None, quality_floor=0.80, savings_target=20.0)
 
@@ -344,6 +345,8 @@ CASES = [
 # Helpers
 # ---------------------------------------------------------------------------
 def call_deepseek(model: str, system: str, user: str, timeout: int = 60) -> tuple[str, float]:
+    if ds is None:
+        raise RuntimeError("DeepSeek client is not initialized")
     t0 = time.time()
     resp = ds.chat.completions.create(
         model=model,
@@ -408,147 +411,168 @@ def build_prompt(messages: list[str], prior_context: list[str], task: str) -> st
     return "\n\n".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# Run benchmark
-# ---------------------------------------------------------------------------
-@dataclass
-class Result:
-    category: str
-    task_short: str
-    model: str
-    mode: str
-    baseline_tokens: int
-    prompt_tokens: int
-    savings_pct: float
-    latency: float
-    self_eval: float
-    ref_score: float
-    combined: float
+def _run_benchmark_with_client():
+    # ---------------------------------------------------------------------------
+    # Run benchmark
+    # ---------------------------------------------------------------------------
+    @dataclass
+    class Result:
+        category: str
+        task_short: str
+        model: str
+        mode: str
+        baseline_tokens: int
+        prompt_tokens: int
+        savings_pct: float
+        latency: float
+        self_eval: float
+        ref_score: float
+        combined: float
 
-results: list[Result] = []
+    results: list[Result] = []
 
-MODELS = [
-    ("deepseek-chat",     "V3"),
-    ("deepseek-reasoner", "R1"),
-]
+    MODELS = [
+        ("deepseek-chat",     "V3"),
+        ("deepseek-reasoner", "R1"),
+    ]
 
-print("\n" + "="*80)
-print("  BREVITAS × DEEPSEEK BENCHMARK")
-print("="*80)
+    print("\n" + "="*80)
+    print("  BREVITAS × DEEPSEEK BENCHMARK")
+    print("="*80)
 
-for case in CASES:
-    category = case["category"]
-    task_short = case["task"][:55] + "…"
-    ref_facts = case["reference_facts"]
+    for case in CASES:
+        category = case["category"]
+        task_short = case["task"][:55] + "…"
+        ref_facts = case["reference_facts"]
 
-    # Compress once, reuse for both models
-    comp_msgs, pruned_ctx, baseline_toks, compressed_toks = compress_case(case)
-    savings = round((1 - compressed_toks / max(1, baseline_toks)) * 100, 1)
+        # Compress once, reuse for both models
+        comp_msgs, pruned_ctx, baseline_toks, compressed_toks = compress_case(case)
+        savings = round((1 - compressed_toks / max(1, baseline_toks)) * 100, 1)
 
-    baseline_prompt = build_prompt(case["messages"], case["prior_context"], case["task"])
-    compressed_prompt = build_prompt(comp_msgs, pruned_ctx, case["task"])
+        baseline_prompt = build_prompt(case["messages"], case["prior_context"], case["task"])
+        compressed_prompt = build_prompt(comp_msgs, pruned_ctx, case["task"])
 
-    print(f"\n[{category.upper()}] {task_short}")
-    print(f"  Tokens: {baseline_toks} → {compressed_toks}  ({savings}% saved)")
+        print(f"\n[{category.upper()}] {task_short}")
+        print(f"  Tokens: {baseline_toks} → {compressed_toks}  ({savings}% saved)")
 
-    for ds_model, label in MODELS:
-        for mode, prompt in [("BEFORE", baseline_prompt), ("AFTER", compressed_prompt)]:
-            print(f"  {label} {mode}… ", end="", flush=True)
-            try:
-                answer, lat = call_deepseek(
-                    ds_model,
-                    "You are a senior technical expert. Answer thoroughly and precisely.",
-                    prompt,
-                )
-                se = self_eval_score(ds_model, case["task"], answer)
-                rs = reference_score(answer, ref_facts)
-                combined = round((se / 10 * 0.5 + rs * 0.5) * 10, 2)  # 0-10 scale
-                print(f"self-eval={se:.0f}/10  ref={rs:.0%}  combined={combined:.1f}/10  lat={lat:.1f}s")
+        for ds_model, label in MODELS:
+            for mode, prompt in [("BEFORE", baseline_prompt), ("AFTER", compressed_prompt)]:
+                print(f"  {label} {mode}… ", end="", flush=True)
+                try:
+                    answer, lat = call_deepseek(
+                        ds_model,
+                        "You are a senior technical expert. Answer thoroughly and precisely.",
+                        prompt,
+                    )
+                    se = self_eval_score(ds_model, case["task"], answer)
+                    rs = reference_score(answer, ref_facts)
+                    combined = round((se / 10 * 0.5 + rs * 0.5) * 10, 2)  # 0-10 scale
+                    print(f"self-eval={se:.0f}/10  ref={rs:.0%}  combined={combined:.1f}/10  lat={lat:.1f}s")
 
-                prompt_toks = estimate_tokens(prompt)
-                results.append(Result(
-                    category=category,
-                    task_short=task_short,
-                    model=label,
-                    mode=mode,
-                    baseline_tokens=baseline_toks,
-                    prompt_tokens=prompt_toks,
-                    savings_pct=savings if mode == "AFTER" else 0.0,
-                    latency=lat,
-                    self_eval=se,
-                    ref_score=rs,
-                    combined=combined,
-                ))
-            except Exception as e:
-                print(f"ERROR: {e}")
+                    prompt_toks = estimate_tokens(prompt)
+                    results.append(Result(
+                        category=category,
+                        task_short=task_short,
+                        model=label,
+                        mode=mode,
+                        baseline_tokens=baseline_toks,
+                        prompt_tokens=prompt_toks,
+                        savings_pct=savings if mode == "AFTER" else 0.0,
+                        latency=lat,
+                        self_eval=se,
+                        ref_score=rs,
+                        combined=combined,
+                    ))
+                except Exception as e:
+                    print(f"ERROR: {e}")
 
-# ---------------------------------------------------------------------------
-# Summary table
-# ---------------------------------------------------------------------------
-print("\n" + "="*80)
-print("  RESULTS SUMMARY")
-print("="*80)
+    # ---------------------------------------------------------------------------
+    # Summary table
+    # ---------------------------------------------------------------------------
+    print("\n" + "="*80)
+    print("  RESULTS SUMMARY")
+    print("="*80)
 
-header = f"{'Category':<22} {'Model':<4} {'BEFORE':<26} {'AFTER':<26} {'Δ Quality':<10} {'Tokens saved'}"
-print(header)
-print("-" * 100)
+    header = f"{'Category':<22} {'Model':<4} {'BEFORE':<26} {'AFTER':<26} {'Δ Quality':<10} {'Tokens saved'}"
+    print(header)
+    print("-" * 100)
 
-categories = list(dict.fromkeys(r.category for r in results))
-for cat in categories:
+    categories = list(dict.fromkeys(r.category for r in results))
+    for cat in categories:
+        for _, label in MODELS:
+            before = [r for r in results if r.category == cat and r.model == label and r.mode == "BEFORE"]
+            after  = [r for r in results if r.category == cat and r.model == label and r.mode == "AFTER"]
+            if not before or not after:
+                continue
+            b = before[0]; a = after[0]
+            delta = a.combined - b.combined
+            sign = "+" if delta >= 0 else ""
+            toks_saved_pct = a.savings_pct
+            print(
+                f"{cat:<22} {label:<4} "
+                f"se={b.self_eval:.0f}  ref={b.ref_score:.0%}  Q={b.combined:.1f}   "
+                f"se={a.self_eval:.0f}  ref={a.ref_score:.0%}  Q={a.combined:.1f}   "
+                f"{sign}{delta:.1f}/10     {toks_saved_pct:.1f}%"
+            )
+
+    # Aggregate
+    print("\n" + "-"*100)
+    print("AGGREGATE (averaged across all cases):")
     for _, label in MODELS:
-        before = [r for r in results if r.category == cat and r.model == label and r.mode == "BEFORE"]
-        after  = [r for r in results if r.category == cat and r.model == label and r.mode == "AFTER"]
-        if not before or not after:
+        b_all = [r for r in results if r.model == label and r.mode == "BEFORE"]
+        a_all = [r for r in results if r.model == label and r.mode == "AFTER"]
+        if not b_all or not a_all:
             continue
-        b = before[0]; a = after[0]
-        delta = a.combined - b.combined
+        avg_b   = sum(r.combined for r in b_all) / len(b_all)
+        avg_a   = sum(r.combined for r in a_all) / len(a_all)
+        avg_sav = sum(r.savings_pct for r in a_all) / len(a_all)
+        avg_lat_b = sum(r.latency for r in b_all) / len(b_all)
+        avg_lat_a = sum(r.latency for r in a_all) / len(a_all)
+        retention = avg_a / max(0.01, avg_b) * 100
+        print(f"  {label}: Quality BEFORE={avg_b:.2f}/10  AFTER={avg_a:.2f}/10  "
+              f"Retention={retention:.1f}%  Avg tokens saved={avg_sav:.1f}%  "
+              f"Latency Δ={avg_lat_a - avg_lat_b:+.1f}s")
+
+    # Per-category breakdown
+    print("\nPER-CATEGORY AVERAGES (both models combined):")
+    for cat in categories:
+        b_cat = [r for r in results if r.category == cat and r.mode == "BEFORE"]
+        a_cat = [r for r in results if r.category == cat and r.mode == "AFTER"]
+        if not b_cat or not a_cat:
+            continue
+        avg_b = sum(r.combined for r in b_cat) / len(b_cat)
+        avg_a = sum(r.combined for r in a_cat) / len(a_cat)
+        avg_sav = sum(r.savings_pct for r in a_cat) / len(a_cat)
+        delta = avg_a - avg_b
         sign = "+" if delta >= 0 else ""
-        toks_saved_pct = a.savings_pct
-        print(
-            f"{cat:<22} {label:<4} "
-            f"se={b.self_eval:.0f}  ref={b.ref_score:.0%}  Q={b.combined:.1f}   "
-            f"se={a.self_eval:.0f}  ref={a.ref_score:.0%}  Q={a.combined:.1f}   "
-            f"{sign}{delta:.1f}/10     {toks_saved_pct:.1f}%"
-        )
+        print(f"  {cat:<22} BEFORE={avg_b:.2f}  AFTER={avg_a:.2f}  Δ={sign}{delta:.2f}  Savings={avg_sav:.1f}%")
 
-# Aggregate
-print("\n" + "-"*100)
-print("AGGREGATE (averaged across all cases):")
-for _, label in MODELS:
-    b_all = [r for r in results if r.model == label and r.mode == "BEFORE"]
-    a_all = [r for r in results if r.model == label and r.mode == "AFTER"]
-    if not b_all or not a_all:
-        continue
-    avg_b   = sum(r.combined for r in b_all) / len(b_all)
-    avg_a   = sum(r.combined for r in a_all) / len(a_all)
-    avg_sav = sum(r.savings_pct for r in a_all) / len(a_all)
-    avg_lat_b = sum(r.latency for r in b_all) / len(b_all)
-    avg_lat_a = sum(r.latency for r in a_all) / len(a_all)
-    retention = avg_a / max(0.01, avg_b) * 100
-    print(f"  {label}: Quality BEFORE={avg_b:.2f}/10  AFTER={avg_a:.2f}/10  "
-          f"Retention={retention:.1f}%  Avg tokens saved={avg_sav:.1f}%  "
-          f"Latency Δ={avg_lat_a - avg_lat_b:+.1f}s")
+    print("\n" + "="*80)
+    print("Benchmark complete.")
 
-# Per-category breakdown
-print("\nPER-CATEGORY AVERAGES (both models combined):")
-for cat in categories:
-    b_cat = [r for r in results if r.category == cat and r.mode == "BEFORE"]
-    a_cat = [r for r in results if r.category == cat and r.mode == "AFTER"]
-    if not b_cat or not a_cat:
-        continue
-    avg_b = sum(r.combined for r in b_cat) / len(b_cat)
-    avg_a = sum(r.combined for r in a_cat) / len(a_cat)
-    avg_sav = sum(r.savings_pct for r in a_cat) / len(a_cat)
-    delta = avg_a - avg_b
-    sign = "+" if delta >= 0 else ""
-    print(f"  {cat:<22} BEFORE={avg_b:.2f}  AFTER={avg_a:.2f}  Δ={sign}{delta:.2f}  Savings={avg_sav:.1f}%")
+    # Save raw results as JSON
+    out_path = ROOT / "benchmarks" / "deepseek_results.json"
+    out_path.parent.mkdir(exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump([vars(r) for r in results], f, indent=2)
+    print(f"Raw results saved → {out_path}")
 
-print("\n" + "="*80)
-print("Benchmark complete.")
 
-# Save raw results as JSON
-out_path = ROOT / "benchmarks" / "deepseek_results.json"
-out_path.parent.mkdir(exist_ok=True)
-with open(out_path, "w") as f:
-    json.dump([vars(r) for r in results], f, indent=2)
-print(f"Raw results saved → {out_path}")
+def main(client=None):
+    """Run with one owned pool, leaving an injected client under caller ownership."""
+    global ds
+    owned = client is None
+    active = (client if client is not None else
+              OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com"))
+    previous = ds
+    ds = active
+    try:
+        return _run_benchmark_with_client()
+    finally:
+        ds = previous
+        if owned:
+            safe_close_resource(active)
+
+
+if __name__ == "__main__":
+    main()

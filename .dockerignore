@@ -1,0 +1,58 @@
+# Source-control and local editor metadata
+.git
+.git/**
+.github
+.idea
+.vscode
+.DS_Store
+
+# Secrets and local authoritative/test data must never enter a Docker context
+.env
+.env*
+api/.secret_key
+api/*.db
+**/*.sqlite
+**/*.sqlite3
+*.pem
+*.key
+
+# Dependency trees and virtual environments
+node_modules
+**/node_modules
+.venv
+venv
+env
+
+# Python, test, coverage, and tool caches
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage
+htmlcov
+
+# Generated application/build artifacts
+.next
+.turbo
+.vercel
+out
+build
+dist
+dashboard/dist
+public/dashboard/assets
+*.log
+tmp
+temp
+
+# Repository areas not consumed by either production Dockerfile
+archive
+dashboard
+docs
+public
+src
+supabase
+tests
+unit-tests

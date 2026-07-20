@@ -1,0 +1,16 @@
+# Production-baseline upgrade suffix. The known baseline is the first 12 entries
+# of migration-fresh-manifest.txt, ending at 20260716_stripe_billing_rate_25pct.
+# Frozen security/compliance bodies are pinned in migration-frozen-checksums.txt.
+supabase/migrations/202607170001_enterprise_tenancy.sql
+supabase/migrations/202607170002_cache_security.sql
+supabase/migrations/202607170003_durable_jobs.sql
+supabase/migrations/202607170004_billing_recovery.sql
+supabase/migrations/202607170005_company_administration.sql
+supabase/migrations/202607170006_database_scaling.sql
+supabase/migrations/202607170007_compliance_workflows.sql
+supabase/migrations/202607170008_atomic_key_audit.sql
+supabase/migrations/202607170009_key_listing_security.sql
+supabase/migrations/202607170010_device_delivery_idempotency.sql
+supabase/migrations/202607170011_active_memberships.sql
+supabase/migrations/202607170012_receipt_accounting_alignment.sql
+supabase/migrations/202607170013_active_company_selection.sql

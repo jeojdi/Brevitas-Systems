@@ -35,8 +35,10 @@ def _no_real_retrieval(monkeypatch):
 BIG = "shared reference material for every analyst agent. " * 300   # >> 500-token gate
 
 
-def _msgs(system: str, task: str) -> list[dict]:
-    return [{"role": "system", "content": system},
+def _msgs(agent_context: str, task: str) -> list[dict]:
+    # b9 is only eligible for structurally simple plain-text turns. System/tool
+    # messages are covered by test_message_structure_safety and must never reorder.
+    return [{"role": "user", "content": agent_context},
             {"role": "user", "content": BIG},
             {"role": "user", "content": task}]
 
@@ -80,7 +82,7 @@ def test_lock_when_reorder_makes_cache_worse():
     # once locked, the pipeline is NEVER reordered again
     body = {"model": "deepseek-chat", "messages": _msgs("You are a2.", "task2?")}
     engine.optimize_request(body, "deepseek", router, sid, pipeline=pipe, agent="a2")
-    assert body["messages"][0]["role"] == "system", "locked pipeline keeps natural order"
+    assert body["messages"][0]["content"] == "You are a2.", "locked pipeline keeps natural order"
 
 
 def test_no_lock_when_reorder_improves_cache():
@@ -101,4 +103,4 @@ def test_no_reorder_without_two_observations():
         body = {"model": "deepseek-chat", "messages": _msgs(f"You are {agent}.", "t?")}
         engine.optimize_request(body, "deepseek", router, f"s-{pipe}-{agent}",
                                 pipeline=pipe, agent=agent)
-        assert body["messages"][0]["role"] == "system", "cold session must not reorder"
+        assert body["messages"][0]["content"] == f"You are {agent}.", "cold session must not reorder"

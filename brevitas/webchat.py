@@ -9,13 +9,24 @@ from __future__ import annotations
 
 import os
 import tempfile
-from dataclasses import dataclass, field
+import atexit
+from dataclasses import dataclass, field, replace
 from typing import Dict, List
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .chat import read_document, _load_key, _base_url
+from .resource_bounds import (
+    BoundedTTLMap,
+    ResourceBounds,
+    ResourceLimitExceeded,
+    extend_bounded_list,
+    require_size,
+    serialized_size_bytes,
+    safe_close_resource,
+    utf8_size,
+)
 
 
 @dataclass
@@ -27,11 +38,40 @@ class Session:
     cum_uncached: float = 0.0
     cum_actual: float = 0.0
     cached_total: int = 0
+    output_total: int = 0
     client: object = None
     model: str = ""
 
 
-_SESSIONS: Dict[str, Session] = {}
+_BOUNDS = ResourceBounds.from_env()
+
+
+def _session_size(value: Session) -> int:
+    return (utf8_size(value.doc) + serialized_size_bytes(value.history) + 2048)
+
+
+def _copy_session(value: Session) -> Session:
+    return replace(value, history=list(value.history))
+
+
+def _close_session(value: Session) -> None:
+    if value.client is not None:
+        safe_close_resource(value.client)
+
+
+_SESSIONS: BoundedTTLMap[str, Session] = BoundedTTLMap(
+    ttl_s=_BOUNDS.demo_session_ttl_s,
+    max_entries=_BOUNDS.demo_max_sessions,
+    max_value_bytes=_BOUNDS.demo_max_session_bytes,
+    max_total_bytes=min(256 * 1024 * 1024,
+                        _BOUNDS.demo_max_sessions * _BOUNDS.demo_max_session_bytes),
+    sizer=_session_size,
+    copier=_copy_session,
+    snapshotter=_copy_session,
+    on_remove=_close_session,
+    resource_key=lambda value: value.client if value.client is not None else value,
+)
+atexit.register(_SESSIONS.clear)
 
 
 _CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rb", ".java", ".rs", ".c", ".cpp",
@@ -60,6 +100,7 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
     from token_efficiency_model.lossless.provider_cache import count_tokens
 
     app = FastAPI(title="Brevitas Chat", docs_url=None, redoc_url=None)
+    app.router.on_shutdown.append(_SESSIONS.clear)
     key = _load_key(provider, api_key)
     model = {"deepseek": "deepseek-chat", "openai": "gpt-4o-mini"}.get(provider, "gpt-4o-mini")
     mode = "ON" if brevitas_enabled else "OFF"
@@ -70,23 +111,39 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
 
     @app.post("/api/upload")
     async def upload(files: List[UploadFile] = File(...), session: str = Form("default")):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        if len(files) > _BOUNDS.request_max_items:
+            return JSONResponse({"error": "Too many uploaded files."}, status_code=413)
         # build one big context from all uploaded files (a codebase or a single doc)
         parts, names = [], []
+        document_bytes = 0
         for f in files:
-            raw = await f.read()
+            raw = await f.read(_BOUNDS.demo_document_max_bytes + 1)
+            if len(raw) > _BOUNDS.demo_document_max_bytes:
+                return JSONResponse({"error": "Uploaded document is too large."}, status_code=413)
             ext = os.path.splitext(f.filename or "")[1].lower()
             if ext == ".pdf":
                 with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
                     tmp.write(raw); p = tmp.name
                 try:
-                    txt = read_document(p)
+                    try:
+                        txt = read_document(p, max_bytes=_BOUNDS.demo_document_max_bytes)
+                    except ResourceLimitExceeded as exc:
+                        return JSONResponse({"error": str(exc)}, status_code=413)
                 finally:
                     os.unlink(p)
             elif ext in _CODE_EXT or not ext:
                 txt = raw.decode("utf-8", "ignore")
             else:
                 continue
-            parts.append(f"// ===== FILE: {f.filename} =====\n{txt}")
+            part = f"// ===== FILE: {f.filename} =====\n{txt}"
+            document_bytes += utf8_size(part) + (2 if parts else 0)
+            if document_bytes > _BOUNDS.demo_document_max_bytes:
+                return JSONResponse({"error": "Combined document is too large."}, status_code=413)
+            parts.append(part)
             names.append(f.filename)
         if not parts:
             return JSONResponse({"error": "No readable code/text/PDF files found."}, status_code=400)
@@ -96,11 +153,20 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
         label = names[0] if len(names) == 1 else f"{len(names)} files"
         s = Session(doc=doc, doc_tokens=count_tokens(doc), name=label, model=model,
                     client=BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider)))
-        _SESSIONS[session] = s
+        try:
+            _SESSIONS.put(session, s)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
         return {"name": s.name, "tokens": s.doc_tokens, "files": len(names)}
 
     @app.post("/api/ask")
     async def ask(question: str = Form(...), session: str = Form("default")):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+            require_size(question, _BOUNDS.session_max_item_bytes,
+                         name="question", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
         s = _SESSIONS.get(session)
         if not s or not s.doc:
             return JSONResponse({"error": "Upload a codebase or document first."}, status_code=400)
@@ -130,12 +196,26 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
                 fresh = 0
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        s.history += [{"role": "user", "content": question},
-                      {"role": "assistant", "content": answer}]
-        s.cum_uncached += unc
-        s.cum_actual += act
-        s.cached_total += cached
-        s.output_total = getattr(s, "output_total", 0) + output
+        def update(current: Session) -> None:
+            extend_bounded_list(
+                current.history,
+                [{"role": "user", "content": question},
+                 {"role": "assistant", "content": answer}],
+                max_items=_BOUNDS.demo_history_max_items,
+                max_bytes=_BOUNDS.demo_history_max_bytes,
+            )
+            current.cum_uncached += unc
+            current.cum_actual += act
+            current.cached_total += cached
+            current.output_total += output
+
+        try:
+            updated = _SESSIONS.mutate(session, update)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        if updated is None:
+            return JSONResponse({"error": "Session expired; upload again."}, status_code=410)
+        s = updated
         total = round(100 * (1 - s.cum_actual / s.cum_uncached), 1) if s.cum_uncached else 0.0
         return {"answer": answer, "cached_tokens": cached, "input_fresh": fresh,
                 "output_tokens": output, "output_total": s.output_total,
@@ -144,6 +224,14 @@ def create_app(provider: str = "deepseek", api_key: str = "", brevitas_enabled: 
                 "strategy": strategy, "retr_baseline": retr_base, "retr_optimized": retr_opt,
                 "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                 "brevitas": brevitas_enabled}
+
+    @app.delete("/api/session")
+    def delete_session(session: str = "default"):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        return {"deleted": _SESSIONS.discard(session)}
 
     return app
 
@@ -207,7 +295,7 @@ $('file').onchange=async e=>{
   $('dropText').innerHTML='⏳ Reading '+files.length+' files…';
   const fd=new FormData();
   // skip junk dirs to keep the context lean
-  const skip=/(^|\/)(node_modules|\.git|dist|build|__pycache__|\.venv|venv)(\/|$)/;
+  const skip=/(^|\\/)(node_modules|\\.git|dist|build|__pycache__|\\.venv|venv)(\\/|$)/;
   let n=0;
   for(const f of files){ if(skip.test(f.webkitRelativePath||f.name))continue; fd.append('files',f); n++; if(n>=400)break; }
   fd.append('session','default');

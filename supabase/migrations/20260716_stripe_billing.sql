@@ -128,8 +128,17 @@ begin
         return 'inactive';
     end if;
 
-    period_start := coalesce(account.current_period_start, date_trunc('month', entry.occurred_at));
-    period_end := coalesce(account.current_period_end, period_start + interval '1 month');
+    if account.current_period_start is null
+       or account.current_period_end - account.current_period_start <> interval '7 days' then
+        update public.billing_ledger
+        set status = 'review', last_error = 'invalid Stripe weekly billing-period anchor'
+        where id = entry.id;
+        return 'review';
+    end if;
+    period_start := account.current_period_start
+        + floor(extract(epoch from (entry.occurred_at - account.current_period_start)) / 604800)
+          * interval '7 days';
+    period_end := period_start + interval '7 days';
     select coalesce(sum(fee_microusd), 0) into committed
     from public.billing_ledger
     where user_id = entry.user_id
@@ -139,7 +148,7 @@ begin
 
     if committed + entry.fee_microusd > p_cap_microusd then
         update public.billing_ledger
-        set status = 'capped', last_error = 'monthly safety cap reached'
+        set status = 'capped', last_error = 'weekly safety cap reached'
         where id = entry.id;
         return 'capped';
     end if;

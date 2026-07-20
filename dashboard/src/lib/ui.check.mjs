@@ -11,7 +11,8 @@ test('savings UI explains Stripe-hosted billing and the exact fee boundary', asy
   assert.match(billing, /25% of verified savings/)
   assert.match(app, /estimated_fee_usd: 7\.92/)
   assert.match(billing, /Stripe hosts card collection/)
-  assert.match(billing, /monthly safety cap/)
+  assert.match(billing, /weekly safety cap/)
+  assert.match(billing, /every seven days/)
   assert.doesNotMatch(billing, /card(number|_number)|payment_method_data/i)
 })
 
@@ -52,7 +53,7 @@ test('overview uses a savings-focused per-call area chart', async () => {
 test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
   const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
   assert.match(app, /\['localhost', '127\.0\.0\.1'\]\.includes\(window\.location\.hostname\)/)
-  assert.match(app, /\['dashboard', 'billing'\]\.includes\(PREVIEW_SECTION\)/)
+  assert.match(app, /\['dashboard', 'billing', 'onboarding', 'invitation'\]\.includes\(PREVIEW_SECTION\)/)
   assert.match(app, /previewStats=\{PREVIEW_STATS\}/)
   assert.match(app, /previewBilling=\{PREVIEW_BILLING\}/)
   assert.match(app, /if \(PREVIEW_MODE\) \{\s*return <DashboardPreview/)
@@ -68,4 +69,22 @@ test('admin UI combines protected PostHog and financial operations without secre
   assert.match(admin, /Billing · Amount owed/)
   assert.match(admin, /data-ph-sensitive/)
   assert.doesNotMatch(admin, /POSTHOG_PERSONAL_API_KEY|X-Brevitas-Admin/)
+})
+
+test('device connection consumes only authenticated company choices and handles denials safely', async () => {
+  const [device, app, company] = await Promise.all([
+    source('DeviceConnect'),
+    readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
+    source('CompanyAdministration'),
+  ])
+  assert.match(device, /companies\.find\(company => company\.company_id === selectedCompanyId\)/)
+  assert.match(device, /JSON\.stringify\(\{ device_code: deviceCode, company_id: selected\.company_id \}\)/)
+  assert.match(device, /response\.status === 409/)
+  assert.match(device, /response\.status === 403/)
+  assert.doesNotMatch(device, /X-Brevitas-Company-ID/)
+  assert.match(app, /fetchCompanyContext\(session\.access_token/)
+  assert.match(app, /setCompanyContext\(emptyCompanyContext\(\)\)/)
+  assert.match(app, /selectedCompanyId:[\s\S]*context\.activeCompanyId/)
+  assert.match(app, /company => company\.company_id === companyId/)
+  assert.match(company, /onCompanyContextChange\?\.\(value\)/)
 })

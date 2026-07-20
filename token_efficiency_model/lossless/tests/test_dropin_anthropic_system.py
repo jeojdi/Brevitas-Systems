@@ -1,6 +1,4 @@
-"""Regression: BrevitasDropIn must hoist a system-ROLE message into Anthropic's
-top-level `system` field (Anthropic rejects role:system inside messages -> 400).
-Caught live in the 18-manager hedge-fund A/B."""
+"""Anthropic system compatibility without changing mid-conversation semantics."""
 from __future__ import annotations
 
 from token_efficiency_model.lossless.dropin import BrevitasDropIn
@@ -48,3 +46,43 @@ def test_system_kwarg_and_system_message_merge(monkeypatch):
         model="claude-haiku-4-5-20251001", system="Global policy.", max_tokens=50)
     sysv = fake.captured.get("system") or ""
     assert "Role A." in sysv and "Global policy." in sysv
+
+
+def test_structured_top_level_system_is_preserved_when_merging(monkeypatch):
+    client = BrevitasDropIn(provider="anthropic", api_key="x")
+    fake = _FakeAnthropic()
+    monkeypatch.setattr(client, "_route_client", lambda p: fake)
+    structured = [{"type": "text", "text": "Global policy."}]
+    client.chat(
+        messages=[{"role": "system", "content": "Role A."},
+                  {"role": "user", "content": "hi"}],
+        model="claude-haiku-4-5-20251001", system=structured, max_tokens=50)
+    assert fake.captured["system"][0] == {"type": "text", "text": "Role A."}
+    assert fake.captured["system"][1:] == structured
+
+
+def test_mid_conversation_system_message_is_not_hoisted(monkeypatch):
+    client = BrevitasDropIn(provider="anthropic", api_key="x")
+    fake = _FakeAnthropic()
+    monkeypatch.setattr(client, "_route_client", lambda p: fake)
+    messages = [
+        {"role": "user", "content": "Draft an answer."},
+        {"role": "system", "content": "Now use the reviewer policy."},
+        {"role": "assistant", "content": "Reviewed answer."},
+        {"role": "user", "content": "Continue."},
+    ]
+    client.chat(messages=messages, model="claude-opus-4-8", max_tokens=50)
+    assert fake.captured["messages"] == messages
+    assert "system" not in fake.captured
+
+
+def test_directive_only_system_message_is_preserved(monkeypatch):
+    client = BrevitasDropIn(provider="anthropic", api_key="x")
+    fake = _FakeAnthropic()
+    monkeypatch.setattr(client, "_route_client", lambda p: fake)
+    directive = {"role": "system", "content": [],
+                 "output_config": {"effort": "high"}}
+    messages = [directive, {"role": "user", "content": "Continue."}]
+    client.chat(messages=messages, model="claude-opus-4-8", max_tokens=50)
+    assert fake.captured["messages"] == messages
+    assert "system" not in fake.captured

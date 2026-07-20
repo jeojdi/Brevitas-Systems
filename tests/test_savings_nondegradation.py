@@ -55,6 +55,8 @@ class _Resp:
 
 
 def _client(monkeypatch):
+    monkeypatch.setenv("BREVITAS_CACHE_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_CACHE_LOCAL", "true")
     monkeypatch.setattr(httpx, "AsyncClient", _CountingClient)
     proxy._cache_init_done = False
     proxy._cache_singleton = None

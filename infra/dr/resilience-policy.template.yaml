@@ -1,0 +1,58 @@
+# Repository template only. Applying or provisioning this policy requires a separately
+# approved infrastructure change. It intentionally contains no credentials or resource IDs.
+schema: brevitas.resilience-policy.v1
+status: draft
+region:
+  placement: one-primary-us-region
+  railway_supabase_redis_colocated: true
+postgres:
+  provider: supabase-team-or-enterprise
+  supavisor_pooling: true
+  pitr:
+    enabled_required: true
+    recovery_window_days: 14
+  logical_backup:
+    schedule_utc: "15 02 * * *"
+    encrypted_required: true
+    immutable_storage_required: true
+    retention_days: 35
+    integrity_manifest_required: true
+    restore_target_contract: brevitas-ephemeral-postgres-v1
+    restore_postgresql_major: 16
+    required_extensions: [pgcrypto, vector]
+    required_roles: [anon, authenticated, service_role]
+    independent_deletion_artifact_required: true
+    deletion_replay_before_readiness_required: true
+    restore_test_schedule: quarterly
+redis:
+  role: non-authoritative-coordination-only
+  tls_required: true
+  multi_zone_replication_required: true
+  persistence: aof-every-second
+  rebuild_source: postgres
+object_storage:
+  provider: TO_BE_SELECTED
+  private: true
+  encryption_key: MANAGED_KMS_KEY_REFERENCE_REQUIRED
+  lifecycle_delete_after_days: 35
+  object_lock_days: 35
+reliability:
+  critical_data_rpo_minutes: 15
+  service_rto_hours: 4
+  internal_restoration_target_minutes: 60
+evidence:
+  restricted_store: TO_BE_SELECTED
+  restore_test_retention_days: 400
+  access_review_schedule: quarterly
+authoritative_retention:
+  schedule_utc: "15 03 * * *"
+  worker: dedicated-railway-retention-worker
+  railway_config: infra/dr/railway-retention-worker.json
+  advisory_authority: brevitas.compliance.retention.worker.v1
+  replicas: 2
+  default_batch_limit: 5000
+  hard_batch_limit: 10000
+  backlog_alert_after_hours: 24
+  legal_hold_fail_closed: true
+  financial_ledger_automatic_deletion: false-until-counsel-approval
+  alerts: infra/dr/retention-alerts.yaml

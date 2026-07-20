@@ -1,148 +1,199 @@
-name: Security Scan
+name: Release security
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   schedule:
-    # Run security scan daily at 2 AM UTC
-    - cron: '0 2 * * *'
+    - cron: '17 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    name: Reproducible build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: '22'
-        cache: npm
-        cache-dependency-path: |
-          package-lock.json
-          dashboard/package-lock.json
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: pip
-        cache-dependency-path: |
-          pyproject.toml
-          api/requirements.txt
-    - name: Install root dependencies
-      run: npm ci
-    - name: Install dashboard dependencies
-      run: npm ci --prefix dashboard
-    - name: Test, lint, and build root app
-      env:
-        API_URL: http://localhost:8000
-        NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
-        VITE_SUPABASE_URL: https://example.supabase.co
-        VITE_SUPABASE_ANON_KEY: ci-placeholder
-      run: |
-        npm test
-        npm run lint
-        npm run build
-    - name: Test dashboard
-      run: npm test --prefix dashboard
-    - name: Build dashboard outside public/
-      env:
-        VITE_SUPABASE_URL: https://example.supabase.co
-        VITE_SUPABASE_ANON_KEY: ci-placeholder
-      run: npm run build --prefix dashboard -- --outDir /tmp/brevitas-dashboard-build --emptyOutDir
-    - name: Install backend dependencies
-      run: python -m pip install -e . -r api/requirements.txt pytest
-    - name: Test active backend suites
-      run: >-
-        pytest -q tests unit-tests
-        --ignore=unit-tests/test_real_llm_e2e.py
-        --ignore=unit-tests/test_structural_real_llm.py
-        -k 'not real_encoder_scores_identical_text_as_1'
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11.13'
+          cache: pip
+          cache-dependency-path: scripts/ci/python-test.lock
+      - name: Install locked JavaScript dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --ignore-scripts --prefix dashboard
+      - name: Install hashed Python dependencies
+        run: python -m pip install --require-hashes -r scripts/ci/python-test.lock
+      - name: Test, lint, and build root app
+        env:
+          API_URL: http://localhost:8000
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder
+        run: |
+          npm test
+          npm run lint
+          npm run build
+      - name: Test and build dashboard
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder
+        run: |
+          npm test --prefix dashboard
+          npm run build --prefix dashboard -- --outDir /tmp/brevitas-dashboard-build --emptyOutDir
+      - name: Test backend
+        run: >-
+          python -m pytest -q tests unit-tests token_efficiency_model/lossless/tests
+          --ignore=unit-tests/test_real_llm_e2e.py
+          --ignore=unit-tests/test_structural_real_llm.py
+          -k 'not real_encoder_scores_identical_text_as_1'
 
-  security-scan:
-    runs-on: ubuntu-latest
-
+  dependency-audit:
+    name: Blocking dependency audits (high/critical)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11.13'
+          cache: pip
+          cache-dependency-path: scripts/ci/python-audit.lock
+      - name: Audit root npm lock
+        run: npm audit --audit-level=high
+      - name: Audit dashboard npm lock
+        run: npm audit --prefix dashboard --audit-level=high
+      - name: Install hashed Python audit tooling
+        run: python -m pip install --require-hashes -r scripts/ci/python-audit.lock
+      - name: Audit hashed Python runtime locks
+        run: |
+          pip-audit --strict --require-hashes --disable-pip -r scripts/ci/python-runtime.lock
+          pip-audit --strict --require-hashes --disable-pip --vulnerability-service osv -r scripts/ci/python-compressor.lock
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
+  sast:
+    name: Blocking SAST (Semgrep ERROR)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11.13'
+          cache: pip
+          cache-dependency-path: scripts/ci/python-sast.lock
+      - name: Install hashed SAST tooling
+        run: python -m pip install --require-hashes -r scripts/ci/python-sast.lock
+      - name: Run repository SAST policy
+        run: semgrep scan --config .github/semgrep.yml --severity ERROR --error --metrics off
 
-    - name: Install dependencies
-      run: npm ci
+  secret-scan:
+    name: Blocking verified-secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan pull-request commit range
+        if: github.event_name == 'pull_request'
+        uses: trufflesecurity/trufflehog@e88e7d019eb84ca64f6b768c82eb6bf1a6271401 # v3.90.9
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --only-verified
+          version: 3.90.9@sha256:b8541abacdcf6c6a728bf1c9d868cacacb4addec8fbb6d258dc5699b74fad5c5
+      - name: Scan push commit range
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        uses: trufflesecurity/trufflehog@e88e7d019eb84ca64f6b768c82eb6bf1a6271401 # v3.90.9
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.sha }}
+          extra_args: --only-verified
+          version: 3.90.9@sha256:b8541abacdcf6c6a728bf1c9d868cacacb4addec8fbb6d258dc5699b74fad5c5
+      - name: Scan full repository
+        if: github.event_name == 'schedule' || (github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000')
+        uses: trufflesecurity/trufflehog@e88e7d019eb84ca64f6b768c82eb6bf1a6271401 # v3.90.9
+        with:
+          path: ./
+          base: ''
+          head: HEAD
+          extra_args: --only-verified
+          version: 3.90.9@sha256:b8541abacdcf6c6a728bf1c9d868cacacb4addec8fbb6d258dc5699b74fad5c5
 
-    - name: Run npm audit
-      run: |
-        npm audit --production --json > npm-audit.json || true
-        echo "NPM Audit Results:"
-        cat npm-audit.json | jq '.' || cat npm-audit.json
-      continue-on-error: true
-
-    - name: Check for secrets with TruffleHog
-      uses: trufflesecurity/trufflehog@main
-      with:
-        path: ./
-        base: ${{ github.event.pull_request.base.sha || github.event.before || github.event.repository.default_branch }}
-        head: ${{ github.event.pull_request.head.sha || github.sha }}
-
-    - name: Run Semgrep security scan
-      uses: returntocorp/semgrep-action@v1
-      with:
-        config: >-
-          p/security-audit
-          p/owasp-top-ten
-          p/javascript
-          p/react
-          p/nodejs
-
-    - name: Check for SQL injection patterns
-      run: |
-        echo "Checking for SQL injection vulnerabilities..."
-        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
-           -E "(query|execute|exec)\(.*\+.*\)" .; then
-          echo "Warning: Potential SQL injection patterns found"
-        fi
-
-    - name: Check for XSS vulnerabilities
-      run: |
-        echo "Checking for XSS vulnerabilities..."
-        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
-           -E "dangerouslySetInnerHTML|innerHTML" .; then
-          echo "Warning: Potential XSS vulnerabilities found"
-        fi
-
-    - name: Check for exposed environment variables
-      run: |
-        echo "Checking for exposed environment variables..."
-        if grep -r --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
-           -E "process\.env\.[A-Z_]+.*['\"]" . | grep -v "NEXT_PUBLIC_"; then
-          echo "Warning: Non-public environment variables may be exposed"
-        fi
-
-    - name: Dependency vulnerability scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-        severity: 'CRITICAL,HIGH,MEDIUM'
-
-    - name: Display Trivy results
-      run: |
-        echo "Running Trivy scan for display..."
-        docker run --rm -v "$PWD":/src aquasec/trivy fs /src --severity CRITICAL,HIGH,MEDIUM || true
-      continue-on-error: true
-
-    - name: Upload security results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: security-scan-results
-        path: |
-          npm-audit.json
-          trivy-results.sarif
-        if-no-files-found: warn
+  container-scan:
+    name: Blocking container scan (high/critical)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build release images without publishing
+        run: |
+          docker build --pull=false --tag brevitas-api:ci .
+          docker build --pull=false --file services/compress/Dockerfile --tag brevitas-compressor:ci .
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          scan-type: image
+          image-ref: brevitas-api:ci
+          version: v0.65.0
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+      - name: Scan compressor image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          scan-type: image
+          image-ref: brevitas-compressor:ci
+          version: v0.65.0
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL

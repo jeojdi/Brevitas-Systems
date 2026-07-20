@@ -21,8 +21,24 @@ interface RateLimitConfig {
 interface RateLimitEntry {
   requests: number;
   windowStart: number;
+  lastSeen: number;
   blocked: boolean;
   blockExpiry?: number;
+}
+
+interface RateLimiterOptions {
+  maxEntries?: number;
+  entryTtlMs?: number;
+  cleanupIntervalMs?: number;
+  now?: () => number;
+}
+
+function finiteInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error('Rate limiter resource bounds must be finite integers');
+  }
+  return Math.min(maximum, Math.max(minimum, parsed));
 }
 
 // Different rate limit tiers for different endpoints
@@ -60,15 +76,37 @@ export const RATE_LIMITS = {
   }
 };
 
-class RateLimiter {
+export class RateLimiter {
   private store: Map<string, RateLimitEntry> = new Map();
   private cleanupInterval: NodeJS.Timeout;
+  private readonly maxEntries: number;
+  private readonly entryTtlMs: number;
+  private readonly now: () => number;
 
-  constructor() {
-    // Cleanup expired entries every minute
+  constructor(options: RateLimiterOptions = {}) {
+    this.maxEntries = finiteInteger(
+      options.maxEntries ?? process.env.BREVITAS_WEB_RATE_LIMIT_MAX_ENTRIES,
+      50_000,
+      1,
+      250_000,
+    );
+    this.entryTtlMs = finiteInteger(
+      options.entryTtlMs ?? process.env.BREVITAS_WEB_RATE_LIMIT_TTL_MS,
+      60 * 60 * 1000,
+      1000,
+      24 * 60 * 60 * 1000,
+    );
+    this.now = options.now ?? Date.now;
+    const intervalMs = finiteInteger(
+      options.cleanupIntervalMs ?? process.env.BREVITAS_WEB_RATE_LIMIT_CLEANUP_MS,
+      60 * 1000,
+      1000,
+      60 * 60 * 1000,
+    );
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
-    }, 60 * 1000);
+    }, intervalMs);
+    this.cleanupInterval.unref?.();
   }
 
   /**
@@ -95,6 +133,10 @@ class RateLimiter {
     return `${ip}:${endpoint}`;
   }
 
+  private keyIsBounded(key: string): boolean {
+    return new TextEncoder().encode(key).byteLength <= 512;
+  }
+
   /**
    * Check if a request should be rate limited
    */
@@ -111,7 +153,25 @@ class RateLimiter {
   }> {
     const ip = this.getClientIp(request);
     const key = this.getKey(ip, endpoint);
-    const now = Date.now();
+    const now = this.now();
+    const windowMs = finiteInteger(config.windowMs, 60_000, 1, 24 * 60 * 60 * 1000);
+    const maxRequests = finiteInteger(config.maxRequests, 30, 1, 1_000_000);
+    const blockDurationMs = finiteInteger(
+      config.blockDurationMs,
+      60_000,
+      1,
+      24 * 60 * 60 * 1000,
+    );
+
+    if (!this.keyIsBounded(key)) {
+      return {
+        allowed: false,
+        remaining: 0,
+        reset: now + 1000,
+        retryAfter: 1,
+        message: 'Rate limit identity is too large'
+      };
+    }
 
     let entry = this.store.get(key);
 
@@ -128,29 +188,43 @@ class RateLimiter {
     }
 
     // Initialize or reset entry if window expired
-    if (!entry || now - entry.windowStart > config.windowMs) {
+    if (!entry || now - entry.windowStart > windowMs) {
+      this.cleanup();
+      if (!entry && this.store.size >= this.maxEntries) {
+        // Capacity pressure must not evict an active limiter entry and let a new
+        // identity bypass enforcement. Deny until an expired slot is available.
+        return {
+          allowed: false,
+          remaining: 0,
+          reset: now + 1000,
+          retryAfter: 1,
+          message: 'Rate limiter capacity reached'
+        };
+      }
       entry = {
         requests: 0,
         windowStart: now,
+        lastSeen: now,
         blocked: false
       };
       this.store.set(key, entry);
     }
 
     // Increment request count
+    entry.lastSeen = now;
     entry.requests++;
 
     // Check if limit exceeded
-    if (entry.requests > config.maxRequests) {
+    if (entry.requests > maxRequests) {
       // Block the IP
       entry.blocked = true;
-      entry.blockExpiry = now + (config.blockDurationMs || 60000);
+      entry.blockExpiry = now + blockDurationMs;
 
-      const retryAfter = Math.ceil((config.blockDurationMs || 60000) / 1000);
+      const retryAfter = Math.ceil(blockDurationMs / 1000);
 
       // Log potential DDoS attempt if excessive
-      if (entry.requests > config.maxRequests * 3) {
-        console.warn(`[SECURITY] Potential DDoS from IP ${ip}: ${entry.requests} requests in ${config.windowMs}ms`);
+      if (entry.requests > maxRequests * 3) {
+        console.warn(`[SECURITY] Potential DDoS from IP ${ip}: ${entry.requests} requests in ${windowMs}ms`);
       }
 
       return {
@@ -163,8 +237,8 @@ class RateLimiter {
     }
 
     // Request allowed
-    const remaining = config.maxRequests - entry.requests;
-    const reset = entry.windowStart + config.windowMs;
+    const remaining = maxRequests - entry.requests;
+    const reset = entry.windowStart + windowMs;
 
     return {
       allowed: true,
@@ -177,20 +251,15 @@ class RateLimiter {
    * Clean up expired entries to prevent memory leaks
    */
   private cleanup(): void {
-    const now = Date.now();
+    const now = this.now();
     const expired: string[] = [];
 
     this.store.forEach((entry, key) => {
-      // Remove entries older than 1 hour
-      if (now - entry.windowStart > 3600000) {
+      // A hard TTL applies even if future endpoint configurations have long windows.
+      if (now - entry.lastSeen >= this.entryTtlMs) {
         expired.push(key);
       }
-      // Remove unblocked entries older than their window
-      else if (!entry.blocked && now - entry.windowStart > 300000) {
-        expired.push(key);
-      }
-      // Remove blocked entries after block expiry + 1 hour
-      else if (entry.blocked && entry.blockExpiry && now > entry.blockExpiry + 3600000) {
+      else if (entry.blocked && entry.blockExpiry && now >= entry.blockExpiry) {
         expired.push(key);
       }
     });
@@ -210,6 +279,7 @@ class RateLimiter {
     blockedIps: number;
     topOffenders: Array<{ ip: string; requests: number }>;
   } {
+    this.cleanup();
     const blockedIps = Array.from(this.store.entries()).filter(
       ([, entry]) => entry.blocked
     ).length;
@@ -234,13 +304,23 @@ class RateLimiter {
    */
   blockIp(ip: string, durationMs: number = 3600000): void {
     const key = this.getKey(ip, 'manual-block');
+    if (!this.keyIsBounded(key)) {
+      throw new Error('Rate limit identity is too large');
+    }
+    const now = this.now();
+    const duration = finiteInteger(durationMs, 3600000, 1000, this.entryTtlMs);
+    this.cleanup();
+    if (!this.store.has(key) && this.store.size >= this.maxEntries) {
+      throw new Error('Rate limiter capacity reached; manual block was not retained');
+    }
     this.store.set(key, {
       requests: 999999,
-      windowStart: Date.now(),
+      windowStart: now,
+      lastSeen: now,
       blocked: true,
-      blockExpiry: Date.now() + durationMs
+      blockExpiry: now + duration
     });
-    console.log(`[RateLimiter] Manually blocked IP ${ip} for ${durationMs}ms`);
+    console.log(`[RateLimiter] Manually blocked IP ${ip} for ${duration}ms`);
   }
 
   /**

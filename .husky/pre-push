@@ -12,7 +12,10 @@ patterns=(
   "api[_-]?key.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
   "password.*=.*['\"][^'\"]+['\"]"
   "token.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
-  "Bearer [a-zA-Z0-9\-\._~\+\/]+"
+  # Generic opaque bearer credentials are long; shorter literals are commonly
+  # protocol examples and test fixtures. Structured secret prefixes are
+  # checked separately above.
+  "Bearer [a-zA-Z0-9\-\._~\+\/]{32,}"
   "AWS[A-Z0-9]{16,}"
   "-----BEGIN (RSA|EC|DSA) PRIVATE KEY-----"
 )

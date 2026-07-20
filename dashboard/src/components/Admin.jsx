@@ -6,6 +6,7 @@ const usd = value => `$${Number(value || 0).toFixed(4)}`
 const billingUsd = value => `$${Number(value || 0).toFixed(2)}`
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${Math.round(seconds)}s`
 const ranges = ['7d', '30d', '90d', 'all']
+const sortFields = ['actual_cost_usd', 'baseline_cost_usd', 'verified_savings_usd', 'brevitas_fee_usd', 'calls', 'tokens_saved']
 
 function StatCard({ label, value, accent = '' }) {
   return <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5">
@@ -32,16 +33,20 @@ export default function Admin({ accessToken, refreshTick }) {
   const [traffic, setTraffic] = useState(null)
   const [error, setError] = useState('')
   const [trafficError, setTrafficError] = useState('')
-  const [offset, setOffset] = useState(0)
+  const [cursor, setCursor] = useState('')
+  const [cursorStack, setCursorStack] = useState([])
+  const [sort, setSort] = useState('actual_cost_usd')
+  const [direction, setDirection] = useState('desc')
   const [billingOpen, setBillingOpen] = useState(false)
   const [billing, setBilling] = useState(null)
   const [billingError, setBillingError] = useState('')
 
   const query = useMemo(() => {
-    const params = new URLSearchParams({ range, limit: '100', offset: String(offset) })
+    const params = new URLSearchParams({ range, limit: '100', sort, direction })
+    if (cursor) params.set('cursor', cursor)
     Object.entries(filters).forEach(([key, value]) => { if (value.trim()) params.set(key, value.trim()) })
     return params.toString()
-  }, [range, filters, offset])
+  }, [range, filters, cursor, sort, direction])
 
   const billingQuery = useMemo(() => {
     const params = new URLSearchParams({ range })
@@ -88,15 +93,35 @@ export default function Admin({ accessToken, refreshTick }) {
   }, [accessToken, billingOpen, billingQuery, refreshTick])
 
   const updateFilter = (key, value) => {
-    setOffset(0)
+    setCursor('')
+    setCursorStack([])
     setFilters(current => ({ ...current, [key]: value }))
+  }
+
+  const resetCursor = () => {
+    setCursor('')
+    setCursorStack([])
+  }
+
+  const nextPage = () => {
+    const next = data?.pagination?.next_cursor || ''
+    if (!next) return
+    setCursorStack(stack => [...stack, cursor])
+    setCursor(next)
+  }
+
+  const previousPage = () => {
+    if (!cursorStack.length) return
+    const previous = cursorStack[cursorStack.length - 1]
+    setCursorStack(stack => stack.slice(0, -1))
+    setCursor(previous)
   }
 
   if (error && !data) return <p className="font-mono text-xs text-red-500">{error}</p>
   if (!data) return <p className="annotation">// loading admin operations…</p>
 
   const totals = data.totals || {}
-  const page = data.pagination || { total: data.rows.length, limit: 100, offset: 0 }
+  const page = data.pagination || { total: data.rows.length, limit: 100, next_cursor: '', has_more: false }
 
   return <div className="space-y-10 ph-no-capture" data-ph-sensitive>
     <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5">
@@ -106,7 +131,7 @@ export default function Admin({ accessToken, refreshTick }) {
         <p className="text-brand-muted mt-3 max-w-3xl">Financial receipts and masked web analytics. Prompts, responses, code, paths, provider keys, and network bodies are excluded.</p>
       </div>
       <div className="flex gap-2" aria-label="Reporting period">
-        {ranges.map(value => <button key={value} onClick={() => { setRange(value); setOffset(0) }}
+        {ranges.map(value => <button key={value} onClick={() => { setRange(value); resetCursor() }}
           className={`px-3 py-2 rounded-xl font-mono text-xs ${range === value ? 'bg-brand-blue text-white' : 'border border-brand-border dark:border-brand-dark-border text-brand-muted'}`}>{value}</button>)}
       </div>
     </div>
@@ -191,6 +216,20 @@ export default function Admin({ accessToken, refreshTick }) {
             className="mt-1 w-full rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy" data-ph-sensitive />
         </label>)}
       </div>
+      <div className="flex flex-wrap gap-3">
+        <label className="annotation">Sort
+          <select value={sort} onChange={event => { setSort(event.target.value); resetCursor() }}
+            className="ml-2 rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy">
+            {sortFields.map(field => <option key={field} value={field}>{field.replaceAll('_', ' ')}</option>)}
+          </select>
+        </label>
+        <label className="annotation">Direction
+          <select value={direction} onChange={event => { setDirection(event.target.value); resetCursor() }}
+            className="ml-2 rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy">
+            <option value="desc">Descending</option><option value="asc">Ascending</option>
+          </select>
+        </label>
+      </div>
       {error && <p className="font-mono text-xs text-red-500">{error}</p>}
       <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
         <table className="w-full min-w-[1180px] text-left"><thead><tr>{['Account', 'Project / client', 'Provider / model', 'Calls', 'Tokens saved', 'Actual spend', 'Baseline', 'Verified savings', 'Brevitas fee'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
@@ -203,7 +242,7 @@ export default function Admin({ accessToken, refreshTick }) {
             <td className="font-mono text-xs px-4 py-3 text-brand-teal">{usd(row.verified_savings_usd)}</td><td className="font-mono text-xs px-4 py-3 text-brand-blue">{usd(row.brevitas_fee_usd)}</td>
           </tr>)}</tbody></table>
       </div>
-      <div className="flex items-center justify-between"><p className="annotation">{page.total ? `${page.offset + 1}–${Math.min(page.offset + page.limit, page.total)} of ${page.total}` : 'No matching rows'}</p><div className="flex gap-2"><button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 100))} className="annotation disabled:opacity-40">Previous</button><button disabled={offset + page.limit >= page.total} onClick={() => setOffset(offset + 100)} className="annotation disabled:opacity-40">Next</button></div></div>
+      <div className="flex items-center justify-between"><p className="annotation">{page.total ? `Page ${cursorStack.length + 1} · ${page.total} matching rows` : 'No matching rows'}</p><div className="flex gap-2"><button disabled={!cursorStack.length} onClick={previousPage} className="annotation disabled:opacity-40">Previous</button><button disabled={!page.has_more || !page.next_cursor} onClick={nextPage} className="annotation disabled:opacity-40">Next</button></div></div>
     </section>
   </div>
 }

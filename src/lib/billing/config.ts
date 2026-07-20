@@ -6,15 +6,16 @@ let stripeClient: Stripe | null = null;
 let validatedPrice: Promise<void> | null = null;
 
 export function billingConfig() {
-  const monthlyCapUsd = Number(process.env.BREVITAS_BILLING_MONTHLY_CAP_USD || 0);
+  const weeklyCapUsd = Number(process.env.BREVITAS_BILLING_WEEKLY_CAP_USD || 0);
   return {
+    enabled: process.env.BREVITAS_BILLING_ENABLED === 'true',
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    cronSecret: process.env.CRON_SECRET || '',
+    recoverySecret: process.env.BILLING_RECOVERY_SECRET || process.env.CRON_SECRET || '',
     priceId: process.env.STRIPE_PRICE_ID || '',
     meterEventName: process.env.STRIPE_METER_EVENT_NAME || 'brevitas_fee_microusd',
     publicUrl: (process.env.BREVITAS_PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
-    monthlyCapUsd,
+    weeklyCapUsd,
     automaticTax: process.env.STRIPE_AUTOMATIC_TAX === 'true',
   };
 }
@@ -29,14 +30,15 @@ export function billingIsConfigured(): boolean {
     safePublicUrl = false;
   }
   return Boolean(
+    config.enabled &&
     config.secretKey &&
     config.webhookSecret &&
-    config.cronSecret &&
+    config.recoverySecret &&
     config.priceId &&
     config.meterEventName &&
-    Number.isFinite(config.monthlyCapUsd) &&
-    config.monthlyCapUsd > 0 &&
-    config.monthlyCapUsd <= 100_000 &&
+    Number.isFinite(config.weeklyCapUsd) &&
+    config.weeklyCapUsd > 0 &&
+    config.weeklyCapUsd <= 100_000 &&
     safePublicUrl
   );
 }
@@ -62,7 +64,7 @@ export async function validateStripeCatalog(): Promise<void> {
       price.currency !== 'usd' ||
       price.billing_scheme !== 'per_unit' ||
       price.unit_amount_decimal?.toString() !== '0.0001' ||
-      price.recurring?.interval !== 'month' ||
+      price.recurring?.interval !== 'week' ||
       price.recurring?.usage_type !== 'metered' ||
       !meterId
     ) {

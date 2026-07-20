@@ -1,0 +1,45 @@
+rules:
+  - id: python-dynamic-code-execution
+    languages: [python]
+    message: Dynamic code execution is forbidden in release code.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+    paths:
+      exclude:
+        # Reviewed RLM capability: restricted builtins and an isolated namespace.
+        - /token_efficiency_model/lossless/rlm.py
+  - id: python-shell-command-injection
+    languages: [python]
+    message: Shell-enabled subprocess execution is forbidden.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$FUNC(..., shell=True, ...)
+          - pattern: os.system(...)
+  - id: javascript-dynamic-code-execution
+    languages: [javascript, typescript]
+    message: Dynamic JavaScript execution is forbidden in server and browser code.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+  - id: react-unsafe-html
+    languages: [javascript, typescript]
+    message: Review and remove raw HTML injection before release.
+    severity: ERROR
+    patterns:
+      - pattern: <$ELEMENT ... dangerouslySetInnerHTML=$VALUE ... />
+      # Static repository-owned schema data, not user/provider content.
+      - pattern-not: '<script ... type="application/ld+json" ... dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} ... />'
+  - id: node-shell-command-injection
+    languages: [javascript, typescript]
+    message: Shell command execution is forbidden in application code.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec(...)
+          - pattern: child_process.execSync(...)

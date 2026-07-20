@@ -16,6 +16,9 @@ No breaking changes to the underlying provider API — pass any chat() args thro
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -71,10 +74,154 @@ class BrevitasDropIn:
         self.provider = provider
         self.api_key = api_key
         self._client = None
+        self._client_provider: Optional[str] = None
+        self._lifecycle = threading.Condition(threading.RLock())
+        self._transitioning = False
+        self._active_calls = 0
+        self._shutdown = False
         # one router per client; auto-decides cache_only vs retrieve per call and learns
         # each provider's real cache-hit rate from responses.
         self._router = BrevitasRouter(provider=(provider or "openai"))
         self._session_seq = 0
+
+    @staticmethod
+    async def _await_close_result(result: Any) -> None:
+        if inspect.isawaitable(result):
+            await result
+
+    @classmethod
+    def _run_awaitable_sync(cls, result: Any) -> None:
+        if not inspect.isawaitable(result):
+            return
+
+        def run() -> None:
+            try:
+                asyncio.run(cls._await_close_result(result))
+            except (Exception, asyncio.CancelledError):
+                pass
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            run()
+            return
+        thread = threading.Thread(target=run, name="brevitas-client-close", daemon=False)
+        thread.start()
+        thread.join()
+
+    @classmethod
+    def _close_client_sync(cls, client: Any) -> None:
+        """Invoke exactly one available closer without exposing its exception text."""
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                cls._run_awaitable_sync(close())
+            except (Exception, asyncio.CancelledError):
+                pass
+            return
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            try:
+                cls._run_awaitable_sync(aclose())
+            except (Exception, asyncio.CancelledError):
+                pass
+
+    @staticmethod
+    async def _close_client_async(client: Any) -> None:
+        """Prefer the async closer; move a sync closer off the event loop."""
+        aclose = getattr(client, "aclose", None)
+        if callable(aclose):
+            try:
+                result = aclose()
+                if inspect.isawaitable(result):
+                    await result
+            except (Exception, asyncio.CancelledError):
+                pass
+            return
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except (Exception, asyncio.CancelledError):
+                pass
+
+    def _begin_shutdown(self) -> Any:
+        with self._lifecycle:
+            while self._transitioning:
+                self._lifecycle.wait()
+            if self._shutdown and self._client is None:
+                return None
+            self._shutdown = True
+            while self._active_calls:
+                self._lifecycle.wait()
+            client = self._client
+            self._client = None
+            self._client_provider = None
+            if client is None:
+                return None
+            self._transitioning = True
+            return client
+
+    def _finish_transition(self) -> None:
+        with self._lifecycle:
+            self._transitioning = False
+            self._lifecycle.notify_all()
+
+    def close(self) -> None:
+        """Synchronously close the owned provider pool exactly once."""
+        client = self._begin_shutdown()
+        if client is None:
+            return
+        try:
+            self._close_client_sync(client)
+        finally:
+            self._finish_transition()
+
+    async def _aclose_impl(self) -> None:
+        client = await asyncio.to_thread(self._begin_shutdown)
+        if client is None:
+            return
+        try:
+            await self._close_client_async(client)
+        finally:
+            self._finish_transition()
+
+    async def aclose(self) -> None:
+        """Close asynchronously and finish cleanup even if the caller is cancelled."""
+        cleanup = asyncio.create_task(self._aclose_impl(), name="brevitas-client-aclose")
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as cancelled:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                cleanup.result()
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise cancelled
+
+    def __enter__(self) -> "BrevitasDropIn":
+        with self._lifecycle:
+            if self._shutdown:
+                raise RuntimeError("Brevitas client is closed")
+        return self
+
+    def __exit__(self, *_args: Any) -> bool:
+        self.close()
+        return False
+
+    async def __aenter__(self) -> "BrevitasDropIn":
+        with self._lifecycle:
+            if self._shutdown:
+                raise RuntimeError("Brevitas client is closed")
+        return self
+
+    async def __aexit__(self, *_args: Any) -> bool:
+        await self.aclose()
+        return False
 
     def _detect_provider(self, model: Optional[str] = None) -> str:
         """Detect provider from explicit arg, model name, or base_url."""
@@ -94,35 +241,80 @@ class BrevitasDropIn:
 
     def _route_client(self, provider: str) -> Any:
         """Return or create the appropriate client for the provider."""
-        # Check if we have a cached client for this specific provider
-        if (self._client is not None and
-            hasattr(self._client, "__provider__") and
-            self._client.__provider__ == provider):
-            return self._client
+        with self._lifecycle:
+            while True:
+                while self._transitioning:
+                    self._lifecycle.wait()
+                if self._shutdown:
+                    raise RuntimeError("Brevitas client is closed")
+                current_provider = self._client_provider or getattr(
+                    self._client, "__provider__", None)
+                if self._client is not None and current_provider == provider:
+                    return self._client
+                if self._active_calls:
+                    self._lifecycle.wait()
+                    continue
+                self._transitioning = True
+                prior = self._client
+                self._client = None
+                self._client_provider = None
+                break
 
-        if provider == "anthropic":
+        client = None
+        try:
+            if prior is not None:
+                self._close_client_sync(prior)
+            if provider == "anthropic":
+                try:
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=self.api_key)
+                except ImportError:
+                    raise ImportError(
+                        "anthropic package required; install with: pip install anthropic"
+                    )
+            else:
+                try:
+                    import openai
+                    client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+                except ImportError:
+                    raise ImportError(
+                        "openai package required; install with: pip install openai"
+                    )
             try:
-                import anthropic
-                client = anthropic.Anthropic(api_key=self.api_key)
-                client.__provider__ = "anthropic"
-                self._client = client
-                return client
-            except ImportError:
-                raise ImportError(
-                    "anthropic package required; install with: pip install anthropic"
-                )
-        else:
-            # OpenAI or DeepSeek style (compatible API)
-            try:
-                import openai
-                client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
                 client.__provider__ = provider
+            except Exception:
+                pass
+            with self._lifecycle:
                 self._client = client
-                return client
-            except ImportError:
-                raise ImportError(
-                    "openai package required; install with: pip install openai"
-                )
+                self._client_provider = provider
+            return client
+        finally:
+            self._finish_transition()
+
+    def _acquire_client(self, provider: str) -> Any:
+        while True:
+            client = self._route_client(provider)
+            with self._lifecycle:
+                if self._shutdown:
+                    raise RuntimeError("Brevitas client is closed")
+                # Compatibility tests and integrations sometimes override
+                # ``_route_client`` with a factory that returns, but does not cache,
+                # the provider client. Adopt it only while ownership is empty and no
+                # replacement is in progress; otherwise retry against the winner.
+                if self._client is None and not self._transitioning:
+                    self._client = client
+                    self._client_provider = provider
+                    self._active_calls += 1
+                    return client
+                if self._client is client and not self._transitioning:
+                    self._active_calls += 1
+                    return client
+
+    def _release_client(self) -> None:
+        with self._lifecycle:
+            self._active_calls = max(0, self._active_calls - 1)
+            if self._active_calls == 0:
+                self._lifecycle.notify_all()
 
     def chat(
         self,
@@ -148,39 +340,54 @@ class BrevitasDropIn:
             (response, SavingsReport) — honest cost/token metrics from real usage.
         """
         provider = self._detect_provider(model)
-        client = self._route_client(provider)
 
         body = {"messages": list(messages), "model": model, **kwargs}
 
-        # Anthropic requires `system` as a TOP-LEVEL field, not a role in messages.
-        # Customers writing OpenAI-style messages (system role in the list) must not 400
-        # when wrapped for Anthropic — hoist leading system-role messages into `system`,
-        # losslessly (same content, correct field). Merge with any explicit system kwarg.
+        # Legacy OpenAI-style *leading, plain-text* system messages map to Anthropic's
+        # top-level `system`.  Do not hoist mid-conversation or structured system
+        # directives: Claude Opus 4.8 supports them and their exact position is semantic.
         if provider == "anthropic":
-            sys_texts, rest = [], []
+            sys_texts = []
+            leading = 0
             for m in body["messages"]:
-                if m.get("role") == "system":
-                    c = m.get("content", "")
-                    sys_texts.append(c if isinstance(c, str)
-                                     else " ".join(b.get("text", "") for b in c
-                                                   if isinstance(b, dict)))
-                else:
-                    rest.append(m)
+                if (not isinstance(m, dict) or m.get("role") != "system"
+                        or set(m) - {"role", "content"}
+                        or not isinstance(m.get("content", ""), str)):
+                    break
+                sys_texts.append(m.get("content", ""))
+                leading += 1
             if sys_texts:
                 existing = body.get("system")
-                existing = [existing] if isinstance(existing, str) else (existing or [])
-                if isinstance(existing, list):
-                    existing = [e if isinstance(e, str) else str(e) for e in existing]
-                body["system"] = "\n\n".join([*sys_texts, *existing]) if existing else "\n\n".join(sys_texts)
-                body["messages"] = rest
+                hoisted = "\n\n".join(sys_texts)
+                if isinstance(existing, str) and existing:
+                    body["system"] = f"{hoisted}\n\n{existing}"
+                elif isinstance(existing, list) and existing:
+                    # Preserve caller-owned structured top-level system blocks exactly.
+                    body["system"] = [
+                        {"type": "text", "text": hoisted},
+                        *existing,
+                    ]
+                elif existing:
+                    # Let the provider validate an unusual caller-owned block, but do
+                    # not accidentally expand a dict into its keys.
+                    body["system"] = [
+                        {"type": "text", "text": hoisted}, existing,
+                    ]
+                else:
+                    body["system"] = hoisted
+                body["messages"] = body["messages"][leading:]
 
         # Router-driven optimization (byte-preserving by default; retrieval is explicit opt-in).
         decision = optimize_request(body, provider, self._router, session_id)
 
-        if provider == "anthropic":
-            response = client.messages.create(**body)
-        else:
-            response = client.chat.completions.create(**body)
+        client = self._acquire_client(provider)
+        try:
+            if provider == "anthropic":
+                response = client.messages.create(**body)
+            else:
+                response = client.chat.completions.create(**body)
+        finally:
+            self._release_client()
 
         # Honest savings + feed real cache-hit rate back to the router
         usage = self._extract_usage(response, provider)

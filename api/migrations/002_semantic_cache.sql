@@ -1,65 +1,58 @@
--- Migration 002 — hosted semantic response cache for Brevitas.
--- Run once on the canonical Supabase project (same one as 001_persistent_stores.sql).
+-- DEPRECATED compatibility guard; this is not the canonical cache migration.
 --
--- OPTIONAL: only needed to enable the HOSTED semantic cache backend (cross-machine
--- sharing, BREVITAS_CACHE_BACKEND=supabase). The local proxy uses a SQLite cache and
--- does NOT need this migration. Nothing else in the app depends on it, so it is safe to
--- defer until you want a shared cache.
+-- The only supported hosted-cache schema path is the ordered Supabase migration:
+--   supabase/migrations/202607170002_cache_security.sql
+-- after:
+--   supabase/migrations/202607170001_enterprise_tenancy.sql
+--
+-- Older versions of this file created response_json as required plaintext and
+-- granted service_role direct writes. This guard is safe before or after the
+-- canonical migration: it never creates semantic_cache, purges only unsafe legacy
+-- rows, removes the plaintext lookup signature, and denies direct content writes.
 
--- hosted semantic response cache (needs the `vector` extension)
 create extension if not exists vector;
 
--- Embedding dimension is 384 — Brevitas embeds locally with bge-small-en-v1.5.
--- If you swap the embedding model, this dimension and the app must change together.
-create table if not exists public.semantic_cache (
-    exact_hash        text primary key,        -- SHA-256 of the whole request (Layer 1)
-    context_hash      text not null,           -- request minus the last user msg (Layer 2 bucket)
-    model_id          text not null,           -- "provider:model" — isolates cache per model
-    embedding         vector(384),             -- last-user-message embedding (nullable)
-    response_json     jsonb not null,          -- provider response, replayed verbatim on a hit
-    prompt_tokens     integer not null default 0,
-    completion_tokens integer not null default 0,
-    created_at        timestamptz not null default now(),
-    expires_at        timestamptz not null,
-    hit_count         integer not null default 0
-);
+do $$
+begin
+    if to_regclass('public.semantic_cache') is null then
+        raise notice 'semantic_cache not created: apply 202607170002_cache_security.sql';
+        return;
+    end if;
 
--- Layer-2 search is scoped to one context bucket (identical prefix), so it stays small.
-create index if not exists semantic_cache_ctx
-    on public.semantic_cache (context_hash, expires_at);
--- Approximate-NN index for cosine similarity within a bucket.
-create index if not exists semantic_cache_emb
-    on public.semantic_cache using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+    alter table public.semantic_cache
+        add column if not exists response_ciphertext text not null default '';
+    alter table public.semantic_cache
+        add column if not exists tenant_namespace text not null default '';
+    alter table public.semantic_cache alter column response_json drop not null;
 
--- Backend-only content. RLS + explicit grants prevent anon/authenticated clients from
--- reading cached prompts or responses even if their project defaults grant table access.
-alter table public.semantic_cache enable row level security;
-revoke all on table public.semantic_cache from anon, authenticated;
-grant select, insert, update, delete on table public.semantic_cache to service_role;
+    -- SQL migrations do not possess the application encryption key. Purge rather
+    -- than copy or retain any row that is plaintext or lacks valid ciphertext.
+    delete from public.semantic_cache
+     where response_json is not null
+        or response_ciphertext is null
+        or response_ciphertext = '';
+    update public.semantic_cache set response_json = null where response_json is not null;
 
--- Semantic lookup: nearest non-expired neighbour in the same context bucket, above a
--- similarity floor. Returns at most one row. (<=> is cosine distance; 1 - distance = cosine.)
-create or replace function public.semantic_cache_lookup(
-    p_embedding    vector(384),
-    p_context_hash text,
-    p_threshold    float default 0.97
-) returns table (
-    exact_hash        text,
-    response_json     jsonb,
-    prompt_tokens     integer,
-    completion_tokens integer,
-    similarity        float
-) as $$
-    select exact_hash, response_json, prompt_tokens, completion_tokens,
-           (1 - (embedding <=> p_embedding))::float as similarity
-    from public.semantic_cache
-    where context_hash = p_context_hash
-      and expires_at > now()
-      and embedding is not null
-      and (1 - (embedding <=> p_embedding)) >= p_threshold
-    order by embedding <=> p_embedding
-    limit 1;
-$$ language sql security invoker set search_path = public, extensions, pg_catalog;
+    if not exists (
+        select 1 from pg_constraint
+         where conname = 'semantic_cache_no_plaintext'
+           and conrelid = 'public.semantic_cache'::regclass
+    ) then
+        alter table public.semantic_cache add constraint semantic_cache_no_plaintext
+            check (response_json is null);
+    end if;
 
-revoke all on function public.semantic_cache_lookup(vector, text, float) from public, anon, authenticated;
-grant execute on function public.semantic_cache_lookup(vector, text, float) to service_role;
+    alter table public.semantic_cache enable row level security;
+    revoke all on table public.semantic_cache from public, anon, authenticated;
+    revoke insert, update on table public.semantic_cache from service_role;
+    grant select, delete on table public.semantic_cache to service_role;
+end;
+$$;
+
+-- The retired RPC exposed response_json. It must never coexist with the encrypted
+-- five-argument lookup installed by the timestamped canonical migration.
+drop function if exists public.semantic_cache_lookup(vector, text, float);
+
+-- Do not define a store/lookup RPC here. Operators must continue with
+-- 202607170002_cache_security.sql, which installs bounded encrypted writes,
+-- tenant/model-scoped ciphertext lookup, TTL/size constraints, and purge controls.

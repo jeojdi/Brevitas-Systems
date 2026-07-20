@@ -1,99 +1,60 @@
-import { timingSafeEqual } from 'node:crypto';
-
-import { billingConfig, billingIsConfigured, getStripe, validateStripeCatalog } from '@/lib/billing/config';
+import { billingConfig } from '@/lib/billing/config';
+import { recoveryBearerAuthorized } from '@/lib/billing/recovery-auth.mjs';
 import { billingDatabase } from '@/lib/billing/supabase';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 10;
 
-function cronAuthorized(request: Request): boolean {
-  const expected = process.env.CRON_SECRET || '';
-  const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
-  if (!expected || expected.length !== supplied.length) return false;
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(supplied));
+function recoveryAuthorized(request: Request): boolean {
+  return recoveryBearerAuthorized(
+    request.headers.get('authorization'),
+    billingConfig().recoverySecret,
+  );
 }
 
 export async function POST(request: Request) {
-  if (!cronAuthorized(request)) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!billingIsConfigured()) {
-    return Response.json({ error: 'Billing synchronization is not fully configured' }, { status: 503 });
+  if (!recoveryAuthorized(request)) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+    return Response.json({ error: 'Content-Type must be application/json' }, { status: 415 });
   }
-
-  const db = billingDatabase();
-  const config = billingConfig();
-  await validateStripeCatalog();
-  const capMicrousd = Math.floor(config.monthlyCapUsd * 1_000_000);
-  const oldestAllowed = new Date(Date.now() - 34 * 86_400_000).toISOString();
-  const { data, error } = await db
-    .from('billing_ledger')
-    .select('id,user_id,occurred_at,fee_microusd')
-    .eq('status', 'pending')
-    .order('id', { ascending: true })
-    .limit(200);
+  const contentLength = Number(request.headers.get('content-length') || 0);
+  if (contentLength > 4096) {
+    return Response.json({ error: 'Request body is too large' }, { status: 413 });
+  }
+  let body: unknown;
+  try {
+    const rawBody = await request.text();
+    if (Buffer.byteLength(rawBody, 'utf8') > 4096) {
+      return Response.json({ error: 'Request body is too large' }, { status: 413 });
+    }
+    body = JSON.parse(rawBody);
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return Response.json({ error: 'Invalid manual recovery request' }, { status: 400 });
+  }
+  const candidate = body as { entry_id?: unknown; resolution?: unknown; note?: unknown };
+  const entryId = Number(candidate.entry_id);
+  const resolution = candidate.resolution;
+  const note = typeof candidate.note === 'string' ? candidate.note.trim() : '';
+  if (
+    !Number.isSafeInteger(entryId) || entryId <= 0 ||
+    !['reported', 'dead', 'pending'].includes(String(resolution)) ||
+    note.length < 12 || note.length > 480
+  ) {
+    return Response.json({ error: 'Invalid manual recovery request' }, { status: 400 });
+  }
+  const { data: resolved, error } = await billingDatabase().rpc(
+    'manually_resolve_billing_ledger_entry',
+    { p_entry_id: entryId, p_resolution: resolution, p_note: note },
+  );
   if (error) throw error;
-
-  const entries = data || [];
-  const userIds = [...new Set(entries.map((entry) => entry.user_id))];
-  const { data: accounts, error: accountError } = userIds.length
-    ? await db.from('billing_accounts').select('user_id,stripe_customer_id').in('user_id', userIds)
-    : { data: [], error: null };
-  if (accountError) throw accountError;
-  const customers = new Map((accounts || []).map((account) => [account.user_id, account.stripe_customer_id]));
-
-  const result = { scanned: entries.length, reported: 0, capped: 0, expired: 0, review: 0, skipped: 0 };
-  for (const entry of entries) {
-    if (entry.occurred_at < oldestAllowed) {
-      await db.from('billing_ledger').update({ status: 'expired', last_error: 'Stripe 35-day reporting window elapsed' }).eq('id', entry.id).eq('status', 'pending');
-      result.expired += 1;
-      continue;
-    }
-
-    const customerId = customers.get(entry.user_id);
-    if (!customerId) {
-      result.skipped += 1;
-      continue;
-    }
-
-    const { data: claim, error: claimError } = await db.rpc('claim_billing_ledger_entry', {
-      p_entry_id: entry.id,
-      p_cap_microusd: capMicrousd,
-    });
-    if (claimError) throw claimError;
-    if (claim === 'capped') {
-      result.capped += 1;
-      continue;
-    }
-    if (claim !== 'sending') {
-      result.skipped += 1;
-      continue;
-    }
-
-    try {
-      await getStripe().billing.meterEvents.create({
-        event_name: config.meterEventName,
-        identifier: `brevitas-fee-${entry.id}`,
-        timestamp: Math.floor(new Date(entry.occurred_at).getTime() / 1000),
-        payload: {
-          stripe_customer_id: customerId,
-          value: String(entry.fee_microusd),
-        },
-      }, { idempotencyKey: `brevitas-meter-${entry.id}` });
-      await db.from('billing_ledger').update({
-        status: 'reported', reported_at: new Date().toISOString(), last_error: '',
-      }).eq('id', entry.id).eq('status', 'sending');
-      result.reported += 1;
-    } catch (syncError) {
-      // A timeout can be ambiguous: Stripe might have accepted the event. Never
-      // auto-retry it; leave it for operator reconciliation to prevent duplicates.
-      await db.from('billing_ledger').update({
-        status: 'review',
-        last_error: syncError instanceof Error ? syncError.message.slice(0, 500) : 'unknown Stripe error',
-      }).eq('id', entry.id).eq('status', 'sending');
-      result.review += 1;
-    }
+  if (!resolved) {
+    return Response.json({ error: 'Ledger entry is not eligible for manual recovery' }, { status: 409 });
   }
-
-  return Response.json(result, { headers: { 'Cache-Control': 'no-store' } });
+  return Response.json(
+    { resolved: true, entry_id: entryId, resolution, manual_only: true },
+    { headers: { 'Cache-Control': 'no-store' } },
+  );
 }
-
-export const GET = POST;

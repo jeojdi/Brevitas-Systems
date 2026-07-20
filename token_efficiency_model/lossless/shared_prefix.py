@@ -45,6 +45,22 @@ def _h(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _reorder_safe(messages: Any) -> bool:
+    """Narrow allow-list for direct callers that bypass the request engine."""
+    if not isinstance(messages, list) or not messages:
+        return False
+    for message in messages:
+        if not isinstance(message, dict):
+            return False
+        if message.get("role") not in {"user", "assistant"}:
+            return False
+        if set(message) - {"role", "content"}:
+            return False
+        if not isinstance(message.get("content"), str):
+            return False
+    return True
+
+
 @dataclass
 class _PipelineState:
     # content-hash -> set of distinct agent labels that have sent it
@@ -113,7 +129,7 @@ class SharedPrefixLayer:
         Lossless either way: same message set, only reordered, only proven-shared content
         moved, volatile last message never moved. `count_tokens` defaults to a cheap
         word estimate if not supplied. Returns (messages, reordered)."""
-        if not messages:
+        if not _reorder_safe(messages):
             return messages, False
         st = self._state(pipeline_id)
         if count_tokens is None:

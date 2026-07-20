@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 import {
-  apiJson, apiKeyId, compress, createKey, saveProvider, streamCompression,
+  apiJson, apiKeyId, compress, createKey, redactBrowserError, saveProvider, streamCompression,
 } from './api.js'
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
@@ -24,9 +24,11 @@ test('dashboard requests match the key, provider, and compression contracts', as
   await compress('bvt_active', { messages: ['long'], prior_context: [] }, { request })
 
   assert.deepEqual(calls.map(([path, options]) => [
-    path, options.method, options.headers['X-Brevitas-Key'], JSON.parse(options.body),
+    path, options.method,
+    options.headers.Authorization || options.headers['X-Brevitas-Key'],
+    JSON.parse(options.body),
   ]), [
-    ['/v1/keys', 'POST', 'bvt_active', { name: 'dashboard' }],
+    ['/v1/keys', 'POST', 'Bearer bvt_active', { name: 'dashboard' }],
     ['/v1/provider', 'PUT', 'bvt_active', { provider: 'openai', model: 'gpt-4o-mini', provider_api_key: 'sk-test' }],
     ['/v1/compress', 'POST', 'bvt_active', { messages: ['long'], prior_context: [] }],
   ])
@@ -36,6 +38,19 @@ test('API errors preserve backend detail', async () => {
   await assert.rejects(
     apiJson('/v1/stats', 'stale', { request: async () => json({ detail: 'Invalid API key' }, 401) }),
     /Invalid API key/,
+  )
+})
+
+test('API errors recursively stop common credential shapes reaching browser logs', async () => {
+  const message = redactBrowserError(
+    'authorization=Bearer-private bvt_super_secret and Bearer actual-token abcdefgh.ijklmnop.qrstuvwx',
+  )
+  assert.doesNotMatch(message, /private|bvt_super_secret|actual-token|abcdefgh/)
+  await assert.rejects(
+    apiJson('/v1/stats', 'stale', {
+      request: async () => json({ detail: 'provider failed with sk_private_value' }, 502),
+    }),
+    error => !String(error).includes('sk_private_value'),
   )
 })
 
@@ -69,6 +84,36 @@ test('streaming parser handles split chunks and the optional model response', as
   assert.equal(events[2].text, 'OK')
 })
 
-test('active key id matches the backend SHA-256 identifier', async () => {
+test('streaming failures redact transport, server-event, and callback credentials', async () => {
+  await assert.rejects(
+    streamCompression('bvt_active', { messages: ['demo'] }, () => {}, {
+      request: async () => { throw new Error('Bearer transport-secret') },
+    }),
+    error => !String(error).includes('transport-secret'),
+  )
+
+  const responseFor = payload => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(payload))
+      controller.close()
+    },
+  }), { status: 200 })
+  await assert.rejects(
+    streamCompression('bvt_active', { messages: ['demo'] }, () => {}, {
+      request: async () => responseFor('data: {"stage":"error","message":"sk_stream_private"}\n\n'),
+    }),
+    error => !String(error).includes('sk_stream_private'),
+  )
+  await assert.rejects(
+    streamCompression('bvt_active', { messages: ['demo'] }, () => {
+      throw new Error('api_key=bvt_callback_private')
+    }, {
+      request: async () => responseFor('data: {"stage":"done"}\n\n'),
+    }),
+    error => !String(error).includes('bvt_callback_private'),
+  )
+})
+
+test('active key hash can match the backend fingerprint prefix', async () => {
   assert.equal(await apiKeyId('bvt_active'), createHash('sha256').update('bvt_active').digest('hex'))
 })
