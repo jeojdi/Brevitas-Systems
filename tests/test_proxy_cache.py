@@ -188,10 +188,11 @@ def test_incomplete_response_not_cached(monkeypatch):
     assert _FakeAsyncClient.calls == 2, "truncated response must not be cached"
 
 
-def test_tripped_semantic_cache_lever_skips_hits(monkeypatch):
+def test_tripped_cache_lever_skips_hits(monkeypatch):
+    """Tripping the exact-cache lever must stop the proxy from serving cached hits."""
     from token_efficiency_model.quality import gate
     client = _fresh_client(monkeypatch)
-    gate.trip_lever("semantic_cache")
+    gate.trip_lever("cache")
     try:
         req = {"model": "gpt-4o-mini", "temperature": 0,
                "messages": [{"role": "user", "content": "same question twice"}]}
@@ -199,7 +200,7 @@ def test_tripped_semantic_cache_lever_skips_hits(monkeypatch):
         client.post("/v1/chat/completions", json=req, headers={"authorization": "auth-lv"})
         assert _FakeAsyncClient.calls == 2, "tripped cache lever must not serve hits"
     finally:
-        gate.reset_lever("semantic_cache")
+        gate.reset_lever("cache")
 
 
 if __name__ == "__main__":

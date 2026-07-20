@@ -166,12 +166,15 @@ def _cache_lookup(cache, body: dict, provider: str, model: str):
 
 def _response_complete(data: dict, provider: str) -> bool:
     """Only a naturally-complete response is cacheable — never a truncated one
-    (finish_reason/stop_reason of max_tokens/length), which is a partial answer."""
+    (finish_reason/stop_reason of max_tokens/length), which is a partial answer.
+    EVERY choice must be complete: a multi-choice response with any truncated choice
+    is not cacheable."""
     try:
         if provider == "anthropic":
             return str((data or {}).get("stop_reason") or "") in ("end_turn", "stop_sequence")
         choices = (data or {}).get("choices") or []
-        return bool(choices) and str(choices[0].get("finish_reason") or "") == "stop"
+        return bool(choices) and all(
+            str(c.get("finish_reason") or "") == "stop" for c in choices)
     except Exception:
         return False
 
@@ -516,7 +519,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
 
     cache = _get_cache()
     cache_body = _cache_body(body, request, brevitas_key, api_key) if cache is not None else None
-    if cache is not None and lever_allowed("semantic_cache"):
+    if cache is not None and lever_allowed("cache"):
         hit = _cache_lookup(cache, cache_body, "anthropic", model)
         if hit is not None:
             await _report_cache_hit(request, "anthropic", model, hit, session, labels)
@@ -646,7 +649,7 @@ async def proxy_openai_chat(request: Request) -> Any:
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
     cache = _get_cache()
     cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
-    if cache is not None and lever_allowed("semantic_cache"):
+    if cache is not None and lever_allowed("cache"):
         hit = _cache_lookup(cache, cache_body, provider, model)
         if hit is not None:
             await _report_cache_hit(request, provider, model, hit, session, labels)

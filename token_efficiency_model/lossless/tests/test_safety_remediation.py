@@ -96,12 +96,40 @@ def test_tripped_retrieval_lever_forces_full_context(monkeypatch):
     assert [m["content"] for m in body["messages"]] == before
 
 
-def test_lever_allowed_fails_closed_on_env(monkeypatch):
-    monkeypatch.setenv("BREVITAS_TRIPPED_LEVERS", "semantic_cache, compression")
-    assert gate.lever_allowed("semantic_cache") is False
+def test_lever_allowed_is_fail_closed(monkeypatch):
+    for v in ("BREVITAS_RETRIEVAL_ENABLED", "BREVITAS_COMPRESS_LOSSY",
+              "BREVITAS_MESSAGE_REORDER", "BREVITAS_SEMANTIC_CACHE",
+              "BREVITAS_APPROVED_LEVERS", "BREVITAS_TRIPPED_LEVERS"):
+        monkeypatch.delenv(v, raising=False)
+    # Risky levers are DENIED by default — "not tripped yet" is NOT enough to allow.
+    assert gate.lever_allowed("retrieval") is False
     assert gate.lever_allowed("compression") is False
+    assert gate.lever_allowed("reorder") is False
+    assert gate.lever_allowed("semantic_cache") is False
+    # Safe byte-preserving cache lever is allowed by default.
+    assert gate.lever_allowed("cache") is True
+    # Unknown / empty lever names fail closed.
+    assert gate.lever_allowed("nonsense") is False
+    assert gate.lever_allowed("") is False
+    # Explicit operator opt-in enables a risky lever…
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
     assert gate.lever_allowed("retrieval") is True
-    assert gate.lever_allowed("") is False  # empty/unknown fails closed
+    # …but a trip overrides the opt-in.
+    monkeypatch.setenv("BREVITAS_TRIPPED_LEVERS", "retrieval")
+    assert gate.lever_allowed("retrieval") is False
+
+
+def test_lever_trips_are_per_tenant(monkeypatch):
+    monkeypatch.delenv("BREVITAS_TRIPPED_LEVERS", raising=False)
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
+    gate.trip_lever("retrieval", key="tenantA")
+    try:
+        assert gate.lever_allowed("retrieval", key="tenantA") is False   # tripped tenant
+        assert gate.lever_allowed("retrieval", key="tenantB") is True    # unaffected tenant
+        gate.reset_all_levers(key="tenantA")
+        assert gate.lever_allowed("retrieval", key="tenantA") is True    # reset restores it
+    finally:
+        gate.reset_all_levers(key="tenantA")
 
 
 # ── P1.9: BM25 zero-score filter ─────────────────────────────────────────────
@@ -129,6 +157,21 @@ def test_lossless_prompt_is_byte_identical(text):
     assert out.optimized == text
     assert out.lossy is False
     assert out.method == "lossless"
+
+
+# ── B3: TaskCompressionRouter lossless path is byte-identical ────────────────
+
+@pytest.mark.parametrize("text", [
+    "key:\n  nested: value\n  list:\n    - a\n    - b\n",       # YAML
+    "def f(x):\n    if x:\n        return  x\n",                 # Python
+    "target:\n\tgcc  -o  main  main.c\n",                       # Makefile (tabs)
+])
+def test_task_router_lossless_is_byte_identical(text):
+    from token_efficiency_model.lossless.task_router import TaskCompressionRouter
+    opt = TaskCompressionRouter()._lossless(text)
+    assert opt.optimized == text
+    assert opt.lossy is False
+    assert opt.method == "lossless"
 
 
 # ── P2.11: RLM injects `question` into the REPL ──────────────────────────────

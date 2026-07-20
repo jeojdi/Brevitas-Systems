@@ -52,6 +52,18 @@ except Exception:  # numpy ships with the semanticcache extra; without it, Layer
     np = None
 
 
+def _semantic_allowed(key: str = "") -> bool:
+    """The fuzzy semantic layer is a RISKY lever: cosine similarity alone does NOT prove
+    answer equivalence, and there is no judge here. Serve a reworded-match answer only when
+    the operator has explicitly opted in AND the semantic_cache lever has not tripped
+    (fail-closed). The exact-hash layer is unaffected — it is byte-identical and safe."""
+    try:
+        from token_efficiency_model.quality.gate import lever_allowed
+        return lever_allowed("semantic_cache", key=key)
+    except Exception:
+        return False
+
+
 @dataclass
 class CacheHit:
     kind: str                    # "exact" | "semantic"
@@ -207,7 +219,8 @@ class SemanticCache:
         return True
 
     # -- lookup / store -----------------------------------------------------
-    def lookup(self, body: dict, provider: str, model: str) -> CacheHit | None:
+    def lookup(self, body: dict, provider: str, model: str, *,
+               gate_key: str = "") -> CacheHit | None:
         if not self.cacheable(body):
             return None
         now = time.time()
@@ -222,8 +235,8 @@ class SemanticCache:
             self._bump(exact)
             return CacheHit("exact", json.loads(row[0]), row[1], row[2])
 
-        # Layer 2 — semantic (only if enabled AND embeddings + numpy are available)
-        if not self.semantic_enabled or np is None:
+        # Layer 2 — semantic (only if enabled AND opted-in/untripped AND embeddings available)
+        if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
             return None
         vec = _embed.embed(self._last_user_text(body.get("messages", [])))
         if vec is None:
@@ -316,7 +329,8 @@ class SupabaseSemanticCache(SemanticCache):
     def _vec_literal(vec) -> str:
         return "[" + ",".join(f"{x:.6f}" for x in vec.tolist()) + "]"  # pgvector text form
 
-    def lookup(self, body: dict, provider: str, model: str) -> CacheHit | None:
+    def lookup(self, body: dict, provider: str, model: str, *,
+               gate_key: str = "") -> CacheHit | None:
         if not self.cacheable(body):
             return None
         now_iso = _iso(time.time())
@@ -330,7 +344,7 @@ class SupabaseSemanticCache(SemanticCache):
                 self._bump(exact)
                 return CacheHit("exact", row["response_json"],
                                 row["prompt_tokens"], row["completion_tokens"])
-            if not self.semantic_enabled or np is None:
+            if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
                 return None
             vec = _embed.embed(self._last_user_text(body.get("messages", [])))
             if vec is None:
@@ -458,7 +472,9 @@ def _demo() -> None:
     assert c2.lookup(b2, "openai", "m") is None, "expired row must not hit"
 
     if np is not None:
-        # semantic layer with injected fake embeddings (no model download in tests)
+        # semantic layer with injected fake embeddings (no model download in tests).
+        # The fuzzy layer is fail-closed, so opt it in for this section.
+        os.environ["BREVITAS_SEMANTIC_CACHE"] = "1"
         vecs = {
             "how do refunds work": np.array([1.0, 0.0, 0.0], dtype="float32"),
             "what is the refund policy": np.array([0.99, 0.14, 0.0], dtype="float32"),

@@ -142,9 +142,12 @@ _PLAYGROUND_KEY      = os.getenv("BREVITAS_PLAYGROUND_KEY", "")
 _PLAYGROUND_PROVIDER = os.getenv("BREVITAS_PLAYGROUND_PROVIDER", "groq")
 _PLAYGROUND_MODEL    = os.getenv("BREVITAS_PLAYGROUND_MODEL", "gemma2-9b-it")
 
-# Playground response cache — repeated/reworded questions skip the model call entirely
-# (≈100% savings on that turn). Lazy singleton; any failure disables it so a cache issue
-# can never break the endpoint. Semantic layer auto-enables where the embed model is present.
+# Playground response cache — repeated questions skip the model call entirely (≈100%
+# savings on that turn). Lazy singleton; any failure disables it so a cache issue can never
+# break the endpoint. The EXACT-hash layer (byte-identical repeats) is safe and on. The
+# fuzzy SEMANTIC layer is NOT auto-enabled just because an embed model is present: cosine
+# similarity alone does not prove answer equivalence, so a reworded match could replay a
+# wrong answer. It requires the explicit BREVITAS_SEMANTIC_CACHE opt-in (fail-closed).
 _playground_cache = None
 _playground_cache_init = False
 
@@ -153,8 +156,9 @@ def _get_playground_cache():
     global _playground_cache, _playground_cache_init
     if not _playground_cache_init:
         _playground_cache_init = True
+        semantic_optin = os.getenv("BREVITAS_SEMANTIC_CACHE", "false").lower() in ("1", "true", "yes")
         try:
-            _playground_cache = SemanticCache(semantic_enabled=_embed.available())
+            _playground_cache = SemanticCache(semantic_enabled=semantic_optin and _embed.available())
         except Exception as exc:  # pragma: no cover — cache is best-effort
             logger.warning("Playground cache disabled: %s", type(exc).__name__)
             _playground_cache = None
@@ -185,9 +189,13 @@ def _make_ollama_backend(model: str):
                 timeout=120,
             )
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            data = resp.json()
+            # done_reason "length" => truncated at num_predict; only "stop" is complete.
+            backend.last_complete = str(data.get("done_reason") or "stop") == "stop"
+            return data.get("response", "")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Ollama request failed") from exc
+    backend.last_complete = True
     return backend
 
 
@@ -209,9 +217,14 @@ def _make_anthropic_backend(api_key: str, model: str):
                 timeout=120,
             )
             resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
+            data = resp.json()
+            # Honor the stop metadata: "max_tokens" means the answer was truncated at the
+            # 1024-token cap and must NOT be cached as a complete answer.
+            backend.last_complete = str(data.get("stop_reason") or "") in ("end_turn", "stop_sequence")
+            return data["content"][0]["text"]
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Anthropic request failed") from exc
+    backend.last_complete = True
     return backend
 
 
@@ -228,9 +241,13 @@ def _make_openai_compat_backend(api_key: str, model: str, base_url: str):
                 timeout=120,
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            choice = (resp.json().get("choices") or [{}])[0]
+            # "length" (or any non-"stop") finish_reason means truncated → not cacheable.
+            backend.last_complete = str(choice.get("finish_reason") or "") == "stop"
+            return choice.get("message", {}).get("content", "")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Model provider request failed") from exc
+    backend.last_complete = True
     return backend
 
 
@@ -254,7 +271,8 @@ def _build_backend(config: dict | None):
 
 
 def _compress_pipeline(task: str, messages: list[str], prior_context: list[str],
-                       prune_budget: int, lossy: bool, retrieval: bool = False) -> dict:
+                       prune_budget: int, lossy: bool, retrieval: bool = False,
+                       key_hash: str = "") -> dict:
     """Shared context-reduction core used by /v1/compress, /v1/compress/stream and
     /v1/playground/stream. Messages pass through unchanged except the volatile LAST message,
     which is lossily shrunk when `lossy` is on and the remote compressor is available.
@@ -265,10 +283,11 @@ def _compress_pipeline(task: str, messages: list[str], prior_context: list[str],
     Reports `faithful`: True only when the returned request is byte-identical to the input
     (no lossy rewrite, no pruning), so callers know whether the answer is safe to cache."""
     from token_efficiency_model.quality.gate import lever_allowed
-    # A tripped/failed/missing quality gate forces full-context fallback for that lever.
-    if retrieval and not lever_allowed("retrieval"):
+    # Fail-closed gate, per tenant: a lever runs only if the operator opted in AND this
+    # tenant's lever has not tripped. Absence of approval / a tripped stream => full context.
+    if retrieval and not lever_allowed("retrieval", key_hash):
         retrieval = False
-    if lossy and not lever_allowed("compression"):
+    if lossy and not lever_allowed("compression", key_hash):
         lossy = False
     if retrieval:
         sel = retrieval_select(task, prior_context, k=prune_budget, use_adaptive=True)
@@ -919,7 +938,7 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     # LAST message may be lossily shrunk while earlier messages stay byte-identical so the
     # provider cache still hits the stable prefix.
     pipe = _compress_pipeline(task, body.messages, body.prior_context, body.prune_budget,
-                              body.lossy, retrieval=body.retrieval)
+                              body.lossy, retrieval=body.retrieval, key_hash=kh)
     out_messages = pipe["out_messages"]
     model_result = _run_configured_model(
         kh, out_messages, pipe["selected_context"], task,
@@ -981,7 +1000,11 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
     smart=False or explicit `rate`: use that fixed rate (1.0=lossless). Lossy when rate<1.0
     (LLMLingua-2, arXiv:2403.12968); fail-safe to lossless without the [promptopt] extra.
     Tokens measured with tiktoken."""
-    if body.smart and body.rate is None:
+    from token_efficiency_model.quality.gate import lever_allowed
+    # Lossy prompt compression is a risky lever: fail-closed unless this tenant has opted in
+    # (and not tripped). When not allowed, force the lossless (byte-identical) path.
+    compression_ok = lever_allowed("compression", kh)
+    if body.smart and body.rate is None and compression_ok:
         from token_efficiency_model.lossless.task_router import TaskCompressionRouter
         res = TaskCompressionRouter().route(body.prompt, task_hint=body.task)
         r = res.optimization
@@ -989,8 +1012,11 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
                  "reason": res.reason, "quality_sim": res.quality_sim}
     else:
         from token_efficiency_model.lossless.prompt_optimizer import optimize_prompt as _opt
-        r = _opt(body.prompt, rate=body.rate if body.rate is not None else 1.0)
-        extra = {"task": None, "rate": body.rate}
+        rate = body.rate if body.rate is not None else 1.0
+        if rate < 1.0 and not compression_ok:
+            rate = 1.0   # gate not open → refuse to compress; return the prompt losslessly
+        r = _opt(body.prompt, rate=rate)
+        extra = {"task": None, "rate": rate}
 
     _safe_record_usage(
         key_hash=kh,
@@ -1022,6 +1048,16 @@ def compress_retrieval(request: Request, body: RetrievalCompressRequest,
     paired workload clears a quality gate. Savings use the real tokenizer; no score is invented.
     """
     from token_efficiency_model.lossless.api_adapter import retrieval_select
+    from token_efficiency_model.quality.gate import lever_allowed
+
+    # Fail-closed, per tenant: retrieval can omit evidence, so only prune when this tenant
+    # has opted in AND the retrieval lever has not tripped. Otherwise return full context.
+    if not lever_allowed("retrieval", kh):
+        ctx_tokens = estimate_tokens_many(body.prior_context)
+        return {"selected_context": list(body.prior_context),
+                "baseline_tokens": ctx_tokens, "optimized_tokens": ctx_tokens,
+                "savings_pct": 0.0, "fallback_applied": True,
+                "reason": "retrieval_gate_closed"}
 
     out = retrieval_select(body.task, body.prior_context, k=body.k,
                            min_top_score=body.min_top_score, use_adaptive=True)
@@ -1058,7 +1094,8 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 return
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
-                                      body.prune_budget, body.lossy, retrieval=body.retrieval)
+                                      body.prune_budget, body.lossy, retrieval=body.retrieval,
+                                      key_hash=kh)
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1191,7 +1228,7 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
                                       body.prune_budget, lossy=body.lossy,
-                                      retrieval=body.retrieval)
+                                      retrieval=body.retrieval, key_hash=kh)
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1222,9 +1259,11 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                          "temperature": 0, "_brevitas_cache_namespace": kh}
                 hit = None
                 from token_efficiency_model.quality.gate import lever_allowed
-                if cache is not None and lever_allowed("semantic_cache"):
+                # Gate on the safe exact-cache lever for this tenant; the fuzzy semantic
+                # sub-layer is separately fail-closed inside the cache.
+                if cache is not None and lever_allowed("cache", kh):
                     try:
-                        hit = cache.lookup(cbody, provider, model)
+                        hit = cache.lookup(cbody, provider, model, gate_key=kh)
                     except Exception:
                         hit = None
                 if cancel_event.is_set():
@@ -1241,10 +1280,13 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                                      "similarity": cache_similarity, "tokens_saved": cache_saved_tokens})
                 else:
                     model_response = backend(prompt, model)
-                    # Only cache when the prompt we answered was byte-faithful to the
-                    # original (no lossy compression, no retrieval pruning); otherwise a
-                    # repeat would replay a degraded-context answer as a verified hit.
-                    if cache is not None and pipe.get("faithful", True):
+                    # Cache only when BOTH hold: (1) the prompt we answered was byte-faithful
+                    # to the original (no lossy compression / retrieval pruning), and (2) the
+                    # provider finished naturally — a response truncated at the token cap
+                    # (Anthropic stop_reason=max_tokens, OpenAI finish_reason=length) is a
+                    # partial answer and must never be replayed as a complete one.
+                    complete = getattr(backend, "last_complete", True)
+                    if cache is not None and pipe.get("faithful", True) and complete:
                         try:
                             cache.store(cbody, provider, model, {"text": model_response},
                                         prompt_tokens=count_tokens(prompt),
@@ -1474,11 +1516,12 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         stream.update(body.quality_verified)
         if stream.state.tripped:
             quality_status = "stream_tripped"
-            # A tripped stream must stop the request path from applying ANY unproven
-            # lever — not just stop billing. Force full-context fallback going forward.
+            # A tripped stream must stop THIS TENANT's request path from applying any
+            # unproven lever — not just stop billing. Trips are keyed by the customer key,
+            # so one tenant's failing reports never disable levers for other tenants.
             from token_efficiency_model.quality.gate import trip_lever
             for _lever in ("retrieval", "compression", "semantic_cache"):
-                trip_lever(_lever)
+                trip_lever(_lever, key=kh)
         else:
             quality_status = "verified" if body.quality_verified else "failed"
     verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0
@@ -1578,8 +1621,12 @@ def quality_stream(request: Request, kh: str = Depends(_authenticated)):
 
 @app.post("/v1/quality/stream/reset")
 def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
-    """Reset a tripped stream (after investigation). Deliberately explicit."""
+    """Reset a tripped stream (after investigation). Deliberately explicit.
+    Also clears this tenant's lever trips so the request-path levers re-enable together
+    with the billing stream (the two must not drift apart)."""
     _seq_streams.pop(kh, None)
+    from token_efficiency_model.quality.gate import reset_all_levers
+    reset_all_levers(key=kh)
     return {"reset": True}
 
 

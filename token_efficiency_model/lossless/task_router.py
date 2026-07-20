@@ -193,14 +193,21 @@ class TaskCompressionRouter:
                 compressed_any = True
             else:
                 out_parts.append(seg_norm)
+        # If nothing was actually lossily compressed, the result MUST be byte-identical to
+        # the input — never the whitespace-normalized join (that corrupts YAML/Python/etc.
+        # while claiming lossless). Return the original bytes.
+        if not compressed_any:
+            reason = "gate_rejected" if gate_rejects else "too_short"
+            return TaskCompressionResult(task, rate, self._lossless(prompt), code_blocks,
+                                         reason=reason, quality_sim=worst_sim)
         optimized = "".join(out_parts).strip()
         after = count_tokens(optimized)
-        reason = "compressed" if compressed_any else ("gate_rejected" if gate_rejects else "too_short")
+        reason = "compressed"
         opt = PromptOptimization(
             original=prompt, optimized=optimized, tokens_before=before, tokens_after=after,
             saved_pct=round(100 * (1 - after / max(1, before)), 2),
-            method="llmlingua2+lossless" if compressed_any else "lossless",
-            lossy=compressed_any,
+            method="llmlingua2+lossless",
+            lossy=True,
             note=f"task={task}, rate={rate}; code blocks protected={code_blocks}; "
                  f"gate rejects={gate_rejects} (floor={floor}). "
                  "LLMLingua-2 (arXiv:2403.12968) — lossy; verify critical prompts.",
@@ -209,11 +216,10 @@ class TaskCompressionRouter:
                                      quality_sim=worst_sim)
 
     def _lossless(self, prompt: str) -> PromptOptimization:
+        # Lossless MUST be byte-identical: normalize_prompt collapses whitespace outside
+        # code fences and corrupts indentation-significant content, so it is NOT applied here.
         before = count_tokens(prompt)
-        norm = normalize_prompt(prompt)
-        after = count_tokens(norm)
         return PromptOptimization(
-            original=prompt, optimized=norm, tokens_before=before, tokens_after=after,
-            saved_pct=round(100 * (1 - after / max(1, before)), 2),
-            method="lossless", lossy=False,
+            original=prompt, optimized=prompt, tokens_before=before, tokens_after=before,
+            saved_pct=0.0, method="lossless", lossy=False,
         )

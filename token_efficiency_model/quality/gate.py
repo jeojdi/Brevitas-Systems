@@ -24,15 +24,35 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
-# ── Lever kill state (P0.6) ───────────────────────────────────────────────────
-# A failed, missing, or tripped quality gate must force the request path back to the
-# original FULL-context request — never keep applying a lever whose quality is unproven.
-# This registry is the single fail-closed gate the request paths consult before applying
-# retrieval / compression / semantic-cache. Trips are sticky within a process and can also
-# be set cross-process via BREVITAS_TRIPPED_LEVERS (comma-separated) for the local proxy,
-# which runs separately from the hosted mSPRT stream.
-_LEVERS = ("retrieval", "compression", "semantic_cache", "reorder")
-_tripped_levers: set[str] = set()
+# ── Lever gate (P0.6 + follow-ups) ────────────────────────────────────────────
+# The single gate the request paths consult before applying an optimization. Two classes:
+#
+#   RISKY levers (retrieval, compression, reorder, semantic_cache) can change an answer.
+#   They are FAIL-CLOSED: DENIED by default and only allowed when the operator has
+#   explicitly opted in (per-lever env flag or BREVITAS_APPROVED_LEVERS) AND the lever has
+#   not tripped. "Not tripped yet" is NOT enough to allow — absence of a quality signal
+#   means deny, not allow.
+#
+#   SAFE levers (cache = the exact-hash, byte-identical response cache) are byte-preserving,
+#   so they are ALLOWED by default but can still be disabled by a trip.
+#
+# Trips are PER-TENANT: a trip is keyed by (tenant_key, lever). One customer's failing
+# quality stream disables levers only for THAT customer — never globally. A trip with the
+# empty key, or BREVITAS_TRIPPED_LEVERS, is a global operator kill switch that applies to all.
+# Unknown lever names always deny.
+
+# risky lever -> the env flag that opts it in (each defaults off)
+_RISKY_LEVERS = {
+    "retrieval": "BREVITAS_RETRIEVAL_ENABLED",
+    "compression": "BREVITAS_COMPRESS_LOSSY",
+    "reorder": "BREVITAS_MESSAGE_REORDER",
+    "semantic_cache": "BREVITAS_SEMANTIC_CACHE",
+}
+_SAFE_LEVERS = {"cache"}                 # exact-hash byte-identical response cache
+_LEVERS = set(_RISKY_LEVERS) | _SAFE_LEVERS
+
+_tripped_levers: set[tuple[str, str]] = set()   # (tenant_key, lever); "" key == global
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _env_tripped_levers() -> set[str]:
@@ -40,26 +60,60 @@ def _env_tripped_levers() -> set[str]:
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
 
-def trip_lever(lever: str) -> None:
-    """Sticky-disable a lever (e.g. when the mSPRT quality stream trips). Persists for the
-    process lifetime; reset explicitly via reset_lever after investigation."""
+def _env_approved_levers() -> set[str]:
+    raw = os.environ.get("BREVITAS_APPROVED_LEVERS", "")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def _lever_opted_in(name: str) -> bool:
+    """A risky lever is opted in only by explicit operator config: its own enable flag,
+    or an entry in BREVITAS_APPROVED_LEVERS."""
+    env = _RISKY_LEVERS.get(name)
+    if env and os.environ.get(env, "").strip().lower() in _TRUTHY:
+        return True
+    return name in _env_approved_levers()
+
+
+def trip_lever(lever: str, key: str = "") -> None:
+    """Sticky-disable a lever for tenant `key` (empty key = global). Persists for the
+    process lifetime; clear via reset_lever / reset_all_levers after investigation."""
     if lever:
-        _tripped_levers.add(lever.strip().lower())
+        _tripped_levers.add(((key or ""), lever.strip().lower()))
 
 
-def reset_lever(lever: str) -> None:
-    _tripped_levers.discard((lever or "").strip().lower())
+def reset_lever(lever: str, key: str = "") -> None:
+    _tripped_levers.discard(((key or ""), (lever or "").strip().lower()))
 
 
-def lever_allowed(lever: str) -> bool:
-    """True only when `lever` is safe to apply. FAILS CLOSED: any tripped state (in-process
-    or via BREVITAS_TRIPPED_LEVERS) or any error returns False, so the caller falls back to
-    the original full-context request instead of a quality-unproven optimization."""
+def reset_all_levers(key: str = "") -> None:
+    """Clear every lever trip for tenant `key` (used by the per-customer reset endpoint)."""
+    k = key or ""
+    for entry in [e for e in _tripped_levers if e[0] == k]:
+        _tripped_levers.discard(entry)
+
+
+def _is_tripped(name: str, key: str) -> bool:
+    return (((key or ""), name) in _tripped_levers        # this tenant
+            or ("", name) in _tripped_levers              # global trip
+            or name in _env_tripped_levers())             # operator env kill switch
+
+
+def lever_allowed(lever: str, key: str = "") -> bool:
+    """True only when `lever` is safe to apply for tenant `key`. FAILS CLOSED:
+      * unknown lever name          -> deny
+      * any error                   -> deny
+      * tripped (tenant/global/env) -> deny
+      * risky lever not opted in    -> deny (absence of approval is denial, not allowance)
+    Safe (byte-preserving) levers default allow; risky levers require explicit opt-in."""
     try:
         name = (lever or "").strip().lower()
-        if not name:
+        if name not in _LEVERS:
             return False
-        return name not in _tripped_levers and name not in _env_tripped_levers()
+        if _is_tripped(name, key):
+            return False
+        if name in _SAFE_LEVERS:
+            return True
+        return _lever_opted_in(name)
     except Exception:
         return False
 

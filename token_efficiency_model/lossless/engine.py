@@ -150,7 +150,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # would cache MORE tokens than it already does. This prevents the regression where
     # a blind reorder breaks a cache the provider was already serving (Don't Break the
     # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
-    if pipeline and _reorder_enabled():
+    if pipeline and _reorder_enabled() and _lever_allowed("reorder"):
         st9 = _b9_state(pipeline)
         if not st9["locked"]:
             from .provider_cache import count_tokens as _ct
