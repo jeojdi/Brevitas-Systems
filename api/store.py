@@ -55,6 +55,11 @@ _USAGE_COLUMNS: dict[str, str] = {
     "baseline_cost_usd": "REAL",
     "actual_cost_usd": "REAL",
     "measured_savings_usd": "REAL",
+    "provider_input_tokens_avoided": "INTEGER NOT NULL DEFAULT 0",
+    "native_cache_discount_usd": "REAL",
+    "calls_avoided": "INTEGER NOT NULL DEFAULT 0",
+    "transport_bytes_avoided": "INTEGER NOT NULL DEFAULT 0",
+    "brevitas_incremental_savings_usd": "REAL",
     "verified_savings_usd": "REAL NOT NULL DEFAULT 0",
     "cost_saved_usd": "REAL NOT NULL DEFAULT 0",
     "brevitas_fee_usd": "REAL NOT NULL DEFAULT 0",
@@ -117,6 +122,13 @@ def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
         "baseline_cost_usd": values.get("baseline_cost_usd"),
         "actual_cost_usd": values.get("actual_cost_usd"),
         "measured_savings_usd": values.get("measured_savings_usd"),
+        "provider_input_tokens_avoided": int(
+            values.get("provider_input_tokens_avoided") or 0),
+        "native_cache_discount_usd": values.get("native_cache_discount_usd"),
+        "calls_avoided": int(values.get("calls_avoided") or 0),
+        "transport_bytes_avoided": int(values.get("transport_bytes_avoided") or 0),
+        "brevitas_incremental_savings_usd": values.get(
+            "brevitas_incremental_savings_usd"),
         "verified_savings_usd": round(float(verified or 0), 10),
         "cost_saved_usd": round(float(verified or 0), 10),
         "brevitas_fee_usd": round(float(values.get("brevitas_fee_usd") or 0), 10),
@@ -150,6 +162,13 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     optimized = sum(_i(r.get("optimized_tokens")) for r in rows)
     saved = sum(_i(r.get("tokens_saved")) for r in rows)
     measured = sum(_f(r.get("measured_savings_usd")) for r in rows)
+    input_avoided = sum(_i(r.get("provider_input_tokens_avoided")) for r in rows)
+    native_discount = sum(_f(r.get("native_cache_discount_usd")) for r in rows)
+    calls_avoided = sum(_i(r.get("calls_avoided")) for r in rows)
+    transport_avoided = sum(_i(r.get("transport_bytes_avoided")) for r in rows)
+    incremental_rows = [r for r in rows if r.get("brevitas_incremental_savings_usd") is not None]
+    incremental = sum(_f(r.get("brevitas_incremental_savings_usd"))
+                      for r in incremental_rows)
     verified = sum(_f(r.get("verified_savings_usd", r.get("cost_saved_usd"))) for r in rows)
     actual_cost = sum(_f(r.get("actual_cost_usd")) for r in rows)
     baseline_cost = sum(_f(r.get("baseline_cost_usd")) for r in rows)
@@ -159,11 +178,21 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         month = str(row.get("ts") or "")[:7]
         bucket = months.setdefault(month, {"month": month, "calls": 0, "tokens_saved": 0,
+            "provider_input_tokens_avoided": 0, "calls_avoided": 0,
+            "native_cache_discount_usd": 0.0,
+            "transport_bytes_avoided": 0,
             "actual_cost_usd": 0.0,
             "measured_savings_usd": 0.0, "verified_savings_usd": 0.0,
             "cost_saved_usd": 0.0, "brevitas_fee_usd": 0.0})
         bucket["calls"] += 1
         bucket["tokens_saved"] += _i(row.get("tokens_saved"))
+        bucket["provider_input_tokens_avoided"] += _i(
+            row.get("provider_input_tokens_avoided"))
+        bucket["calls_avoided"] += _i(row.get("calls_avoided"))
+        bucket["native_cache_discount_usd"] += _f(
+            row.get("native_cache_discount_usd"))
+        bucket["transport_bytes_avoided"] += _i(
+            row.get("transport_bytes_avoided"))
         bucket["actual_cost_usd"] += _f(row.get("actual_cost_usd"))
         bucket["measured_savings_usd"] += _f(row.get("measured_savings_usd"))
         v = _f(row.get("verified_savings_usd", row.get("cost_saved_usd")))
@@ -183,6 +212,13 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_baseline_cost_usd": round(baseline_cost, 8),
         "total_actual_cost_usd": round(actual_cost, 8),
         "total_measured_savings_usd": round(measured, 8),
+        "total_provider_input_tokens_avoided": input_avoided,
+        "total_native_cache_discount_usd": round(native_discount, 8),
+        "total_calls_avoided": calls_avoided,
+        "total_transport_bytes_avoided": transport_avoided,
+        "total_brevitas_incremental_savings_usd": (
+            round(incremental, 8) if incremental_rows else None),
+        "incremental_control_calls": len(incremental_rows),
         "total_verified_savings_usd": round(verified, 8),
         "total_cost_saved_usd": round(verified, 8),
         "total_brevitas_fee_usd": round(fee, 8),
@@ -195,6 +231,13 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "source": r.get("source") or "Unattributed", "provider": r.get("provider") or "",
             "model": r.get("model") or "", "operation": r.get("operation") or "",
             "measured_savings_usd": r.get("measured_savings_usd"),
+            "provider_input_tokens_avoided": _i(
+                r.get("provider_input_tokens_avoided")),
+            "native_cache_discount_usd": r.get("native_cache_discount_usd"),
+            "calls_avoided": _i(r.get("calls_avoided")),
+            "transport_bytes_avoided": _i(r.get("transport_bytes_avoided")),
+            "brevitas_incremental_savings_usd": r.get(
+                "brevitas_incremental_savings_usd"),
             "verified_savings_usd": _f(r.get("verified_savings_usd", r.get("cost_saved_usd"))),
             "cost_saved_usd": _f(r.get("verified_savings_usd", r.get("cost_saved_usd"))),
             "pricing_status": r.get("pricing_status") or "unpriced",
@@ -231,6 +274,15 @@ def _breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "baseline_cost_usd": stat["total_baseline_cost_usd"],
                     "actual_cost_usd": stat["total_actual_cost_usd"],
                     "measured_savings_usd": stat["total_measured_savings_usd"],
+                    "provider_input_tokens_avoided": stat[
+                        "total_provider_input_tokens_avoided"],
+                    "native_cache_discount_usd": stat[
+                        "total_native_cache_discount_usd"],
+                    "calls_avoided": stat["total_calls_avoided"],
+                    "transport_bytes_avoided": stat[
+                        "total_transport_bytes_avoided"],
+                    "brevitas_incremental_savings_usd": stat[
+                        "total_brevitas_incremental_savings_usd"],
                     "verified_savings_usd": stat["total_verified_savings_usd"],
                     "brevitas_fee_usd": stat["total_brevitas_fee_usd"],
                     "unpriced_calls": stat["unpriced_calls"]})
@@ -505,6 +557,13 @@ class UsageStore:
         for label, items in groups.items():
             stat = _stats(items)
             out.append({field: label, "calls": len(items), "tokens_saved": stat["total_tokens_saved"],
+                        "provider_input_tokens_avoided": stat[
+                            "total_provider_input_tokens_avoided"],
+                        "calls_avoided": stat["total_calls_avoided"],
+                        "native_cache_discount_usd": stat[
+                            "total_native_cache_discount_usd"],
+                        "transport_bytes_avoided": stat[
+                            "total_transport_bytes_avoided"],
                         "avg_savings_pct": stat["avg_savings_pct"], "avg_quality": stat["avg_quality_proxy"],
                         "cost_saved_usd": stat["total_verified_savings_usd"],
                         "brevitas_fee_usd": stat["total_brevitas_fee_usd"]})

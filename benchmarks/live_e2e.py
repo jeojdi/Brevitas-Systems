@@ -1,4 +1,4 @@
-"""Live tri-provider plug-and-play acceptance test (goal gate) — REALISTIC scenario.
+"""Live provider integration acceptance test — not an attribution benchmark.
 
 Default scenario = a real coding-agent session: three REAL source files from this repo
 are the context, and the conversation grows append-only across turns (exactly how real
@@ -8,7 +8,7 @@ have answers verifiable from the actual code, so correctness is objective.
 Per provider (Anthropic / OpenAI / DeepSeek) it verifies:
   1. Answers are correct (response contains the expected code fact).
   2. Provider caching actually engages: cached tokens > 0 on turns 2+.
-  3. The honest savings report shows real input-side savings (> 0%) on warm turns.
+  3. Provider-native cache receipt fields are parsed on warm turns.
   4. Block-style message content round-trips without crashing.
 
 Spend guard: 4 calls/provider, max_tokens=200, ~6K-token context → a few cents total.
@@ -18,7 +18,8 @@ Usage:
   python3 benchmarks/live_e2e.py                       # realistic agent scenario, all 3
   python3 benchmarks/live_e2e.py --providers deepseek  # subset
   python3 benchmarks/live_e2e.py --scenario doc        # simple doc-QA (debug only)
-Exit 0 only if every requested provider passes every assertion.
+Cached-token discounts observed here are provider behavior, not evidence of
+Brevitas-incremental savings. Use the paired-control harness for attribution.
 """
 from __future__ import annotations
 
@@ -188,7 +189,7 @@ def evaluate(result: dict) -> list[str]:
     if sum(t["cached_tokens"] for t in turns[1:]) <= 0:
         fails.append("no cached tokens on any warm turn (2+) — caching never engaged")
     if max((t["input_savings_pct"] for t in turns[1:]), default=0.0) <= 0.0:
-        fails.append("input savings never exceeded 0% on warm turns")
+        fails.append("native cache discount never appeared on warm turns")
     return fails
 
 

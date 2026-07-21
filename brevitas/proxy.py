@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ._compress import count_messages_tokens, report_usage
+from .identity import CUSTOMER_ID_HEADER, normalize_customer_id, short_tenant_key, tenant_key
 from .labels import _git_root_name
 from .receipts import SSEUsageParser, TokenReceipt, count_request_tokens, normalize_usage
 from .session import BrevitasSession
@@ -157,9 +158,9 @@ def _usage_tokens(data: dict, provider: str) -> tuple[int, int]:
     return int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
 
 
-def _cache_lookup(cache, body: dict, provider: str, model: str):
+def _cache_lookup(cache, body: dict, provider: str, model: str, gate_key: str = ""):
     try:
-        return cache.lookup(body, provider, model)
+        return cache.lookup(body, provider, model, gate_key=gate_key)
     except Exception:
         return None
 
@@ -192,9 +193,11 @@ def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> No
 def _cache_body(body: dict, request: Request, *credentials: str) -> dict:
     """Original request plus safe cache-vary metadata; never persist raw credentials."""
     cached = deepcopy(body)
-    cached["_brevitas_cache_namespace"] = _key_id("\0".join(
-        value for value in credentials if value
-    ))
+    customer_id = _customer_id(request)
+    namespace_parts = [value for value in credentials if value]
+    if customer_id:
+        namespace_parts.extend(("brevitas-customer", customer_id))
+    cached["_brevitas_cache_namespace"] = _key_id("\0".join(namespace_parts))
     cached["_brevitas_cache_vary"] = {
         name: request.headers.get(name, "") for name in (
             "anthropic-version", "anthropic-beta", "openai-organization",
@@ -202,6 +205,20 @@ def _cache_body(body: dict, request: Request, *credentials: str) -> dict:
         ) if request.headers.get(name)
     }
     return cached
+
+
+def _customer_id(request: Request) -> str:
+    try:
+        return normalize_customer_id(request.headers.get(CUSTOMER_ID_HEADER, ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _tenant_context(request: Request, fallback_credential: str = "") -> tuple[str, str]:
+    """Return (full quality-gate key, bounded process-state key)."""
+    credential = request.headers.get("x-brevitas-key", "") or fallback_credential
+    gate_key = tenant_key(credential, _customer_id(request))
+    return gate_key, short_tenant_key(gate_key)
 
 
 async def _json_object(request: Request) -> tuple[bytes, dict]:
@@ -274,6 +291,7 @@ async def _emit_usage(request: Request, payload: dict) -> None:
     try:
         if _usage_reporter is not None:
             key = request.headers.get("x-brevitas-key", "")
+            payload = {**payload, "_brevitas_tenant_key": _tenant_context(request, key)[0]}
             if inspect.iscoroutinefunction(_usage_reporter):
                 await _usage_reporter(key, payload)
             else:
@@ -302,7 +320,10 @@ def _router_usage(receipt: TokenReceipt, provider: str) -> dict:
                 },
                 "output_tokens": receipt.output_tokens}
     return {"prompt_tokens": receipt.input_tokens,
-            "prompt_tokens_details": {"cached_tokens": receipt.cached_input_tokens},
+            "prompt_tokens_details": {
+                "cached_tokens": receipt.cached_input_tokens,
+                "cache_write_tokens": receipt.cache_write_tokens,
+            },
             "completion_tokens": receipt.output_tokens}
 
 
@@ -311,14 +332,15 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
                           router: BrevitasRouter, labels: dict, optimized: bool,
                           response_id: str = "", strategy: str = "native_cache",
                           fleet_pipe: str = "", cache_attributable: bool = False,
-                          optimized_tokens: int | None = None) -> None:
+                          optimized_tokens: int | None = None,
+                          tenant_key: str = "") -> None:
     has_receipt = receipt.total_tokens > 0
     usage = _router_usage(receipt, provider) if has_receipt else {}
     if has_receipt:
         _meter(provider, model, usage, labels, optimized)
     if optimized and has_receipt:
         record_usage(usage, provider, router, session.session_id,
-                     pipeline=fleet_pipe, model=model)
+                     pipeline=fleet_pipe, model=model, tenant_key=tenant_key)
         _state_save()
     receipt_fields = receipt.as_dict() if has_receipt else {}
     await _emit_usage(request, {
@@ -462,6 +484,18 @@ def _passthrough_mode() -> bool:
     return os.environ.get("BREVITAS_PASSTHROUGH", "") in ("1", "true", "yes")
 
 
+def _safe_optimize_request(body: dict, provider: str, router: BrevitasRouter,
+                           session_id: str, **kwargs) -> dict:
+    """Run optional optimization fail-open and restore the exact parsed request on error."""
+    original = deepcopy(body)
+    try:
+        return optimize_request(body, provider, router, session_id, **kwargs)
+    except Exception:
+        body.clear()
+        body.update(original)
+        return {"strategy": "passthrough:optimizer_error", "response_faithful": True}
+
+
 def _meter(provider: str, model: str, usage: dict, labels: dict, optimized: bool) -> None:
     """Append one JSONL usage record per call when BREVITAS_METER_FILE is set.
     Works identically in passthrough and optimized modes so A/B runs are compared
@@ -483,7 +517,9 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
     """Extract provider auth headers from the incoming request."""
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if provider == "anthropic":
-        for h in ("x-api-key", "anthropic-version", "anthropic-beta"):
+        # Anthropic accepts both x-api-key and Authorization: Bearer (used by
+        # Claude Code OAuth/WIF flows). Preserve whichever credential the caller sent.
+        for h in ("x-api-key", "authorization", "anthropic-version", "anthropic-beta"):
             val = request.headers.get(h)
             if val:
                 headers[h] = val
@@ -507,35 +543,39 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     _, body = await _json_object(request)
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
+    provider_auth = api_key or request.headers.get("authorization", "")
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, "messages")
     brevitas_key = request.headers.get("x-brevitas-key", "")
-    identity = brevitas_key or api_key
+    gate_key, state_key = _tenant_context(request, provider_auth)
     # Key state by tenant + provider + exact model + operation + agent so a router (whose
     # provider/economics are fixed at construction) never mixes providers or models.
-    sess_key = f"ant:{_key_id(identity)}:anthropic:{model}:messages:{_agent_label(labels, body)}"
+    sess_key = f"ant:{state_key}:anthropic:{model}:messages:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
     cache = _get_cache()
-    cache_body = _cache_body(body, request, brevitas_key, api_key) if cache is not None else None
-    if cache is not None and lever_allowed("cache"):
-        hit = _cache_lookup(cache, cache_body, "anthropic", model)
+    cache_body = (_cache_body(body, request, brevitas_key, provider_auth)
+                  if cache is not None else None)
+    if cache is not None and lever_allowed("cache", gate_key):
+        hit = _cache_lookup(cache, cache_body, "anthropic", model, gate_key)
         if hit is not None:
             await _report_cache_hit(request, "anthropic", model, hit, session, labels)
             session.advance()
             return JSONResponse(content=hit.response, status_code=200)
 
     optimized = not _passthrough_mode()
-    fleet_pipe, fleet_agent = _auto_fleet_labels(labels, api_key, body)
+    fleet_pipe, fleet_agent = _auto_fleet_labels(labels, provider_auth, body)
     strategy = "passthrough"
     cache_attributable = False
     # Faithful means the request we forward is byte-faithful to the original, so its
     # response is valid to cache under the original key. Retrieval/reorder set it False.
     response_faithful = True
     if optimized:
-        meta = optimize_request(body, "anthropic", router, session.session_id,
-                                pipeline=fleet_pipe, agent=fleet_agent)
+        meta = _safe_optimize_request(
+            body, "anthropic", router, session.session_id,
+            pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key,
+        )
         strategy = meta.get("strategy", "native_cache")
         cache_attributable = meta.get("cache_control_owner") == "brevitas"
         response_faithful = bool(meta.get("response_faithful", True))
@@ -543,7 +583,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
 
     bg_sig, bg_role = None, "free"
     if optimized and _BG_ON:
-        bg_sig = _bg.signature(body)
+        bg_sig = _bg.signature(body, namespace=gate_key)
         if bg_sig:
             bg_role, _bg_waited = await _bg.acquire(bg_sig)
 
@@ -588,6 +628,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
+                        tenant_key=gate_key,
                     )
                     session.advance()
 
@@ -619,6 +660,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             optimized, str(data.get("id") or ""), strategy, fleet_pipe,
             cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
+            tenant_key=gate_key,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -639,18 +681,18 @@ async def proxy_openai_chat(request: Request) -> Any:
     labels["gateway"] = labels.get("gateway") or (provider if provider == "openrouter" else "")
     baseline = count_request_tokens(body, "chat.completions")
     brevitas_key = request.headers.get("x-brevitas-key", "")
-    identity = brevitas_key or auth
+    gate_key, state_key = _tenant_context(request, auth)
     # Key by tenant + provider + exact model + operation + agent (see anthropic handler):
     # this is what stops DeepSeek/OpenAI economics from mixing in one shared-key fleet.
-    sess_key = f"oai:{_key_id(identity)}:{provider}:{model}:chat.completions:{_agent_label(labels, body)}"
+    sess_key = f"oai:{state_key}:{provider}:{model}:chat.completions:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
 
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
     cache = _get_cache()
     cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
-    if cache is not None and lever_allowed("cache"):
-        hit = _cache_lookup(cache, cache_body, provider, model)
+    if cache is not None and lever_allowed("cache", gate_key):
+        hit = _cache_lookup(cache, cache_body, provider, model, gate_key)
         if hit is not None:
             await _report_cache_hit(request, provider, model, hit, session, labels)
             session.advance()
@@ -663,25 +705,27 @@ async def proxy_openai_chat(request: Request) -> Any:
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, auth, body)
     strategy = "passthrough"
     response_faithful = True
+    cache_attributable = False
     if optimized:
-        meta = optimize_request(body, provider, router, session.session_id,
-                                pipeline=fleet_pipe, agent=fleet_agent)
+        meta = _safe_optimize_request(
+            body, provider, router, session.session_id,
+            pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key,
+        )
         strategy = meta.get("strategy", "native_cache")
         response_faithful = bool(meta.get("response_faithful", True))
+        cache_attributable = bool(meta.get("cache_attributable", False))
     optimized_tokens = count_request_tokens(body, "chat.completions")
 
     # pathfinder gate — signature computed AFTER optimization (the bytes actually sent)
     bg_sig, bg_role = None, "free"
     if optimized and _BG_ON:
-        bg_sig = _bg.signature(body)
+        bg_sig = _bg.signature(body, namespace=gate_key)
         if bg_sig:
             bg_role, _bg_waited = await _bg.acquire(bg_sig)
     bg_warm = _BG_WARM.get(provider, 240.0)
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
-    if is_stream and provider in ("openai", "deepseek"):
-        body.setdefault("stream_options", {}).setdefault("include_usage", True)
 
     override_upstream = request.headers.get("x-brevitas-upstream")
     upstream_base = get_openai_compatible_upstream(model, override_upstream, provider)
@@ -724,7 +768,9 @@ async def proxy_openai_chat(request: Request) -> Any:
                     await _record_receipt(
                         request, provider, model, "chat.completions", baseline, parser.finish(),
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
+                        cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
+                        tenant_key=gate_key,
                     )
                     session.advance()
 
@@ -754,7 +800,9 @@ async def proxy_openai_chat(request: Request) -> Any:
             request, provider, model, "chat.completions", baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             optimized, str(data.get("id") or ""), strategy, fleet_pipe,
+            cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
+            tenant_key=gate_key,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -773,28 +821,36 @@ async def proxy_openai_responses(request: Request) -> Any:
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, "responses")
     auth = request.headers.get("authorization", "")
-    identity = request.headers.get("x-brevitas-key") or auth
-    sess_key = f"responses:{_key_id(identity)}:{provider}:{model}:responses:{_agent_label(labels, body)}"
+    gate_key, state_key = _tenant_context(request, auth)
+    sess_key = f"responses:{state_key}:{provider}:{model}:responses:{_agent_label(labels, body)}"
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
     optimized = False
     body_changed = False
     strategy = "passthrough"
+    cache_attributable = False
 
     response_input = body.get("input")
     if not _passthrough_mode() and isinstance(response_input, list) and all(
         isinstance(item, dict) and "role" in item for item in response_input
     ):
-        temporary = {"model": model, "messages": deepcopy(response_input)}
+        temporary = {"model": model, "messages": deepcopy(response_input),
+                     "_brevitas_operation": "responses"}
         if body.get("instructions"):
             temporary["system"] = body["instructions"]
-        meta = optimize_request(temporary, provider, router, session.session_id,
-                                pipeline=labels.get("pipeline", ""),
-                                agent=labels.get("agent", ""))
+        meta = _safe_optimize_request(
+            temporary, provider, router, session.session_id,
+            pipeline=labels.get("pipeline", ""), agent=labels.get("agent", ""),
+            tenant_key=gate_key,
+        )
         body["input"] = temporary["messages"]
+        for cache_field in ("prompt_cache_key", "prompt_cache_options"):
+            if cache_field in temporary:
+                body[cache_field] = temporary[cache_field]
         body_changed = body["input"] != response_input
         optimized = body_changed
         strategy = meta.get("strategy", "native_cache")
+        cache_attributable = bool(meta.get("cache_attributable", False))
     optimized_tokens = count_request_tokens(body, "responses")
 
     base = get_openai_compatible_upstream(
@@ -833,7 +889,9 @@ async def proxy_openai_responses(request: Request) -> Any:
                         request, provider, model, "responses", baseline, parser.finish(),
                         session, router, labels, optimized, parser.response_id, strategy,
                         labels.get("pipeline", ""),
+                        cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
+                        tenant_key=gate_key,
                     )
                     session.advance()
 
@@ -852,7 +910,9 @@ async def proxy_openai_responses(request: Request) -> Any:
             request, provider, model, "responses", baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             optimized, str(data.get("id") or ""), strategy, labels.get("pipeline", ""),
+            cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
+            tenant_key=gate_key,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -866,8 +926,9 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
     provider = _provider_for(model, _explicit_provider(request))
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, operation)
-    identity = request.headers.get("x-brevitas-key") or request.headers.get("authorization", "")
-    sess_key = f"{operation}:{_key_id(identity)}:{provider}:{model}"
+    gate_key, state_key = _tenant_context(
+        request, request.headers.get("authorization", ""))
+    sess_key = f"{operation}:{state_key}:{provider}:{model}"
     session, router = _session_for(sess_key), _router_for(sess_key, provider)
     base = get_openai_compatible_upstream(
         model, request.headers.get("x-brevitas-upstream"), provider
@@ -899,7 +960,7 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
                 if completed:
                     await _record_receipt(request, provider, model, operation, baseline,
                         parser.finish(), session, router, labels, False, parser.response_id,
-                        "passthrough", labels.get("pipeline", ""))
+                        "passthrough", labels.get("pipeline", ""), tenant_key=gate_key)
                     session.advance()
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
@@ -914,6 +975,7 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
             request, provider, model, operation, baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             False, str(data.get("id") or ""), "passthrough", labels.get("pipeline", ""),
+            tenant_key=gate_key,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,

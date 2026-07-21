@@ -489,7 +489,7 @@ print("\n" + "="*80)
 print("  RESULTS SUMMARY")
 print("="*80)
 
-header = f"{'Category':<22} {'Model':<4} {'BEFORE':<26} {'AFTER':<26} {'Δ Quality':<10} {'Tokens saved'}"
+header = f"{'Category':<22} {'Model':<4} {'BEFORE':<26} {'AFTER':<26} {'Δ Quality':<10} {'Provider input avoided'}"
 print(header)
 print("-" * 100)
 
@@ -526,7 +526,7 @@ for _, label in MODELS:
     avg_lat_a = sum(r.latency for r in a_all) / len(a_all)
     retention = avg_a / max(0.01, avg_b) * 100
     print(f"  {label}: Quality BEFORE={avg_b:.2f}/10  AFTER={avg_a:.2f}/10  "
-          f"Retention={retention:.1f}%  Avg tokens saved={avg_sav:.1f}%  "
+          f"Retention={retention:.1f}%  Avg provider input avoided={avg_sav:.1f}%  "
           f"Latency Δ={avg_lat_a - avg_lat_b:+.1f}s")
 
 # Per-category breakdown

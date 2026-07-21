@@ -22,6 +22,9 @@ def test_signature_same_prefix_same_sig_and_small_is_none():
     other = {"messages": [{"role": "user", "content": BIG + "x"},
                           {"role": "user", "content": "q"}]}
     assert g.signature(other) != s1, "different stable prefix -> different signature"
+    assert g.signature(_body("q1"), namespace="tenant-a") != g.signature(
+        _body("q1"), namespace="tenant-b"
+    ), "identical prefixes from different tenants must never coordinate"
     assert g.signature({"messages": [{"role": "user", "content": "tiny"},
                                      {"role": "user", "content": "q"}]}) is None
 

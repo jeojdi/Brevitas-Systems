@@ -87,6 +87,13 @@ def test_repeated_request_hits_cache(monkeypatch):
     assert r3.status_code == 200
     assert _FakeAsyncClient.calls == 2, "cache entries must be tenant-isolated"
 
+    common = {"authorization": "shared-provider", "x-brevitas-key": "shared-service"}
+    client.post("/v1/chat/completions", json=req,
+                headers={**common, "x-brevitas-customer-id": "customer-a"})
+    client.post("/v1/chat/completions", json=req,
+                headers={**common, "x-brevitas-customer-id": "customer-b"})
+    assert _FakeAsyncClient.calls == 4, "shared service keys must isolate end customers"
+
 
 def test_high_temperature_not_cached(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)

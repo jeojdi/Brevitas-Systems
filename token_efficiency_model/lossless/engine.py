@@ -18,7 +18,8 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from .api_adapter import retrieval_select
-from .provider_cache import apply_anthropic_cache, count_cache_control, savings_from_usage
+from .provider_cache import (apply_anthropic_cache, apply_openai_cache,
+                             count_cache_control, savings_from_usage)
 from .router import BrevitasRouter
 
 # Cache-stable retrieval layout (brief b1): per session, the set of retrieved context
@@ -58,13 +59,28 @@ def _reorder_enabled() -> bool:
     }
 
 
-def _lever_allowed(lever: str) -> bool:
+def _anthropic_cache_enabled() -> bool:
+    """Brevitas-owned Anthropic writes are opt-in because cache creation has a
+    premium and no online router can prove that a future read will occur. Caller-owned
+    automatic/explicit caching is always preserved and merely metered."""
+    return os.environ.get("BREVITAS_ANTHROPIC_CACHE", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _openai_breakpoints_enabled() -> bool:
+    return os.environ.get("BREVITAS_OPENAI_CACHE_BREAKPOINTS", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _lever_allowed(lever: str, tenant_key: str = "") -> bool:
     """Fail-closed gate check: a tripped/failed/missing quality gate returns False so we
     fall back to full context. Any import/eval error also returns False (safe: the lever
     it guards is opt-in, so disabling it never breaks the lossless default path)."""
     try:
         from token_efficiency_model.quality.gate import lever_allowed
-        return lever_allowed(lever)
+        return lever_allowed(lever, key=tenant_key)
     except Exception:
         return False
 
@@ -100,6 +116,11 @@ def _accumulate_retrieved(session_id: str, selected: List[str]) -> List[str]:
     return list(acc)  # copy — never hand out the live internal list
 
 
+def _scoped_state_key(tenant_key: str, value: str) -> str:
+    """Namespace process-wide optimizer state without exposing raw tenant ids."""
+    return f"{tenant_key}:{value}" if tenant_key else value
+
+
 def _msg_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -124,7 +145,8 @@ def _stable_context(messages: List[dict], system: Any = None) -> List[str]:
 
 
 def optimize_request(body: dict, provider: str, router: BrevitasRouter,
-                     session_id: str, pipeline: str = "", agent: str = "") -> dict:
+                     session_id: str, pipeline: str = "", agent: str = "",
+                     tenant_key: str = "") -> dict:
     """Apply the router-chosen lossless strategy to `body` in place. Returns decision meta.
 
     When a multi-agent `pipeline` label is present, shared context is first promoted to a
@@ -150,8 +172,10 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # would cache MORE tokens than it already does. This prevents the regression where
     # a blind reorder breaks a cache the provider was already serving (Don't Break the
     # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
-    if pipeline and _reorder_enabled() and _lever_allowed("reorder"):
-        st9 = _b9_state(pipeline)
+    state_session_id = _scoped_state_key(tenant_key, session_id)
+    state_pipeline = _scoped_state_key(tenant_key, pipeline) if pipeline else ""
+    if pipeline and _reorder_enabled() and _lever_allowed("reorder", tenant_key):
+        st9 = _b9_state(state_pipeline)
         if not st9["locked"]:
             from .provider_cache import count_tokens as _ct
             from .shared_prefix import layout_ex as _shared_layout_ex
@@ -162,7 +186,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             else:
                 natural_cached = float(total_tok)          # unknown → assume well-cached (don't reorder)
             new_msgs, reordered = _shared_layout_ex(
-                pipeline, agent or session_id, messages,
+                state_pipeline, agent or session_id, messages,
                 natural_cached_tokens=natural_cached, count_tokens=_ct)
             body["messages"] = messages = new_msgs
             if reordered:
@@ -200,7 +224,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             "router_recommendation": "retrieve",
             "quality_status": "byte_preserving",
         }
-    elif strategy == "retrieve" and not _lever_allowed("retrieval"):
+    elif strategy == "retrieve" and not _lever_allowed("retrieval", tenant_key):
         # Quality gate tripped/failed/missing → force the original full context.
         strategy = "cache_only"
         router.note_strategy(session_id, "cache_only")
@@ -223,7 +247,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             # Cache-stable layout (b1): union this turn's picks into the session's
             # APPEND-ONLY retrieved set so the sent prefix stays byte-identical and
             # the provider cache hits it. `keep` only ever grows across turns.
-            acc = _accumulate_retrieved(session_id, list(sel["selected_context"]))
+            acc = _accumulate_retrieved(state_session_id, list(sel["selected_context"]))
         if acc and len(acc) <= _RETRIEVED_MAX_CHUNKS:
             # (an unbounded append-only set eventually re-approaches full context AND
             # dropping accumulated chunks would bust the prefix — past the cap the safest
@@ -288,7 +312,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
         sysv = body.get("system")
         if isinstance(sysv, str) and sysv:
             from .template_miner import default_miner
-            b9boundary = default_miner.observe_boundary(f"tm:{session_id}", sysv)
+            b9boundary = default_miner.observe_boundary(f"tm:{state_session_id}", sysv)
             if 0 < b9boundary < len(sysv):
                 meta["template_volatile_at"] = b9boundary
                 if _os.environ.get("BREVITAS_TEMPLATE_SPLIT", "0") not in ("0", "false", "no"):
@@ -307,6 +331,10 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             # and must not be stripped/re-priced as our optimization.
             meta["cache_breakpoints"] = existing
             meta["cache_control_owner"] = "caller"
+        elif not _anthropic_cache_enabled():
+            meta["cache_roi"] = "explicit_opt_in_required"
+            meta["cache_breakpoints"] = 0
+            meta["cached_prefix_tokens"] = 0
         else:
             if gap > 3600.0:
                 allowed, roi_reason = False, "reuse_outside_cache_ttl"
@@ -323,13 +351,27 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             else:
                 meta["cache_breakpoints"] = 0
                 meta["cached_prefix_tokens"] = 0
-    # OpenAI/DeepSeek: caching is automatic if prefix is byte-identical — we DON'T mutate it.
+    elif provider == "openai":
+        plan = apply_openai_cache(
+            body, tenant_key=tenant_key,
+            explicit_breakpoint=_openai_breakpoints_enabled(),
+        )
+        meta["openai_cache_supported"] = plan.supported
+        meta["openai_cache_key_added"] = plan.key_added
+        meta["openai_cache_breakpoint_added"] = plan.breakpoint_added
+        meta["cached_prefix_tokens"] = plan.stable_prefix_tokens
+        meta["cache_control_owner"] = plan.owner
+        # A routing key can improve matching but OpenAI may have cached the same
+        # prefix automatically. Only explicit-only breakpoint mode is attributable.
+        meta["cache_attributable"] = plan.breakpoint_added
+    # DeepSeek and older OpenAI models remain byte-identical and use provider-native
+    # automatic prefix caching; no unsupported cache options are injected.
     meta["response_faithful"] = response_faithful
     return meta
 
 
 def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id: str,
-                 pipeline: str = "", model: str = ""):
+                 pipeline: str = "", model: str = "", tenant_key: str = ""):
     """Honest savings from real usage + feed cache-hit feedback to the router (and, when a
     pipeline label is present, to the b9 do-no-harm lock)."""
     s = savings_from_usage(usage, provider, model=model)
@@ -350,7 +392,7 @@ def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id:
 
     # b9 counterfactual check: is the pipeline caching WORSE since we reordered?
     if pipeline and prompt > 0:
-        st9 = _b9_pipes.get(pipeline)
+        st9 = _b9_pipes.get(_scoped_state_key(tenant_key, pipeline))
         if st9 is not None and st9["reordered"] and not st9["locked"]:
             hit = max(0.0, min(1.0, s.cached_tokens / prompt))
             st9["post_hit"] = hit if st9["post_hit"] < 0 else 0.5 * st9["post_hit"] + 0.5 * hit

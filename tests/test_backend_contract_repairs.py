@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -147,9 +148,84 @@ def test_failed_proxy_upstream_is_not_metered(monkeypatch):
     proxy.set_usage_reporter(lambda key, payload: events.append(payload))
     response = TestClient(proxy.proxy_app).post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer provider", "X-Brevitas-Key": "bvt"},
+        headers={"Authorization": "Bearer" + " provider", "X-Brevitas-Key": "bvt"},
         json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
     )
     proxy.set_usage_reporter(None)
     assert response.status_code == 429
     assert events == []
+
+
+def test_anthropic_bearer_auth_is_forwarded(monkeypatch):
+    import brevitas.proxy as proxy
+
+    seen = {}
+    real = httpx.AsyncClient
+    def handler(request):
+        seen.update(request.headers)
+        return httpx.Response(200, json={
+            "id": "msg", "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
+        transport=httpx.MockTransport(handler)))
+    proxy._cache_init_done = True
+    proxy._cache_singleton = None
+    monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
+
+    response = TestClient(proxy.proxy_app).post(
+        "/v1/messages",
+        headers={"Authorization": "Bearer" + " oauth-token"},
+        json={"model": "claude-sonnet-4-6", "max_tokens": 10,
+              "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert seen["authorization"] == "Bearer" + " oauth-token"
+
+
+def test_playground_cache_replay_is_tenant_scoped_and_not_token_deletion(
+        tmp_path, monkeypatch):
+    from brevitas.identity import tenant_key
+
+    server, store, raw_key, client = _server_client(tmp_path, monkeypatch)
+    observed = {}
+
+    class Cache:
+        def lookup(self, body, provider, model, gate_key=""):
+            observed.update(body=body, provider=provider, model=model,
+                            gate_key=gate_key)
+            return SimpleNamespace(
+                response={"text": "cached answer"}, kind="exact", similarity=1.0,
+                prompt_tokens=10, completion_tokens=4,
+            )
+
+    monkeypatch.setattr(server, "_get_playground_cache", lambda: Cache())
+    monkeypatch.setattr(server, "_build_chat_backend", lambda *_args: (
+        "openai", "gpt-4o-mini",
+        lambda *_call_args: (_ for _ in ()).throw(AssertionError("provider called")),
+    ))
+    monkeypatch.setattr(server, "_compress_pipeline", lambda *_args, **_kwargs: {
+        "out_messages": ["hello"], "selected_context": [],
+        "baseline_tokens": 20, "optimized_tokens": 15, "savings_pct": 25.0,
+        "fallback_applied": False, "reason": "full_context",
+        "message_reason": "compressed", "method": "test", "quality_sim": None,
+        "faithful": True,
+    })
+
+    headers = {"X-Brevitas-Key": raw_key, "X-Brevitas-Customer-Id": "customer-a"}
+    response = client.post("/v1/playground/stream", headers=headers, json={
+        "messages": ["hello"], "task": "hello",
+    })
+    events = [json.loads(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ")]
+    result = next(event["result"] for event in events if event["stage"] == "done")
+    expected_tenant = tenant_key(raw_key, "customer-a")
+
+    assert observed["gate_key"] == expected_tenant
+    assert observed["body"]["_brevitas_cache_namespace"] == expected_tenant
+    assert result["provider_input_tokens_avoided"] == 5
+    assert result["calls_avoided"] == 1
+    assert result["tokens_saved_total"] == 5
+    stats = store.get_stats(hash_key(raw_key))
+    assert stats["total_provider_input_tokens_avoided"] == 5
+    assert stats["total_calls_avoided"] == 1

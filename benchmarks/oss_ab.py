@@ -1,4 +1,4 @@
-"""OSS agent-pipeline A/B: real dollar cost WITHOUT vs WITH Brevitas.
+"""Randomized paired-control OSS agent-pipeline benchmark.
 
 Two realistic multi-agent workloads, using the ACTUAL agent/task definitions from
 popular open-source repos (their real IP), driven through an OpenAI-compatible client:
@@ -14,10 +14,11 @@ financialdatasets.ai), so their web/data TOOLS are disabled and the agents reaso
 an in-context brief — the LLM-cost structure (shared context re-sent to every agent
 across a pipeline) is identical, which is exactly what Brevitas optimizes.
 
-A/B: BASELINE sends each agent the full shared context every call (raw client).
-BREVITAS routes the same calls through BrevitasDropIn (auto caching/retrieval/router).
-Both measured from REAL provider usage; cost priced from api/store PROVIDER_COSTS_PER_1M
-including cached-token discounts. Spend-guarded (max_tokens small, ~6 agents/run).
+Each trial runs control and treatment in randomized order with distinct provider
+credentials (required for cache isolation), temperature zero, and a fixed transcript.
+Model outputs are scored/recorded but never fed into later prompts, so sampled output
+length cannot change the other arm's future input. Results include cold/warm costs and
+a 95% confidence interval over paired cost deltas.
 
 Usage: python3 benchmarks/oss_ab.py --provider deepseek --workload marketing
        python3 benchmarks/oss_ab.py --provider openai   --workload finance
@@ -26,7 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -49,10 +53,12 @@ def _load_env():
 
 PROVIDERS = {
     "deepseek": {"model": "deepseek-chat", "base": "https://api.deepseek.com/v1",
-                 "key_env": "Deepseek_api_key",
+                 "control_key_env": "DEEPSEEK_CONTROL_API_KEY",
+                 "treatment_key_env": "DEEPSEEK_TREATMENT_API_KEY",
                  "in": 0.27, "cached": 0.07, "out": 1.10},   # $/1M (deepseek docs)
     "openai": {"model": "gpt-4o-mini", "base": "https://api.openai.com/v1",
-               "key_env": "OPENAI_API_KEY",
+               "control_key_env": "OPENAI_CONTROL_API_KEY",
+               "treatment_key_env": "OPENAI_TREATMENT_API_KEY",
                "in": 0.15, "cached": 0.075, "out": 0.60},     # $/1M (openai docs)
 }
 
@@ -105,9 +111,8 @@ FINANCE_AGENTS = [
 ]
 
 
-def _mk_client(prov, optimized):
+def _mk_client(prov, optimized, key):
     cfg = PROVIDERS[prov]
-    key = os.environ[cfg["key_env"]]
     if optimized:
         return BrevitasDropIn(base_url=cfg["base"], provider=prov, api_key=key)
     import openai
@@ -116,9 +121,11 @@ def _mk_client(prov, optimized):
 
 def _call(client, optimized, model, messages, sid):
     if optimized:
-        resp, _ = client.chat(messages=messages, model=model, session_id=sid, max_tokens=220)
+        resp, _ = client.chat(messages=messages, model=model, session_id=sid,
+                              max_tokens=220, temperature=0)
         return resp
-    return client.chat.completions.create(model=model, messages=messages, max_tokens=220)
+    return client.chat.completions.create(model=model, messages=messages,
+                                          max_tokens=220, temperature=0)
 
 
 def _usage_cost(usage, cfg) -> tuple[float, int, int]:
@@ -131,15 +138,15 @@ def _usage_cost(usage, cfg) -> tuple[float, int, int]:
     return usd, prompt, cached
 
 
-def run(prov, workload, optimized) -> dict:
+def run(prov, workload, optimized, key, trial: int) -> dict:
     cfg = PROVIDERS[prov]
-    client = _mk_client(prov, optimized)
+    client = _mk_client(prov, optimized, key)
     if workload == "marketing":
         brief, agents, sysprefix = MARKETING_BRIEF, MARKETING_AGENTS, None
     else:
         brief, agents, sysprefix = FINANCE_BRIEF, FINANCE_AGENTS, None
 
-    sid = f"{workload}-{'brev' if optimized else 'base'}"
+    sid = f"{workload}-trial-{trial}-{'treatment' if optimized else 'control'}"
     total_usd = 0.0
     total_prompt = 0
     total_cached = 0
@@ -175,7 +182,9 @@ def run(prov, workload, optimized) -> dict:
         transcript.append({"agent": role, "usd": round(usd, 6), "prompt": prompt,
                            "cached": cached, "head": text[:70].replace("\n", " ")})
         history.append({"role": "user", "content": f"[{role} task] {task}"})
-        history.append({"role": "assistant", "content": text})
+        # Fixed transcript invariant: sampled model output is never included in a
+        # subsequent prompt, so arm order/output length cannot contaminate later calls.
+        history.append({"role": "assistant", "content": "[fixed benchmark handoff]"})
         time.sleep(0.6)
 
     return {"usd": total_usd, "prompt_tokens": total_prompt, "cached_tokens": total_cached,
@@ -186,35 +195,64 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", default="deepseek", choices=list(PROVIDERS))
     ap.add_argument("--workload", default="marketing", choices=["marketing", "finance"])
+    ap.add_argument("--trials", type=int, default=4)
+    ap.add_argument("--seed", type=int, default=20260720)
     args = ap.parse_args()
     _load_env()
-    if not os.environ.get(PROVIDERS[args.provider]["key_env"]):
-        print(f"missing key {PROVIDERS[args.provider]['key_env']}"); return 1
+    cfg = PROVIDERS[args.provider]
+    control_key = os.environ.get(cfg["control_key_env"], "")
+    treatment_key = os.environ.get(cfg["treatment_key_env"], "")
+    if not control_key or not treatment_key:
+        print(f"missing isolated keys {cfg['control_key_env']} and/or {cfg['treatment_key_env']}")
+        return 1
+    if control_key == treatment_key:
+        print("control and treatment credentials must differ to isolate provider caches")
+        return 1
 
-    print(f"\n=== {args.workload} on {args.provider}: BASELINE (no Brevitas) ===", flush=True)
-    base = run(args.provider, args.workload, optimized=False)
-    print(f"  cost ${base.get('usd', 0):.6f}  prompt_tok {base.get('prompt_tokens')}  "
-          f"cached {base.get('cached_tokens')}")
+    rng = random.Random(args.seed)
+    trials = []
+    for trial in range(1, max(2, args.trials) + 1):
+        order = ["control", "treatment"]
+        rng.shuffle(order)
+        arms = {}
+        print(f"\n=== trial {trial} · order: {' → '.join(order)} ===", flush=True)
+        for arm in order:
+            optimized = arm == "treatment"
+            key = treatment_key if optimized else control_key
+            arms[arm] = run(args.provider, args.workload, optimized, key, trial)
+            print(f"  {arm}: ${arms[arm].get('usd', 0):.6f} · "
+                  f"prompt {arms[arm].get('prompt_tokens')} · cached {arms[arm].get('cached_tokens')}")
+        trials.append({"trial": trial, "order": order, **arms})
 
-    print(f"=== {args.workload} on {args.provider}: WITH BREVITAS ===", flush=True)
-    brev = run(args.provider, args.workload, optimized=True)
-    print(f"  cost ${brev.get('usd', 0):.6f}  prompt_tok {brev.get('prompt_tokens')}  "
-          f"cached {brev.get('cached_tokens')}")
-
+    valid = [t for t in trials if not t["control"].get("error")
+             and not t["treatment"].get("error") and t["control"].get("usd", 0) > 0]
+    deltas = [t["control"]["usd"] - t["treatment"]["usd"] for t in valid]
+    cold_deltas = [t["control"]["transcript"][0]["usd"]
+                   - t["treatment"]["transcript"][0]["usd"] for t in valid]
+    warm_deltas = [sum(row["usd"] for row in t["control"]["transcript"][1:])
+                   - sum(row["usd"] for row in t["treatment"]["transcript"][1:])
+                   for t in valid]
+    mean = statistics.mean(deltas) if deltas else 0.0
+    half = (1.96 * statistics.stdev(deltas) / math.sqrt(len(deltas))
+            if len(deltas) > 1 else None)
     out = {"provider": args.provider, "workload": args.workload,
-           "baseline": base, "brevitas": brev}
-    if "usd" in base and "usd" in brev and base["usd"] > 0 and "error" not in base and "error" not in brev:
-        saved = base["usd"] - brev["usd"]
-        out["cost_saved_usd"] = round(saved, 6)
-        out["cost_saved_pct"] = round(100 * saved / base["usd"], 1)
-        print(f"\n  >>> SAVED ${saved:.6f}  ({out['cost_saved_pct']}% of baseline cost) <<<")
-    for k in ("baseline", "brevitas"):
-        if out[k].get("error"):
-            print(f"  {k} ERROR: {out[k]['error']}")
+           "seed": args.seed, "cache_isolation": "distinct_provider_credentials",
+           "fixed_transcript": True, "trials": trials,
+           "paired_cost_delta_usd_mean": round(mean, 8),
+           "cold_cost_delta_usd_mean": round(statistics.mean(cold_deltas), 8)
+               if cold_deltas else None,
+           "warm_cost_delta_usd_mean": round(statistics.mean(warm_deltas), 8)
+               if warm_deltas else None,
+           "paired_cost_delta_usd_95ci": (
+               [round(mean - half, 8), round(mean + half, 8)] if half is not None else None),
+           "valid_trials": len(valid)}
+    print(f"\npaired control − treatment mean: ${mean:.8f}")
+    if half is not None:
+        print(f"95% CI: [${mean-half:.8f}, ${mean+half:.8f}]")
     res = Path(__file__).parent / f"oss_ab_{args.workload}_{args.provider}.json"
     res.write_text(json.dumps(out, indent=2, default=str))
     print(f"  results -> {res}")
-    return 0
+    return 0 if len(valid) == len(trials) else 1
 
 
 if __name__ == "__main__":

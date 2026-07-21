@@ -2,6 +2,8 @@
 
 from token_efficiency_model.lossless.provider_cache import (
     apply_anthropic_cache,
+    apply_openai_cache,
+    count_cache_control,
     count_tokens,
     savings_from_usage,
 )
@@ -63,6 +65,37 @@ def test_at_most_four_breakpoints():
     assert plan.breakpoints <= 4
 
 
+def test_top_level_anthropic_cache_control_is_caller_owned():
+    body = {"cache_control": {"type": "ephemeral"},
+            "messages": [{"role": "user", "content": "hello"}]}
+    assert count_cache_control(body) == 1
+
+
+def test_openai_gpt56_cache_key_and_explicit_breakpoint():
+    body = {
+        "model": "gpt-5.6",
+        "messages": [
+            {"role": "system", "content": _long(1800)},
+            {"role": "user", "content": "question"},
+        ],
+    }
+    plan = apply_openai_cache(body, tenant_key="tenant-a", explicit_breakpoint=True)
+    assert plan.supported and plan.key_added and plan.breakpoint_added
+    assert body["prompt_cache_key"].startswith("brevitas:tenant-a:")
+    assert body["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
+    assert body["messages"][0]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"}
+
+
+def test_openai_cache_fields_fail_closed_on_older_models():
+    body = {"model": "gpt-4o", "messages": [
+        {"role": "system", "content": _long(1800)},
+        {"role": "user", "content": "question"},
+    ]}
+    assert apply_openai_cache(body, tenant_key="tenant").supported is False
+    assert "prompt_cache_key" not in body
+
+
 # --- honest savings from real usage ---------------------------------------- #
 def test_anthropic_savings_from_cache_read():
     # 9000 tokens read from cache, 1000 fresh -> big discount
@@ -89,6 +122,15 @@ def test_openai_cached_tokens_savings():
     assert abs(s.savings_pct - 40.0) < 0.5
 
 
+def test_openai_gpt56_cache_write_is_not_fresh_or_free():
+    usage = {"prompt_tokens": 2000, "prompt_tokens_details": {
+        "cached_tokens": 0, "cache_write_tokens": 2000}}
+    s = savings_from_usage(usage, "openai", model="gpt-5.6")
+    assert s.detail["cache_write"] == 2000
+    assert s.input_fresh == 2000
+    assert s.savings_pct == -25.0
+
+
 def test_no_cache_means_no_savings():
     assert savings_from_usage({"prompt_tokens": 500, "prompt_tokens_details": {}}, "openai").savings_pct == 0.0
 
@@ -96,7 +138,7 @@ def test_no_cache_means_no_savings():
 def test_deepseek_cache_discount_is_real_rate_not_90pct():
     """DeepSeek V4 Flash cache hits cost 2% of fresh input.
 
-    At 80% cached, the current official rate yields 78.4% input savings.
+    At 80% cached, the current official rate yields 78.4% input-cost savings.
     """
     usage = {"prompt_tokens": 10000, "prompt_tokens_details": {"cached_tokens": 8000}}
     ds = savings_from_usage(usage, "deepseek").savings_pct

@@ -18,7 +18,10 @@ const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostnam
   && ['dashboard', 'billing'].includes(PREVIEW_SECTION)
 const PREVIEW_STATS = {
   total_calls: 128,
-  total_tokens_saved: 84200,
+  total_provider_input_tokens_avoided: 18400,
+  total_calls_avoided: 7,
+  total_native_cache_discount_usd: 23.14,
+  total_brevitas_incremental_savings_usd: null,
   total_optimized_tokens: 60300,
   total_actual_cost_usd: 74.26,
   total_verified_savings_usd: 31.68,
@@ -35,6 +38,7 @@ const PREVIEW_STATS = {
     timestamp: new Date(Date.UTC(2026, 6, 16, 12, index * 5)).toISOString(),
     baseline_tokens,
     optimized_tokens,
+    provider_input_tokens_avoided: Math.max(0, baseline_tokens - optimized_tokens),
     savings_pct: Number((((baseline_tokens - optimized_tokens) / baseline_tokens) * 100).toFixed(1)),
     project,
   })).reverse(),

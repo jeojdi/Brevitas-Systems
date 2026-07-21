@@ -494,7 +494,7 @@ for _, label in MODELS:
     retention = avg_a / max(0.01, avg_b) * 100
     print(f"  {label}: Accuracy  BEFORE={avg_b:.1f}%  AFTER={avg_a:.1f}%  "
           f"Δ={avg_a-avg_b:+.1f}%  Retention={retention:.1f}%  "
-          f"Avg tokens saved={tok_saved:.1f}%")
+          f"Avg provider input avoided={tok_saved:.1f}%")
 
 print("\n" + "-"*90)
 print("NOTES:")

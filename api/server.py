@@ -73,6 +73,7 @@ def _optimize_message_logged(text: str) -> dict:
 
 from .auth import generate_api_key, hash_key
 from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage, MODEL_PRICES
+from brevitas.identity import CUSTOMER_ID_HEADER, normalize_customer_id, tenant_key
 from .store import make_store, PROVIDER_COSTS_PER_1M
 from brevitas.semantic_cache import SemanticCache
 from brevitas import _embed
@@ -482,6 +483,12 @@ async def _protect_model_proxy(request: Request, call_next):
     if not raw_key and os.getenv("BREVITAS_PROXY_AUTH", "true").lower() not in ("0", "false", "no"):
         return JSONResponse(status_code=401, content={"detail": "Missing X-Brevitas-Key header"})
     kh = hash_key(raw_key) if raw_key else f"ip:{request.client.host if request.client else 'unknown'}"
+    try:
+        customer_id = normalize_customer_id(request.headers.get(CUSTOMER_ID_HEADER, ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    request.state.brevitas_key_hash = kh
+    request.state.brevitas_tenant_key = tenant_key(raw_key, customer_id) if raw_key else kh
     if raw_key:
         try:
             if not _key_exists(kh):
@@ -532,7 +539,8 @@ def _safe_record_usage(**values) -> bool:
         return False
 
 
-def _authenticated(x_api_key: Optional[str] = Header(None),
+def _authenticated(request: Request,
+                   x_api_key: Optional[str] = Header(None),
                    x_brevitas_key: Optional[str] = Header(None)) -> str:
     key = x_brevitas_key or x_api_key
     if not key:
@@ -545,7 +553,27 @@ def _authenticated(x_api_key: Optional[str] = Header(None),
         raise HTTPException(status_code=503, detail="Authentication store unavailable") from exc
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid API key")
+    try:
+        customer_id = normalize_customer_id(request.headers.get(CUSTOMER_ID_HEADER, ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.state.brevitas_key_hash = kh
+    request.state.brevitas_tenant_key = tenant_key(key, customer_id)
     return kh
+
+
+def _request_tenant_key(request: Request, fallback_key: str) -> str:
+    """Return middleware/auth tenant state with a safe local-test fallback.
+
+    FastAPI dependency overrides used by embedders and tests can bypass `_authenticated`.
+    Those calls are still isolated by the override's key instead of crashing because
+    request state was not populated.
+    """
+    value = getattr(request.state, "brevitas_tenant_key", "")
+    if value:
+        return str(value)
+    customer_id = normalize_customer_id(request.headers.get(CUSTOMER_ID_HEADER, ""))
+    return tenant_key(fallback_key, customer_id) if customer_id else fallback_key
 
 
 def _dashboard_identity(request: Request) -> dict:
@@ -938,7 +966,8 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
     # LAST message may be lossily shrunk while earlier messages stay byte-identical so the
     # provider cache still hits the stable prefix.
     pipe = _compress_pipeline(task, body.messages, body.prior_context, body.prune_budget,
-                              body.lossy, retrieval=body.retrieval, key_hash=kh)
+                              body.lossy, retrieval=body.retrieval,
+                              key_hash=_request_tenant_key(request, kh))
     out_messages = pipe["out_messages"]
     model_result = _run_configured_model(
         kh, out_messages, pipe["selected_context"], task,
@@ -1003,7 +1032,7 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
     from token_efficiency_model.quality.gate import lever_allowed
     # Lossy prompt compression is a risky lever: fail-closed unless this tenant has opted in
     # (and not tripped). When not allowed, force the lossless (byte-identical) path.
-    compression_ok = lever_allowed("compression", kh)
+    compression_ok = lever_allowed("compression", _request_tenant_key(request, kh))
     if body.smart and body.rate is None and compression_ok:
         from token_efficiency_model.lossless.task_router import TaskCompressionRouter
         res = TaskCompressionRouter().route(body.prompt, task_hint=body.task)
@@ -1052,7 +1081,7 @@ def compress_retrieval(request: Request, body: RetrievalCompressRequest,
 
     # Fail-closed, per tenant: retrieval can omit evidence, so only prune when this tenant
     # has opted in AND the retrieval lever has not tripped. Otherwise return full context.
-    if not lever_allowed("retrieval", kh):
+    if not lever_allowed("retrieval", _request_tenant_key(request, kh)):
         ctx_tokens = estimate_tokens_many(body.prior_context)
         return {"selected_context": list(body.prior_context),
                 "baseline_tokens": ctx_tokens, "optimized_tokens": ctx_tokens,
@@ -1095,7 +1124,7 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
                                       body.prune_budget, body.lossy, retrieval=body.retrieval,
-                                      key_hash=kh)
+                                      key_hash=_request_tenant_key(request, kh))
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1211,6 +1240,7 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
     # Resolve the backend up-front so an invalid BYOK provider/model returns a clean 502
     # instead of surfacing mid-stream. Raises HTTPException on bad input.
     provider, model, backend = _build_chat_backend(body.byok_provider, body.byok_model, body.byok_key)
+    tenant_gate_key = _request_tenant_key(request, kh)
 
     event_queue: queue.Queue = queue.Queue()
     SENTINEL = object()
@@ -1228,7 +1258,8 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
 
             pipe = _compress_pipeline(task, body.messages, body.prior_context,
                                       body.prune_budget, lossy=body.lossy,
-                                      retrieval=body.retrieval, key_hash=kh)
+                                      retrieval=body.retrieval,
+                                      key_hash=tenant_gate_key)
             if cancel_event.is_set():
                 return
             out_messages = pipe["out_messages"]
@@ -1243,7 +1274,8 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                              "fallback": pipe["fallback_applied"]})
 
             # Answer with the resolved backend — but first check the semantic/exact cache:
-            # a repeated (or reworded) question skips the model call entirely (≈100% savings).
+            # an eligible exact repeat can skip the model call. Fuzzy reuse is separately
+            # opt-in and fail-closed; neither kind is reported as provider token deletion.
             model_response = ""
             cache_hit = False
             cache_kind = ""
@@ -1256,14 +1288,18 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 ]))
                 cache = _get_playground_cache()
                 cbody = {"messages": [{"role": "user", "content": prompt}],
-                         "temperature": 0, "_brevitas_cache_namespace": kh}
+                         "temperature": 0,
+                         "_brevitas_cache_namespace": tenant_gate_key}
                 hit = None
                 from token_efficiency_model.quality.gate import lever_allowed
                 # Gate on the safe exact-cache lever for this tenant; the fuzzy semantic
                 # sub-layer is separately fail-closed inside the cache.
-                if cache is not None and lever_allowed("cache", kh):
+                if cache is not None and lever_allowed("cache", tenant_gate_key):
                     try:
-                        hit = cache.lookup(cbody, provider, model, gate_key=kh)
+                        hit = cache.lookup(
+                            cbody, provider, model,
+                            gate_key=tenant_gate_key,
+                        )
                     except Exception:
                         hit = None
                 if cancel_event.is_set():
@@ -1277,7 +1313,9 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                     cache_saved_tokens = (hit.prompt_tokens or count_tokens(prompt)) \
                         + (hit.completion_tokens or count_tokens(model_response))
                     event_queue.put({"stage": "cached", "kind": cache_kind,
-                                     "similarity": cache_similarity, "tokens_saved": cache_saved_tokens})
+                                     "similarity": cache_similarity,
+                                     "calls_avoided": 1,
+                                     "replayed_call_tokens": cache_saved_tokens})
                 else:
                     model_response = backend(prompt, model)
                     # Cache only when BOTH hold: (1) the prompt we answered was byte-faithful
@@ -1298,36 +1336,31 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                                  "text": model_response, "model_response": model_response,
                                  "cached": cache_hit})
 
-            # Total tokens saved this turn = compression + (whole call, if the cache served it).
-            tokens_saved_total = compression_saved + (cache_saved_tokens if cache_hit else 0)
-            # Cost saved at reference rates: compression trims input tokens; a cache hit also
-            # eliminates the full call (its prompt as input + completion as output).
+            # Mechanisms remain separate: compression can avoid provider input tokens;
+            # exact response replay avoids a model call. A replay is never token deletion.
+            provider_input_tokens_avoided = compression_saved
+            calls_avoided = int(cache_hit)
+            # Estimated reference-price delta: compression trims input tokens; an exact
+            # replay also avoids the reference call. This is not paired-control evidence.
             if cache_hit:
-                cost_saved_usd = _price_usd(compression_saved + (hit.prompt_tokens or 0),
-                                            hit.completion_tokens or count_tokens(model_response))
+                estimated_cost_delta_usd = _price_usd(
+                    compression_saved + (hit.prompt_tokens or 0),
+                    hit.completion_tokens or count_tokens(model_response),
+                )
             else:
-                cost_saved_usd = _price_usd(compression_saved, 0)
+                estimated_cost_delta_usd = _price_usd(compression_saved, 0)
 
-            # Record the turn's effective savings so the Overview graphs reflect wins. A cache
-            # hit eliminates the whole call, so it books as ~100% savings for that turn.
-            if cache_hit:
-                _safe_record_usage(
-                    key_hash=kh,
-                    baseline_tokens=pipe["baseline_tokens"] + cache_saved_tokens,
-                    optimized_tokens=0,
-                    savings_pct=100.0,
-                    quality_proxy=None,
-                    strategy=f"chat:cache_{cache_kind}|ctx:{pipe['reason']}"[:64],
-                )
-            else:
-                _safe_record_usage(
-                    key_hash=kh,
-                    baseline_tokens=pipe["baseline_tokens"],
-                    optimized_tokens=pipe["optimized_tokens"],
-                    savings_pct=pipe["savings_pct"],
-                    quality_proxy=None,
-                    strategy=f"chat:{pipe['message_reason']}|ctx:{pipe['reason']}"[:64],
-                )
+            _safe_record_usage(
+                key_hash=kh,
+                baseline_tokens=pipe["baseline_tokens"],
+                optimized_tokens=pipe["optimized_tokens"],
+                savings_pct=pipe["savings_pct"],
+                provider_input_tokens_avoided=provider_input_tokens_avoided,
+                calls_avoided=calls_avoided,
+                quality_proxy=None,
+                strategy=(f"chat:cache_{cache_kind}|ctx:{pipe['reason']}" if cache_hit
+                          else f"chat:{pipe['message_reason']}|ctx:{pipe['reason']}")[:64],
+            )
 
             event_queue.put({"stage": "done", "result": {
                 "compressed_messages": out_messages,
@@ -1343,8 +1376,13 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 "cache_hit":           cache_hit,
                 "cache_kind":          cache_kind,
                 "cache_similarity":    cache_similarity,
-                "tokens_saved_total":  tokens_saved_total,
-                "cost_saved_usd":      cost_saved_usd,
+                "provider_input_tokens_avoided": provider_input_tokens_avoided,
+                "calls_avoided":       calls_avoided,
+                "estimated_cost_delta_usd": estimated_cost_delta_usd,
+                # Deprecated compatibility aliases. `tokens_saved_total` now means only
+                # provider input avoided; it never includes replayed response tokens.
+                "tokens_saved_total":  provider_input_tokens_avoided,
+                "cost_saved_usd":      estimated_cost_delta_usd,
                 "price_basis":         _PLAYGROUND_PRICE_MODEL,
                 "provider":            provider,
                 "model":               model,
@@ -1421,6 +1459,10 @@ class UsageReportRequest(BaseModel):
     receipt_source: str = Field(default="sdk", pattern="^(sdk|proxy|import|manual)$")
     receipt_available: bool = True
     is_stream: bool = False
+    # Mechanism-separated evidence. Incremental savings is reported only when a
+    # paired control arm supplied an authoritative provider cost.
+    control_cost_usd: Optional[float] = Field(default=None, ge=0)
+    transport_bytes_avoided: int = Field(default=0, ge=0)
 
     @field_validator("provider", "model", "operation", "strategy", "session_id", "project",
                      "environment", "source", "repo", "client", "pipeline", "agent",
@@ -1461,7 +1503,9 @@ def _verification_mode(strategy: str) -> str:
     return "unknown"
 
 
-def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
+def _record_usage_report(kh: str, body: UsageReportRequest,
+                         tenant_gate_key: str | None = None) -> dict:
+    tenant_gate_key = tenant_gate_key or kh
     if body.request_id and _store.has_request(kh, body.request_id):
         return {"duplicate": True, "request_id": body.request_id,
                 "tokens_saved": 0, "measured_savings_usd": 0.0,
@@ -1505,9 +1549,34 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
                  "pricing_version": "", "prices": {},
              })
     measured = costs["measured_savings_usd"]
+    provider_input_tokens_avoided = max(0, baseline_tokens - receipt.input_tokens)
+    strategy_name = (body.strategy or "").strip().lower()
+    calls_avoided = int(strategy_name.startswith(("exact_cache", "semantic_cache")))
+    native_cache_discount_usd = None
+    prices = costs.get("prices") or {}
+    if costs["pricing_status"] == "priced" and prices:
+        cached_discount = receipt.cached_input_tokens * (
+            prices["input"] - prices["cached"])
+        write_5m = receipt.cache_write_5m_tokens
+        write_1h = receipt.cache_write_1h_tokens
+        tiered = write_5m + write_1h
+        if tiered > receipt.cache_write_tokens:
+            write_5m = write_1h = tiered = 0
+        unspecified = receipt.cache_write_tokens - tiered
+        write_premium = (
+            (unspecified + write_5m) * (prices["write"] - prices["input"])
+            + write_1h * (prices.get("write_1h", prices["input"] * 2.0)
+                          - prices["input"])
+        )
+        native_cache_discount_usd = round(
+            (cached_discount - write_premium) / 1_000_000, 10)
+    incremental_savings_usd = None
+    if body.control_cost_usd is not None and costs["actual_cost_usd"] is not None:
+        incremental_savings_usd = round(
+            body.control_cost_usd - costs["actual_cost_usd"], 10)
 
     mode = _verification_mode(body.strategy)
-    stream = _seq_stream(kh)
+    stream = _seq_stream(tenant_gate_key)
     if mode == "byte_preserving":
         quality_status = "verified"
     elif body.quality_verified is None:
@@ -1520,8 +1589,8 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
             # unproven lever — not just stop billing. Trips are keyed by the customer key,
             # so one tenant's failing reports never disable levers for other tenants.
             from token_efficiency_model.quality.gate import trip_lever
-            for _lever in ("retrieval", "compression", "semantic_cache"):
-                trip_lever(_lever, key=kh)
+            for _lever in ("retrieval", "compression", "semantic_cache", "reorder"):
+                trip_lever(_lever, key=tenant_gate_key)
         else:
             quality_status = "verified" if body.quality_verified else "failed"
     verified = max(0.0, float(measured or 0)) if quality_status == "verified" else 0.0
@@ -1548,6 +1617,11 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         baseline_cost_usd=costs["baseline_cost_usd"],
         actual_cost_usd=costs["actual_cost_usd"],
         measured_savings_usd=measured,
+        provider_input_tokens_avoided=provider_input_tokens_avoided,
+        native_cache_discount_usd=native_cache_discount_usd,
+        calls_avoided=calls_avoided,
+        transport_bytes_avoided=body.transport_bytes_avoided,
+        brevitas_incremental_savings_usd=incremental_savings_usd,
         verified_savings_usd=verified,
         brevitas_fee_usd=fee,
         pricing_status=costs["pricing_status"],
@@ -1582,6 +1656,11 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
         "baseline_cost_usd": costs["baseline_cost_usd"],
         "actual_cost_usd": costs["actual_cost_usd"],
         "measured_savings_usd": measured,
+        "provider_input_tokens_avoided": provider_input_tokens_avoided,
+        "native_cache_discount_usd": native_cache_discount_usd,
+        "calls_avoided": calls_avoided,
+        "transport_bytes_avoided": body.transport_bytes_avoided,
+        "brevitas_incremental_savings_usd": incremental_savings_usd,
         "verified_savings_usd": round(verified, 8),
         "cost_saved_usd": round(verified, 8),
         "brevitas_fee_usd": round(fee, 8),
@@ -1595,7 +1674,7 @@ def _record_usage_report(kh: str, body: UsageReportRequest) -> dict:
 @app.post("/v1/usage")
 @limiter.limit("300/minute")
 def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
-    return _record_usage_report(kh, body)
+    return _record_usage_report(kh, body, _request_tenant_key(request, kh))
 
 
 # ── Sequential quality streams (brief b4) ─────────────────────────────────────
@@ -1616,7 +1695,7 @@ def _seq_stream(kh: str):
 @app.get("/v1/quality/stream")
 def quality_stream(request: Request, kh: str = Depends(_authenticated)):
     """Auditable state of this customer's sequential quality stream."""
-    return _seq_stream(kh).to_dict()
+    return _seq_stream(_request_tenant_key(request, kh)).to_dict()
 
 
 @app.post("/v1/quality/stream/reset")
@@ -1624,9 +1703,10 @@ def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
     """Reset a tripped stream (after investigation). Deliberately explicit.
     Also clears this tenant's lever trips so the request-path levers re-enable together
     with the billing stream (the two must not drift apart)."""
-    _seq_streams.pop(kh, None)
+    tenant_gate_key = _request_tenant_key(request, kh)
+    _seq_streams.pop(tenant_gate_key, None)
     from token_efficiency_model.quality.gate import reset_all_levers
-    reset_all_levers(key=kh)
+    reset_all_levers(key=tenant_gate_key)
     return {"reset": True}
 
 
@@ -1840,7 +1920,9 @@ def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
     kh = hash_key(raw_key)
     if not _key_exists(kh):
         return
-    _record_usage_report(kh, UsageReportRequest.model_validate(payload))
+    payload = dict(payload)
+    tenant_gate_key = str(payload.pop("_brevitas_tenant_key", "") or kh)
+    _record_usage_report(kh, UsageReportRequest.model_validate(payload), tenant_gate_key)
 
 
 # Railway serves the management API and provider-compatible proxy from one process.

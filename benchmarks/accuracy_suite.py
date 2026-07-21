@@ -1,8 +1,7 @@
-"""Tri-provider LOSSLESS-accuracy benchmark suite (Claude / OpenAI / DeepSeek).
+"""Tri-provider aggregate-accuracy comparison (Claude / OpenAI / DeepSeek).
 
-Purpose: prove Brevitas is lossless on standardized public benchmarks — accuracy WITH
-Brevitas must match accuracy WITHOUT (the caching/routing path sends the model the same
-content) — while measuring the real token/dollar savings. Few-shot prompts give the
+Purpose: compare aggregate task accuracy with and without Brevitas. Equal aggregate
+accuracy is not a proof of identical inputs, outputs, or per-example behavior. Few-shot prompts give the
 providers a byte-identical shared exemplar prefix to cache (realistic for benchmarking
 and for any templated production traffic).
 
@@ -62,10 +61,9 @@ def raw_client(p):
 
 
 def call(p, client, optimized, system, user, sid, max_tokens):
-    # temperature=0: deterministic decoding so the lossless proof is CLEAN — identical
-    # content in => identical tokens out => identical accuracy. Any accuracy delta at
-    # temp>0 would be sampling noise, not Brevitas. (Anthropic omits an explicit temp
-    # to keep it at its deterministic default of 0 for haiku with no sampling knobs set.)
+    # temperature=0 reduces sampling variance for a behavior comparison. It does not
+    # prove identical behavior, and aggregate accuracy equality is not a losslessness
+    # claim. (Anthropic omits an explicit temperature for this legacy harness.)
     c = PROV[p]
     if optimized:
         resp, _ = client.chat(messages=[{"role": "system", "content": system},
@@ -203,10 +201,10 @@ def main():
             "baseline": base, "brevitas": brev,
             "accuracy_delta": round(brev["accuracy"] - base["accuracy"], 4),
             "cost_saved_pct": round(100*saved/base["usd"], 1) if base["usd"] > 0 else 0.0,
-            "lossless": abs(brev["accuracy"] - base["accuracy"]) < 1e-9}
+            "aggregate_accuracy_equal": abs(brev["accuracy"] - base["accuracy"]) < 1e-9}
         b = out["benchmarks"][name]
         print(f"  => acc Δ {b['accuracy_delta']:+.4f}  saved {b['cost_saved_pct']}%  "
-              f"lossless={b['lossless']}")
+              f"aggregate_equal={b['aggregate_accuracy_equal']}")
     res = ROOT / "benchmarks" / f"accuracy_suite_{p}.json"
     res.write_text(json.dumps(out, indent=2, default=str))
     print(f"\nresults -> {res}")

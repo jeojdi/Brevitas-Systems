@@ -1,12 +1,12 @@
 """
 Brevitas × DeepSeek Ground-Truth Benchmark V2
 ==============================================
-BEFORE (full context) vs OLD-LOSSY (legacy TokenEfficientPipeline) vs NEW (lossless orchestrator)
+BEFORE (full context) vs OLD-LOSSY (legacy TokenEfficientPipeline) vs NEW (cache-first orchestrator)
 
 Modes:
   BEFORE   = full multi-agent context (baseline ceiling)
   OLD-LOSSY = legacy TokenEfficientPipeline default (compression+pruning)
-  NEW      = revamped lossless path (native cache + RLM retrieval, BrevitasMode.LOSSLESS)
+  NEW      = cache-first path with optional RLM retrieval (quality-affecting)
 
 Datasets: arc, bbh, humaneval, mmlu_cs, mmlu_logic
 Same datasets and scoring as v1 — pure accuracy vs ground truth, no self-eval.
@@ -139,7 +139,7 @@ def compress_lossy(messages: list[str], prior_context: list[str], task: str) -> 
     return comp_msgs, pruned_ctx, baseline, out_toks
 
 def process_lossless(messages: list[str], prior_context: list[str], task: str) -> tuple[list[str], list[str], int]:
-    """Apply lossless mode (NEW path)."""
+    """Apply the legacy-named NEW path; retrieval is not strictly lossless."""
     config = ModeConfig(mode=BrevitasMode.LOSSLESS, enable_rlm_retrieval=True)
     result = orchestrator.process(
         task_text=task,
@@ -147,7 +147,7 @@ def process_lossless(messages: list[str], prior_context: list[str], task: str) -
         prior_context=prior_context,
         config=config,
     )
-    # In lossless mode, we return full context but with RLM retrieval prepared
+    # This historical mode name does not imply byte-identical provider input.
     out_toks = estimate_tokens_many(result.optimized_messages) + estimate_tokens_many(result.optimized_context)
     return result.optimized_messages, result.optimized_context, out_toks
 
@@ -589,7 +589,7 @@ print("\n" + "-"*100)
 print("NOTES:")
 print("  · BEFORE = full multi-agent context (baseline)")
 print("  · OLD-LOSSY = legacy TokenEfficientPipeline (compression+pruning)")
-print("  · NEW = lossless orchestrator (native cache + RLM retrieval, no lossy compression)")
+print("  · NEW = cache-first orchestrator with optional quality-affecting RLM retrieval")
 print("  · Accuracy measured purely against dataset ground truth (no self-eval)")
 print(f"  · Total API calls (live): {api_call_count}")
 print(f"  · Models tested: {', '.join(label for _, label in MODELS)}")

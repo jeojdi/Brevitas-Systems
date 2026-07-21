@@ -629,10 +629,10 @@ function LandingPage() {
         {/* Layer 3: content — text-shadow lifts every element off the image */}
         <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#8ea6ff' }}>
           <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff', letterSpacing: '-0.035em' }}>
-            we make your agents spend <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>less</em> tokens.
+            see exactly how your agents <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>spend.</em>
           </h1>
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
-            most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
+            Brevitas keeps reusable prefixes stable, meters native cache economics, and can optionally reduce context behind explicit quality gates.
           </p>
           <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24, alignItems: 'center', justifyContent: 'center' }}>
             <Button variant="primary" href="/login" className="hero-btn hero-cta">Get started</Button>
@@ -642,13 +642,13 @@ function LandingPage() {
             display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
             paddingTop: 32, borderTop: '1px solid var(--line)', justifyContent: 'center'
           }}>
-            <StatCard variant="inline" value="–59.4%" label="tokens saved" />
-            <StatCard variant="inline" value="–46.9%" label="cost saved" />
-            <StatCard variant="inline" value="99.6%" label="context retained" />
-            <StatCard variant="inline" value="99%" label="quality parity" />
+            <StatCard variant="inline" value="5" label="mechanisms separated" />
+            <StatCard variant="inline" value="0" label="risky levers on by default" />
+            <StatCard variant="inline" value="per-tenant" label="quality trips" />
+            <StatCard variant="inline" value="paired" label="controls for attribution" />
           </div>
           <div className="hero-benchmark-note t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
-            first-run benchmark · agentbench task · real api calls
+            provider receipts first · no blanket savings percentage
           </div>
           <div className="hero-install fade-up delay-4 in" style={{ display: 'flex', justifyContent: 'center', marginTop: 'clamp(36px, 6vh, 64px)' }}>
             <InstallCommand />
@@ -734,10 +734,10 @@ function LandingPage() {
                 Every agent output is bloated with restated context, things the next agent already knows. You're billed for all of it, every time, on every hop.
               </p>
               <p className="t-body">
-                Brevitas strips it before the next model sees it. The important tokens survive. The billing filler goes. Your agents don't notice. Your invoice does.
+                By default, Brevitas preserves prompt content and measures provider cache reads and writes. Retrieval or compression can reduce input, but those levers can affect quality and require explicit opt-in.
               </p>
               <p className="t-body">
-                This alone recovers 40–60% for most teams. There are five more places we find money.
+                The dashboard keeps input reduction, native cache discounts, calls avoided, transport bytes, and paired-control lift in separate buckets.
               </p>
               <div style={{ marginTop: 12 }}>
                 <a href="/product" className="btn btn-ghost underline">Explore the product →</a>
@@ -811,7 +811,7 @@ function LandingPage() {
         <div className="container">
           <div className="fade-up" style={{ marginBottom: 40 }}>
             <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              Six lossless levers for lower model costs. The router applies only what earns its keep.
+              Six cost mechanisms, separated by what they change and what evidence they require.
             </h2>
           </div>
           <div className="fade-up delay-1">
@@ -836,10 +836,10 @@ function LandingPage() {
             <div className="fade-up">
               <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 20 }}>
                 Real pipelines.<br />
-                <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>Measured savings.</em>
+                <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>Measured with controls.</em>
               </h2>
               <p className="t-body" style={{ marginBottom: 40, maxWidth: 400 }}>
-                AgentBench, MARBLE, and BattleAgentBench. Published, peer-reviewed benchmarks. Not cherry-picked tasks. Not internal evals. The kind your CFO can point to.
+                Benchmark attribution requires paired control and treatment runs, isolated cache namespaces, fixed transcripts, repeated trials, and confidence intervals.
               </p>
               <a href="/benchmarks" className="btn btn-secondary">See full results →</a>
             </div>
@@ -847,9 +847,9 @@ function LandingPage() {
             {/* Right: benchmark data rows */}
             <div className="fade-up delay-1" style={{ display: 'flex', flexDirection: 'column' }}>
               {[
-                { letter: 'A', name: 'AgentBench', venue: 'ICLR 2024', metric: '–59.4%', label: 'tokens saved', pct: 59.4 },
-                { letter: 'M', name: 'MARBLE',     venue: 'ACL 2025',  metric: '–46.9%', label: 'cost reduction', pct: 46.9 },
-                { letter: 'B', name: 'BattleAgentBench', venue: '2024', metric: '99.6%', label: 'context retained', pct: 99.6 },
+                { letter: 'A', name: 'AgentBench', venue: 'ICLR 2024', metric: 'paired', label: 'control / treatment', pct: 100 },
+                { letter: 'M', name: 'MARBLE',     venue: 'ACL 2025',  metric: 'isolated', label: 'cache namespaces', pct: 100 },
+                { letter: 'B', name: 'BattleAgentBench', venue: '2024', metric: '95% CI', label: 'repeated trials', pct: 95 },
               ].map(({ letter, name, venue, metric, label, pct }, i) => (
                 <div key={i} style={{
                   display: 'grid', gridTemplateColumns: '1fr auto',

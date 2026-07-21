@@ -40,9 +40,10 @@ function TokenBar({ baseline, optimized }) {
   )
 }
 
-// Live / final savings strip attached to a turn.
+// Live / final mechanism-separated usage strip attached to a turn.
 function SavingsStrip({ meta, live = false }) {
-  const retained = meta.retained != null ? `${meta.retained.toFixed(1)}%` : 'lossless'
+  const retained = meta.retained != null ? `${meta.retained.toFixed(1)}%` : 'not measured'
+  const inputAvoided = Math.max(0, Number(meta.baseline || 0) - Number(meta.optimized || 0))
   return (
     <div className={`rounded-xl border p-3.5 space-y-3 ${live
       ? 'border-brand-blue/40 bg-brand-blue-dim dark:bg-brand-dark-blue-dim'
@@ -68,19 +69,19 @@ function SavingsStrip({ meta, live = false }) {
       <div className="grid grid-cols-3 gap-3 pt-0.5">
         <div>
           <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">
-            {meta.cacheHit ? '100' : meta.savingsPct.toFixed(1)}%
+            {meta.cacheHit ? '1' : inputAvoided.toLocaleString()}
           </p>
-          <p className="annotation mt-0.5">// tokens saved</p>
+          <p className="annotation mt-0.5">{meta.cacheHit ? '// model call avoided' : '// provider input tokens avoided'}</p>
         </div>
         <div>
           <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{retained}</p>
-          <p className="annotation mt-0.5">// context retained</p>
+          <p className="annotation mt-0.5">// measured similarity</p>
         </div>
         <div>
           <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">
             {meta.costSaved != null ? fmtUsd(meta.costSaved) : '—'}
           </p>
-          <p className="annotation mt-0.5">// saved ≈ {meta.priceBasis || 'gpt-4o'}</p>
+          <p className="annotation mt-0.5">// estimated cost delta · {meta.priceBasis || 'gpt-4o'}</p>
         </div>
       </div>
     </div>
@@ -125,12 +126,12 @@ export default function Playground({ apiKey }) {
     setByokModel((catalog[id] ?? [])[0] ?? '')
   }
 
-  // Cumulative session savings across all completed turns.
+  // Cumulative session usage effects across all completed turns.
   const totals = turns.reduce((acc, t) => {
     if (t.meta) {
       acc.saved += t.meta.tokensSaved ?? (t.meta.baseline - t.meta.optimized)
       acc.cost  += t.meta.costSaved ?? 0
-      acc.hits  += t.meta.cacheHit ? 1 : 0
+      acc.hits  += t.meta.callsAvoided ?? (t.meta.cacheHit ? 1 : 0)
       acc.n     += 1
     }
     return acc
@@ -192,8 +193,11 @@ export default function Playground({ apiKey }) {
             provider: r.provider, model: r.model,
             cacheHit: r.cache_hit ?? lastMeta?.cacheHit ?? false,
             cacheKind: r.cache_kind || lastMeta?.cacheKind || '',
-            tokensSaved: r.tokens_saved_total ?? (lastMeta ? lastMeta.baseline - lastMeta.optimized : 0),
-            costSaved: r.cost_saved_usd ?? 0,
+            tokensSaved: r.provider_input_tokens_avoided
+              ?? r.tokens_saved_total
+              ?? (lastMeta ? lastMeta.baseline - lastMeta.optimized : 0),
+            callsAvoided: r.calls_avoided ?? (r.cache_hit ? 1 : 0),
+            costSaved: r.estimated_cost_delta_usd ?? r.cost_saved_usd ?? 0,
             priceBasis: r.price_basis || 'gpt-4o-mini',
           }
           setTurns(prev => [...prev, {
@@ -224,11 +228,11 @@ export default function Playground({ apiKey }) {
         <p className="annotation tracking-widest uppercase mb-4">Playground</p>
         <h2 className="font-serif text-4xl lg:text-5xl text-brand-navy dark:text-brand-dark-navy leading-tight">
           Chat with an agent.<br />
-          <em className="italic text-brand-teal">Watch the context shrink every turn.</em>
+          <em className="italic text-brand-teal">See what happens to every request.</em>
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-4 max-w-xl leading-relaxed">
-          Every message you send carries the whole conversation. Brevitas compresses and prunes it before
-          the model sees it — so the token bill stops growing with the chat. Watch the savings update live.
+          Each turn is labeled honestly: unchanged, input-reduced by an explicitly enabled quality-affecting
+          lever, or served from response cache without a model call.
         </p>
       </div>
 
@@ -310,15 +314,15 @@ export default function Playground({ apiKey }) {
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
           <p className="font-mono text-2xl font-medium text-brand-blue tabular-nums">{Math.round(totals.saved).toLocaleString()}</p>
-          <p className="annotation mt-1">// tokens saved this chat</p>
+          <p className="annotation mt-1">// provider input tokens avoided</p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
           <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{fmtUsd(totals.cost)}</p>
-          <p className="annotation mt-1">// cost saved · ≈ gpt-4o</p>
+          <p className="annotation mt-1">// estimated cost delta · ≈ gpt-4o</p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
           <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">{totals.hits}<span className="text-base text-brand-muted dark:text-brand-dark-muted"> / {totals.n}</span></p>
-          <p className="annotation mt-1">// cache hits</p>
+          <p className="annotation mt-1">// model calls avoided</p>
         </div>
       </div>
 
@@ -412,7 +416,7 @@ export default function Playground({ apiKey }) {
             {streaming ? '…' : 'Send'}
           </button>
         </div>
-        <p className="annotation mt-2">// tip — send the same message again to watch it get served from cache (100% saved)</p>
+        <p className="annotation mt-2">// tip — repeat the same eligible message to see an exact cache hit reported as one model call avoided</p>
       </div>
 
       {/* ── Integration guide ── */}

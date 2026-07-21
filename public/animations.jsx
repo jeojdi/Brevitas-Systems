@@ -230,21 +230,17 @@ function PipelineReduction({ compact = false, loop = true }) {
   const [baselineTokens, setBaselineTokens] = useStateA(0);
   const [optimizedTokens, setOptimizedTokens] = useStateA(0);
   const [resolveIn, setResolveIn] = useStateA(false);
-  const [statA, setStatA] = useStateA(0);
-  const [statB, setStatB] = useStateA(0);
-  const [statC, setStatC] = useStateA(0);
   const [cycle, setCycle] = useStateA(0);
 
   useEffectA(() => {
     if (!inView) return;
     if (reduced) {
       setStage(5); setBaselineTokens(2924); setOptimizedTokens(1188);
-      setResolveIn(true); setStatA(59.4); setStatB(46.9); setStatC(99);
+      setResolveIn(true);
       return;
     }
     let timers = [];
     setStage(0); setBaselineTokens(0); setOptimizedTokens(0); setResolveIn(false);
-    setStatA(0); setStatB(0); setStatC(0);
     timers.push(setTimeout(() => setStage(1), 500));
     timers.push(setTimeout(() => {
       setStage(2);
@@ -283,16 +279,7 @@ function PipelineReduction({ compact = false, loop = true }) {
     timers.push(setTimeout(() => setStage(5), 3600));
     timers.push(setTimeout(() => {
       setResolveIn(true);
-      const t0 = performance.now();
-      const tick = (now) => {
-        const p = Math.min(1, (now - t0) / 900);
-        const e = p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2,2)/2;
-        setStatA(+(59.4 * e).toFixed(1));
-        setStatB(+(46.9 * e).toFixed(1));
-        setStatC(Math.round(99 * e));
-        if (p < 1) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
+      setResolveIn(true);
     }, 4400));
     if (loop) {
       timers.push(setTimeout(() => setCycle(c => c+1), 12000));
@@ -446,28 +433,28 @@ function PipelineReduction({ compact = false, loop = true }) {
           padding: 24,
           animation: 'fadeIn 700ms var(--ease-out-soft)',
         }}>
-          <div style={{ display: 'flex', gap: 'clamp(24px, 6vw, 80px)', alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <div style={{ display: 'flex', gap: 'clamp(24px, 5vw, 64px)', alignItems: 'stretch', flexWrap: 'wrap', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center' }}>
-              <div className="serif tabular" style={{ fontSize: 'clamp(52px, 7vw, 88px)', fontWeight: 300, color: 'var(--signal)', letterSpacing: '-0.02em', lineHeight: 1 }}>
-                –{statA.toFixed(1)}%
+              <div className="serif" style={{ fontSize: 'clamp(26px, 4vw, 42px)', fontWeight: 300, color: 'var(--signal)', letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                Input reduced
               </div>
-              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 8 }}>tokens saved</div>
+              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 10 }}>optional compression</div>
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div className="serif tabular" style={{ fontSize: 'clamp(52px, 7vw, 88px)', fontWeight: 300, color: 'var(--signal)', letterSpacing: '-0.02em', lineHeight: 1 }}>
-                –{statB.toFixed(1)}%
+              <div className="serif" style={{ fontSize: 'clamp(26px, 4vw, 42px)', fontWeight: 300, color: 'var(--signal)', letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                Cache discounted
               </div>
-              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 8 }}>cost saved</div>
+              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 10 }}>same provider input</div>
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div className="serif tabular" style={{ fontSize: 'clamp(52px, 7vw, 88px)', fontWeight: 300, color: 'var(--fg)', letterSpacing: '-0.02em', lineHeight: 1 }}>
-                {statC}%
+              <div className="serif" style={{ fontSize: 'clamp(26px, 4vw, 42px)', fontWeight: 300, color: 'var(--fg)', letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                Calls avoided
               </div>
-              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 8 }}>quality parity</div>
+              <div className="t-mono" style={{ color: 'var(--stone-2)', marginTop: 10 }}>exact response replay</div>
             </div>
           </div>
           <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 32, textAlign: 'center' }}>
-            AgentBench task · real API calls · real token counts
+            Illustrative flow · each mechanism is metered separately
           </div>
         </div>
       )}

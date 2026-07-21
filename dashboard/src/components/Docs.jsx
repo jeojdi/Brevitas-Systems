@@ -76,7 +76,7 @@ const COMMANDS = [
   ['bvx install',   'Configure AI coding tools (install ai) or a codebase (install <repo>)'],
   ['bvx uninstall', 'Restore all tool configs and remove the background service'],
   ['bvx status',    'Show proxy, service, and provider status'],
-  ['bvx stats',     'Show cumulative token-savings metrics from the proxy'],
+  ['bvx stats',     'Show input reduction, cache discounts, and avoided calls separately'],
   ['bvx providers', 'List supported providers and their detection/config state'],
   ['bvx doctor',    'Run diagnostics across the whole installation'],
   ['bvx repair',    'Re-apply configuration and restart the service'],

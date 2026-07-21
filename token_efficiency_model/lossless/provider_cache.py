@@ -19,6 +19,8 @@ hits cost 2% of fresh input at the 2026-07-16 list price.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +37,7 @@ try:
         return len(_ENC.encode(text or "", disallowed_special=()))
 except Exception:  # pragma: no cover
     def count_tokens(text: str) -> int:
-        return max(1, int(len((text or "").split()) * 1.3))
+        return max(0, int(len((text or "").split()) * 1.3))
 
 
 def _block_text(block: Any) -> str:
@@ -238,7 +240,10 @@ def count_cache_control(body: dict) -> int:
     """Count caller-supplied cache markers without reading or changing content."""
     if not isinstance(body, dict):
         return 0
-    total = 0
+    # Current Anthropic clients can request automatic prompt caching with a
+    # request-wide top-level cache_control object. It owns the whole policy, so
+    # Brevitas must not add up to four more explicit breakpoints.
+    total = 1 if isinstance(body.get("cache_control"), dict) else 0
     for blocks in (body.get("tools"), body.get("system")):
         if isinstance(blocks, list):
             total += sum(1 for block in blocks
@@ -267,6 +272,112 @@ def _mark_tools(body: dict, ttl: str = "") -> bool:
         tools[-1]["cache_control"] = _cc(ttl)
         return True
     return False
+
+
+# --------------------------------------------------------------------------- #
+# 1b. OpenAI GPT-5.6 prompt-cache routing and optional explicit breakpoints
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class OpenAICachePlan:
+    supported: bool = False
+    key_added: bool = False
+    breakpoint_added: bool = False
+    stable_prefix_tokens: int = 0
+    owner: str = "none"          # none | caller | brevitas
+
+
+def _openai_cache_capable(model: str) -> bool:
+    # Fail closed: older models reject the new options/breakpoint fields. Extend this
+    # allowlist only when a later family is verified against the official API docs.
+    return (model or "").lower().startswith("gpt-5.6")
+
+
+def _has_openai_breakpoint(value: Any) -> bool:
+    if isinstance(value, dict):
+        if isinstance(value.get("prompt_cache_breakpoint"), dict):
+            return True
+        return any(_has_openai_breakpoint(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_openai_breakpoint(item) for item in value)
+    return False
+
+
+def apply_openai_cache(body: dict, tenant_key: str = "", *,
+                       explicit_breakpoint: bool = False,
+                       min_tokens: int = 1024) -> OpenAICachePlan:
+    """Add current GPT-5.6 cache routing fields without touching prompt text.
+
+    A deterministic, tenant-scoped prompt_cache_key improves cache routing. Explicit
+    breakpoints are supported but opt-in because writes are billed at 1.25x; when on,
+    the last stable text block is marked and request-wide mode/TTL are set exactly as
+    documented. Caller-owned keys/options/breakpoints are always preserved.
+    """
+    if not isinstance(body, dict) or not _openai_cache_capable(str(body.get("model", ""))):
+        return OpenAICachePlan()
+    messages = body.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        return OpenAICachePlan(supported=True)
+
+    stable_messages = [m for m in messages[:-1] if isinstance(m, dict)]
+    last = messages[-1] if isinstance(messages[-1], dict) else {}
+    last_content = last.get("content")
+    stable_final_blocks = last_content[:-1] if isinstance(last_content, list) else []
+    stable_view: dict[str, Any] = {"messages": stable_messages}
+    if stable_final_blocks:
+        stable_view["final"] = {"role": last.get("role"), "content": stable_final_blocks}
+    if body.get("tools"):
+        stable_view["tools"] = body["tools"]
+
+    stable_text = json.dumps(stable_view, sort_keys=True, separators=(",", ":"), default=str)
+    stable_tokens = count_tokens(stable_text)
+    caller_owned = ("prompt_cache_key" in body or "prompt_cache_options" in body
+                    or _has_openai_breakpoint(messages))
+    plan = OpenAICachePlan(supported=True, stable_prefix_tokens=stable_tokens,
+                           owner="caller" if caller_owned else "none")
+    if stable_tokens < min_tokens:
+        return plan
+
+    if "prompt_cache_key" not in body:
+        prefix_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()[:20]
+        tenant = (tenant_key or "local")[:20]
+        body["prompt_cache_key"] = f"brevitas:{tenant}:{prefix_hash}"
+        plan.key_added = True
+        if not caller_owned:
+            plan.owner = "brevitas"
+
+    if not explicit_breakpoint or "prompt_cache_options" in body \
+            or _has_openai_breakpoint(messages):
+        return plan
+
+    target_holder: dict | None = None
+    target_key = ""
+    if stable_final_blocks and isinstance(stable_final_blocks[-1], dict):
+        target_holder, target_key = stable_final_blocks[-1], "block"
+    elif stable_messages:
+        target_holder, target_key = stable_messages[-1], "content"
+
+    if target_holder is None:
+        return plan
+    if target_key == "block":
+        target_holder["prompt_cache_breakpoint"] = {"mode": "explicit"}
+    else:
+        content = target_holder.get("content")
+        if isinstance(content, str):
+            target_holder["content"] = [{
+                "type": ("input_text" if body.get("_brevitas_operation") == "responses"
+                         else "text"),
+                "text": content,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }]
+        elif isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1]["prompt_cache_breakpoint"] = {"mode": "explicit"}
+        else:
+            return plan
+    body["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
+    plan.breakpoint_added = True
+    plan.owner = "brevitas"
+    return plan
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +424,10 @@ _MODEL_RATES = [
 def rates_for(provider: str, model: str = "") -> Dict[str, float]:
     """Rate ratios for a specific model, falling back to the provider row."""
     m = (model or "").lower()
+    # OpenAI's current prompt-caching guide specifies a 1.25x write price for
+    # GPT-5.6 and later families. Reads retain the provider/model read ratio.
+    if m.startswith("gpt-5.6"):
+        return {**_RATES["openai"], "cache_write": 1.25}
     if m:
         for prefix, r in _MODEL_RATES:
             if m.startswith(prefix):
@@ -364,16 +479,18 @@ def savings_from_usage(usage: dict, provider: str, model: str = "") -> Savings:
         prompt = int(usage.get("prompt_tokens", 0))
         details = usage.get("prompt_tokens_details", {}) or {}
         cached = int(details.get("cached_tokens", 0) or usage.get("prompt_cache_hit_tokens", 0))
+        write = int(details.get("cache_write_tokens", 0) or 0)
         if prompt == 0 and ("prompt_cache_hit_tokens" in usage
                             or "prompt_cache_miss_tokens" in usage):
             prompt = cached + int(usage.get("prompt_cache_miss_tokens", 0) or 0)
-        fresh = max(0, prompt - cached)
-        write = 0
+        fresh = max(0, prompt - cached - write)
         output = int(usage.get("completion_tokens", 0))
         in_uncached = prompt * 1.0
-        in_actual = fresh * 1.0 + cached * r["cache_read"]
-        detail = {"prompt": prompt, "cached": cached, "output": output,
-                  "cache_read_rate": r["cache_read"]}
+        in_actual = (fresh * 1.0 + write * r["cache_write"]
+                     + cached * r["cache_read"])
+        detail = {"prompt": prompt, "cached": cached, "cache_write": write,
+                  "output": output, "cache_read_rate": r["cache_read"],
+                  "cache_write_rate": r["cache_write"]}
 
     out_cost = output * r["output"]
     uncached = in_uncached + out_cost          # total cost if nothing cached

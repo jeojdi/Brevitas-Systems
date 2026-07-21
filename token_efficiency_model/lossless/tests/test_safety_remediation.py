@@ -132,6 +132,35 @@ def test_lever_trips_are_per_tenant(monkeypatch):
         gate.reset_all_levers(key="tenantA")
 
 
+def test_engine_threads_tenant_key_to_retrieval_gate(monkeypatch):
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
+    monkeypatch.setattr(BrevitasRouter, "decide", lambda self, sid, stable, query:
+                        types.SimpleNamespace(strategy="retrieve", reason="test"))
+    calls = []
+    monkeypatch.setattr(engine, "retrieval_select", lambda *args, **kwargs:
+                        calls.append(args) or {
+                            "selected_context": [], "baseline_tokens": 10,
+                            "optimized_tokens": 10, "fallback_applied": True,
+                            "reason": "test", "method": "stub",
+                        })
+    gate.trip_lever("retrieval", key="tenant-a")
+    try:
+        denied = engine.optimize_request(
+            {"messages": _msgs()}, "openai", BrevitasRouter(provider="openai"),
+            "shared-session", tenant_key="tenant-a",
+        )
+        assert denied["reason"] == "retrieval_gate_tripped"
+        assert calls == []
+
+        engine.optimize_request(
+            {"messages": _msgs()}, "openai", BrevitasRouter(provider="openai"),
+            "shared-session", tenant_key="tenant-b",
+        )
+        assert len(calls) == 1
+    finally:
+        gate.reset_all_levers(key="tenant-a")
+
+
 # ── P1.9: BM25 zero-score filter ─────────────────────────────────────────────
 
 def test_bm25_drops_zero_score_docs():

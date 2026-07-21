@@ -87,7 +87,7 @@ export default function Pipelines({ apiKey }) {
 
   // If no pipeline selected, show overview
   if (!selectedPipeline) {
-    const totalSaved = pipelines.reduce((sum, p) => sum + (p.tokens_saved || 0), 0)
+    const totalSaved = pipelines.reduce((sum, p) => sum + (p.provider_input_tokens_avoided || 0), 0)
     const totalCost = pipelines.reduce((sum, p) => sum + (p.cost_saved_usd || 0), 0)
     const totalFee = pipelines.reduce((sum, p) => sum + (p.brevitas_fee_usd || 0), 0)
     const avgQuality = pipelines.length > 0 ? pipelines.reduce((sum, p) => sum + (p.avg_quality || 0), 0) / pipelines.length : 0
@@ -97,22 +97,22 @@ export default function Pipelines({ apiKey }) {
         <div>
           <p className="annotation tracking-widest uppercase mb-4">Pipelines</p>
           <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy leading-tight">
-            Savings by pipeline.
+            Optimization evidence by pipeline.
           </h2>
           <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-3 max-w-lg leading-relaxed">
-            Drill down to see which pipelines and agents deliver the most value from compression.
+            Keep input reduction, provider-cache discounts, and avoided calls separate.
           </p>
         </div>
 
         {/* Summary stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
-            label="Total tokens saved"
+            label="Input tokens avoided"
             value={fmtK(totalSaved)}
             sub="across all pipelines"
           />
           <StatCard
-            label="Total cost saved"
+            label="Verified benefit"
             value={`$${fmt(totalCost, 4)}`}
             sub="provider spend avoided"
             accent
@@ -132,7 +132,7 @@ export default function Pipelines({ apiKey }) {
         {/* Pipeline bars */}
         {pipelines.length > 0 && (
           <div>
-            <p className="annotation tracking-widest uppercase mb-4">// savings by pipeline</p>
+            <p className="annotation tracking-widest uppercase mb-4">// provider input avoided by pipeline</p>
             <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6">
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={pipelines}>
@@ -140,7 +140,7 @@ export default function Pipelines({ apiKey }) {
                   <XAxis dataKey="pipeline" />
                   <YAxis />
                   <Tooltip formatter={(value) => fmtK(value)} />
-                  <Bar dataKey="tokens_saved" fill="#10b981" name="Tokens saved" />
+                  <Bar dataKey="provider_input_tokens_avoided" fill="#4f5fc4" name="Input tokens avoided" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -153,7 +153,7 @@ export default function Pipelines({ apiKey }) {
             <p className="annotation tracking-widest uppercase mb-4">// pipeline details</p>
             <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-hidden">
               <div className="grid grid-cols-6 gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-                {['Pipeline', 'Calls', 'Tokens saved', 'Quality', 'Cost saved', 'Fee'].map(h => (
+                {['Pipeline', 'Calls', 'Input avoided', 'Quality', 'Verified benefit', 'Fee'].map(h => (
                   <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
                 ))}
               </div>
@@ -165,7 +165,7 @@ export default function Pipelines({ apiKey }) {
                 >
                   <span className="font-mono text-xs text-brand-blue">{p.pipeline || '(untagged)'}</span>
                   <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(p.calls)}</span>
-                  <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(p.tokens_saved)}</span>
+                  <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(p.provider_input_tokens_avoided)}</span>
                   <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmt(p.avg_quality, 2)}</span>
                   <span className="font-mono text-xs text-brand-teal">${fmt(p.cost_saved_usd, 4)}</span>
                   <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(p.brevitas_fee_usd, 4)}</span>
@@ -214,11 +214,11 @@ export default function Pipelines({ apiKey }) {
           value={fmtK(pipelineData?.calls || 0)}
         />
         <StatCard
-          label="Tokens saved"
-          value={fmtK(pipelineData?.tokens_saved || 0)}
+          label="Input tokens avoided"
+          value={fmtK(pipelineData?.provider_input_tokens_avoided || 0)}
         />
         <StatCard
-          label="Cost saved"
+          label="Verified benefit"
           value={`$${fmt(pipelineData?.cost_saved_usd || 0, 4)}`}
           accent
         />
@@ -234,7 +234,7 @@ export default function Pipelines({ apiKey }) {
           <p className="annotation tracking-widest uppercase mb-4">// agents in this pipeline</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-hidden">
             <div className="grid grid-cols-6 gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Agent', 'Calls', 'Tokens saved', 'Quality', 'Cost saved', 'Fee'].map(h => (
+              {['Agent', 'Calls', 'Input avoided', 'Quality', 'Verified benefit', 'Fee'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
@@ -242,7 +242,7 @@ export default function Pipelines({ apiKey }) {
               <div key={a.agent} className="grid grid-cols-6 gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
                 <span className="font-mono text-xs text-brand-blue">{a.agent || '(unnamed)'}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(a.calls)}</span>
-                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(a.tokens_saved)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(a.provider_input_tokens_avoided)}</span>
                 <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmt(a.avg_quality, 2)}</span>
                 <span className="font-mono text-xs text-brand-teal">${fmt(a.cost_saved_usd, 4)}</span>
                 <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(a.brevitas_fee_usd, 4)}</span>
@@ -258,7 +258,7 @@ export default function Pipelines({ apiKey }) {
           <p className="annotation tracking-widest uppercase mb-4">// recent runs</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-hidden">
             <div className="grid grid-cols-5 gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Run ID', 'Calls', 'Tokens saved', 'Savings %', 'Cost saved'].map(h => (
+              {['Run ID', 'Calls', 'Input avoided', 'Calls avoided', 'Verified benefit'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
@@ -266,8 +266,8 @@ export default function Pipelines({ apiKey }) {
               <div key={r.run_id} className="grid grid-cols-5 gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
                 <span className="font-mono text-xs text-brand-blue truncate" title={r.run_id}>{r.run_id}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(r.calls)}</span>
-                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(r.tokens_saved)}</span>
-                <span className="font-mono text-xs text-brand-teal">{fmt(r.avg_savings_pct)}%</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(r.provider_input_tokens_avoided)}</span>
+                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmtK(r.calls_avoided)} calls avoided</span>
                 <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(r.cost_saved_usd, 4)}</span>
               </div>
             ))}

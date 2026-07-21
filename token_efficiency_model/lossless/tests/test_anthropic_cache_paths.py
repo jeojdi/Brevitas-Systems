@@ -15,9 +15,8 @@ from token_efficiency_model.lossless.provider_cache import apply_anthropic_cache
 from token_efficiency_model.lossless.router import BrevitasRouter
 
 
-def _big_text(n_words: int = 650) -> str:
-    # ~1300 tokens (each "wordN" ≈ 2 tokens): above the 1024 default minimum,
-    # below haiku's 2048 documented minimum.
+def _big_text(n_words: int = 1100) -> str:
+    # Above the 1024 default minimum and below Haiku 4.5's 4096-token minimum.
     return " ".join(f"word{i}" for i in range(n_words))
 
 
@@ -49,8 +48,8 @@ def test_final_block_never_marked_even_when_huge():
     assert "cache_control" not in body["messages"][0]["content"][-1]
 
 
-def test_haiku_requires_2048_minimum():
-    # ~1300 tokens: above the 1024 default, below haiku's 2048 documented minimum
+def test_haiku_requires_larger_minimum():
+    # Above the 1024 default, below Haiku 4.5's documented model-specific minimum.
     mk = lambda model: {"model": model,
                         "messages": [{"role": "user",
                                       "content": [{"type": "text", "text": _big_text()},
@@ -59,10 +58,10 @@ def test_haiku_requires_2048_minimum():
     sonnet = mk("claude-sonnet-4-6")
     assert apply_anthropic_cache(haiku).breakpoints == 0
     assert apply_anthropic_cache(sonnet).breakpoints >= 1
-    # and haiku DOES mark once above 2048
+    # and Haiku does mark once above its larger threshold
     haiku2 = {"model": "claude-haiku-4-5-20251001",
               "messages": [{"role": "user",
-                            "content": [{"type": "text", "text": _huge_text()},
+                                "content": [{"type": "text", "text": _huge_text(4000)},
                                         {"type": "text", "text": "Q?"}]}]}
     assert apply_anthropic_cache(haiku2).breakpoints >= 1
 
@@ -78,6 +77,30 @@ def _any_marker(body: dict) -> bool:
     return False
 
 
+def test_engine_does_not_buy_anthropic_cache_write_without_opt_in(monkeypatch):
+    monkeypatch.delenv("BREVITAS_ANTHROPIC_CACHE", raising=False)
+    router = BrevitasRouter(provider="anthropic")
+    body = {"model": "claude-sonnet-4-6", "system": _huge_text(2000),
+            "messages": [{"role": "user", "content": "question"}]}
+    eng.optimize_request(body, "anthropic", router, "no-write")
+    repeat = {"model": body["model"], "system": _huge_text(2000),
+              "messages": [{"role": "user", "content": "question"}]}
+    meta = eng.optimize_request(repeat, "anthropic", router, "no-write")
+    assert meta["cache_roi"] == "explicit_opt_in_required"
+    assert not _any_marker(repeat)
+
+
+def test_engine_respects_top_level_anthropic_automatic_cache_control(monkeypatch):
+    monkeypatch.delenv("BREVITAS_ANTHROPIC_CACHE", raising=False)
+    body = {"model": "claude-sonnet-4-6",
+            "cache_control": {"type": "ephemeral"},
+            "messages": [{"role": "user", "content": "question"}]}
+    meta = eng.optimize_request(body, "anthropic", BrevitasRouter(provider="anthropic"),
+                                "caller-cache")
+    assert meta["cache_control_owner"] == "caller"
+    assert meta["cache_breakpoints"] == 1
+
+
 # --------------------------------------------------------------------------- #
 # engine.optimize_request: markers on EVERY path
 # --------------------------------------------------------------------------- #
@@ -91,6 +114,7 @@ def test_engine_marks_anthropic_on_retrieve_path_after_reuse_is_observed(monkeyp
 
     monkeypatch.setattr(eng, "retrieval_select", fake_select)
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
+    monkeypatch.setenv("BREVITAS_ANTHROPIC_CACHE", "1")
     def request_body():
         return {"model": "claude-sonnet-4-6",
                 "messages": [{"role": "user", "content": ctx1},
@@ -109,9 +133,10 @@ def test_engine_marks_anthropic_on_retrieve_path_after_reuse_is_observed(monkeyp
     assert _any_marker(body), "retrieve path must still place Anthropic cache markers"
 
 
-def test_engine_marks_anthropic_document_block_after_reuse():
+def test_engine_marks_anthropic_document_block_after_reuse(monkeypatch):
     # The reusable document rides inside the final user message. The engine must
     # recognize it as stable, wait for observed reuse, then cache it.
+    monkeypatch.setenv("BREVITAS_ANTHROPIC_CACHE", "1")
     def request_body():
         return {"model": "claude-sonnet-4-6",
                 "messages": [{"role": "user",

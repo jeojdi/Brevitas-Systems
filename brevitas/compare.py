@@ -179,10 +179,10 @@ button:disabled{opacity:.5}
     <input type="file" id="file" multiple hidden></div>
 
   <div class="headline">
-    <div class="stat good"><div class="sub">Total input tokens saved</div><div class="big" id="tokDrop">—</div>
+    <div class="stat good"><div class="sub">Provider input tokens avoided vs control</div><div class="big" id="tokDrop">—</div>
       <div class="sub" id="tokDetail">upload a document & ask</div></div>
-    <div class="stat good"><div class="sub">Total cost saved (incl. provider caching)</div><div class="big" id="costDrop">—</div>
-      <div class="sub" id="costDetail">honest, apples-to-apples</div></div>
+    <div class="stat good"><div class="sub">Observed cost delta</div><div class="big" id="costDrop">—</div>
+      <div class="sub" id="costDetail">sequential demo · not isolated attribution</div></div>
     <div class="stat"><div class="sub">Turns</div><div class="big" id="turns">0</div>
       <div class="sub">context size: <span id="dtok">—</span> tok</div></div>
   </div>

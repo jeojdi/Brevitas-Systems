@@ -40,21 +40,48 @@ def _int(value: Any) -> int:
         return 0
 
 
-def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
-    """Parse common provider receipts; unknown shapes remain zero/unpriced."""
-    if not isinstance(usage, dict):
-        return TokenReceipt()
-    if isinstance(usage.get("usage"), dict):
-        usage = usage["usage"]
-    elif isinstance(usage.get("usageMetadata"), dict):
-        usage = usage["usageMetadata"]
-    elif isinstance(usage.get("token_usage"), dict):
-        usage = usage["token_usage"]
-    elif isinstance(usage.get("meta"), dict) and isinstance(usage["meta"].get("billed_units"), dict):
-        usage = usage["meta"]
+def _as_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    for method in ("model_dump", "to_dict", "dict"):
+        fn = getattr(value, method, None)
+        if callable(fn):
+            try:
+                data = fn()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+    names = (
+        "usage", "usageMetadata", "usage_metadata", "token_usage", "meta",
+        "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
+        "prompt_tokens_details", "input_tokens_details", "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens", "cache_read_input_tokens",
+        "cache_creation_input_tokens", "cache_creation",
+        "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount",
+        "thoughtsTokenCount", "toolUsePromptTokenCount", "totalTokenCount",
+        "prompt_token_count", "candidates_token_count", "cached_content_token_count",
+        "thoughts_token_count", "tool_use_prompt_token_count", "total_token_count",
+    )
+    return {name: getattr(value, name) for name in names if hasattr(value, name)}
 
-    billed = usage.get("billed_units") or {}
-    if isinstance(billed, dict) and billed:
+
+def normalize_usage(usage: Any, provider: str = "") -> TokenReceipt:
+    """Parse common provider receipts; unknown shapes remain zero/unpriced."""
+    usage = _as_dict(usage)
+    if not usage:
+        return TokenReceipt()
+    for name in ("usage", "usageMetadata", "usage_metadata", "token_usage"):
+        nested = _as_dict(usage.get(name))
+        if nested:
+            usage = nested
+            break
+    meta = _as_dict(usage.get("meta"))
+    if _as_dict(meta.get("billed_units")):
+        usage = meta
+
+    billed = _as_dict(usage.get("billed_units"))
+    if billed:
         return TokenReceipt(
             fresh_input_tokens=_int(billed.get("input_tokens")),
             output_tokens=_int(billed.get("output_tokens")),
@@ -64,9 +91,7 @@ def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
     if provider.lower() == "anthropic" or any(
         key in usage for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
     ):
-        creation = usage.get("cache_creation") or {}
-        if not isinstance(creation, dict):
-            creation = {}
+        creation = _as_dict(usage.get("cache_creation"))
         return TokenReceipt(
             fresh_input_tokens=_int(usage.get("input_tokens")),
             cached_input_tokens=_int(usage.get("cache_read_input_tokens")),
@@ -78,42 +103,60 @@ def normalize_usage(usage: dict | None, provider: str = "") -> TokenReceipt:
 
     # OpenAI Responses.
     if "input_tokens" in usage or "output_tokens" in usage:
-        details = usage.get("input_tokens_details") or {}
-        cached = _int(details.get("cached_tokens")) if isinstance(details, dict) else 0
+        details = _as_dict(usage.get("input_tokens_details"))
+        cached = _int(details.get("cached_tokens"))
+        write = _int(details.get("cache_write_tokens"))
         total_input = _int(usage.get("input_tokens"))
         # Cohere v2 puts authoritative counts under billed_units.
         output = _int(usage.get("output_tokens"))
         return TokenReceipt(
-            fresh_input_tokens=max(0, total_input - cached),
+            fresh_input_tokens=max(0, total_input - cached - write),
             cached_input_tokens=cached,
+            cache_write_tokens=write,
             output_tokens=output,
         )
 
     # OpenAI-compatible Chat Completions.
     if "prompt_tokens" in usage or "completion_tokens" in usage:
-        details = usage.get("prompt_tokens_details") or {}
-        cached = _int(details.get("cached_tokens")) if isinstance(details, dict) else 0
+        details = _as_dict(usage.get("prompt_tokens_details"))
+        cached = _int(details.get("cached_tokens"))
+        write = _int(details.get("cache_write_tokens"))
         cached = cached or _int(usage.get("prompt_cache_hit_tokens"))
         prompt = _int(usage.get("prompt_tokens"))
         if prompt == 0 and ("prompt_cache_hit_tokens" in usage
                             or "prompt_cache_miss_tokens" in usage):
             prompt = cached + _int(usage.get("prompt_cache_miss_tokens"))
         return TokenReceipt(
-            fresh_input_tokens=max(0, prompt - cached),
+            fresh_input_tokens=max(0, prompt - cached - write),
             cached_input_tokens=cached,
+            cache_write_tokens=write,
             output_tokens=_int(usage.get("completion_tokens")),
         )
 
     # Gemini / Vertex usageMetadata.
-    if "promptTokenCount" in usage or "candidatesTokenCount" in usage:
-        prompt = _int(usage.get("promptTokenCount"))
-        cached = _int(usage.get("cachedContentTokenCount"))
+    if any(name in usage for name in (
+        "promptTokenCount", "candidatesTokenCount", "prompt_token_count",
+        "candidates_token_count", "thoughtsTokenCount", "thoughts_token_count",
+    )):
+        prompt = _int(usage.get("promptTokenCount", usage.get("prompt_token_count")))
+        cached = _int(usage.get("cachedContentTokenCount",
+                                usage.get("cached_content_token_count")))
+        tool_prompt = _int(usage.get("toolUsePromptTokenCount",
+                                     usage.get("tool_use_prompt_token_count")))
+        if prompt == 0:
+            prompt = tool_prompt
+        candidates = _int(usage.get("candidatesTokenCount",
+                                    usage.get("candidates_token_count")))
+        thoughts = _int(usage.get("thoughtsTokenCount",
+                                  usage.get("thoughts_token_count")))
+        output = candidates + thoughts
+        total = _int(usage.get("totalTokenCount", usage.get("total_token_count")))
+        if total > prompt + output:
+            output += total - prompt - output
         return TokenReceipt(
             fresh_input_tokens=max(0, prompt - cached),
             cached_input_tokens=cached,
-            # Split the public field spelling so the repository's deliberately
-            # broad secret scanner does not mistake it for a hard-coded token.
-            output_tokens=_int(usage.get("candidates" "TokenCount")),
+            output_tokens=output,
         )
 
     # Bedrock Converse and invoke-model normalized receipts.

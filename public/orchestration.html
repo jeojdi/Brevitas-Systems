@@ -493,7 +493,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   </div>
   <div class="orch-nav-right">
     <div class="live-dot"></div>
-    <span class="live-label">7 agents live</span>
+    <span class="live-label">illustrative demo</span>
     <span class="nav-time" id="live-clock">—</span>
   </div>
 </nav>
@@ -502,22 +502,22 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
 <div class="orch-ticker">
   <div class="ticker-item">
     <span class="ticker-value bone" id="tick-calls">—</span>
-    <span class="ticker-label">calls today</span>
+    <span class="ticker-label">sample calls</span>
   </div>
   <div class="ticker-sep"></div>
   <div class="ticker-item">
     <span class="ticker-value bronze" id="tick-tokens">—</span>
-    <span class="ticker-label">tokens saved</span>
+    <span class="ticker-label">input tokens avoided</span>
   </div>
   <div class="ticker-sep"></div>
   <div class="ticker-item">
     <span class="ticker-value signal" id="tick-savings">—</span>
-    <span class="ticker-label">avg compression</span>
+    <span class="ticker-label">requests compressed</span>
   </div>
   <div class="ticker-sep"></div>
   <div class="ticker-item">
     <span class="ticker-value signal" id="tick-cost">—</span>
-    <span class="ticker-label">saved in cost</span>
+    <span class="ticker-label">native cache discount</span>
   </div>
   <div class="ticker-sep"></div>
   <div class="ticker-item">
@@ -544,6 +544,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   <div class="section-header" style="margin-bottom:32px">
     <div class="section-label">Multi-Agent Orchestration</div>
     <h1 class="section-title">Command <em>Center</em></h1>
+    <div class="section-label" style="margin-top:12px;color:var(--bronze)">Illustrative interface — simulated data, not production telemetry or benchmark evidence</div>
   </div>
 
   <!-- Tab bar -->
@@ -565,16 +566,16 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
         <div class="stat-card-delta">↑ 2 since last session</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card-label">Tokens Saved Today</div>
+        <div class="stat-card-label">Provider Input Tokens Avoided — Sample</div>
         <div class="stat-card-value signal count-up" data-target="2417382">0</div>
-        <div class="stat-card-sub">via Brevitas compression</div>
-        <div class="stat-card-delta">58.3% avg reduction</div>
+        <div class="stat-card-sub">optional compression only</div>
+        <div class="stat-card-delta">illustrative workload</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card-label">Cost This Session</div>
+        <div class="stat-card-label">Provider Cost — Sample</div>
         <div class="stat-card-value bone">$1.14</div>
-        <div class="stat-card-sub">vs $2.74 without Brevitas</div>
-        <div class="stat-card-delta" style="color:var(--signal)">↓ $1.60 saved (58.4%)</div>
+        <div class="stat-card-sub">simulated request mix</div>
+        <div class="stat-card-delta" style="color:var(--signal)">not a measured product claim</div>
       </div>
       <div class="stat-card">
         <div class="stat-card-label">Tasks Completed</div>
@@ -649,7 +650,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
       </div>
       <div class="legend-item">
         <div class="legend-swatch" style="background:#8dd8c6"></div>
-        <span class="legend-label">Teal — Brevitas compression</span>
+        <span class="legend-label">Teal — optional compression (sample)</span>
       </div>
       <div class="legend-item">
         <div class="legend-swatch" style="background:var(--oxblood);opacity:0.8"></div>
@@ -806,22 +807,22 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   <div class="tab-panel" id="tab-costs">
     <div class="section-header" style="margin-bottom:28px">
       <div class="section-label">Token economy</div>
-      <div class="section-title">Cost &amp; <em>Context</em> Savings</div>
+      <div class="section-title">Sample Cost &amp; <em>Context</em> Accounting</div>
     </div>
 
     <div class="cost-grid">
       <!-- Baseline vs Brevitas -->
       <div class="cost-compare">
-        <div class="cost-compare-title">Session Cost — Baseline vs. Brevitas</div>
+        <div class="cost-compare-title">Illustrative Cost — Full Context vs. Optional Compression</div>
         <div class="cost-row">
-          <span class="cost-row-label">Without Brevitas</span>
+          <span class="cost-row-label">Full context</span>
           <div class="cost-row-track">
             <div class="cost-row-fill" style="width:100%;background:rgba(201,128,120,0.5)"></div>
           </div>
           <span class="cost-row-val" style="color:var(--oxblood)">$2.74</span>
         </div>
         <div class="cost-row">
-          <span class="cost-row-label">With Brevitas</span>
+          <span class="cost-row-label">Optional compression</span>
           <div class="cost-row-track">
             <div class="cost-row-fill" style="width:41.6%;background:var(--signal)"></div>
           </div>
@@ -829,20 +830,20 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
         </div>
         <div class="savings-hero">
           <div class="savings-hero-pct">58.4%</div>
-          <div class="savings-hero-label">cost reduction from Brevitas compression</div>
+          <div class="savings-hero-label">sample cost difference</div>
           <div style="margin-top:16px;font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">
-            $1.60 saved this session · $0.46/k tokens average
+            Simulated values for interface demonstration only
           </div>
         </div>
       </div>
 
       <!-- Context quality -->
       <div class="cost-compare">
-        <div class="cost-compare-title">Context Retained After Compression</div>
+        <div class="cost-compare-title">Compression Review Checklist</div>
         <div style="margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Semantic fidelity</span>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">98.4%</span>
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Task outcome comparison</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">required</span>
           </div>
           <div class="diff-track">
             <div class="diff-fill" data-width="98.4" style="background:var(--signal);width:0%"></div>
@@ -850,8 +851,8 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
         </div>
         <div style="margin-bottom:8px;margin-top:16px">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Critical facts preserved</span>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--bronze)">99.1%</span>
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Per-task regression review</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--bronze)">required</span>
           </div>
           <div class="diff-track">
             <div class="diff-fill" data-width="99.1" style="background:var(--bronze);width:0%"></div>
@@ -859,15 +860,15 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
         </div>
         <div style="margin-bottom:8px;margin-top:16px">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Structural coherence</span>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">97.8%</span>
+            <span style="font-family:'Inter Tight',sans-serif;font-size:13px;color:var(--stone-2)">Paired control isolation</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--signal)">required</span>
           </div>
           <div class="diff-track">
             <div class="diff-fill" data-width="97.8" style="background:var(--signal);width:0%"></div>
           </div>
         </div>
         <div style="border-top:1px solid var(--line);margin-top:20px;padding-top:18px">
-          <div class="cost-compare-title" style="margin-bottom:12px">Token Reduction by Agent Handoff</div>
+          <div class="cost-compare-title" style="margin-bottom:12px">Sample Input Tokens by Agent Handoff</div>
           <div class="chart-wrap" style="height:140px">
             <canvas id="chart-compression"></canvas>
           </div>
@@ -877,7 +878,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
 
     <!-- Per-agent cost table -->
     <div class="card">
-      <div class="section-label" style="margin-bottom:20px">Per-Agent Token &amp; Cost Breakdown — This Session</div>
+      <div class="section-label" style="margin-bottom:20px">Illustrative Per-Agent Usage — Simulated Session</div>
       <table class="cost-table">
         <thead>
           <tr>
@@ -888,7 +889,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
             <th>Compression</th>
             <th>Cost (raw)</th>
             <th>Cost (compressed)</th>
-            <th>Saved</th>
+            <th>Sample delta</th>
           </tr>
         </thead>
         <tbody id="cost-table-body"></tbody>
@@ -897,8 +898,8 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
 
     <!-- cumulative savings chart -->
     <div class="chart-card" style="margin-top:24px">
-      <div class="chart-title">Cumulative Token Savings Over Session</div>
-      <div class="chart-sub">// tokens that never left the pipeline · Brevitas baseline</div>
+      <div class="chart-title">Illustrative Provider Input Tokens Avoided</div>
+      <div class="chart-sub">// simulated optional-compression data · not benchmark evidence</div>
       <div class="chart-wrap" style="height:220px">
         <canvas id="chart-savings"></canvas>
       </div>
@@ -1108,7 +1109,7 @@ AGENTS.forEach(a => {
         <div class="agent-metric-value">$${a.costCompressed.toFixed(2)}</div>
       </div>
       <div class="agent-metric">
-        <div class="agent-metric-label">Context Fidelity</div>
+        <div class="agent-metric-label">Sample Outcome Score</div>
         <div class="agent-metric-value signal">${a.responsePct}%</div>
       </div>
     </div>
@@ -1338,17 +1339,16 @@ function initChartsForTab(tab) {
       }
     });
 
-    /* cumulative savings area */
+    /* deterministic illustrative input-avoidance area */
     const calls = Array.from({length:30},(_,i)=>i+1);
-    let cum = 0;
-    const cumulativeSavings = calls.map(() => { cum += 40000+Math.random()*80000; return Math.floor(cum); });
+    const cumulativeInputAvoided = calls.map((_, i) => Math.floor((i + 1) * 60000));
     new C(document.getElementById('chart-savings'), {
       type:'line',
       data:{
         labels: calls,
         datasets:[{
-          label:'Tokens saved',
-          data: cumulativeSavings,
+          label:'Provider input tokens avoided (sample)',
+          data: cumulativeInputAvoided,
           fill:true,
           backgroundColor:'rgba(141,216,198,0.08)',
           borderColor:'#8dd8c6',
@@ -1454,7 +1454,7 @@ const P_TIMELINE = [
   { t:8100, fn:()=>{ pNode('bvt-2','active'); pLog('bvt:2','Final compression: 221k → 119k tokens…','log-bvt'); } },
   { t:8500, fn:()=>{ pNode('bvt-2','complete'); pLog('bvt:2','↓ 46.2% compression · 99.1% context score','log-bvt'); pEdge('e-bvt2-out'); } },
   { t:8700, fn:()=>{ pNode('output','active'); } },
-  { t:8900, fn:()=>{ pNode('output','complete'); pLog('system','Pipeline complete · 9.4s · total 77% token savings','log-ok');
+  { t:8900, fn:()=>{ pNode('output','complete'); pLog('system','Pipeline complete · 9.4s · illustrative compression run','log-ok');
     const btn = document.getElementById('pipe-run-btn');
     if(btn){ btn.textContent='Run again'; btn.disabled=false; }
     const st = document.getElementById('pipe-status');
