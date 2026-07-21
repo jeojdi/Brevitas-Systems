@@ -79,7 +79,7 @@ done
 [[ "$(dr_sha256 "$deletion_artifact")" == "$expected_deletion_artifact_sha256" ]] || dr_die "deletion artifact hash mismatch"
 dr_safe_directory "$evidence_dir"; dr_require_command python3; dr_require_command psql
 database_url="$(dr_secret_from_env "$database_url_env")"
-PGDATABASE="$database_url" python3 - "$backup_manifest" "$deletion_artifact" \
+dr_database_exec "$database_url" python3 - "$backup_manifest" "$deletion_artifact" \
   "$source_id" "$source_environment" "$target_id" "$environment" "$expected_database_name" \
   "$expected_manifest_sha256" "$expected_deletion_artifact_sha256" \
   "$deletion_evidence_reference" "$actor_id" <<'PY'
@@ -112,12 +112,16 @@ if issued<=backup_time:
 tombstones=artifact.get("tombstones")
 if not isinstance(tombstones,list):
     raise SystemExit("ERROR: deletion artifact tombstones are invalid")
-dsn=os.environ.get("PGDATABASE","")
-preflight=subprocess.run(
-    ["psql","-X","-v","ON_ERROR_STOP=1","-At","-F","|","-c",
-     "select current_database(),current_setting('server_version_num')::integer,target_mode,target_id,target_environment,expected_database_name,backup_source_id,source_environment,backup_manifest_sha256,deletion_artifact_sha256,deletion_evidence_reference,(raw_verified_at is not null),(replay_verified_at is null),(ready_at is null) from brevitas_restore.control where singleton"],
-    check=True,capture_output=True,text=True,env={**os.environ,"PGDATABASE":dsn,"PGCONNECT_TIMEOUT":"10"},
-).stdout.strip()
+if not os.environ.get("PGDATABASE", ""):
+    raise SystemExit("ERROR: database credential is unavailable")
+try:
+    preflight=subprocess.run(
+        ["psql","-X","-v","ON_ERROR_STOP=1","-At","-F","|","-c",
+         "select current_database(),current_setting('server_version_num')::integer,target_mode,target_id,target_environment,expected_database_name,backup_source_id,source_environment,backup_manifest_sha256,deletion_artifact_sha256,deletion_evidence_reference,(raw_verified_at is not null),(replay_verified_at is null),(ready_at is null) from brevitas_restore.control where singleton"],
+        check=True,capture_output=True,text=True,env=os.environ.copy(),
+    ).stdout.strip()
+except subprocess.CalledProcessError:
+    raise SystemExit("ERROR: restore control/evidence preflight mismatch") from None
 fields=preflight.split("|")
 if len(fields)!=14:
     raise SystemExit("ERROR: restore control/evidence preflight mismatch")
@@ -141,22 +145,23 @@ for item in tombstones:
       "--set=request_id="+request_id,"--set=requested_at="+str(item.get("requested_at","")),
       "--set=expires_at="+str(item.get("expires_at","")),"--set=request_scope="+scope,
       "--set=subject_id="+subject_id,"--set=actor_id="+actor_id,
-      "--set=evidence_reference="+evidence_reference,"--set=artifact_sha256="+artifact_hash,
-      "-c","select public.compliance_replay_deletion_tombstone(:'source_id',:'organization_id'::uuid,:'request_id'::uuid,:'requested_at'::timestamptz,:'expires_at'::timestamptz,:'request_scope',nullif(:'subject_id','')::uuid,:'actor_id',:'evidence_reference',:'artifact_sha256')"]
-    subprocess.run(command,check=True,capture_output=True,text=True,
-                   env={**os.environ,"PGDATABASE":dsn,"PGCONNECT_TIMEOUT":"10"})
+      "--set=evidence_reference="+evidence_reference,"--set=artifact_sha256="+artifact_hash]
+    replay_sql="select public.compliance_replay_deletion_tombstone(:'source_id',:'organization_id'::uuid,:'request_id'::uuid,:'requested_at'::timestamptz,:'expires_at'::timestamptz,:'request_scope',nullif(:'subject_id','')::uuid,:'actor_id',:'evidence_reference',:'artifact_sha256');\n"
+    subprocess.run(command,input=replay_sql,check=True,capture_output=True,text=True,
+                   env=os.environ.copy())
 count=subprocess.run(
-    ["psql","-X","-v","ON_ERROR_STOP=1","-qAt","-c","select count(*) from brevitas_restore.replay_evidence where artifact_sha256='"+artifact_hash+"'"],
-    check=True,capture_output=True,text=True,env={**os.environ,"PGDATABASE":dsn,"PGCONNECT_TIMEOUT":"10"},
+    ["psql","-X","-v","ON_ERROR_STOP=1","-qAt","--set=artifact_hash="+artifact_hash],
+    input="select count(*) from brevitas_restore.replay_evidence where artifact_sha256=:'artifact_hash';\n",
+    check=True,capture_output=True,text=True,env=os.environ.copy(),
 ).stdout.strip()
 if count!=str(len(tombstones)):
     raise SystemExit("ERROR: deletion replay evidence count mismatch")
 marked=subprocess.run(
     ["psql","-X","-v","ON_ERROR_STOP=1","-qAt","--set=source_id="+source_id,
      "--set=manifest_hash="+manifest_hash,"--set=artifact_hash="+artifact_hash,
-     "--set=evidence_reference="+evidence_reference,"-c",
-     "update brevitas_restore.control set replay_verified_at=coalesce(replay_verified_at,clock_timestamp()) where singleton and raw_verified_at is not null and replay_verified_at is null and ready_at is null and backup_source_id=:'source_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and deletion_evidence_reference=:'evidence_reference' returning 1"],
-    check=True,capture_output=True,text=True,env={**os.environ,"PGDATABASE":dsn,"PGCONNECT_TIMEOUT":"10"},
+     "--set=evidence_reference="+evidence_reference],
+    input="update brevitas_restore.control set replay_verified_at=coalesce(replay_verified_at,clock_timestamp()) where singleton and raw_verified_at is not null and replay_verified_at is null and ready_at is null and backup_source_id=:'source_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and deletion_evidence_reference=:'evidence_reference' returning 1;\n",
+    check=True,capture_output=True,text=True,env=os.environ.copy(),
 )
 if marked.stdout.strip()!="1":
     raise SystemExit("ERROR: deletion replay verification state could not be persisted")

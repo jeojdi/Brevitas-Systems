@@ -38,6 +38,8 @@ AUDIT_ROLES = frozenset({
 ATOMIC_DASHBOARD_KEY_ROLES = frozenset({
     "company_owner", "company_admin", "member", "billing_admin",
 })
+DASHBOARD_SESSION_PER_ACTOR_CAP = 8
+DASHBOARD_SESSION_PER_COMPANY_CAP = 1000
 COMPANY_ROLES = frozenset({
     "company_owner", "company_admin", "member", "billing_admin",
 })
@@ -48,6 +50,10 @@ _DASHBOARD_KEY_FIELDS = frozenset({
 _DEVICE_RECEIPT_FIELDS = frozenset({
     "status", "already_consumed", "device_hash", "key_hash", "encrypted_key",
     "owner_id", "organization_id", "consumed_at",
+})
+_ONBOARDING_STATUS_FIELDS = frozenset({
+    "company_id", "status", "cli_connected", "proxied_request_observed",
+    "completed_at",
 })
 _AUDIT_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -159,6 +165,12 @@ def _required_uuid(value: str, field: str) -> str:
         raise ValueError(f"invalid {field}") from exc
 
 
+def _canonical_store_company_role(value: Any) -> str:
+    role = str(value or "")
+    return {"owner": "company_owner", "admin": "company_admin",
+            "billing": "billing_admin"}.get(role, role)
+
+
 def _dashboard_expiry(value: str) -> str:
     now = datetime.now(timezone.utc)
     if value:
@@ -180,6 +192,76 @@ def _rpc_object(value: Any) -> dict[str, Any]:
     if isinstance(value, list):
         value = value[0] if len(value) == 1 else None
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _validated_onboarding_status(value: Any, organization_id: str) -> dict[str, Any]:
+    """Accept only the content-free, tenant-bound onboarding RPC contract."""
+    status = _rpc_object(value)
+    if status.pop("ok", False) is not True or set(status) != _ONBOARDING_STATUS_FIELDS:
+        raise RuntimeError("onboarding status RPC returned an unsafe response")
+    try:
+        returned_organization = _required_uuid(
+            str(status.get("company_id") or ""), "onboarding company_id")
+        expected_organization = _required_uuid(
+            organization_id, "expected onboarding company_id")
+    except ValueError as exc:
+        raise RuntimeError("onboarding status RPC returned an unsafe tenant") from exc
+    if returned_organization != expected_organization:
+        raise RuntimeError("onboarding status RPC returned the wrong tenant")
+    if status.get("status") not in ("pending", "complete"):
+        raise RuntimeError("onboarding status RPC returned an invalid state")
+    if not isinstance(status.get("cli_connected"), bool) or not isinstance(
+            status.get("proxied_request_observed"), bool):
+        raise RuntimeError("onboarding status RPC returned invalid evidence")
+    completed_at = str(status.get("completed_at") or "")
+    if (status["status"] == "complete") != bool(completed_at):
+        raise RuntimeError("onboarding status RPC returned inconsistent completion")
+    if completed_at:
+        try:
+            parsed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError("onboarding status RPC returned an invalid timestamp") from exc
+        if parsed.tzinfo is None:
+            raise RuntimeError("onboarding status RPC returned a naive timestamp")
+    return {
+        **status,
+        "company_id": returned_organization,
+        "completed_at": completed_at,
+    }
+
+
+def _validated_installation_registration(
+        value: Any, installation_id: str) -> dict[str, Any]:
+    """Accept only the bounded response from the atomic registration RPC."""
+    response = _rpc_object(value)
+    if response.pop("ok", False) is not True or set(response) != {
+            "id", "last_seen_at", "device_authorization_bound"}:
+        raise RuntimeError("installation registration RPC returned an unsafe response")
+    try:
+        returned_id = _required_uuid(
+            str(response.get("id") or ""), "registered installation_id")
+        expected_id = _required_uuid(
+            installation_id, "expected installation_id")
+    except ValueError as exc:
+        raise RuntimeError(
+            "installation registration RPC returned an invalid identity") from exc
+    if returned_id != expected_id:
+        raise RuntimeError("installation registration RPC returned the wrong installation")
+    if not isinstance(response.get("device_authorization_bound"), bool):
+        raise RuntimeError("installation registration RPC returned invalid authorization state")
+    last_seen_at = str(response.get("last_seen_at") or "")
+    try:
+        parsed = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError(
+            "installation registration RPC returned an invalid timestamp") from exc
+    if parsed.tzinfo is None:
+        raise RuntimeError("installation registration RPC returned a naive timestamp")
+    return {
+        "id": returned_id,
+        "last_seen_at": last_seen_at,
+        "device_authorization_bound": response["device_authorization_bound"],
+    }
 
 
 def _device_consume_identity(device_hash: str, expected_key_hash: str,
@@ -706,10 +788,27 @@ class UsageStore:
             for row in db.execute("SELECT key_hash FROM api_keys WHERE id='' OR id IS NULL").fetchall():
                 db.execute("UPDATE api_keys SET id=? WHERE key_hash=?", (str(uuid.uuid4()), row[0]))
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_id_idx ON api_keys(id)")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS api_keys_dashboard_sessions_idx "
+                "ON api_keys(organization_id,created_by,created,id) "
+                "WHERE key_type='dashboard_session'"
+            )
             db.execute("CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, legacy_owner_id TEXT NOT NULL DEFAULT '' UNIQUE, cache_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)")
             organization_cols = {r[1] for r in db.execute("PRAGMA table_info(organizations)")}
             if "billing_owner_id" not in organization_cols:
                 db.execute("ALTER TABLE organizations ADD COLUMN billing_owner_id TEXT NOT NULL DEFAULT ''")
+            for name, definition in {
+                "onboarding_started_at": "TEXT NOT NULL DEFAULT ''",
+                "onboarding_completed_at": "TEXT NOT NULL DEFAULT ''",
+                "onboarding_completed_by": "TEXT NOT NULL DEFAULT ''",
+                "onboarding_evidence_usage_id": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in organization_cols:
+                    db.execute(f"ALTER TABLE organizations ADD COLUMN {name} {definition}")
+            db.execute(
+                "UPDATE organizations SET onboarding_started_at=created_at "
+                "WHERE onboarding_started_at=''"
+            )
             db.execute("UPDATE organizations SET billing_owner_id=legacy_owner_id WHERE billing_owner_id='' AND legacy_owner_id<>''")
             db.execute("CREATE TABLE IF NOT EXISTS organization_members (organization_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'admin', created_at TEXT NOT NULL, PRIMARY KEY(organization_id,user_id))")
             db.execute("CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, external_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', cache_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(organization_id,external_id))")
@@ -718,12 +817,32 @@ class UsageStore:
             if "cache_enabled" not in {r[1] for r in db.execute("PRAGMA table_info(customers)")}:
                 db.execute("ALTER TABLE customers ADD COLUMN cache_enabled INTEGER NOT NULL DEFAULT 0")
             db.execute("CREATE TABLE IF NOT EXISTS service_accounts (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, environment TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(organization_id,name,environment))")
+            service_account_cols = {
+                r[1] for r in db.execute("PRAGMA table_info(service_accounts)")
+            }
+            for name, definition in {
+                "status": "TEXT NOT NULL DEFAULT 'active'",
+                "expires_at": "TEXT NOT NULL DEFAULT ''",
+                "revoked_at": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in service_account_cols:
+                    db.execute(
+                        f"ALTER TABLE service_accounts ADD COLUMN {name} {definition}"
+                    )
             db.execute("CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, device_fingerprint TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, revoked_at TEXT NOT NULL DEFAULT '', UNIQUE(organization_id,device_fingerprint))")
             db.execute("CREATE TABLE IF NOT EXISTS installations (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '', service_account_id TEXT NOT NULL DEFAULT '', repository_id TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL DEFAULT '', environment TEXT NOT NULL DEFAULT '', device_platform TEXT NOT NULL DEFAULT '', device_arch TEXT NOT NULL DEFAULT '', client_name TEXT NOT NULL DEFAULT '', bvx_version TEXT NOT NULL DEFAULT '', installed_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, revoked_at TEXT NOT NULL DEFAULT '')")
             installation_cols = {r[1] for r in db.execute("PRAGMA table_info(installations)")}
             for name in ("repository_id", "device_platform", "device_arch", "client_name"):
                 if name not in installation_cols:
                     db.execute(f"ALTER TABLE installations ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            for name in (
+                "registration_key_hash", "registration_key_id", "device_auth_receipt_id",
+            ):
+                if name not in installation_cols:
+                    db.execute(
+                        f"ALTER TABLE installations ADD COLUMN {name} "
+                        "TEXT NOT NULL DEFAULT ''"
+                    )
             db.execute("CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL DEFAULT '', actor_user_id TEXT NOT NULL DEFAULT '', actor_key_hash TEXT DEFAULT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL DEFAULT '', target_id TEXT NOT NULL DEFAULT '', details TEXT NOT NULL DEFAULT '{}', occurred_at TEXT NOT NULL)")
             audit_columns = {r[1] for r in db.execute("PRAGMA table_info(audit_events)")}
             audit_upgrades = {
@@ -736,6 +855,17 @@ class UsageStore:
                 if name not in audit_columns:
                     db.execute(f"ALTER TABLE audit_events ADD COLUMN {name} {definition}")
             db.execute("CREATE TABLE IF NOT EXISTS provider_config (key_hash TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'ollama', provider_api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT 'llama3.2')")
+            db.execute("""CREATE TRIGGER IF NOT EXISTS provider_config_revoke_cleanup
+                AFTER UPDATE OF revoked_at ON api_keys
+                WHEN NEW.revoked_at IS NOT NULL AND NEW.revoked_at<>''
+                BEGIN
+                    DELETE FROM provider_config WHERE key_hash=NEW.key_hash;
+                END""")
+            db.execute("""CREATE TRIGGER IF NOT EXISTS provider_config_delete_cleanup
+                AFTER DELETE ON api_keys
+                BEGIN
+                    DELETE FROM provider_config WHERE key_hash=OLD.key_hash;
+                END""")
             db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
             db.execute("CREATE TABLE IF NOT EXISTS key_repositories (key_hash TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'bvx', installed_at TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (key_hash, repo))")
             device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
@@ -830,8 +960,8 @@ class UsageStore:
             if not row:
                 organization_id = str(uuid.uuid4())
                 now = _now()
-                db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,created_at) VALUES(?,?,?,?,?)",
-                           (organization_id, name or "My organization", user_id, user_id, now))
+                db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,created_at,onboarding_started_at) VALUES(?,?,?,?,?,?)",
+                           (organization_id, name or "My organization", user_id, user_id, now, now))
                 db.execute("INSERT INTO organization_members(organization_id,user_id,role,created_at) VALUES(?,?,?,?)",
                            (organization_id, user_id, "owner", now))
                 row = db.execute("SELECT id,name,billing_owner_id FROM organizations WHERE id=?", (organization_id,)).fetchone()
@@ -900,6 +1030,161 @@ class UsageStore:
             return None
         return {"id": row[0], "name": row[1], "role": role,
                 "billing_owner_id": row[3]}
+
+    @staticmethod
+    def _onboarding_evidence(
+            db: sqlite3.Connection, organization_id: str,
+            started_at: str) -> tuple[bool, sqlite3.Row | None]:
+        checked_at = _now()
+        installation = db.execute(
+            "SELECT installation.installed_at FROM installations installation "
+            "JOIN api_keys credential ON credential.id=installation.registration_key_id "
+            "AND credential.key_hash=installation.registration_key_hash "
+            "AND credential.organization_id=installation.organization_id "
+            "AND credential.key_type='device' "
+            "AND credential.revoked_at='' "
+            "AND (credential.expires_at='' OR credential.expires_at>?) "
+            "JOIN audit_events activation ON activation.organization_id=installation.organization_id "
+            "AND activation.action='device_key.activated' "
+            "AND activation.target_type='api_key' AND activation.target_id=credential.id "
+            "AND activation.outcome='committed' "
+            "WHERE installation.organization_id=? AND installation.revoked_at='' "
+            "AND installation.device_auth_receipt_id<>'' "
+            "AND lower(installation.client_name)='bvx' "
+            "AND installation.bvx_version<>'' AND installation.device_id<>'' "
+            "AND installation.installed_at>=? ORDER BY installation.installed_at,"
+            "installation.id LIMIT 1",
+            (checked_at, organization_id, started_at),
+        ).fetchone()
+        if not installation:
+            return False, None
+        evidence = db.execute(
+            "SELECT usage.id,usage.ts FROM usage_log usage "
+            "JOIN installations installation ON installation.organization_id=usage.organization_id "
+            "AND installation.registration_key_hash=usage.key_hash "
+            "AND installation.revoked_at='' AND installation.device_auth_receipt_id<>'' "
+            "AND lower(installation.client_name)='bvx' "
+            "AND installation.bvx_version<>'' AND installation.device_id<>'' "
+            "AND installation.installed_at>=? AND usage.ts>=installation.installed_at "
+            "JOIN api_keys credential ON credential.id=installation.registration_key_id "
+            "AND credential.key_hash=installation.registration_key_hash "
+            "AND credential.organization_id=usage.organization_id "
+            "AND credential.revoked_at='' "
+            "AND (credential.expires_at='' OR credential.expires_at>?) "
+            "JOIN audit_events activation ON activation.organization_id=usage.organization_id "
+            "AND activation.action='device_key.activated' "
+            "AND activation.target_type='api_key' AND activation.target_id=credential.id "
+            "AND activation.outcome='committed' "
+            "WHERE usage.organization_id=? AND usage.authoritative=1 "
+            "AND usage.receipt_source='proxy' AND credential.key_type='device' "
+            "ORDER BY usage.ts,usage.id LIMIT 1",
+            (started_at, checked_at, organization_id),
+        ).fetchone()
+        return True, evidence
+
+    def onboarding_status(self, user_id: str, organization_id: str) -> dict[str, Any]:
+        """Return content-free onboarding state after exact active-membership proof."""
+        with self._conn() as db:
+            member_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(organization_members)")
+            }
+            active_clause = " AND status='active'" if "status" in member_columns else ""
+            member = db.execute(
+                "SELECT role FROM organization_members WHERE organization_id=? "
+                f"AND user_id=?{active_clause} LIMIT 1",
+                (organization_id, user_id),
+            ).fetchone()
+            if not member or _canonical_store_company_role(member[0]) not in COMPANY_ROLES:
+                raise PermissionError("active company membership required")
+            organization = db.execute(
+                "SELECT onboarding_started_at,onboarding_completed_at "
+                "FROM organizations WHERE id=? LIMIT 1",
+                (organization_id,),
+            ).fetchone()
+            if not organization:
+                raise PermissionError("active company membership required")
+            cli_connected, evidence = self._onboarding_evidence(
+                db, organization_id, str(organization[0] or ""),
+            )
+        completed_at = str(organization[1] or "")
+        return {
+            "company_id": organization_id,
+            "status": "complete" if completed_at else "pending",
+            "cli_connected": bool(cli_connected or completed_at),
+            "proxied_request_observed": bool(evidence or completed_at),
+            "completed_at": completed_at,
+        }
+
+    def complete_onboarding(self, user_id: str, organization_id: str,
+                            request_id: str) -> dict[str, Any]:
+        """Atomically complete onboarding only from durable CLI/proxy evidence."""
+        actor_id, audit_request_id, _ = _audit_identity(
+            user_id, request_id, "company_owner",
+        )
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            member_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(organization_members)")
+            }
+            active_clause = " AND status='active'" if "status" in member_columns else ""
+            member = db.execute(
+                "SELECT role FROM organization_members WHERE organization_id=? "
+                f"AND user_id=?{active_clause} LIMIT 1",
+                (organization_id, user_id),
+            ).fetchone()
+            role = _canonical_store_company_role(member[0]) if member else ""
+            if role != "company_owner":
+                raise PermissionError("company owner access required")
+            organization = db.execute(
+                "SELECT onboarding_started_at,onboarding_completed_at "
+                "FROM organizations WHERE id=? LIMIT 1",
+                (organization_id,),
+            ).fetchone()
+            if not organization:
+                raise PermissionError("active company membership required")
+            completed_at = str(organization[1] or "")
+            cli_connected, evidence = self._onboarding_evidence(
+                db, organization_id, str(organization[0] or ""),
+            )
+            if completed_at:
+                return {
+                    "company_id": organization_id,
+                    "status": "complete",
+                    "cli_connected": True,
+                    "proxied_request_observed": True,
+                    "completed_at": completed_at,
+                }
+            if not evidence:
+                return {
+                    "company_id": organization_id,
+                    "status": "pending",
+                    "cli_connected": cli_connected,
+                    "proxied_request_observed": False,
+                    "completed_at": "",
+                }
+            completed_at = _now()
+            updated = db.execute(
+                "UPDATE organizations SET onboarding_completed_at=?,"
+                "onboarding_completed_by=?,onboarding_evidence_usage_id=? "
+                "WHERE id=? AND onboarding_completed_at=''",
+                (completed_at, actor_id, int(evidence[0]), organization_id),
+            ).rowcount
+            if updated:
+                db.execute(
+                    "INSERT INTO audit_events(organization_id,actor_user_id,action,"
+                    "target_type,target_id,details,occurred_at,request_id,actor_id,"
+                    "actor_role,outcome) VALUES(?,?,?,?,?,'{}',?,?,?,?,?)",
+                    (organization_id, actor_id, "organization.onboarding.completed",
+                     "company", organization_id, completed_at, audit_request_id,
+                     actor_id, role, "committed"),
+                )
+        return {
+            "company_id": organization_id,
+            "status": "complete",
+            "cli_connected": True,
+            "proxied_request_observed": True,
+            "completed_at": completed_at,
+        }
 
     def ensure_service_account(self, organization_id: str, environment: str,
                                created_by: str = "") -> dict[str, Any]:
@@ -1399,20 +1684,89 @@ class UsageStore:
         key_id = str(uuid.uuid4())
         audit_identity = (_audit_identity(created_by, request_id, actor_role)
                           if organization_id else None)
-        with self._conn() as db:
-            cur = db.execute("INSERT OR IGNORE INTO api_keys(id,key_hash,name,created,owner_id,organization_id,service_account_id,key_type,scopes,environment,key_prefix,created_by,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (key_id, key_hash, name, _now(), owner_id, organization_id,
-                        service_account_id, key_type, scope_value, environment,
-                        key_prefix, created_by, expires_at))
-            if cur.rowcount and organization_id:
-                actor_id, audit_request_id, audit_role = audit_identity
-                db.execute(
-                    "INSERT INTO audit_events(organization_id,actor_user_id,action,"
-                    "target_type,target_id,details,occurred_at,request_id,actor_id,"
-                    "actor_role,outcome) VALUES(?,?,?,?,?,'{}',?,?,?,?,?)",
-                    (organization_id, created_by, "api_key.created", "api_key",
-                     key_id, _now(), audit_request_id, actor_id, audit_role, "committed"),
-                )
+        if key_type == "dashboard_session":
+            expires_at = _dashboard_expiry(expires_at)
+        try:
+            with self._conn() as db:
+                if key_type == "dashboard_session":
+                    # Serialize expiry cleanup, cap enforcement, rotation, and
+                    # insertion across local API processes sharing this file.
+                    db.execute("BEGIN IMMEDIATE")
+                    now = _now()
+                    db.execute(
+                        "UPDATE api_keys SET revoked_at=? WHERE organization_id=? "
+                        "AND key_type='dashboard_session' AND revoked_at='' "
+                        "AND (expires_at='' OR expires_at<=?)",
+                        (now, organization_id, now),
+                    )
+                    counts = db.execute(
+                        "SELECT count(*),sum(CASE WHEN created_by=? THEN 1 ELSE 0 END) "
+                        "FROM api_keys WHERE organization_id=? "
+                        "AND key_type='dashboard_session' AND revoked_at='' "
+                        "AND expires_at>?",
+                        (created_by, organization_id, now),
+                    ).fetchone()
+                    company_active = int(counts[0] or 0)
+                    actor_active = int(counts[1] or 0)
+                    revoke_count = max(
+                        actor_active - (DASHBOARD_SESSION_PER_ACTOR_CAP - 1),
+                        company_active - (DASHBOARD_SESSION_PER_COMPANY_CAP - 1),
+                        0,
+                    )
+                    if revoke_count > actor_active:
+                        raise RuntimeError("dashboard session company cap reached")
+                    rotated = db.execute(
+                        "SELECT id FROM api_keys WHERE organization_id=? "
+                        "AND key_type='dashboard_session' AND created_by=? "
+                        "AND revoked_at='' AND expires_at>? ORDER BY created,id LIMIT ?",
+                        (organization_id, created_by, now, revoke_count),
+                    ).fetchall()
+                    actor_id, audit_request_id, audit_role = audit_identity
+                    for row in rotated:
+                        db.execute(
+                            "UPDATE api_keys SET revoked_at=? WHERE organization_id=? "
+                            "AND id=? AND key_type='dashboard_session' AND created_by=? "
+                            "AND revoked_at=''",
+                            (now, organization_id, row["id"], created_by),
+                        )
+                        db.execute(
+                            "INSERT INTO audit_events(organization_id,actor_user_id,"
+                            "action,target_type,target_id,details,occurred_at,request_id,"
+                            "actor_id,actor_role,outcome) "
+                            "VALUES(?,?,?,?,?,'{}',?,?,?,?,?)",
+                            (organization_id, created_by, "dashboard_session.rotated",
+                             "api_key", row["id"], now, audit_request_id,
+                             actor_id, audit_role, "committed"),
+                        )
+                if key_type == "organization_service":
+                    billing_owner = db.execute(
+                        "SELECT organization.billing_owner_id FROM organizations organization "
+                        "JOIN service_accounts account "
+                        "ON account.organization_id=organization.id "
+                        "WHERE organization.id=? AND account.id=?",
+                        (organization_id, service_account_id),
+                    ).fetchone()
+                    if not billing_owner or not billing_owner[0]:
+                        raise ValueError(
+                            "organization service key requires an authoritative billing owner")
+                    owner_id = str(billing_owner[0])
+                insert = ("INSERT" if key_type == "dashboard_session"
+                          else "INSERT OR IGNORE")
+                cur = db.execute(f"{insert} INTO api_keys(id,key_hash,name,created,owner_id,organization_id,service_account_id,key_type,scopes,environment,key_prefix,created_by,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (key_id, key_hash, name, _now(), owner_id, organization_id,
+                            service_account_id, key_type, scope_value, environment,
+                            key_prefix, created_by, expires_at))
+                if cur.rowcount and organization_id:
+                    actor_id, audit_request_id, audit_role = audit_identity
+                    db.execute(
+                        "INSERT INTO audit_events(organization_id,actor_user_id,action,"
+                        "target_type,target_id,details,occurred_at,request_id,actor_id,"
+                        "actor_role,outcome) VALUES(?,?,?,?,?,'{}',?,?,?,?,?)",
+                        (organization_id, created_by, "api_key.created", "api_key",
+                         key_id, _now(), audit_request_id, actor_id, audit_role, "committed"),
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise RuntimeError("duplicate key") from exc
 
     def key_exists(self, key_hash: str) -> bool:
         with self._conn() as db:
@@ -1433,7 +1787,13 @@ class UsageStore:
 
     def key_owner(self, key_hash: str) -> str:
         with self._conn() as db:
-            row = db.execute("SELECT owner_id FROM api_keys WHERE key_hash=?", (key_hash,)).fetchone()
+            row = db.execute(
+                "SELECT CASE WHEN key.key_type='organization_service' "
+                "THEN organization.billing_owner_id ELSE key.owner_id END "
+                "FROM api_keys key LEFT JOIN organizations organization "
+                "ON organization.id=key.organization_id WHERE key.key_hash=?",
+                (key_hash,),
+            ).fetchone()
         return str(row[0] or "") if row else ""
 
     def list_keys(self, key_hash: str = "") -> list[dict[str, Any]]:
@@ -1491,9 +1851,43 @@ class UsageStore:
                               installation_id: str, repository: str | None, environment: str,
                               bvx_version: str, device_fingerprint: str = "", *,
                               repository_id: str = "", device_platform: str = "",
-                              device_arch: str = "", client_name: str = "") -> dict[str, Any]:
+                              device_arch: str = "", client_name: str = "",
+                              registration_key_hash: str = "") -> dict[str, Any]:
         now = _now()
         with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            registration_key_id = ""
+            device_auth_receipt_id = ""
+            if registration_key_hash:
+                if not _SHA256_DIGEST.fullmatch(registration_key_hash):
+                    raise ValueError("invalid installation credential")
+                credential = db.execute(
+                    "SELECT id,key_type,scopes FROM api_keys WHERE key_hash=? "
+                    "AND organization_id=? AND revoked_at='' "
+                    "AND (expires_at='' OR expires_at>?) LIMIT 1",
+                    (registration_key_hash, organization_id, now),
+                ).fetchone()
+                if not credential:
+                    raise ValueError("installation credential is not active")
+                if "installations:register" not in {
+                        scope for scope in str(credential[2] or "").split(",") if scope}:
+                    raise ValueError("installation credential lacks registration scope")
+                registration_key_id = str(credential[0])
+                if str(credential[1]) == "device":
+                    receipt = db.execute(
+                        "SELECT id FROM bvx_device_consumption_receipts "
+                        "WHERE key_hash=? AND organization_id=? AND quarantined_at='' "
+                        "ORDER BY consumed_at DESC LIMIT 1",
+                        (registration_key_hash, organization_id),
+                    ).fetchone()
+                    activation = db.execute(
+                        "SELECT 1 FROM audit_events WHERE organization_id=? "
+                        "AND action='device_key.activated' AND target_type='api_key' "
+                        "AND target_id=? AND outcome='committed' LIMIT 1",
+                        (organization_id, registration_key_id),
+                    ).fetchone()
+                    if receipt and activation:
+                        device_auth_receipt_id = str(receipt[0])
             device_id = ""
             if device_fingerprint:
                 device = db.execute("SELECT id,revoked_at FROM devices WHERE organization_id=? AND device_fingerprint=?",
@@ -1507,23 +1901,37 @@ class UsageStore:
                     device_id = str(uuid.uuid4())
                     db.execute("INSERT INTO devices(id,organization_id,device_fingerprint,created_at,last_seen_at) VALUES(?,?,?,?,?)",
                                (device_id, organization_id, device_fingerprint, now, now))
-            row = db.execute("SELECT id,revoked_at FROM installations WHERE id=? AND organization_id=?",
+            row = db.execute(
+                "SELECT id,revoked_at,registration_key_hash,registration_key_id,"
+                "device_auth_receipt_id FROM installations "
+                "WHERE id=? AND organization_id=?",
                              (installation_id, organization_id)).fetchone()
             if row:
                 if row[1]:
                     raise ValueError("installation is revoked")
+                if row[2] and row[2] != registration_key_hash:
+                    raise ValueError("installation credential mismatch")
+                if row[3] and row[3] != registration_key_id:
+                    raise ValueError("installation credential mismatch")
+                if row[4] and row[4] != device_auth_receipt_id:
+                    raise ValueError("installation device authorization mismatch")
+                registration_key_hash = str(row[2] or registration_key_hash)
+                registration_key_id = str(row[3] or registration_key_id)
+                device_auth_receipt_id = str(row[4] or device_auth_receipt_id)
                 if repository is None:
                     current = db.execute("SELECT repository_id,repository FROM installations WHERE id=?",
                                          (installation_id,)).fetchone()
                     repository_id, repository = current[0], current[1]
-                db.execute("UPDATE installations SET device_id=?,repository_id=?,repository=?,environment=?,device_platform=?,device_arch=?,client_name=?,bvx_version=?,last_seen_at=? WHERE id=?",
+                db.execute("UPDATE installations SET device_id=?,repository_id=?,repository=?,environment=?,device_platform=?,device_arch=?,client_name=?,bvx_version=?,last_seen_at=?,registration_key_hash=?,registration_key_id=?,device_auth_receipt_id=? WHERE id=?",
                            (device_id, repository_id, repository or "", environment, device_platform,
-                            device_arch, client_name, bvx_version, now, installation_id))
+                            device_arch, client_name, bvx_version, now, registration_key_hash,
+                            registration_key_id, device_auth_receipt_id, installation_id))
             else:
-                db.execute("INSERT INTO installations(id,organization_id,device_id,service_account_id,repository_id,repository,environment,device_platform,device_arch,client_name,bvx_version,installed_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO installations(id,organization_id,device_id,service_account_id,repository_id,repository,environment,device_platform,device_arch,client_name,bvx_version,installed_at,last_seen_at,registration_key_hash,registration_key_id,device_auth_receipt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (installation_id, organization_id, device_id, service_account_id,
                             repository_id, repository or "", environment, device_platform, device_arch,
-                            client_name, bvx_version, now, now))
+                            client_name, bvx_version, now, now, registration_key_hash,
+                            registration_key_id, device_auth_receipt_id))
         return {"id": installation_id, "last_seen_at": now}
 
     def list_installations(self, organization_id: str) -> list[dict[str, Any]]:
@@ -1792,6 +2200,29 @@ class UsageStore:
 
     def set_provider_config(self, key_hash: str, provider: str, provider_api_key: str, model: str) -> None:
         with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            active = db.execute(
+                """SELECT 1
+                     FROM api_keys AS credential
+                     LEFT JOIN service_accounts AS account
+                       ON account.organization_id=credential.organization_id
+                      AND account.id=credential.service_account_id
+                    WHERE credential.key_hash=?
+                      AND credential.revoked_at=''
+                      AND (credential.expires_at='' OR credential.expires_at>?)
+                      AND (
+                          credential.key_type<>'organization_service'
+                          OR (
+                              account.id IS NOT NULL
+                              AND account.status='active'
+                              AND account.revoked_at=''
+                              AND (account.expires_at='' OR account.expires_at>?)
+                          )
+                      )""",
+                (key_hash, _now(), _now()),
+            ).fetchone()
+            if not active:
+                raise ValueError("provider configuration requires an active key")
             db.execute("INSERT INTO provider_config(key_hash,provider,provider_api_key,model) VALUES (?,?,?,?) ON CONFLICT(key_hash) DO UPDATE SET provider=excluded.provider,provider_api_key=excluded.provider_api_key,model=excluded.model",
                        (key_hash, provider, provider_api_key, model))
 
@@ -1799,6 +2230,39 @@ class UsageStore:
         with self._conn() as db:
             row = db.execute("SELECT provider,provider_api_key,model FROM provider_config WHERE key_hash=?", (key_hash,)).fetchone()
         return None if not row else {"provider": row[0], "provider_api_key": row[1], "model": row[2]}
+
+    def purge_provider_configs(self, limit: int = 500) -> int:
+        batch_limit = max(1, min(int(limit), 1000))
+        now = _now()
+        with self._conn() as db:
+            cursor = db.execute(
+                """DELETE FROM provider_config
+                    WHERE key_hash IN (
+                        SELECT config.key_hash
+                          FROM provider_config AS config
+                          LEFT JOIN api_keys AS credential
+                            ON credential.key_hash=config.key_hash
+                          LEFT JOIN service_accounts AS account
+                            ON account.organization_id=credential.organization_id
+                           AND account.id=credential.service_account_id
+                         WHERE credential.key_hash IS NULL
+                            OR credential.revoked_at<>''
+                            OR (credential.expires_at<>'' AND credential.expires_at<=?)
+                            OR (
+                                credential.key_type='organization_service'
+                                AND (
+                                    account.id IS NULL
+                                    OR account.status<>'active'
+                                    OR account.revoked_at<>''
+                                    OR (account.expires_at<>'' AND account.expires_at<=?)
+                                )
+                            )
+                         ORDER BY config.key_hash
+                         LIMIT ?
+                    )""",
+                (now, now, batch_limit),
+            )
+        return max(0, int(cursor.rowcount or 0))
 
 
 class SupabaseUsageStore:
@@ -1914,6 +2378,35 @@ class SupabaseUsageStore:
             "select": "id,name,billing_owner_id", "id": f"eq.{organization_id}", "limit": "1",
         }) or []
         return ({**rows[0], "role": role}) if rows else None
+
+    def onboarding_status(self, user_id: str, organization_id: str) -> dict[str, Any]:
+        actor_id = _required_uuid(user_id, "onboarding actor_user_id")
+        organization_uuid = _required_uuid(
+            organization_id, "onboarding organization_id")
+        value = self._request(
+            "POST", "rpc/organization_onboarding_status", data={
+                "p_actor_user_id": actor_id,
+                "p_organization_id": organization_uuid,
+            },
+        )
+        return _validated_onboarding_status(value, organization_uuid)
+
+    def complete_onboarding(self, user_id: str, organization_id: str,
+                            request_id: str) -> dict[str, Any]:
+        actor_id = _required_uuid(user_id, "onboarding actor_user_id")
+        organization_uuid = _required_uuid(
+            organization_id, "onboarding organization_id")
+        _, audit_request_id, _ = _audit_identity(
+            actor_id, request_id, "company_owner",
+        )
+        value = self._request(
+            "POST", "rpc/complete_organization_onboarding", data={
+                "p_actor_user_id": actor_id,
+                "p_organization_id": organization_uuid,
+                "p_request_id": audit_request_id,
+            },
+        )
+        return _validated_onboarding_status(value, organization_uuid)
 
     def ensure_service_account(self, organization_id: str, environment: str,
                                created_by: str = "") -> dict[str, Any]:
@@ -2147,8 +2640,24 @@ class SupabaseUsageStore:
         return row
 
     def key_owner(self, key_hash: str) -> str:
-        rows = self._request("GET", "api_keys", params={"select": "owner_id", "key_hash": f"eq.{key_hash}", "limit": "1"})
-        return str(rows[0].get("owner_id") or "") if rows else ""
+        rows = self._request("GET", "api_keys", params={
+            "select": "owner_id,organization_id,key_type",
+            "key_hash": f"eq.{key_hash}", "limit": "1",
+        }) or []
+        if not rows:
+            return ""
+        row = rows[0]
+        if row.get("key_type") == "organization_service":
+            organization_id = str(row.get("organization_id") or "")
+            if not organization_id:
+                return ""
+            organizations = self._request("GET", "organizations", params={
+                "select": "billing_owner_id", "id": f"eq.{organization_id}",
+                "limit": "1",
+            }) or []
+            return (str(organizations[0].get("billing_owner_id") or "")
+                    if organizations else "")
+        return str(row.get("owner_id") or "")
 
     def list_keys(self, key_hash: str = "") -> list[dict[str, Any]]:
         params = {"select": "key_hash,name,created", "order": "created.desc"}
@@ -2257,23 +2766,12 @@ class SupabaseUsageStore:
                               installation_id: str, repository: str | None, environment: str,
                               bvx_version: str, device_fingerprint: str = "", *,
                               repository_id: str = "", device_platform: str = "",
-                              device_arch: str = "", client_name: str = "") -> dict[str, Any]:
-        now = _now()
-        identity = self._request("GET", "installations", params={
-            "select": "organization_id,revoked_at", "id": f"eq.{installation_id}", "limit": "1",
-        }) or []
-        if identity and identity[0].get("organization_id") != organization_id:
-            raise ValueError("installation id belongs to another organization")
-        if identity and identity[0].get("revoked_at"):
-            raise ValueError("installation is revoked")
-        device_id = None
-        if device_fingerprint:
-            rows = self._request("POST", "devices", params={"on_conflict": "organization_id,device_fingerprint"},
-                data={"organization_id": organization_id, "device_fingerprint": device_fingerprint,
-                      "last_seen_at": now}, prefer="resolution=merge-duplicates,return=representation") or []
-            device_id = rows[0]["id"]
-            if rows[0].get("revoked_at"):
-                raise ValueError("device is revoked")
+                              device_arch: str = "", client_name: str = "",
+                              registration_key_hash: str = "") -> dict[str, Any]:
+        organization_uuid = _required_uuid(organization_id, "organization_id")
+        installation_uuid = _required_uuid(installation_id, "installation_id")
+        if not _SHA256_DIGEST.fullmatch(str(registration_key_hash or "")):
+            raise ValueError("invalid installation credential")
         if repository is None:
             current = self._request("GET", "installations", params={
                 "select": "repository_id,repository", "id": f"eq.{installation_id}",
@@ -2281,14 +2779,34 @@ class SupabaseUsageStore:
             }) or []
             repository_id = str(current[0].get("repository_id") or "") if current else ""
             repository = str(current[0].get("repository") or "") if current else ""
-        rows = self._request("POST", "installations", params={"on_conflict": "id"}, data={
-            "id": installation_id, "organization_id": organization_id, "device_id": device_id,
-            "service_account_id": service_account_id or None, "repository": repository,
-            "repository_id": repository_id, "environment": environment,
-            "device_platform": device_platform, "device_arch": device_arch,
-            "client_name": client_name, "bvx_version": bvx_version, "last_seen_at": now,
-        }, prefer="resolution=merge-duplicates,return=representation") or []
-        return {"id": rows[0]["id"], "last_seen_at": rows[0]["last_seen_at"]}
+        result = _rpc_object(self._request(
+            "POST", "rpc/register_bvx_installation", data={
+                "p_organization_id": organization_uuid,
+                "p_registration_key_hash": registration_key_hash,
+                "p_installation_id": installation_uuid,
+                "p_device_fingerprint": device_fingerprint,
+                "p_repository_id": repository_id,
+                "p_repository": repository or "",
+                "p_environment": environment,
+                "p_device_platform": device_platform,
+                "p_device_arch": device_arch,
+                "p_client_name": client_name,
+                "p_bvx_version": bvx_version,
+            },
+        ))
+        if result.get("ok") is not True:
+            code = str(result.get("code") or "registration_failed")
+            messages = {
+                "invalid_request": "invalid installation request",
+                "forbidden": "installation credential is not active",
+                "device_revoked": "device is revoked",
+                "foreign_installation": (
+                    "installation id belongs to another organization"),
+                "installation_revoked": "installation is revoked",
+                "credential_mismatch": "installation credential mismatch",
+            }
+            raise ValueError(messages.get(code, "installation registration rejected"))
+        return _validated_installation_registration(result, installation_uuid)
 
     def list_installations(self, organization_id: str) -> list[dict[str, Any]]:
         return self._request("GET", "installations", params={
@@ -2588,6 +3106,18 @@ class SupabaseUsageStore:
     def get_provider_config(self, key_hash: str) -> dict | None:
         rows = self._request("GET", "provider_config", params={"select": "provider,provider_api_key,model", "key_hash": f"eq.{key_hash}", "limit": "1"})
         return rows[0] if rows else None
+
+    def purge_provider_configs(self, limit: int = 500) -> int:
+        batch_limit = max(1, min(int(limit), 1000))
+        result = self._request(
+            "POST", "rpc/purge_expired_provider_configs",
+            data={"p_limit": batch_limit},
+        )
+        if isinstance(result, list):
+            result = result[0] if result else 0
+        if isinstance(result, dict):
+            result = next(iter(result.values()), 0)
+        return int(result or 0)
 
 
 class BoundedUsageWriter:

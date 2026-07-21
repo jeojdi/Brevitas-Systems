@@ -36,6 +36,8 @@ from .server import (
     _store,
     _wait_for_provider_calls,
     _initialize_credential_cipher,
+    _kms_dependency_ready,
+    _kms_readiness_status,
     _authoritative_service_key_context,
     _configure_managed_kms_from_deployment,
     _production_runtime,
@@ -45,6 +47,7 @@ from .billing_recovery import (
     build_billing_recovery_processor_from_env,
     run_billing_recovery_loop,
 )
+from .build_info import build_identity, validate_production_build_identity
 from .jobs import PermanentJobError
 from .observability import (
     BillingTelemetryAdapter,
@@ -201,10 +204,17 @@ async def liveness():
     return {"status": "ok"}
 
 
+@health_app.get("/version")
+async def version():
+    return {"service": "worker", "build": build_identity(required=_production_runtime())}
+
+
 @health_app.get("/ready")
 @health_app.get("/health")
 async def readiness():
     database_ready, redis_ready = await _dependencies_ready()
+    kms = await _kms_readiness_status()
+    kms_ready = _kms_dependency_ready(kms)
     if _BILLING_REQUIRED:
         billing_ready, billing_health = _billing_health_status()
     else:
@@ -217,7 +227,13 @@ async def readiness():
             "consecutive_errors": 0,
             "error_threshold_exceeded": False,
         }
-    ready = _WORKER_ACCEPTING and database_ready and redis_ready and billing_ready
+    ready = (
+        _WORKER_ACCEPTING
+        and database_ready
+        and redis_ready
+        and kms_ready
+        and billing_ready
+    )
     payload = {
         "status": "ok" if ready else "unavailable",
         "accepting_jobs": _WORKER_ACCEPTING,
@@ -226,6 +242,13 @@ async def readiness():
                          "authoritative": True},
             "redis": {"status": "ready" if redis_ready else "unavailable",
                       "authoritative": False, "role": "coordination"},
+            "kms": {
+                "status": (
+                    "disabled" if not kms["configured"] else
+                    "ready" if kms_ready else "unavailable"
+                ),
+                **kms,
+            },
             "billing_recovery": {
                 "status": ("disabled" if _BILLING_ROLE == "nonbilling" else
                            "ready" if billing_ready else "unavailable"),
@@ -282,6 +305,7 @@ async def _process_job(payload: dict, row: dict) -> dict:
                 _safe_record_usage,
                 auth_context=AuthContext(
                     key_hash=row["key_hash"], organization_id=row["organization_id"],
+                    billing_owner_id=str(key_context.get("owner_id") or ""),
                     customer_id=row["customer_id"], key_type=str(key_context.get("key_type") or ""),
                 ),
                 key_hash=row["key_hash"], baseline_tokens=result["baseline_tokens"],
@@ -290,6 +314,11 @@ async def _process_job(payload: dict, row: dict) -> dict:
                 request_id=f"job:{row['id']}", provider="brevitas", model="compression",
             )
             return output
+        # This ownership-fenced marker is the final durable boundary before a
+        # potentially billable provider POST. A reclaimed marked job is never
+        # sent automatically because supported providers offer no verified
+        # idempotency or result reconciliation contract.
+        await _job_service.mark_provider_outbound_started(row)
         output = await asyncio.to_thread(
             _run_configured_model,
             row["key_hash"], payload.get("messages", []),
@@ -300,6 +329,7 @@ async def _process_job(payload: dict, row: dict) -> dict:
             _safe_record_usage,
             auth_context=AuthContext(
                 key_hash=row["key_hash"], organization_id=row["organization_id"],
+                billing_owner_id=str(key_context.get("owner_id") or ""),
                 customer_id=row["customer_id"], key_type=str(key_context.get("key_type") or ""),
             ),
             key_hash=row["key_hash"], baseline_tokens=token_cost,
@@ -331,6 +361,7 @@ async def run() -> None:
     concurrency = max(1, min(100, int(os.getenv("BREVITAS_WORKER_CONCURRENCY", "10"))))
     poll_seconds = max(0.05, float(os.getenv("BREVITAS_JOB_POLL_SECONDS", "0.25")))
     stop = asyncio.Event()
+    validate_production_build_identity(_production_runtime())
     _configure_managed_kms_from_deployment()
     cipher = _initialize_credential_cipher(required=True)
     _BILLING_ROLE = _billing_worker_role()
@@ -441,8 +472,9 @@ async def run() -> None:
         interval = max(1.0, float(os.getenv("BREVITAS_WORKER_HEALTH_INTERVAL", "5")))
         while not stop.is_set():
             database_ready, redis_ready = await _dependencies_ready()
+            kms_ready = _kms_dependency_ready(await _kms_readiness_status())
             _WORKER_ACCEPTING = (
-                database_ready and redis_ready and _billing_loop_ready())
+                database_ready and redis_ready and kms_ready and _billing_loop_ready())
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
@@ -455,12 +487,21 @@ async def run() -> None:
             except Exception as exc:
                 logger.error("job_retention_purge_failed", error_type=type(exc).__name__)
             try:
+                await asyncio.to_thread(_store.purge_provider_configs)
+            except Exception as exc:
+                logger.error(
+                    "provider_credential_cleanup_failed",
+                    error_type=type(exc).__name__,
+                )
+            try:
                 await asyncio.wait_for(stop.wait(), timeout=300)
             except TimeoutError:
                 pass
 
     database_ready, redis_ready = await _dependencies_ready()
-    _WORKER_ACCEPTING = database_ready and redis_ready and _billing_loop_ready()
+    kms_ready = _kms_dependency_ready(await _kms_readiness_status())
+    _WORKER_ACCEPTING = (
+        database_ready and redis_ready and kms_ready and _billing_loop_ready())
     tasks = [
         asyncio.create_task(dependency_monitor(), name="worker-dependency-monitor"),
         asyncio.create_task(maintenance(), name="worker-maintenance"),

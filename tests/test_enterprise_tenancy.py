@@ -85,7 +85,13 @@ def test_management_requires_human_bearer_and_raw_secret_is_never_stored(tmp_pat
         active_sessions = db.execute(
             "SELECT count(*) FROM api_keys WHERE key_type='dashboard_session' AND revoked_at=''"
         ).fetchone()[0]
-    assert active_sessions == 1
+    assert active_sessions == 2
+    assert client.get(
+        "/v1/stats", headers={"X-Brevitas-Key": first_session.json()["api_key"]},
+    ).status_code == 200
+    assert client.get(
+        "/v1/stats", headers={"X-Brevitas-Key": second_session.json()["api_key"]},
+    ).status_code == 200
 
     organization = store.member_organization("company-admin")
     store.create_key(
@@ -93,6 +99,7 @@ def test_management_requires_human_bearer_and_raw_secret_is_never_stored(tmp_pat
         owner_id="company-admin", organization_id=organization["id"],
         key_type="dashboard_session", scopes=["usage:read_own"],
         created_by="colleague-admin",
+        expires_at=second_session.json()["expires_at"],
     )
     third_session = client.post("/v1/keys", headers={"Authorization": "Bearer session"},
                                 json={"name": "dashboard", "purpose": "dashboard_session"})

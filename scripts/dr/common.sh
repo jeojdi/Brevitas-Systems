@@ -17,6 +17,23 @@ dr_require_command() {
   command -v "$1" >/dev/null 2>&1 || dr_die "required command is unavailable: $1"
 }
 
+dr_require_postgresql_client_major() {
+  local command_name="$1"
+  local expected_major="$2"
+  local version
+  local actual_major
+  dr_require_command "$command_name"
+  version="$("$command_name" --version 2>/dev/null)" \
+    || dr_die "unable to identify PostgreSQL client: $command_name"
+  if [[ "$version" =~ PostgreSQL\)[[:space:]]+([0-9]+) ]]; then
+    actual_major="${BASH_REMATCH[1]}"
+  else
+    dr_die "unable to parse PostgreSQL client version: $command_name"
+  fi
+  [[ "$actual_major" == "$expected_major" ]] \
+    || dr_die "$command_name major version must be $expected_major for the PostgreSQL 16 restore contract"
+}
+
 dr_validate_environment() {
   case "$1" in
     local|test|development|staging|production) ;;
@@ -47,6 +64,18 @@ dr_secret_from_env() {
   local value="${!name-}"
   [[ -n "$value" ]] || dr_die "required credential environment variable is unset"
   printf '%s' "$value"
+}
+
+dr_database_exec() {
+  # Descriptor 3 carries the credential without consuming the database
+  # command's stdin and without placing a password-bearing URI in argv.
+  local database_url="$1"
+  shift
+  [[ -n "$database_url" && "$#" -gt 0 ]] \
+    || dr_die "database URL and command are required"
+  dr_require_command python3
+  python3 "$SCRIPT_DIR/libpq-exec.py" \
+    --database-url-fd 3 --connect-timeout 10 -- "$@" 3<<< "$database_url"
 }
 
 dr_require_production_opt_in() {

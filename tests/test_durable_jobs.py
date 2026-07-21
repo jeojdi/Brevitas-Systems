@@ -59,6 +59,34 @@ class RenewTrackingStore(InMemoryJobStore):
         return super().renew(job_id, worker_id, lease_seconds)
 
 
+class LeaseFailureStore(InMemoryJobStore):
+    def __init__(self, *, raises=False):
+        super().__init__()
+        self.raises = raises
+        self.renewals = 0
+        self.worker_updates = []
+
+    def renew(self, job_id, worker_id, lease_seconds):
+        self.renewals += 1
+        if self.raises:
+            raise RuntimeError("renew dependency unavailable")
+        return False
+
+    def update(self, job_id, worker_id, values):
+        updated = super().update(job_id, worker_id, values)
+        if updated:
+            self.worker_updates.append(dict(values))
+        return updated
+
+
+class FinalUpdateOwnershipLossStore(InMemoryJobStore):
+    def update(self, job_id, worker_id, values):
+        if values.get("status") in {"succeeded", "queued", "failed", "dead"}:
+            with self._lock:
+                self.rows[job_id]["lease_owner"] = "replacement_worker"
+        return super().update(job_id, worker_id, values)
+
+
 def service():
     store = InMemoryJobStore()
     dispatcher = Dispatcher()
@@ -208,6 +236,116 @@ def test_long_running_processor_renews_its_database_lease():
 
     asyncio.run(exercise())
     assert store.renewals >= 2
+
+
+def test_slow_async_processor_is_cancelled_when_lease_renewal_is_rejected():
+    store = LeaseFailureStore()
+    jobs = JobService(store, crypto=job_crypto(), dispatcher=Dispatcher())
+    jobs.lease_seconds = 0.09
+
+    async def exercise():
+        submitted, _ = await jobs.submit(tenant(), request(), "lease-rejected")
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def slow_processor(_payload, _row):
+            started.set()
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cancelled.set()
+            return {"must_not_commit": True}
+
+        assert await jobs.process_one("worker_lost", slow_processor)
+        assert started.is_set()
+        assert cancelled.is_set()
+        return store.rows[submitted["id"]]
+
+    row = asyncio.run(exercise())
+    assert store.renewals == 1
+    assert [update["status"] for update in store.worker_updates] == ["running"]
+    assert row["status"] == "running"
+    assert row["result_ciphertext"] is None
+    assert row["lease_owner"] == "worker_lost"
+
+
+def test_renewal_exception_cancels_processor_without_error_or_final_update():
+    store = LeaseFailureStore(raises=True)
+    jobs = JobService(store, crypto=job_crypto(), dispatcher=Dispatcher())
+    jobs.lease_seconds = 0.09
+
+    async def exercise():
+        submitted, _ = await jobs.submit(tenant(), request(), "renew-exception")
+        cancelled = asyncio.Event()
+
+        async def slow_processor(_payload, _row):
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cancelled.set()
+            return {"must_not_commit": True}
+
+        assert await jobs.process_one("worker_exception", slow_processor)
+        assert cancelled.is_set()
+        return store.rows[submitted["id"]]
+
+    row = asyncio.run(exercise())
+    assert store.renewals == 1
+    assert [update["status"] for update in store.worker_updates] == ["running"]
+    assert row["status"] == "running"
+    assert row["last_error_code"] == ""
+    assert row["lease_owner"] == "worker_exception"
+
+
+def test_expired_lease_cannot_be_resurrected_or_commit_a_result():
+    store = InMemoryJobStore()
+    row = {
+        "id": "expired-job", "status": "running", "lease_owner": "stale_worker",
+        "lease_expires_at": (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        ).isoformat(),
+    }
+    store.rows[row["id"]] = row
+
+    assert store.renew(row["id"], "stale_worker", 180) is False
+    assert store.update(
+        row["id"], "stale_worker", {"status": "succeeded"},
+    ) is None
+    assert row["status"] == "running"
+
+
+def test_success_commit_is_discarded_if_final_update_loses_ownership():
+    store = FinalUpdateOwnershipLossStore()
+    jobs = JobService(store, crypto=job_crypto(), dispatcher=Dispatcher())
+
+    async def exercise():
+        submitted, _ = await jobs.submit(tenant(), request(), "stale-success")
+        assert await jobs.process_one("stale_worker", lambda *_: {"ok": True})
+        return store.rows[submitted["id"]]
+
+    row = asyncio.run(exercise())
+    assert row["status"] == "running"
+    assert row["result_ciphertext"] is None
+    assert row["lease_owner"] == "replacement_worker"
+
+
+def test_error_commit_is_discarded_if_retry_update_loses_ownership():
+    store = FinalUpdateOwnershipLossStore()
+    jobs = JobService(store, crypto=job_crypto(), dispatcher=Dispatcher())
+
+    async def exercise():
+        submitted, _ = await jobs.submit(tenant(), request(), "stale-error")
+
+        def fail(*_args):
+            raise RuntimeError("provider failed")
+
+        assert await jobs.process_one("stale_worker", fail)
+        return store.rows[submitted["id"]]
+
+    row = asyncio.run(exercise())
+    assert row["status"] == "running"
+    assert row["last_error_code"] == ""
+    assert row["lease_owner"] == "replacement_worker"
 
 
 def test_expired_queued_job_is_dead_and_never_executed():

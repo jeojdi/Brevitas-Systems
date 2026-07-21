@@ -9,9 +9,19 @@ hosted environment.
 
 ## 1. Supabase
 
-Apply every file in `supabase/migrations/` in timestamp order, including the enterprise tenancy,
-encrypted cache, and durable-job migrations dated `20260717`.
-Do not also apply the duplicate base schema in `api/migrations/001_persistent_stores.sql`.
+Apply the release-manifest migrations in timestamp order, including the enterprise tenancy,
+encrypted cache, and durable-job migrations dated `20260717`. The sole exception is
+`202607200004` through `202607200006`: apply that billing-identity sequence only through the
+guarded maintenance procedure in the Vercel section below; never run those three files directly.
+Continue the ordered manifest through
+`202607200012_stripe_webhook_lease_renewal.sql` before deploying the matching webhook runtime,
+through `202607200014_billing_checkout_session_reservations.sql` before deploying Checkout, and
+through `202607200015_provider_outbound_ambiguity.sql` before deploying the durable job worker.
+Continue through `202607200016_durable_onboarding.sql` before enabling onboarding completion and
+the final `202607200017_billing_customer_owner_fencing.sql` before enabling Checkout customer
+persistence. Do not deploy any dependent runtime against an older database contract, and do
+not also apply the duplicate base schema in
+`api/migrations/001_persistent_stores.sql`.
 
 Service-owned tables have RLS enabled with no end-user policies. Only Railway's service-role
 credential can access them. Raw API keys are returned once by the management API and are never
@@ -60,6 +70,12 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_ANON_KEY=...
 BREVITAS_STORE=supabase
 BREVITAS_ENV=production
+# External/promoted images only; native Railway deploys use RAILWAY_GIT_COMMIT_SHA.
+BREVITAS_BUILD_SHA=FULL_40_OR_64_CHARACTER_GIT_COMMIT_SHA
+# Optional immutable release metadata:
+BREVITAS_BUILD_TIMESTAMP=RFC3339_TIMESTAMP_WITH_TIMEZONE
+BREVITAS_BUILD_VERSION=IMMUTABLE_RELEASE_VERSION
+BREVITAS_IMAGE_DIGEST=sha256:FULL_64_CHARACTER_REGISTRY_DIGEST
 ALLOWED_ORIGINS=https://YOUR_VERCEL_DOMAIN
 BREVITAS_PROXY_AUTH=true
 REDIS_URL=rediss://...
@@ -68,6 +84,8 @@ BREVITAS_KMS_KEY_ID=YOUR_IMMUTABLE_MANAGED_KEY_ID
 BREVITAS_KMS_KEY_VERSION=YOUR_IMMUTABLE_KEY_VERSION
 BREVITAS_KMS_ADAPTER_FACTORY=your_runtime.kms:create_adapter
 BREVITAS_KMS_ADAPTER_TRUSTED_MODULES=your_runtime.kms
+BREVITAS_KMS_READINESS_TIMEOUT_SECONDS=1
+BREVITAS_KMS_READINESS_MAX_AGE_SECONDS=30
 COMPANY_ADMIN_CURSOR_SECRET=YOUR_RANDOM_32_PLUS_CHARACTER_CURSOR_SECRET
 COMPANY_ADMIN_INVITEE_PEPPER=YOUR_RANDOM_32_PLUS_CHARACTER_INVITEE_PEPPER
 BREVITAS_CACHE_ENABLED=false
@@ -91,6 +109,9 @@ The adapter factory is deployment-owned code that returns the repository's `Mana
 interface. Its module must be named exactly in `BREVITAS_KMS_ADAPTER_TRUSTED_MODULES`; arbitrary
 dotted imports are rejected. Provider, device, and job ciphertext use versioned envelope
 encryption, and legacy keys may only be supplied as explicit decrypt-only migration inputs.
+API and worker readiness actively wrap and unwrap one ephemeral random data key with a fixed,
+non-customer context. They fail closed on KMS errors, probe timeouts, or evidence older than the
+configured maximum age; process-only liveness remains up during a KMS outage.
 Set the same environment-specific `COMPANY_ADMIN_CURSOR_SECRET` value on every API replica and
 worker that constructs the Supabase store; it signs both company-administration and usage
 pagination cursors. Set `COMPANY_ADMIN_INVITEE_PEPPER` independently to another environment-
@@ -102,6 +123,13 @@ only on a deliberately separate worker service; the tracked Railway worker templ
 authoritative billing worker. Use the Supabase Supavisor transaction pooler for application
 database connections, with PITR enabled. Redis Cloud must be paid, multi-zone, TLS-only, and
 configured for AOF every second; Postgres remains authoritative after every Redis loss.
+
+API and worker startup fail closed unless they resolve one full immutable Git commit SHA. Native
+Railway builds provide `RAILWAY_GIT_COMMIT_SHA`; CI-built images bake
+`BREVITAS_BUILD_SHA` into the image. If both are present they must be identical. Never use a
+branch, `latest`, a deployment name, a filesystem path, or another mutable label. Set
+`BREVITAS_IMAGE_DIGEST` only after the registry returns the pushed image's immutable digest; an
+image cannot truthfully declare its own digest while it is being built.
 
 The authoritative worker stays unready until its billing loop has validated both the Stripe
 catalog and Supabase health and has completed a successful cycle. It becomes unready again after
@@ -122,6 +150,7 @@ After deployment, confirm:
 ```bash
 curl https://YOUR_RAILWAY_HOST/v1/health/live
 curl https://YOUR_RAILWAY_HOST/v1/health/ready
+curl https://YOUR_RAILWAY_HOST/v1/version
 ```
 
 Then attach the public domain (for example `api.brevitassystems.com`) and keep Railway HTTPS
@@ -131,6 +160,9 @@ payload without removing the otherwise healthy API from service. Set
 `BREVITAS_COMPRESS_REQUIRED=true` only for a deployment whose contract requires lossy compression;
 then compressor failure makes readiness unavailable. Health never returns credentials or endpoint
 names.
+`/v1/version` returns only validated commit/build/version/digest fields; compare its
+`build.commit_sha` to the commit that passed CI. The worker's private health listener exposes the
+same contract at `/version` for operator verification.
 
 ## 3. Vercel
 
@@ -148,10 +180,20 @@ POSTHOG_ASSETS_HOST=https://us-assets.i.posthog.com
 
 The Next.js rewrite forwards `/v1/*` to Railway. Never put the Supabase service-role key, managed
 KMS configuration, or server credentials in a `NEXT_PUBLIC_*`/`VITE_*` variable.
+Enable Vercel's automatic System Environment Variables so builds receive the immutable
+`VERCEL_GIT_COMMIT_SHA`. `/api/version` bakes it into a static response; production builds fail
+when the SHA is absent, malformed, or conflicts with an explicitly supplied
+`BREVITAS_BUILD_SHA`.
 
 `vercel.json` intentionally has no billing cron. Keep the billing sync route as an authenticated
 manual recovery control only; the continuously running Railway worker owns scheduled processing,
-leases, recovery, and reconciliation. Stripe checkout and webhook routes remain on Vercel.
+leases, recovery, and reconciliation. Stripe checkout and webhook routes remain on Vercel; the
+Customer Portal route remains there as well. During guarded billing-identity maintenance, set `BREVITAS_BILLING_ENABLED=false` on
+every Vercel instance and billing worker before applying migrations. This quiesces every billing
+writer/control: the worker does not initialize, and Checkout, webhook, portal, and manual recovery
+return retryable 503 responses before request parsing, authentication/rate-limit storage,
+Stripe/Supabase calls, event claiming, or ledger mutation. Do not treat a read-only status response
+as authorization to re-enable billing.
 
 Create a US Cloud PostHog project and use the same project token for the public site and
 dashboard. Create a project-scoped personal API key with only the read/query access needed by

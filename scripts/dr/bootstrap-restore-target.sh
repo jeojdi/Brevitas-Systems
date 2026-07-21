@@ -69,13 +69,13 @@ fi
 dr_require_confirmation "$confirmation" "BOOTSTRAP:$source_id:$target_id"
 dr_require_command psql
 database_url="$(dr_secret_from_env "$database_url_env")"
-preflight="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+preflight="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select current_database(),current_setting('server_version_num')::integer,(select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind in ('r','p') and n.nspname in ('public','auth'))")"
 IFS='|' read -r actual_database version_num application_tables <<< "$preflight"
 [[ "$actual_database" == "$expected_database_name" ]] || dr_die "restore target database name mismatch"
 [[ "$version_num" =~ ^16[0-9]{4}$ ]] || dr_die "restore target requires PostgreSQL major version 16"
 [[ "$application_tables" == "0" ]] || dr_die "restore bootstrap target contains application tables"
-PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 \
+dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 \
   --set=target_mode="$target_mode" --set=target_id="$target_id" \
   --set=target_environment="$environment" \
   --set=expected_database_name="$expected_database_name" --set=backup_source_id="$source_id" \
@@ -83,7 +83,7 @@ PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 \
   --set=deletion_artifact_sha256="$expected_deletion_artifact_sha256" \
   --set=deletion_evidence_reference="$deletion_evidence_reference" \
   --file "$SCRIPT_DIR/restore-target-bootstrap.sql" >/dev/null
-postflight="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+postflight="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select (select count(*) from pg_extension where extname in ('pgcrypto','vector')),(select count(*) from pg_roles where rolname in ('anon','authenticated','service_role')),target_mode,target_id,target_environment,backup_source_id from brevitas_restore.control where singleton")"
 [[ "$postflight" == "2|3|ephemeral-postgres|$target_id|$environment|$source_id" ]] || dr_die "restore bootstrap verification failed"
 dr_note "Isolated restore target bootstrap completed for $target_id."

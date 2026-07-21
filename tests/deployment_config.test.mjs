@@ -95,21 +95,50 @@ test('favicon routes use the Brevitas mark without a stale Next override', () =>
 
 test('dashboard aliases receive CSP and are excluded from indexing', () => {
   const config = read('next.config.ts')
-  for (const path of ['/dashboard/:path*', '/login', '/signup', '/waitlist']) {
+  for (const path of [
+    '/dashboard/:path*', '/login', '/login/personal', '/login/enterprise', '/signup', '/waitlist',
+  ]) {
     assert.match(config, new RegExp(path.replace(/[/*]/g, '\\$&')))
   }
+  assert.match(config, /source: '\/login\/personal', destination: '\/dashboard\/index\.html'/)
+  assert.match(config, /source: '\/login\/enterprise', destination: '\/dashboard\/index\.html'/)
   assert.match(config, /X-Robots-Tag.+noindex, nofollow/)
 })
 
-test('waitlist accepts writes without granting browser reads', () => {
+test('email confirmation returns only to allowlisted login audiences', () => {
+  const page = read('public/email-confirmed.html')
+  assert.match(page, /personal: '\/login\/personal'/)
+  assert.match(page, /enterprise: '\/login\/enterprise'/)
+  assert.match(page, /destinations\[audience\]/)
+  assert.doesNotMatch(page, /(?:next|redirect|returnTo).*location\.(?:href|assign)/i)
+})
+
+test('waitlist accepts only bounded server-authorized writes', () => {
   const route = read('src/app/api/waitlist/route.ts')
-  assert.doesNotMatch(route, /\.insert\(\[row\]\)[\s\S]{0,80}\.select\(/)
+  const server = read('src/lib/waitlist-server.ts')
+  const migration = read('supabase/migrations/202607200002_waitlist_security.sql')
+  const sharedLimits = read('supabase/migrations/202607200010_shared_endpoint_rate_limits.sql')
+  assert.match(route, /submitWaitlistSignup/)
+  assert.doesNotMatch(route, /withRateLimit|x-forwarded-for|x-real-ip|x-client-ip/i)
+  assert.doesNotMatch(route, /@\/lib\/supabase|NEXT_PUBLIC_SUPABASE_ANON_KEY/)
   assert.doesNotMatch(route, /export async function GET/)
+  assert.match(server, /import 'server-only'/)
+  assert.match(server, /SUPABASE_SERVICE_ROLE_KEY/)
+  assert.match(server, /\.rpc\('submit_waitlist_signup'/)
+  assert.doesNotMatch(server, /NEXT_PUBLIC_SUPABASE_ANON_KEY/)
+  assert.match(migration, /revoke all on table public\.waitlist[\s\S]+anon[\s\S]+authenticated/i)
+  assert.match(migration, /grant execute on function public\.submit_waitlist_signup[\s\S]+to service_role/i)
+  assert.match(migration, /waitlist_email_canonical_check/)
+  assert.match(migration, /waitlist_field_lengths_check/)
+  assert.match(sharedLimits, /shared_endpoint_rate_limits/)
+  assert.match(sharedLimits, /v_global_limit integer := 120/)
+  assert.match(sharedLimits, /v_identity_limit integer := 3/)
 
   for (const sql of ['supabase/create_waitlist_table.sql', 'supabase/fix_rls_policy.sql']) {
     const policy = read(sql)
     assert.doesNotMatch(policy, /CREATE POLICY[^;]+FOR SELECT/is)
-    assert.match(policy, /FOR INSERT TO anon WITH CHECK \(true\)/i)
+    assert.doesNotMatch(policy, /FOR INSERT TO anon/i)
+    assert.match(policy, /REVOKE ALL ON TABLE[^;]+anon[^;]+authenticated/i)
   }
 })
 

@@ -2,6 +2,13 @@
 
 **INTERNAL TEMPLATE — NO CUSTOMER DATA OR SECRETS — NOT FOR PUBLICATION**
 
+This Markdown worksheet is not release evidence and cannot satisfy the operational release gate.
+For a release-bound restore exercise, translate independently retained receipts into the strict
+[`operational-readiness-evidence.schema.json`](operational-readiness-evidence.schema.json) envelope
+and validate it as described in
+[`OPERATIONAL_READINESS_GATE.md`](OPERATIONAL_READINESS_GATE.md). Never mark this template complete
+without executing the external actions.
+
 - Exercise/change ID (opaque):
 - Scenario: PITR / logical restore / Redis loss / regional outage / breach tabletop
 - Incident commander role:

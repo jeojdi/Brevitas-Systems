@@ -20,7 +20,7 @@ There are three moving parts:
 
 | Piece | What it is | Who manages it |
 | --- | --- | --- |
-| **`bvx`** | The installer/manager CLI (this repo, written in Go). Detects your AI tools, stores one API key, points each tool at the local proxy, and runs the background service. | You (`brew` / `install.ps1`) |
+| **`bvx`** | The separately released installer/manager CLI (written in Go). Detects your AI tools, stores one API key, points each tool at the local proxy, and runs the background service. Its source and release artifacts are outside this repository and require separate verification. | You (`brew` / `install.ps1`) |
 | **Proxy service** | A local HTTP proxy on `127.0.0.1:8080` that every configured tool routes through. Runs in the background (`bvx serve`). | `bvx` (installs + supervises it) |
 | **`brevitas-systems`** | The Python package that holds the actual optimization logic. `bvx` talks to it over a local socket. **Not bundled** — `bvx` installs and pins it via `pip`. | `bvx install` / `bvx update` |
 
@@ -46,7 +46,7 @@ ships a prebuilt binary.
 
 ## Install
 
-### macOS / Linux (Homebrew)
+### macOS (Homebrew)
 
 ```sh
 brew tap Brevitas-ai/brevitas
@@ -65,6 +65,15 @@ To build the latest `main` from source instead of a release binary:
 brew install --HEAD Brevitas-ai/brevitas/bvx
 ```
 
+### Linux (Homebrew)
+
+```sh
+brew install Brevitas-ai/brevitas/bvx
+```
+
+The released Homebrew formula includes Linux x86-64 and ARM64 binaries and
+installs Python 3.13 as a dependency.
+
 ### Windows (PowerShell)
 
 ```powershell
@@ -79,7 +88,7 @@ SHA-256** against the release `checksums.txt`, installs it to
 - To pin a specific version, set `$env:BVX_VERSION` before running:
 
   ```powershell
-  $env:BVX_VERSION = "0.1.22"
+  $env:BVX_VERSION = "0.1.26"
   irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex
   ```
 
@@ -113,9 +122,6 @@ This is the same as `bvx install ai`. Here's exactly what it does:
 5. **Installs and starts** the background services (proxy + `brevitas-systems`
    optimizer).
 
-BVX `0.1.22` pins `brevitas-systems==0.9.11`, including the quality-first hybrid retrieval
-runtime. The managed optimizer enables retrieval by default; set
-`BREVITAS_RETRIEVAL_ENABLED=0` before starting BVX to use byte-preserving caching only.
 6. **Runs diagnostics** and prints a summary.
 
 Example output:
@@ -147,9 +153,9 @@ To route every LLM call in a project through Brevitas (instead of configuring
 interactive tools):
 
 ```sh
-bvx install <repo>                 # scan + open the AI-call map
-bvx install <repo> --apply         # write a .env.agentmap you can `source`
-bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs
+bvx install repo                 # choose a codebase, scan + open the AI-call map
+bvx install repo --apply         # also write a .env.agentmap you can `source`
+bvx install repo --apply --auto  # also rewrite hardcoded provider URLs
 ```
 
 ---
@@ -160,6 +166,17 @@ bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs
 bvx status     # proxy, service, and provider status
 bvx doctor     # full diagnostics across the installation
 ```
+
+Require diagnostics to pass, then send one ordinary prompt from a tool BVX
+reported as configured. Prove that request used the proxy by checking the local,
+content-free counters:
+
+```sh
+bvx stats      # "Requests proxied" must increase after the prompt
+```
+
+A successful login or a healthy service does not prove that an AI tool is routed
+through BVX. The request counter does.
 
 If something looks off, re-apply config and restart the service:
 
@@ -193,7 +210,7 @@ brew upgrade bvx
 irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex
 ```
 
-Upgrade the optimization engine (`brevitas-systems`):
+Ask BVX to check both the CLI and compatible optimization engine:
 
 ```sh
 bvx update
@@ -227,7 +244,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\bvx"
 
 | Command | Description |
 | --- | --- |
-| `bvx install` | Configure AI coding tools (`install ai`) or a codebase (`install <repo>`) |
+| `bvx install` | Configure AI coding tools (`install ai`) or choose a codebase (`install repo`) |
 | `bvx uninstall` | Restore all tool configs and remove the background service |
 | `bvx status` | Show proxy, service, and provider status |
 | `bvx stats` | Show cumulative token-savings metrics from the proxy |
@@ -238,7 +255,9 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\bvx"
 | `bvx logs` | Print (or follow, with `-f`) the proxy logs |
 | `bvx config` | Print or edit Brevitas configuration |
 | `bvx login` / `logout` | Connect through the dashboard / remove the stored key |
-| `bvx update` | Check for and upgrade the `brevitas-systems` package |
+| `bvx onboard` | Scan a company backend and import existing customers safely |
+| `bvx serve` / `optimizer` | Run the proxy or optimization adapter in the foreground |
+| `bvx update` | Check for BVX and optimization-engine updates |
 | `bvx version` | Print version information |
 
 Run `bvx help` to see the full list at any time.

@@ -18,3 +18,10 @@ def test_bvx_base_model_includes_retrieval_runtime():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     dependencies = project["project"]["dependencies"]
     assert any(dependency.startswith("fastembed") for dependency in dependencies)
+
+
+def test_optimizer_distribution_does_not_shadow_bvx_manager_cli():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    scripts = project["project"]["scripts"]
+    assert scripts["brevitas"] == "brevitas.cli:main"
+    assert "bvx" not in scripts

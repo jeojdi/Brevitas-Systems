@@ -948,8 +948,12 @@ def test_billing_recovery_requires_explicit_weekly_launch_gate(monkeypatch):
     }
     for name, value in required.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.delenv("BREVITAS_BILLING_ENABLED", raising=False)
-    assert billing_recovery_is_configured() is False
+    for disabled_value in (None, "", "false", "FALSE", "1", "yes", " true ", "TRUE"):
+        if disabled_value is None:
+            monkeypatch.delenv("BREVITAS_BILLING_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("BREVITAS_BILLING_ENABLED", disabled_value)
+        assert billing_recovery_is_configured() is False
     monkeypatch.setenv("BREVITAS_BILLING_ENABLED", "true")
     assert billing_recovery_is_configured() is True
 
@@ -979,7 +983,7 @@ def test_migration_and_vercel_route_enforce_durable_worker_contract():
     assert "ledger.occurred_at >= claim_period_start" in migration
     assert "ledger.occurred_at < claim_period_end" in migration
     assert "ROLLBACK PROCEDURE" in migration
-    assert "manually_resolve_billing_ledger_entry" in route
+    assert "manuallyResolveBillingLedgerEntry" in route
     assert "manual_only: true" in route
     assert "getStripe" not in route
     assert "export const GET" not in route

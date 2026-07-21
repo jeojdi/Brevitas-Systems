@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 
 import { billingConfig, billingIsConfigured } from '@/lib/billing/config';
 import {
+  authorizeActiveBillingCompany,
   authenticatedBillingUser,
   billingDatabase,
   getBillingAccount,
@@ -14,8 +15,12 @@ export async function GET(request: NextRequest) {
   try {
     const user = await authenticatedBillingUser(request);
     if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
+    const authorization = await authorizeActiveBillingCompany(user.id);
+    if (!authorization.ok || !authorization.organizationId || !authorization.billingOwnerId) {
+      return Response.json({ error: 'Billing permission is required for the active company' }, { status: 403 });
+    }
 
-    const account = await getBillingAccount(user.id);
+    const account = await getBillingAccount(authorization.organizationId);
     const periodStartMs = Date.parse(account?.current_period_start || '');
     const periodEndMs = Date.parse(account?.current_period_end || '');
     const periodTrackingValid = (
@@ -29,7 +34,7 @@ export async function GET(request: NextRequest) {
       const { data, error } = await billingDatabase()
         .from('billing_ledger')
         .select('fee_microusd,status')
-        .eq('user_id', user.id)
+        .eq('organization_id', authorization.organizationId)
         .gte('occurred_at', new Date(periodStartMs).toISOString())
         .lt('occurred_at', new Date(periodEndMs).toISOString());
       if (error) throw error;

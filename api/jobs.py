@@ -47,7 +47,14 @@ class CorruptJobCiphertext(PermanentJobError):
     """A quarantined row whose authenticated ciphertext cannot be opened."""
 
 
+class JobLeaseLost(RuntimeError):
+    """The worker can no longer prove that it owns the durable job."""
+
+
 def _retryable(exc: Exception) -> bool:
+    explicit = getattr(exc, "job_retryable", None)
+    if isinstance(explicit, bool):
+        return explicit
     if isinstance(exc, (PermanentJobError, ValueError, TypeError)):
         return False
     status = getattr(exc, "status_code", None)
@@ -56,6 +63,19 @@ def _retryable(exc: Exception) -> bool:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _owns_active_lease(row: dict, worker_id: str) -> bool:
+    if (row.get("lease_owner") != worker_id
+            or row.get("status") not in ("leased", "running")):
+        return False
+    try:
+        expires_at = datetime.fromisoformat(str(row.get("lease_expires_at") or ""))
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        return False
+    return expires_at > datetime.now(timezone.utc)
 
 
 def _contains_secret(value: Any) -> bool:
@@ -236,6 +256,19 @@ class InMemoryJobStore:
                 lease_expiry = datetime.fromisoformat(row["lease_expires_at"]) if row.get("lease_expires_at") else None
                 available = datetime.fromisoformat(row["available_at"])
                 reclaim = row["status"] in ("leased", "running") and lease_expiry and lease_expiry < now
+                ambiguous_outbound = (
+                    row.get("operation") == "chat"
+                    and row.get("provider_outbound_started_at") is not None
+                    and (row["status"] == "queued" or reclaim)
+                )
+                if ambiguous_outbound:
+                    row.update(
+                        status="dead", completed_at=_now(), lease_owner=None,
+                        lease_expires_at=None,
+                        last_error_code="provider_outcome_ambiguous",
+                        updated_at=_now(),
+                    )
+                    continue
                 if reclaim and row["attempts"] >= row["max_attempts"]:
                     row.update(status="dead", completed_at=_now(), lease_owner=None,
                                lease_expires_at=None, last_error_code="lease_expired",
@@ -256,8 +289,7 @@ class InMemoryJobStore:
     def renew(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
         with self._lock:
             row = self.rows.get(job_id)
-            if (not row or row.get("lease_owner") != worker_id
-                    or row.get("status") not in ("leased", "running")):
+            if not row or not _owns_active_lease(row, worker_id):
                 return False
             row["lease_expires_at"] = (
                 datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
@@ -265,10 +297,29 @@ class InMemoryJobStore:
             row["updated_at"] = _now()
             return True
 
+    def mark_provider_outbound_started(
+        self, job_id: str, worker_id: str,
+    ) -> dict | None:
+        with self._lock:
+            row = self.rows.get(job_id)
+            if (not row or not _owns_active_lease(row, worker_id)
+                    or row.get("status") != "running"
+                    or row.get("operation") != "chat"
+                    or row.get("cancel_requested")
+                    or row.get("provider_outbound_started_at") is not None):
+                return None
+            row.update(
+                provider_outbound_started_at=_now(),
+                provider_outbound_attempt=int(row["attempts"]),
+                updated_at=_now(),
+            )
+            self._check_row(row)
+            return dict(row)
+
     def update(self, job_id: str, worker_id: str, values: dict) -> dict | None:
         with self._lock:
             row = self.rows.get(job_id)
-            if not row or row.get("lease_owner") != worker_id:
+            if not row or not _owns_active_lease(row, worker_id):
                 return None
             candidate = {**row, **values, "updated_at": _now()}
             self._check_row(candidate)
@@ -288,16 +339,17 @@ class InMemoryJobStore:
             current.update(candidate)
             return True
 
-    def quarantine_ciphertext(self, row: dict, worker_id: str) -> None:
+    def quarantine_ciphertext(self, row: dict, worker_id: str) -> bool:
         with self._lock:
             current = self.rows.get(str(row.get("id") or ""))
-            if not current or current.get("lease_owner") != worker_id:
-                return
+            if not current or not _owns_active_lease(current, worker_id):
+                return False
             current.update(
                 status="dead", last_error_code="ciphertext_unreadable",
                 completed_at=_now(), lease_owner=None, lease_expires_at=None,
                 updated_at=_now(),
             )
+            return True
 
     def quarantine_result(self, row: dict) -> None:
         with self._lock:
@@ -326,7 +378,8 @@ class SQLiteJobStore:
         "id", "organization_id", "customer_id", "key_hash", "idempotency_key", "operation",
         "provider", "model", "payload_ciphertext", "result_ciphertext", "status", "attempts",
         "max_attempts", "available_at", "lease_owner", "lease_expires_at", "cancel_requested",
-        "last_error_code", "created_at", "updated_at", "completed_at", "expires_at",
+        "provider_outbound_started_at", "provider_outbound_attempt", "last_error_code",
+        "created_at", "updated_at", "completed_at", "expires_at",
     )
 
     def __init__(self, store: Any):
@@ -343,10 +396,22 @@ class SQLiteJobStore:
                     status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
                     available_at TEXT NOT NULL, lease_owner TEXT, lease_expires_at TEXT,
                     cancel_requested INTEGER NOT NULL DEFAULT 0, last_error_code TEXT NOT NULL DEFAULT '',
+                    provider_outbound_started_at TEXT, provider_outbound_attempt INTEGER,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, expires_at TEXT NOT NULL,
                     UNIQUE(organization_id, customer_id, idempotency_key)
                 )
             """)
+            columns = {
+                str(row[1]) for row in db.execute("PRAGMA table_info(ai_jobs)").fetchall()
+            }
+            if "provider_outbound_started_at" not in columns:
+                db.execute(
+                    "ALTER TABLE ai_jobs ADD COLUMN provider_outbound_started_at TEXT"
+                )
+            if "provider_outbound_attempt" not in columns:
+                db.execute(
+                    "ALTER TABLE ai_jobs ADD COLUMN provider_outbound_attempt INTEGER"
+                )
 
     def _dict(self, row: Any) -> dict | None:
         if row is None:
@@ -405,6 +470,15 @@ class SQLiteJobStore:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "UPDATE ai_jobs SET status='dead',completed_at=?,updated_at=?,"
+                "lease_owner=NULL,lease_expires_at=NULL,"
+                "last_error_code='provider_outcome_ambiguous' "
+                "WHERE operation='chat' AND provider_outbound_started_at IS NOT NULL "
+                "AND (status='queued' OR (status IN ('leased','running') "
+                "AND lease_expires_at<?))",
+                (_now(), _now(), now.isoformat()),
+            )
+            db.execute(
+                "UPDATE ai_jobs SET status='dead',completed_at=?,updated_at=?,"
                 "lease_owner=NULL,lease_expires_at=NULL,last_error_code='lease_expired' "
                 "WHERE status IN ('leased','running') AND lease_expires_at<? "
                 "AND attempts>=max_attempts",
@@ -417,6 +491,7 @@ class SQLiteJobStore:
             )
             row = db.execute(
                 "SELECT * FROM ai_jobs WHERE attempts<max_attempts AND cancel_requested=0 AND "
+                "provider_outbound_started_at IS NULL AND "
                 "((status='queued' AND available_at<=? AND expires_at>?) OR "
                 "(status IN ('leased','running') AND lease_expires_at<?)) "
                 "ORDER BY available_at,created_at LIMIT 1",
@@ -435,11 +510,31 @@ class SQLiteJobStore:
         with self.store._conn() as db:
             cursor = db.execute(
                 "UPDATE ai_jobs SET lease_expires_at=?,updated_at=? "
-                "WHERE id=? AND lease_owner=? AND status IN ('leased','running')",
+                "WHERE id=? AND lease_owner=? AND status IN ('leased','running') "
+                "AND lease_expires_at>?",
                 ((datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat(),
-                 _now(), job_id, worker_id),
+                 _now(), job_id, worker_id, _now()),
             )
             return bool(cursor.rowcount)
+
+    def mark_provider_outbound_started(
+        self, job_id: str, worker_id: str,
+    ) -> dict | None:
+        now = _now()
+        with self.store._conn() as db:
+            cursor = db.execute(
+                "UPDATE ai_jobs SET provider_outbound_started_at=?,"
+                "provider_outbound_attempt=attempts,updated_at=? "
+                "WHERE id=? AND lease_owner=? AND status='running' "
+                "AND lease_expires_at>? AND operation='chat' "
+                "AND cancel_requested=0 AND provider_outbound_started_at IS NULL",
+                (now, now, job_id, worker_id, now),
+            )
+            if not cursor.rowcount:
+                return None
+            return self._dict(db.execute(
+                "SELECT * FROM ai_jobs WHERE id=?", (job_id,),
+            ).fetchone())
 
     def update(self, job_id: str, worker_id: str, values: dict) -> dict | None:
         allowed = {name: value for name, value in values.items() if name in self._COLUMNS}
@@ -451,8 +546,9 @@ class SQLiteJobStore:
         with self.store._conn() as db:
             cursor = db.execute(
                 f"UPDATE ai_jobs SET {','.join(f'{name}=?' for name in names)} "
-                "WHERE id=? AND lease_owner=?",
-                (*params, job_id, worker_id),
+                "WHERE id=? AND lease_owner=? AND status IN ('leased','running') "
+                "AND lease_expires_at>?",
+                (*params, job_id, worker_id, _now()),
             )
             if not cursor.rowcount:
                 return None
@@ -478,14 +574,16 @@ class SQLiteJobStore:
             )
             return bool(cursor.rowcount)
 
-    def quarantine_ciphertext(self, row: dict, worker_id: str) -> None:
+    def quarantine_ciphertext(self, row: dict, worker_id: str) -> bool:
         with self.store._conn() as db:
-            db.execute(
+            cursor = db.execute(
                 "UPDATE ai_jobs SET status='dead',last_error_code='ciphertext_unreadable',"
                 "completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL "
-                "WHERE id=? AND lease_owner=?",
-                (_now(), _now(), row["id"], worker_id),
+                "WHERE id=? AND lease_owner=? AND status IN ('leased','running') "
+                "AND lease_expires_at>?",
+                (_now(), _now(), row["id"], worker_id, _now()),
             )
+            return bool(cursor.rowcount)
 
     def quarantine_result(self, row: dict) -> None:
         with self.store._conn() as db:
@@ -525,10 +623,21 @@ class SupabaseJobStore:
         }) or []
         return rows[0] if rows else None
 
+    def mark_provider_outbound_started(
+        self, job_id: str, worker_id: str,
+    ) -> dict | None:
+        rows = self.store._request(
+            "POST", "rpc/mark_ai_job_provider_outbound_started", data={
+                "p_job_id": job_id, "p_worker_id": worker_id,
+            },
+        ) or []
+        return rows[0] if isinstance(rows, list) and rows else None
+
     def renew(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
         rows = self.store._request("PATCH", "ai_jobs", params={
             "id": f"eq.{job_id}", "lease_owner": f"eq.{worker_id}",
             "status": "in.(leased,running)",
+            "lease_expires_at": f"gt.{_now()}",
         }, data={
             "lease_expires_at": (
                 datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
@@ -566,6 +675,7 @@ class SupabaseJobStore:
     def update(self, job_id: str, worker_id: str, values: dict) -> dict | None:
         rows = self.store._request("PATCH", "ai_jobs", params={
             "id": f"eq.{job_id}", "lease_owner": f"eq.{worker_id}",
+            "status": "in.(leased,running)", "lease_expires_at": f"gt.{_now()}",
         }, data={**values, "updated_at": _now()}) or []
         return rows[0] if rows else None
 
@@ -591,14 +701,16 @@ class SupabaseJobStore:
         }, data={column: new, "updated_at": _now()}) or []
         return bool(rows)
 
-    def quarantine_ciphertext(self, row: dict, worker_id: str) -> None:
-        self.store._request("PATCH", "ai_jobs", params={
+    def quarantine_ciphertext(self, row: dict, worker_id: str) -> bool:
+        rows = self.store._request("PATCH", "ai_jobs", params={
             "id": f"eq.{row['id']}", "lease_owner": f"eq.{worker_id}",
+            "status": "in.(leased,running)", "lease_expires_at": f"gt.{_now()}",
         }, data={
             "status": "dead", "last_error_code": "ciphertext_unreadable",
             "completed_at": _now(), "updated_at": _now(),
             "lease_owner": None, "lease_expires_at": None,
-        })
+        }) or []
+        return bool(rows)
 
     def quarantine_result(self, row: dict) -> None:
         self.store._request("PATCH", "ai_jobs", params={
@@ -694,6 +806,7 @@ class JobService:
             "result_ciphertext": None, "status": "queued", "attempts": 0,
             "max_attempts": request.max_attempts, "available_at": now.isoformat(),
             "lease_owner": None, "lease_expires_at": None, "cancel_requested": False,
+            "provider_outbound_started_at": None, "provider_outbound_attempt": None,
             "last_error_code": "", "created_at": now.isoformat(), "updated_at": now.isoformat(),
             "completed_at": None,
             "expires_at": (now + timedelta(seconds=retention_seconds)).isoformat(),
@@ -722,34 +835,67 @@ class JobService:
         )
         return self.public(row) if row else None
 
+    async def mark_provider_outbound_started(self, row: dict) -> None:
+        """Persist the final fence immediately before a billable chat call."""
+        worker_id = str(row.get("lease_owner") or "")
+        if row.get("operation") != "chat" or not worker_id:
+            raise JobLeaseLost("job cannot enter provider outbound state")
+        updated = await asyncio.to_thread(
+            self.store.mark_provider_outbound_started, row["id"], worker_id,
+        )
+        if not isinstance(updated, dict):
+            raise JobLeaseLost("job lease was lost before provider outbound")
+        started_at = updated.get("provider_outbound_started_at")
+        try:
+            marked_attempt = int(updated.get("provider_outbound_attempt"))
+        except (TypeError, ValueError):
+            raise JobLeaseLost("provider outbound fence was not persisted") from None
+        if not started_at or marked_attempt != int(row.get("attempts") or 0):
+            raise JobLeaseLost("provider outbound fence was not persisted")
+        row["provider_outbound_started_at"] = started_at
+        row["provider_outbound_attempt"] = marked_attempt
+
     async def process_one(self, worker_id: str, processor: Processor) -> bool:
+        """Process one claimed row while its lease remains provably owned.
+
+        Lease fencing prevents a stale worker from committing a result. It does
+        not make an already accepted provider request exactly-once: cancellation
+        cannot retract an external side effect. Unsupported ambiguous provider
+        outcomes must terminalize instead of being sent again; relaxing that
+        rule requires verified provider idempotency or reconciliation support.
+        """
         row = await asyncio.to_thread(self.store.claim, worker_id, self.lease_seconds)
         if not row:
             return False
         if row.get("cancel_requested"):
-            await asyncio.to_thread(self.store.update, row["id"], worker_id, {
-                "status": "cancelled", "completed_at": _now(), "lease_expires_at": None,
-            })
+            with contextlib.suppress(JobLeaseLost):
+                await self._owned_update(row["id"], worker_id, {
+                    "status": "cancelled", "completed_at": _now(),
+                    "lease_owner": None, "lease_expires_at": None,
+                })
             return True
-        await asyncio.to_thread(self.store.update, row["id"], worker_id, {"status": "running"})
+        try:
+            await self._owned_update(row["id"], worker_id, {"status": "running"})
+        except JobLeaseLost:
+            return True
         heartbeat = asyncio.create_task(self._renew_lease(row["id"], worker_id))
         try:
-            payload, replacement = self._crypto().decrypt(
-                row["payload_ciphertext"], row=row, field="payload",
+            payload, replacement = await asyncio.to_thread(
+                self._crypto().decrypt, row["payload_ciphertext"],
+                row=row, field="payload",
             )
+            if heartbeat.done():
+                await heartbeat
             if replacement is not None:
                 migrated = await asyncio.to_thread(
                     self.store.update, row["id"], worker_id,
                     {"payload_ciphertext": replacement},
                 )
                 if not migrated:
-                    raise RuntimeError("job lease was lost during ciphertext migration")
-            if inspect.iscoroutinefunction(processor):
-                result = await processor(payload, row)
-            else:
-                result = await asyncio.to_thread(processor, payload, row)
-                if inspect.isawaitable(result):
-                    result = await result
+                    raise JobLeaseLost("job lease was lost during ciphertext migration")
+            result = await self._run_processor_with_lease(
+                processor, payload, row, heartbeat,
+            )
             if not isinstance(result, dict):
                 raise TypeError("job processor must return an object")
             metadata = result.pop("_job_metadata", {})
@@ -757,43 +903,156 @@ class JobService:
                 self.store.get, row["id"], row["organization_id"], row["customer_id"]
             )
             cancelled = bool(current and current.get("cancel_requested"))
-            values = ({"status": "cancelled", "result_ciphertext": None}
-                      if cancelled else {"status": "succeeded",
-                                         "result_ciphertext": self._crypto().encrypt(
-                                             result or {}, row=row, field="result")})
+            if cancelled:
+                values = {"status": "cancelled", "result_ciphertext": None}
+            else:
+                result_ciphertext = await asyncio.to_thread(
+                    self._crypto().encrypt, result or {}, row=row, field="result",
+                )
+                if heartbeat.done():
+                    await heartbeat
+                values = {
+                    "status": "succeeded", "result_ciphertext": result_ciphertext,
+                }
             if isinstance(metadata, dict):
                 values["provider"] = str(metadata.get("provider") or "")[:64]
                 values["model"] = str(metadata.get("model") or "")[:128]
-            values.update(completed_at=_now(), lease_expires_at=None, last_error_code="")
-            await asyncio.to_thread(self.store.update, row["id"], worker_id, values)
+            await self._confirm_lease(row["id"], worker_id, heartbeat)
+            values.update(
+                completed_at=_now(), lease_owner=None, lease_expires_at=None,
+                last_error_code="",
+            )
+            await self._owned_update(row["id"], worker_id, values)
+        except JobLeaseLost:
+            pass
         except CorruptJobCiphertext:
-            await asyncio.to_thread(self.store.quarantine_ciphertext, row, worker_id)
+            try:
+                await self._confirm_lease(row["id"], worker_id, heartbeat)
+                quarantined = await asyncio.to_thread(
+                    self.store.quarantine_ciphertext, row, worker_id,
+                )
+                if not quarantined:
+                    raise JobLeaseLost("job lease was lost before quarantine")
+            except JobLeaseLost:
+                pass
         except Exception as exc:
-            can_retry = _retryable(exc) and int(row["attempts"]) < int(row["max_attempts"])
+            retryable = _retryable(exc)
+            outbound_started = row.get("provider_outbound_started_at") is not None
+            definitely_not_accepted = bool(getattr(
+                exc, "provider_outbound_not_accepted", False,
+            ))
+            ambiguous_outbound = outbound_started and not definitely_not_accepted
+            can_retry = (
+                not ambiguous_outbound and retryable
+                and int(row["attempts"]) < int(row["max_attempts"])
+            )
             backoff = min(300, 2 ** min(8, int(row["attempts"]))) + secrets.randbelow(3)
-            await asyncio.to_thread(self.store.update, row["id"], worker_id, {
-                "status": ("queued" if can_retry else
-                           "failed" if not _retryable(exc) else "dead"),
-                "available_at": (datetime.now(timezone.utc) + timedelta(seconds=backoff)).isoformat(),
-                "lease_expires_at": None, "lease_owner": None,
-                "last_error_code": type(exc).__name__[:64],
-                "completed_at": None if can_retry else _now(),
-            })
+            try:
+                await self._confirm_lease(row["id"], worker_id, heartbeat)
+                values = {
+                    "status": (
+                        "dead" if ambiguous_outbound else
+                        "queued" if can_retry else
+                        "failed" if not retryable else "dead"
+                    ),
+                    "available_at": (
+                        datetime.now(timezone.utc) + timedelta(seconds=backoff)
+                    ).isoformat(),
+                    "lease_expires_at": None, "lease_owner": None,
+                    "last_error_code": (
+                        "provider_outcome_ambiguous" if ambiguous_outbound
+                        else type(exc).__name__[:64]
+                    ),
+                    "completed_at": None if can_retry else _now(),
+                }
+                if outbound_started and definitely_not_accepted:
+                    values.update(
+                        provider_outbound_started_at=None,
+                        provider_outbound_attempt=None,
+                    )
+                    row["provider_outbound_started_at"] = None
+                    row["provider_outbound_attempt"] = None
+                await self._owned_update(row["id"], worker_id, values)
+            except JobLeaseLost:
+                pass
         finally:
             heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, JobLeaseLost):
                 await heartbeat
         return True
+
+    async def _owned_update(
+        self, job_id: str, worker_id: str, values: dict,
+    ) -> dict:
+        updated = await asyncio.to_thread(
+            self.store.update, job_id, worker_id, values,
+        )
+        if not updated:
+            raise JobLeaseLost("job lease ownership check failed")
+        return updated
+
+    async def _confirm_lease(
+        self, job_id: str, worker_id: str, heartbeat: asyncio.Task,
+    ) -> None:
+        if heartbeat.done():
+            await heartbeat
+        try:
+            renewed = await asyncio.to_thread(
+                self.store.renew, job_id, worker_id, self.lease_seconds,
+            )
+        except Exception as exc:
+            raise JobLeaseLost("job lease renewal failed") from exc
+        if not renewed:
+            raise JobLeaseLost("job lease renewal was rejected")
+        if heartbeat.done():
+            await heartbeat
+
+    @staticmethod
+    async def _invoke_processor(
+        processor: Processor, payload: dict, row: dict,
+    ) -> dict:
+        if inspect.iscoroutinefunction(processor):
+            return await processor(payload, row)
+        result = await asyncio.to_thread(processor, payload, row)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _run_processor_with_lease(
+        self, processor: Processor, payload: dict, row: dict,
+        heartbeat: asyncio.Task,
+    ) -> dict:
+        if heartbeat.done():
+            await heartbeat
+        processor_task = asyncio.create_task(
+            self._invoke_processor(processor, payload, row),
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {processor_task, heartbeat}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if heartbeat in done:
+                await heartbeat
+                raise JobLeaseLost("job lease heartbeat stopped")
+            return await processor_task
+        finally:
+            if not processor_task.done():
+                processor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await processor_task
 
     async def _renew_lease(self, job_id: str, worker_id: str) -> None:
         interval = max(0.05, self.lease_seconds / 3)
         while True:
             await asyncio.sleep(interval)
-            renewed = await asyncio.to_thread(
-                self.store.renew, job_id, worker_id, self.lease_seconds
-            )
+            try:
+                renewed = await asyncio.to_thread(
+                    self.store.renew, job_id, worker_id, self.lease_seconds
+                )
+            except Exception as exc:
+                raise JobLeaseLost("job lease renewal failed") from exc
             if not renewed:
-                return
+                raise JobLeaseLost("job lease renewal was rejected")
 
     def public(self, row: dict, *, include_result: bool = False) -> dict:
         result = {

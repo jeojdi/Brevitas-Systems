@@ -1,19 +1,87 @@
 import { billingConfig } from '@/lib/billing/config';
-import { recoveryBearerAuthorized } from '@/lib/billing/recovery-auth.mjs';
-import { billingDatabase } from '@/lib/billing/supabase';
+import { billingMaintenanceResponse } from '@/lib/billing/maintenance-gate.mjs';
+import {
+  recoverySecretAuthorized,
+  recoverySecretIsStrong,
+} from '@/lib/billing/recovery-auth.mjs';
+import {
+  authenticatedBillingUser,
+  authorizeActiveBillingCompany,
+  BillingRecoveryAdmissionError,
+  consumeBillingRecoveryAttempt,
+  manuallyResolveBillingLedgerEntry,
+} from '@/lib/billing/supabase';
 
 export const runtime = 'nodejs';
 export const maxDuration = 10;
 
-function recoveryAuthorized(request: Request): boolean {
-  return recoveryBearerAuthorized(
-    request.headers.get('authorization'),
-    billingConfig().recoverySecret,
-  );
-}
+const REQUEST_ID = /^[A-Za-z0-9._:-]{8,128}$/;
 
 export async function POST(request: Request) {
-  if (!recoveryAuthorized(request)) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  const maintenanceResponse = billingMaintenanceResponse();
+  if (maintenanceResponse) return maintenanceResponse;
+
+  const user = await authenticatedBillingUser(request);
+  if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
+  const authorization = await authorizeActiveBillingCompany(user.id);
+  if (!authorization.ok || !authorization.organizationId) {
+    return Response.json(
+      { error: 'Billing permission is required for the active company' },
+      { status: 403 },
+    );
+  }
+
+  let admission: Awaited<ReturnType<typeof consumeBillingRecoveryAttempt>>;
+  try {
+    admission = await consumeBillingRecoveryAttempt(
+      user.id,
+      authorization.organizationId,
+    );
+  } catch (error) {
+    if (!(error instanceof BillingRecoveryAdmissionError)) throw error;
+    return Response.json(
+      { error: 'Billing recovery is temporarily unavailable' },
+      {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store', 'Retry-After': '5' },
+      },
+    );
+  }
+  if (admission.status === 'rate_limited') {
+    return Response.json(
+      { error: 'Too many billing recovery attempts' },
+      {
+        status: 429,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Retry-After': String(admission.retryAfterSeconds),
+        },
+      },
+    );
+  }
+
+  // The recovery header is a second factor, never the caller identity. Do not
+  // read or compare it until Supabase has authenticated the actor, canonical
+  // company authorization has succeeded, and the shared attempt was admitted.
+  const recoverySecret = billingConfig().recoverySecret;
+  if (!recoverySecretIsStrong(recoverySecret)) {
+    return Response.json(
+      { error: 'Billing recovery is temporarily unavailable' },
+      {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store', 'Retry-After': '300' },
+      },
+    );
+  }
+  if (!recoverySecretAuthorized(
+    request.headers.get('x-billing-recovery-secret'),
+    recoverySecret,
+  )) {
+    return Response.json(
+      { error: 'Recovery second factor is required' },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
     return Response.json({ error: 'Content-Type must be application/json' }, { status: 415 });
   }
@@ -45,16 +113,38 @@ export async function POST(request: Request) {
   ) {
     return Response.json({ error: 'Invalid manual recovery request' }, { status: 400 });
   }
-  const { data: resolved, error } = await billingDatabase().rpc(
-    'manually_resolve_billing_ledger_entry',
-    { p_entry_id: entryId, p_resolution: resolution, p_note: note },
-  );
-  if (error) throw error;
-  if (!resolved) {
-    return Response.json({ error: 'Ledger entry is not eligible for manual recovery' }, { status: 409 });
+  const incomingRequestId = request.headers.get('x-request-id') || '';
+  const requestId = REQUEST_ID.test(incomingRequestId) ? incomingRequestId : crypto.randomUUID();
+  const result = await manuallyResolveBillingLedgerEntry({
+    actorUserId: user.id,
+    expectedOrganizationId: authorization.organizationId,
+    entryId,
+    resolution: String(resolution),
+    note,
+    requestId,
+  });
+  if (!result.ok) {
+    const authorizationChanged = ['forbidden', 'active_company_changed'].includes(result.code);
+    return Response.json(
+      {
+        error: authorizationChanged
+          ? 'Billing permission is required for the active company'
+          : 'Ledger entry is not eligible for manual recovery',
+      },
+      {
+        status: authorizationChanged ? 403 : 409,
+        headers: { 'Cache-Control': 'no-store', 'X-Request-ID': requestId },
+      },
+    );
   }
   return Response.json(
-    { resolved: true, entry_id: entryId, resolution, manual_only: true },
-    { headers: { 'Cache-Control': 'no-store' } },
+    {
+      resolved: true,
+      entry_id: entryId,
+      resolution,
+      audit_id: result.auditId,
+      manual_only: true,
+    },
+    { headers: { 'Cache-Control': 'no-store', 'X-Request-ID': requestId } },
   );
 }

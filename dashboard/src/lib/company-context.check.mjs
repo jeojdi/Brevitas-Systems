@@ -52,6 +52,15 @@ test('company context comes only from the authenticated capabilities endpoint', 
     requestId: () => 'request-company-context',
     request: async (path, options) => {
       calls.push([path, options])
+      if (path === '/v1/organization/onboarding') {
+        return Response.json({
+          company_id: FIRST,
+          status: 'pending',
+          cli_connected: false,
+          proxied_request_observed: false,
+          completed_at: '',
+        })
+      }
       return Response.json({
         company_id: FIRST,
         companies: [{
@@ -62,14 +71,29 @@ test('company context comes only from the authenticated capabilities endpoint', 
   })
 
   assert.equal(result.activeCompanyId, FIRST)
+  assert.equal(result.onboarding.status, 'pending')
   assert.equal(calls[0][0], '/api/admin/company/capabilities')
   assert.equal(calls[0][1].headers.Authorization, 'Bearer verified-session-token')
   assert.equal(calls[0][1].headers['X-Request-ID'], 'request-company-context')
   assert.equal(calls[0][1].cache, 'no-store')
+  assert.equal(calls[1][0], '/v1/organization/onboarding')
+  assert.equal(calls[1][1].headers.Authorization, 'Bearer verified-session-token')
 
   await assert.rejects(fetchCompanyContext('verified-session-token', {
     request: async () => Response.json({ detail: 'foreign company private' }, { status: 403 }),
   }), error => error.message === 'Company access denied' && error.status === 403)
+
+  await assert.rejects(fetchCompanyContext('verified-session-token', {
+    request: async path => path === '/api/admin/company/capabilities'
+      ? Response.json({
+        company_id: FIRST,
+        companies: [{ company_id: FIRST, company_name: 'First', role: 'company_owner' }],
+      })
+      : Response.json({
+        company_id: SECOND, status: 'pending', cli_connected: false,
+        proxied_request_observed: false, completed_at: '',
+      }),
+  }), /Invalid company access response/)
 })
 
 test('active company switching sends only an authenticated membership target', async () => {

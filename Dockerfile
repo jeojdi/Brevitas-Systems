@@ -4,6 +4,20 @@
 # (api/server.py inserts the repo root onto sys.path).
 FROM python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 
+# CI supplies BREVITAS_BUILD_SHA explicitly. Railway also makes its immutable Git SHA
+# available as RAILWAY_GIT_COMMIT_SHA; the application rejects disagreement between them.
+ARG BREVITAS_BUILD_SHA=""
+ARG RAILWAY_GIT_COMMIT_SHA=""
+ARG BREVITAS_BUILD_TIMESTAMP=""
+ARG BREVITAS_BUILD_VERSION=""
+LABEL org.opencontainers.image.revision="${BREVITAS_BUILD_SHA}"
+LABEL org.opencontainers.image.created="${BREVITAS_BUILD_TIMESTAMP}"
+LABEL org.opencontainers.image.version="${BREVITAS_BUILD_VERSION}"
+ENV BREVITAS_BUILD_SHA="${BREVITAS_BUILD_SHA}" \
+    RAILWAY_GIT_COMMIT_SHA="${RAILWAY_GIT_COMMIT_SHA}" \
+    BREVITAS_BUILD_TIMESTAMP="${BREVITAS_BUILD_TIMESTAMP}" \
+    BREVITAS_BUILD_VERSION="${BREVITAS_BUILD_VERSION}"
+
 WORKDIR /app
 
 # Install Python deps first for layer caching. All deps ship manylinux wheels

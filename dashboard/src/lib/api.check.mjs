@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 import {
-  apiJson, apiKeyId, compress, createKey, redactBrowserError, saveProvider, streamCompression,
+  apiJson, apiKeyId, compress, configureApiAuthenticationRecovery, createKey,
+  redactBrowserError, saveProvider, streamCompression,
 } from './api.js'
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
@@ -39,6 +40,66 @@ test('API errors preserve backend detail', async () => {
     apiJson('/v1/stats', 'stale', { request: async () => json({ detail: 'Invalid API key' }, 401) }),
     /Invalid API key/,
   )
+})
+
+test('authentication recovery retries a safe read once with the replacement key', async () => {
+  let recoveries = 0
+  const keys = []
+  const cleanup = configureApiAuthenticationRecovery(async rejected => {
+    recoveries += 1
+    assert.equal(rejected, 'bvt_stale')
+    return 'bvt_replacement'
+  })
+  try {
+    const result = await apiJson('/v1/stats', 'bvt_stale', {
+      request: async (_path, options) => {
+        keys.push(options.headers['X-Brevitas-Key'])
+        return keys.length === 1
+          ? json({ detail: 'Invalid API key' }, 401)
+          : json({ total_calls: 1 })
+      },
+    })
+    assert.deepEqual(result, { total_calls: 1 })
+    assert.deepEqual(keys, ['bvt_stale', 'bvt_replacement'])
+    assert.equal(recoveries, 1)
+  } finally {
+    cleanup()
+  }
+})
+
+test('authentication recovery never replays mutations or streams', async () => {
+  const rejected = []
+  const cleanup = configureApiAuthenticationRecovery(async key => {
+    rejected.push(key)
+    return 'bvt_replacement'
+  })
+  try {
+    let mutationCalls = 0
+    await assert.rejects(
+      compress('bvt_stale_mutation', { messages: ['hello'] }, {
+        request: async () => {
+          mutationCalls += 1
+          return json({ detail: 'Invalid API key' }, 401)
+        },
+      }),
+      error => error.status === 401,
+    )
+    let streamCalls = 0
+    await assert.rejects(
+      streamCompression('bvt_stale_stream', { messages: ['hello'] }, () => {}, {
+        request: async () => {
+          streamCalls += 1
+          return json({ detail: 'Invalid API key' }, 401)
+        },
+      }),
+      error => error.status === 401,
+    )
+    assert.equal(mutationCalls, 1)
+    assert.equal(streamCalls, 1)
+    assert.deepEqual(rejected, ['bvt_stale_mutation', 'bvt_stale_stream'])
+  } finally {
+    cleanup()
+  }
 })
 
 test('API errors recursively stop common credential shapes reaching browser logs', async () => {

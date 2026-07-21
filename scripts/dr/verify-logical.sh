@@ -168,7 +168,7 @@ PY
 
 dr_require_command psql
 database_url="$(dr_secret_from_env "$database_url_env")"
-preflight="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+preflight="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select current_database(),current_setting('server_version_num')::integer,(select count(*) from pg_extension where extname in ('pgcrypto','vector')),(select count(*) from pg_roles where rolname in ('anon','authenticated','service_role')),target_mode,target_id,target_environment,expected_database_name,backup_source_id,source_environment,backup_manifest_sha256,deletion_artifact_sha256,deletion_evidence_reference,(raw_verified_at is not null),(replay_verified_at is not null),(ready_at is not null) from brevitas_restore.control where singleton")"
 IFS='|' read -r actual_database version_num extension_count role_count control_mode \
   control_target control_environment control_database control_source control_source_environment control_manifest \
@@ -186,7 +186,7 @@ IFS='|' read -r actual_database version_num extension_count role_count control_m
 
 if [[ "$raw_verified" != "t" ]]; then
   [[ "$replay_verified" == "f" && "$ready" == "f" ]] || dr_die "restore state is inconsistent before raw verification"
-  PGDATABASE="$database_url" python3 - "$manifest" "$counts" <<'PY'
+  dr_database_exec "$database_url" python3 - "$manifest" "$counts" <<'PY'
 import json
 import os
 import pathlib
@@ -195,8 +195,7 @@ import subprocess
 import sys
 
 manifest_path, counts_path = sys.argv[1:]
-dsn = os.environ.get("PGDATABASE", "")
-if not dsn:
+if not os.environ.get("PGDATABASE", ""):
     raise SystemExit("ERROR: database credential is unavailable")
 document = json.loads(pathlib.Path(manifest_path).read_text())
 with pathlib.Path(counts_path).open("w") as output:
@@ -209,7 +208,7 @@ with pathlib.Path(counts_path).open("w") as output:
             ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-At", "-c",
              f'SELECT count(*) FROM "{schema}"."{table}"'],
             check=True, capture_output=True, text=True,
-            env={**os.environ, "PGDATABASE": dsn, "PGCONNECT_TIMEOUT": "10"},
+            env=os.environ.copy(),
         )
         count = result.stdout.strip()
         if not count.isdigit():
@@ -226,10 +225,13 @@ if set(actual) != set(expected):
 if mismatches:
     raise SystemExit("ERROR: restored raw table verification failed: " + ",".join(sorted(mismatches)))
 PY
-  updated="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-    --set=target_id="$target_id" --set=manifest_hash="$expected_manifest_sha256" \
-    --set=artifact_hash="$expected_deletion_artifact_sha256" -c \
-    "update brevitas_restore.control set raw_verified_at=clock_timestamp() where singleton and target_id=:'target_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and raw_verified_at is null and replay_verified_at is null and ready_at is null returning 1")"
+  updated="$(
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+      --set=target_id="$target_id" --set=manifest_hash="$expected_manifest_sha256" \
+      --set=artifact_hash="$expected_deletion_artifact_sha256" <<'SQL'
+update brevitas_restore.control set raw_verified_at=clock_timestamp() where singleton and target_id=:'target_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and raw_verified_at is null and replay_verified_at is null and ready_at is null returning 1;
+SQL
+  )"
   [[ "$updated" == "1" ]] || dr_die "raw verification state could not be persisted"
   raw_verified="t"
 fi
@@ -250,21 +252,27 @@ if [[ "$replay_verified" != "t" ]]; then
   "$SCRIPT_DIR/replay-deletion-artifact.sh" "${replay_args[@]}"
 fi
 
-post_replay="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' \
-  --set=artifact_hash="$expected_deletion_artifact_sha256" -c \
-  "select (raw_verified_at is not null),(replay_verified_at is not null),(ready_at is not null),(select count(*) from brevitas_restore.replay_evidence where artifact_sha256=:'artifact_hash') from brevitas_restore.control where singleton")"
+post_replay="$(
+  dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' \
+    --set=artifact_hash="$expected_deletion_artifact_sha256" <<'SQL'
+select (raw_verified_at is not null),(replay_verified_at is not null),(ready_at is not null),(select count(*) from brevitas_restore.replay_evidence where artifact_sha256=:'artifact_hash') from brevitas_restore.control where singleton;
+SQL
+)"
 IFS='|' read -r raw_verified replay_verified ready replay_count <<< "$post_replay"
 [[ "$raw_verified" == "t" && "$replay_verified" == "t" ]] || dr_die "deletion replay was not durably verified"
 [[ "$replay_count" == "$tombstone_count" ]] || dr_die "deletion replay evidence count mismatch"
 if [[ "$ready" != "t" ]]; then
-  ready_update="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-    --set=target_id="$target_id" --set=manifest_hash="$expected_manifest_sha256" \
-    --set=artifact_hash="$expected_deletion_artifact_sha256" -c \
-    "update brevitas_restore.control set ready_at=clock_timestamp() where singleton and target_id=:'target_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and raw_verified_at is not null and replay_verified_at is not null and ready_at is null returning 1")"
+  ready_update="$(
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+      --set=target_id="$target_id" --set=manifest_hash="$expected_manifest_sha256" \
+      --set=artifact_hash="$expected_deletion_artifact_sha256" <<'SQL'
+update brevitas_restore.control set ready_at=clock_timestamp() where singleton and target_id=:'target_id' and backup_manifest_sha256=:'manifest_hash' and deletion_artifact_sha256=:'artifact_hash' and raw_verified_at is not null and replay_verified_at is not null and ready_at is null returning 1;
+SQL
+  )"
   [[ "$ready_update" == "1" ]] || dr_die "restore readiness could not be persisted after deletion replay"
 fi
 
-final_state="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+final_state="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select (raw_verified_at is not null),(replay_verified_at is not null),(ready_at is not null) from brevitas_restore.control where singleton")"
 [[ "$final_state" == "t|t|t" ]] || dr_die "restore target did not reach verified readiness"
 

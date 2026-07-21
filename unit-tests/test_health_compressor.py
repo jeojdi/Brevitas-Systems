@@ -30,7 +30,12 @@ def test_health_reports_optional_compressor_degradation(client, monkeypatch):
 
 def test_health_stays_available_but_degraded_in_production(client, monkeypatch):
     import api.server as server
+
+    async def kms_ready():
+        return {"configured": True, "active_probe": True, "fresh": True}
+
     server._COMPRESSOR_STATUS.update(ts=0.0, data=None)
+    monkeypatch.setattr(server, "_kms_readiness_status", kms_ready)
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
     response = client.get("/v1/health")

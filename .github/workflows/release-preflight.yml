@@ -1,0 +1,44 @@
+name: Release infrastructure preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Fixed release environment to verify without mutation
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preflight-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: DNS, HTTPS, routing, and health contracts
+    if: >-
+      github.event.repository.fork == false &&
+      github.repository == 'jeojdi/Brevitas-Systems' &&
+      github.ref == 'refs/heads/main'
+    environment: ${{ inputs.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+      - name: Run credential-free release preflight
+        env:
+          BREVITAS_EXPECTED_RELEASE_SHA: ${{ github.sha }}
+        run: npm run release:preflight -- ${{ inputs.target }}

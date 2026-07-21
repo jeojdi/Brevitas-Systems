@@ -26,7 +26,7 @@ The database locks and re-reads the actor membership for every mutation. A compa
 - Members are retained as `active`, `disabled`, or `removed` instead of being silently deleted. Re-enablement is explicit.
 - `company_admin_active_memberships(p_actor_user_id,p_active_organization_id)` is the only company-choice source for authenticated dashboard/device UI. It verifies and locks the server-derived active membership, returns at most 100 active memberships for that same actor as `{company_id,company_name,role}`, and orders the active company first followed by deterministic name/ID order. Disabled/removed memberships, non-canonical roles, and other users' companies never enter the response. Only `service_role` may execute it.
 - Service accounts have 1–12 allowlisted scopes, a required maximum 365-day expiry, and a maximum of 100 active, unexpired accounts per company. Runtime authentication must use `service_account_key_context` / `service_key_authorization`, which joins the key and account on their composite tenant identity and rejects either expiry/revocation state.
-- Rotation rejects expired accounts, revokes every active key for that service account, and inserts the replacement hash in one transaction. Key expiry is clamped to the account expiry. Raw `bvt_…` keys are returned once and never persisted.
+- Creation inserts the service account, its first billing-owner-attributed key hash, and the actor-attributed audit event in one transaction. The raw `bvt_…` key is returned once with `Cache-Control: private, no-store`, remains only in dashboard memory, and is never persisted or logged. If key insertion or audit append fails, no service account is committed. Rotation remains available later: it rejects expired accounts, revokes every active key for that service account, and inserts the replacement hash transactionally with expiry clamped to the account expiry.
 - List endpoints cap pages at 100 (the dashboard requests 50). Cursors are HMAC-authenticated, tenant- and collection-bound keyset positions. The dashboard stores cursor strings and never decodes them; previous navigation uses a cursor stack that resets when a view/filter/sort/range changes. `/v1/keys` follows the same rule and never returns `key_hash`, a hash-derived fingerprint, or a raw credential. Owners/admins may see metadata for tenant keys; members/billing admins see only dashboard sessions they created.
 
 ## Audit evidence
@@ -166,6 +166,7 @@ drop function if exists public.company_admin_revoke_dashboard_session_key(uuid,u
 drop function if exists public.company_admin_revoke_service_account(uuid,uuid,uuid,text);
 drop function if exists public.service_key_authorization(text);
 drop function if exists public.company_admin_rotate_service_key(uuid,uuid,uuid,text,text,timestamptz,text);
+drop function if exists public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],text,text,timestamptz,text);
 drop function if exists public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],timestamptz,text);
 drop function if exists public.company_admin_set_member(uuid,uuid,uuid,text,text,text);
 drop function if exists public.company_admin_accept_invitation(uuid,text,text,text);

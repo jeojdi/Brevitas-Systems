@@ -110,6 +110,8 @@ def test_unsafe_configured_compressor_fails_production_startup_before_probe(
         raise AssertionError("unsafe compressor must not be probed")
 
     monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("BREVITAS_BUILD_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
     monkeypatch.setenv("BREVITAS_COMPRESS_URL", url)
@@ -177,6 +179,8 @@ def test_production_rejects_disabled_proxy_auth_and_never_uses_local_admission(m
     import api.server as server
 
     monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("BREVITAS_BUILD_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "false")
     with pytest.raises(RuntimeError, match="BREVITAS_PROXY_AUTH=true"):
         server._validate_runtime_config()
@@ -257,6 +261,50 @@ def test_api_live_probe_ignores_dependencies_but_ready_probe_does_not(monkeypatc
     ready = asyncio.run(server.health())
     assert isinstance(ready, JSONResponse)
     assert ready.status_code == 503
+
+
+def test_api_readiness_fails_closed_on_kms_without_changing_liveness(monkeypatch):
+    import api.server as server
+
+    class Store:
+        def healthy(self):
+            return True
+
+    class Limiter:
+        async def healthy(self):
+            return True
+
+    async def compressor_ready():
+        return {
+            "configured": True,
+            "internal_auth_configured": True,
+            "private_endpoint": True,
+            "reachable": True,
+            "model_loaded": True,
+        }
+
+    async def kms_unavailable():
+        return {"configured": True, "active_probe": False, "fresh": False}
+
+    monkeypatch.setattr(server, "_store", Store())
+    monkeypatch.setattr(server, "_distributed_limiter", Limiter())
+    monkeypatch.setattr(server, "_compressor_status", compressor_ready)
+    monkeypatch.setattr(server, "_kms_readiness_status", kms_unavailable)
+    monkeypatch.setattr(server.app.state, "accepting_traffic", True)
+    monkeypatch.setenv("BREVITAS_COMPRESS_REQUIRED", "true")
+
+    assert asyncio.run(server.liveness()) == {"status": "ok"}
+    response = asyncio.run(server.health())
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+    payload = json.loads(response.body)
+    assert payload["kms_ready"] is False
+    assert payload["dependencies"]["kms"] == {
+        "status": "unavailable",
+        "configured": True,
+        "active_probe": False,
+        "fresh": False,
+    }
 
 
 def test_compressor_probe_is_nonblocking_single_flight(monkeypatch):
@@ -521,6 +569,27 @@ def test_worker_live_and_ready_probes_are_distinct(monkeypatch):
     assert ready.status_code == 503
 
 
+def test_worker_readiness_fails_closed_on_kms_without_changing_liveness(monkeypatch):
+    import api.worker as worker
+
+    async def available():
+        return True, True
+
+    async def kms_unavailable():
+        return {"configured": True, "active_probe": False, "fresh": False}
+
+    monkeypatch.setattr(worker, "_dependencies_ready", available)
+    monkeypatch.setattr(worker, "_kms_readiness_status", kms_unavailable)
+    monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    monkeypatch.setattr(worker, "_BILLING_REQUIRED", False)
+    assert asyncio.run(worker.liveness()) == {"status": "ok"}
+    response = asyncio.run(worker.readiness())
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 503
+    payload = json.loads(response.body)
+    assert payload["dependencies"]["kms"]["status"] == "unavailable"
+
+
 def test_worker_shutdown_and_lease_recovery_are_configured():
     source = (ROOT / "api/worker.py").read_text()
     durable_tests = (ROOT / "tests/test_durable_jobs.py").read_text()
@@ -534,6 +603,8 @@ def test_production_worker_requires_authoritative_billing_configuration(monkeypa
     import api.worker as worker
 
     monkeypatch.setattr(worker, "_production_runtime", lambda: True)
+    monkeypatch.setenv("BREVITAS_BUILD_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.delenv("BREVITAS_WORKER_BILLING_ROLE", raising=False)
     assert worker._billing_worker_role() == "authoritative"
     monkeypatch.setenv("BREVITAS_WORKER_BILLING_ROLE", "nonbilling")

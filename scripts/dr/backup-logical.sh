@@ -56,7 +56,7 @@ fi
 
 dr_require_confirmation "$confirmation" "BACKUP:$source_id"
 dr_safe_directory "$output_dir"
-dr_require_command pg_dump
+dr_require_postgresql_client_major pg_dump 16
 dr_require_command psql
 dr_require_command age
 dr_require_command python3
@@ -98,7 +98,7 @@ trap cleanup EXIT INT TERM
 # count import its exported snapshot, so active writes cannot create a manifest
 # that disagrees with the encrypted archive.
 exec 9<>"$snapshot_fifo"
-PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -qAt <&9 >"$snapshot_output" 2>"$snapshot_errors" &
+dr_database_exec "$database_url" psql -X -qAt <&9 >"$snapshot_output" 2>"$snapshot_errors" &
 holder_pid="$!"
 printf '%s\n' 'begin isolation level repeatable read read only;' 'select pg_export_snapshot();' >&9
 snapshot=""
@@ -114,12 +114,12 @@ done
 
 # Count only ordinary/partitioned application tables. Names are quoted by
 # format(), and only counts—not row content—enter the integrity manifest.
-table_names="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -q -v ON_ERROR_STOP=1 -At -F $'\t' -c \
+table_names="$(dr_database_exec "$database_url" psql -X -q -v ON_ERROR_STOP=1 -At -F $'\t' -c \
   "begin isolation level repeatable read read only; set transaction snapshot '$snapshot'; select n.nspname, c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind in ('r','p') and n.nspname in ('public','auth') order by 1,2; commit")"
 while IFS=$'\t' read -r schema_name table_name; do
   [[ -n "$schema_name" && -n "$table_name" ]] || continue
   [[ "$schema_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$table_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || dr_die "database contains an unsupported table identifier"
-  row_count="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -q -v ON_ERROR_STOP=1 -At -c \
+  row_count="$(dr_database_exec "$database_url" psql -X -q -v ON_ERROR_STOP=1 -At -c \
     "begin isolation level repeatable read read only; set transaction snapshot '$snapshot'; select count(*) from \"$schema_name\".\"$table_name\"; commit")"
   [[ "$row_count" =~ ^[0-9]+$ ]] || dr_die "table verification returned an invalid count"
   printf '%s\t%s\t%s\n' "$schema_name" "$table_name" "$row_count" >> "$counts"
@@ -127,7 +127,7 @@ done <<< "$table_names"
 [[ -s "$counts" ]] || dr_die "no application tables were available for verification"
 
 # The logical dump never lands on disk in plaintext.
-PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 pg_dump --format=custom --no-owner --no-privileges \
+dr_database_exec "$database_url" pg_dump --format=custom --no-owner --no-privileges \
   --schema=public --schema=auth --snapshot="$snapshot" \
   | age --encrypt --recipient "$age_recipient" --output "$encrypted"
 chmod 600 "$encrypted"

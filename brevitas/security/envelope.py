@@ -248,6 +248,71 @@ class EnvelopeCipher:
         self.legacy_decryptor = legacy_decryptor
         self.cache = cache if cache is not None else BoundedTTLKeyCache()
 
+    def _wrapped_key_is_current(self, wrapped: object) -> bool:
+        return bool(
+            isinstance(wrapped, WrappedDataKey)
+            and wrapped.provider == self.kms.provider
+            and wrapped.key_id == self.key_id
+            and wrapped.key_version == self.key_version
+            and (
+                self.wrap_algorithm == "provider-default"
+                or wrapped.algorithm == self.wrap_algorithm
+            )
+            and isinstance(wrapped.algorithm, str)
+            and _SAFE_WRAP_ALGORITHM.fullmatch(wrapped.algorithm)
+            and isinstance(wrapped.ciphertext, bytes)
+            and wrapped.ciphertext
+            and len(wrapped.ciphertext) <= MAX_WRAPPED_KEY_BYTES
+        )
+
+    def probe_kms(self) -> None:
+        """Prove the configured KMS can wrap and unwrap one ephemeral data key.
+
+        The random probe key and its wrapped form exist only in process memory. The
+        fixed context contains no tenant, credential, or customer data, and the
+        mutable plaintext buffers are wiped on a best-effort basis before returning.
+        """
+        context = {
+            "purpose": "kms-readiness",
+            "schema": "brevitas.kms-readiness.v1",
+        }
+        data_key = bytearray(os.urandom(32))
+        unwrapped = bytearray()
+        try:
+            try:
+                wrapped = self.kms.wrap_data_key(
+                    key_id=self.key_id,
+                    key_version=self.key_version,
+                    plaintext_key=bytes(data_key),
+                    encryption_context=context,
+                )
+            except KMSUnavailable:
+                raise
+            except Exception:
+                raise KMSUnavailable(
+                    "managed KMS readiness wrap unavailable") from None
+            if not self._wrapped_key_is_current(wrapped):
+                raise KMSUnavailable(
+                    "managed KMS readiness returned inconsistent key metadata")
+            try:
+                plaintext = self.kms.unwrap_data_key(
+                    wrapped, encryption_context=context
+                )
+            except KMSUnavailable:
+                raise
+            except Exception:
+                raise KMSUnavailable(
+                    "managed KMS readiness unwrap unavailable") from None
+            if not isinstance(plaintext, bytes) or len(plaintext) != 32:
+                raise KMSUnavailable(
+                    "managed KMS readiness returned an invalid data key")
+            unwrapped.extend(plaintext)
+            if not hmac.compare_digest(data_key, unwrapped):
+                raise KMSUnavailable("managed KMS readiness round trip failed")
+        finally:
+            BoundedTTLKeyCache._wipe(data_key)
+            BoundedTTLKeyCache._wipe(unwrapped)
+
     @staticmethod
     def is_envelope(ciphertext: object) -> bool:
         return isinstance(ciphertext, str) and ciphertext.startswith(ENVELOPE_PREFIX)
@@ -290,20 +355,7 @@ class EnvelopeCipher:
                 raise
             except Exception:
                 raise KMSUnavailable("managed KMS wrap operation unavailable") from None
-            if (
-                wrapped.provider != self.kms.provider
-                or wrapped.key_id != self.key_id
-                or wrapped.key_version != self.key_version
-                or (
-                    self.wrap_algorithm != "provider-default"
-                    and wrapped.algorithm != self.wrap_algorithm
-                )
-                or not isinstance(wrapped.algorithm, str)
-                or not _SAFE_WRAP_ALGORITHM.fullmatch(wrapped.algorithm)
-                or not isinstance(wrapped.ciphertext, bytes)
-                or not wrapped.ciphertext
-                or len(wrapped.ciphertext) > MAX_WRAPPED_KEY_BYTES
-            ):
+            if not self._wrapped_key_is_current(wrapped):
                 raise KMSUnavailable("managed KMS returned inconsistent key metadata")
             _bounded_metadata(wrapped.provider, "key provider", 128)
             _bounded_metadata(wrapped.algorithm, "wrap algorithm", 128)

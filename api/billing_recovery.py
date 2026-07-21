@@ -748,7 +748,7 @@ class BillingRecoveryProcessor:
 
 
 def billing_recovery_is_configured() -> bool:
-    enabled = os.getenv("BREVITAS_BILLING_ENABLED", "").lower() in {"1", "true", "yes"}
+    enabled = os.getenv("BREVITAS_BILLING_ENABLED", "") == "true"
     return enabled and all(os.getenv(name) for name in (
         "STRIPE_SECRET_KEY",
         "STRIPE_PRICE_ID",

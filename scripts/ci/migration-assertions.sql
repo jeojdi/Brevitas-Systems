@@ -91,17 +91,19 @@ insert into public.organization_members(organization_id, user_id, role) values
 on conflict (organization_id, user_id) do nothing;
 
 insert into public.api_keys(key_hash, name, owner_id, organization_id, key_type) values
-    ('release-key-a', 'Release A', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '10000000-0000-4000-8000-000000000001', 'organization_service'),
-    ('release-key-b', 'Release B', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '20000000-0000-4000-8000-000000000002', 'organization_service')
+    ('release-key-a', 'Release A', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '10000000-0000-4000-8000-000000000001', 'legacy'),
+    ('release-key-b', 'Release B', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '20000000-0000-4000-8000-000000000002', 'legacy')
 on conflict (key_hash) do nothing;
 
 insert into public.billing_accounts(
-    user_id, stripe_customer_id, subscription_status, billing_started_at,
+    organization_id, user_id, stripe_customer_id, subscription_status, billing_started_at,
     current_period_start, current_period_end
 ) values (
+    '10000000-0000-4000-8000-000000000001',
     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'cus_release_security', 'active',
     '2025-01-01 00:00:00+00', '2026-02-28 00:00:00+00', '2026-03-07 00:00:00+00'
-) on conflict (user_id) do update set
+) on conflict (organization_id) do update set
+    user_id = excluded.user_id,
     stripe_customer_id = excluded.stripe_customer_id,
     subscription_status = excluded.subscription_status,
     billing_started_at = excluded.billing_started_at,
@@ -220,6 +222,16 @@ begin
       join public.usage_log usage on usage.id = ledger.usage_log_id
      where usage.request_id = 'release-billing-1';
     if ledger_id is null then raise exception 'billing trigger did not create a ledger row'; end if;
+    -- Keep the upgrade-baseline ledger fixture from consuming the bounded
+    -- single-row claim before this test's purpose-built entry. A missing
+    -- result must never pass through PL/pgSQL's three-valued NULL comparison.
+    update public.billing_ledger
+       set next_attempt_at = now() + interval '1 hour'
+     where id <> ledger_id
+       and status = 'pending';
+    update public.billing_ledger
+       set next_attempt_at = now() - interval '1 second'
+     where id = ledger_id;
     begin
         delete from public.billing_ledger where id = ledger_id;
         raise exception 'billing ledger deletion unexpectedly succeeded';
@@ -234,14 +246,16 @@ begin
     end;
     select * into claimed
       from public.claim_billing_ledger_entries('release-worker', 30, 1, 1000000);
-    if claimed.id <> ledger_id or claimed.reclaimed then
+    if claimed.id is distinct from ledger_id
+       or claimed.reclaimed is distinct from false then
         raise exception 'fresh billing lease claim failed';
     end if;
     update public.billing_ledger set lease_expires_at = now() - interval '1 second'
      where id = ledger_id;
     select * into claimed
       from public.claim_billing_ledger_entries('release-worker-2', 30, 1, 1000000);
-    if claimed.id <> ledger_id or not claimed.reclaimed then
+    if claimed.id is distinct from ledger_id
+       or claimed.reclaimed is distinct from true then
         raise exception 'stale billing lease recovery failed';
     end if;
 end;
@@ -258,6 +272,7 @@ begin
         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         '30000000-0000-4000-8000-000000000003',
         'release-security', 'staging', array['proxy:invoke']::text[],
+        repeat('f', 64), 'bvt_release1',
         now() + interval '1 day', 'release-service-create-0001'
     );
     if not coalesce((created->>'ok')::boolean, false) then
@@ -278,6 +293,17 @@ begin
            and organization_id = '10000000-0000-4000-8000-000000000001'
            and status = 'active'
     ) then raise exception 'cross-tenant administration changed the service account'; end if;
+    if not exists (
+        select 1 from public.api_keys
+         where key_hash = repeat('f', 64)
+           and organization_id = '10000000-0000-4000-8000-000000000001'
+           and service_account_id = account_id
+           and key_type = 'organization_service'
+           and owner_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+           and created_by = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+           and key_prefix = 'bvt_release1'
+           and revoked_at is null
+    ) then raise exception 'service-account creation did not issue its initial billing-owned key'; end if;
 end;
 $$;
 

@@ -1,0 +1,68 @@
+name: Operational readiness evidence gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Protected release environment whose external evidence is being checked
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+  workflow_call:
+    inputs:
+      target:
+        description: Protected release environment whose external evidence is being checked
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operational-readiness-${{ inputs.target }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate-invocation:
+    name: Refuse untrusted or ambiguous release invocation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      TARGET: ${{ inputs.target }}
+      REPOSITORY: ${{ github.repository }}
+      IS_FORK: ${{ github.event.repository.fork }}
+      REF_NAME: ${{ github.ref }}
+    steps:
+      - name: Require canonical main and a fixed target
+        run: |
+          test "$IS_FORK" = "false"
+          test "$REPOSITORY" = "jeojdi/Brevitas-Systems"
+          test "$REF_NAME" = "refs/heads/main"
+          test "$TARGET" = "staging" || test "$TARGET" = "production"
+
+  operational-readiness:
+    name: Backup, restore, monitoring, alerting, on-call, and rollback evidence
+    needs: validate-invocation
+    environment: ${{ inputs.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      OPERATIONAL_READINESS_EVIDENCE_JSON: ${{ vars.OPERATIONAL_READINESS_EVIDENCE_JSON }}
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+      - name: Validate current external operational evidence
+        run: >-
+          node scripts/ci/operational-readiness.mjs
+          --environment "${{ inputs.target }}"
+          --build-sha "${{ github.sha }}"
+          --evidence-env OPERATIONAL_READINESS_EVIDENCE_JSON

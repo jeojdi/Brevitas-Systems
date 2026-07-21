@@ -88,6 +88,7 @@ PAGE_MAX = 100
 INVITATION_MAX = 100
 SERVICE_ACCOUNT_MAX = 100
 DASHBOARD_SESSION_MAX = 1000
+DASHBOARD_SESSION_PER_ACTOR_MAX = 8
 ACTIVE_COMPANY_MAX = 100
 
 
@@ -692,6 +693,9 @@ class SQLiteCompanyAdminService:
                                environment: str, scopes: list[str], expires_in_days: int,
                                request_id: str) -> dict[str, Any]:
         account_id = str(uuid.uuid4())
+        key_id = str(uuid.uuid4())
+        raw_key = generate_api_key()
+        key_hash = hash_key(raw_key)
         expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat()
         with self._conn() as db:
             self._begin(db)
@@ -722,12 +726,35 @@ class SQLiteCompanyAdminService:
                             account_id, "denied")
                 db.commit()
                 raise CompanyAdminConflict
+            organization = db.execute(
+                "SELECT billing_owner_id FROM organizations WHERE id=?",
+                (principal.company_id,),
+            ).fetchone()
+            if not organization or not organization["billing_owner_id"]:
+                self._audit(db, principal, actor_role, request_id,
+                            "service_account.create.denied", "service_account",
+                            account_id, "denied")
+                db.commit()
+                raise CompanyAdminConflict
             try:
                 db.execute("INSERT INTO service_accounts(id,organization_id,name,environment,created_by,created_at,scopes,status,expires_at,updated_at) VALUES(?,?,?,?,?, ?,?,'active',?,?)",
                            (account_id, principal.company_id, name, environment,
                             principal.actor_id, now, ",".join(sorted(set(scopes))),
                             expires_at, now))
+                db.execute(
+                    "INSERT INTO api_keys(id,key_hash,name,created,owner_id,"
+                    "organization_id,service_account_id,key_type,scopes,environment,"
+                    "key_prefix,expires_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key_id, key_hash, name, now, organization["billing_owner_id"],
+                     principal.company_id, account_id, "organization_service",
+                     ",".join(sorted(set(scopes))), environment, raw_key[:12],
+                     expires_at, principal.actor_id),
+                )
             except sqlite3.IntegrityError as exc:
+                # A key collision or account uniqueness conflict must not leave
+                # a machine identity without its initial credential.
+                db.rollback()
+                self._begin(db)
                 self._audit(db, principal, actor_role, request_id,
                             "service_account.create.denied", "service_account",
                             account_id, "denied")
@@ -736,7 +763,9 @@ class SQLiteCompanyAdminService:
             self._audit(db, principal, actor_role, request_id, "service_account.created",
                         "service_account", account_id, "committed")
         return {"id": account_id, "name": name, "environment": environment,
-                "scopes": sorted(set(scopes)), "status": "active", "expires_at": expires_at}
+                "scopes": sorted(set(scopes)), "status": "active", "expires_at": expires_at,
+                "key_id": key_id, "api_key": raw_key, "prefix": raw_key[:12],
+                "secret_available_once": True}
 
     def rotate_service_key(self, principal: CompanyPrincipal, service_account_id: str,
                            expires_in_days: int, request_id: str) -> dict[str, Any]:
@@ -749,11 +778,18 @@ class SQLiteCompanyAdminService:
             actor_role = self._authorize(db, principal, "service_accounts:manage", request_id,
                                          "service_key.rotate", "service_account",
                                          service_account_id)
-            account = db.execute("SELECT name,environment,scopes,status,expires_at FROM service_accounts WHERE organization_id=? AND id=?",
-                                 (principal.company_id, service_account_id)).fetchone()
+            account = db.execute(
+                "SELECT account.name,account.environment,account.scopes,account.status,"
+                "account.expires_at,organization.billing_owner_id "
+                "FROM service_accounts account JOIN organizations organization "
+                "ON organization.id=account.organization_id "
+                "WHERE account.organization_id=? AND account.id=?",
+                (principal.company_id, service_account_id),
+            ).fetchone()
             account_expiry = (datetime.fromisoformat(str(account["expires_at"]).replace("Z", "+00:00"))
                               if account and account["expires_at"] else None)
-            if (not account or account["status"] != "active" or
+            if (not account or not account["billing_owner_id"]
+                    or account["status"] != "active" or
                     (account_expiry is not None and account_expiry <= datetime.now(timezone.utc))):
                 self._audit(db, principal, actor_role, request_id,
                             "service_key.rotate.denied", "service_account",
@@ -764,7 +800,8 @@ class SQLiteCompanyAdminService:
             db.execute("UPDATE api_keys SET revoked_at=? WHERE organization_id=? AND service_account_id=? AND revoked_at=''",
                        (_now(), principal.company_id, service_account_id))
             db.execute("INSERT INTO api_keys(id,key_hash,name,created,owner_id,organization_id,service_account_id,key_type,scopes,environment,key_prefix,expires_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (key_id, key_hash, account["name"], _now(), principal.actor_id,
+                       (key_id, key_hash, account["name"], _now(),
+                        account["billing_owner_id"],
                         principal.company_id, service_account_id, "organization_service",
                         account["scopes"], account["environment"], raw_key[:12],
                         expires_at, principal.actor_id))
@@ -864,17 +901,35 @@ class SQLiteCompanyAdminService:
                 "AND revoked_at='' AND expires_at>?",
                 (principal.actor_id, principal.company_id, now_text),
             ).fetchone()
-            if int(active or 0) - int(actor_active or 0) >= DASHBOARD_SESSION_MAX:
+            active_count = int(active or 0)
+            actor_active_count = int(actor_active or 0)
+            revoke_count = max(
+                actor_active_count - (DASHBOARD_SESSION_PER_ACTOR_MAX - 1),
+                active_count - (DASHBOARD_SESSION_MAX - 1),
+                0,
+            )
+            if revoke_count > actor_active_count:
                 self._audit(db, principal, actor_role, request_id,
                             "dashboard_session.create.denied", "company",
                             principal.company_id, "denied")
                 db.commit()
                 raise CompanyAdminConflict
-            db.execute(
-                "UPDATE api_keys SET revoked_at=? WHERE organization_id=? "
-                "AND key_type='dashboard_session' AND created_by=? AND revoked_at=''",
-                (now_text, principal.company_id, principal.actor_id),
-            )
+            rotated = db.execute(
+                "SELECT id FROM api_keys WHERE organization_id=? "
+                "AND key_type='dashboard_session' AND created_by=? "
+                "AND revoked_at='' AND expires_at>? ORDER BY created,id LIMIT ?",
+                (principal.company_id, principal.actor_id, now_text, revoke_count),
+            ).fetchall()
+            for row in rotated:
+                db.execute(
+                    "UPDATE api_keys SET revoked_at=? WHERE organization_id=? "
+                    "AND id=? AND key_type='dashboard_session' AND created_by=? "
+                    "AND revoked_at=''",
+                    (now_text, principal.company_id, row["id"], principal.actor_id),
+                )
+                self._audit(db, principal, actor_role, request_id,
+                            "dashboard_session.rotated", "api_key", row["id"],
+                            "committed")
             scopes = ["proxy:invoke", "usage:read_own", "provider:read", "provider:manage"]
             db.execute(
                 "INSERT INTO api_keys(id,key_hash,name,created,owner_id,organization_id,"
@@ -1098,13 +1153,16 @@ class SupabaseCompanyAdminService:
                                environment: str, scopes: list[str], expires_in_days: int,
                                request_id: str) -> dict[str, Any]:
         service_account_id = str(uuid.uuid4())
-        return self._result(self._rpc("company_admin_create_service_account", {
+        raw_key = generate_api_key()
+        result = self._result(self._rpc("company_admin_create_service_account", {
             "p_organization_id": principal.company_id, "p_actor_user_id": principal.actor_id,
             "p_service_account_id": service_account_id,
             "p_name": name, "p_environment": environment, "p_scopes": scopes,
+            "p_key_hash": hash_key(raw_key), "p_key_prefix": raw_key[:12],
             "p_expires_at": (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat(),
             "p_request_id": request_id,
         }))
+        return {**result, "api_key": raw_key, "secret_available_once": True}
 
     def rotate_service_key(self, principal: CompanyPrincipal, service_account_id: str,
                            expires_in_days: int, request_id: str) -> dict[str, Any]:
@@ -1189,14 +1247,17 @@ def service_account_key_context(store: Any, key_hash: str) -> dict[str, Any] | N
     with sqlite3.connect(str(db_path)) as db:
         db.row_factory = sqlite3.Row
         row = db.execute(
-            "SELECT key.key_hash,key.organization_id,key.service_account_id,key.key_type,"
+            "SELECT key.key_hash,organization.billing_owner_id AS owner_id,"
+            "key.organization_id,key.service_account_id,key.key_type,"
             "key.scopes,key.environment,key.expires_at,account.expires_at AS account_expires_at "
             "FROM api_keys key JOIN service_accounts account "
             "ON account.id=key.service_account_id "
             "AND account.organization_id=key.organization_id "
+            "JOIN organizations organization ON organization.id=key.organization_id "
             "WHERE key.key_hash=? AND key.key_type='organization_service' "
             "AND key.revoked_at='' AND (key.expires_at='' OR key.expires_at>?) "
             "AND account.status='active' AND account.revoked_at='' "
+            "AND organization.billing_owner_id<>'' "
             "AND (account.expires_at='' OR account.expires_at>?) LIMIT 1",
             (key_hash, now, now),
         ).fetchone()
@@ -1451,7 +1512,7 @@ def create_service_account(body: CreateServiceAccountBody,
     return _result(lambda: context.service.create_service_account(
         context.principal, body.name, body.environment, body.scopes,
         body.expires_in_days, context.request_id),
-        audit_request_id=context.request_id, audit_denials=True)
+        secret=True, audit_request_id=context.request_id, audit_denials=True)
 
 
 @router.post("/service-accounts/{service_account_id}/rotate-key")

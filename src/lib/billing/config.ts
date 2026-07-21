@@ -1,6 +1,7 @@
 import 'server-only';
 
 import Stripe from 'stripe';
+import { recoverySecretIsStrong } from '@/lib/billing/recovery-auth.mjs';
 
 let stripeClient: Stripe | null = null;
 let validatedPrice: Promise<void> | null = null;
@@ -11,7 +12,7 @@ export function billingConfig() {
     enabled: process.env.BREVITAS_BILLING_ENABLED === 'true',
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    recoverySecret: process.env.BILLING_RECOVERY_SECRET || process.env.CRON_SECRET || '',
+    recoverySecret: process.env.BILLING_RECOVERY_SECRET || '',
     priceId: process.env.STRIPE_PRICE_ID || '',
     meterEventName: process.env.STRIPE_METER_EVENT_NAME || 'brevitas_fee_microusd',
     publicUrl: (process.env.BREVITAS_PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
@@ -33,7 +34,7 @@ export function billingIsConfigured(): boolean {
     config.enabled &&
     config.secretKey &&
     config.webhookSecret &&
-    config.recoverySecret &&
+    recoverySecretIsStrong(config.recoverySecret) &&
     config.priceId &&
     config.meterEventName &&
     Number.isFinite(config.weeklyCapUsd) &&

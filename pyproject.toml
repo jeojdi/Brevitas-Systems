@@ -36,7 +36,6 @@ all       = ["sentence-transformers>=2.2.0", "llmlingua>=0.2.1", "anthropic>=0.2
 
 [project.scripts]
 brevitas = "brevitas.cli:main"
-bvx      = "brevitas.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -45,3 +44,8 @@ exclude = ["*.tests", "*.tests.*", "tests*", "benchmarks*", "examples*", "archiv
 
 [tool.setuptools.package-data]
 brevitas = ["samples/*.md"]
+
+[tool.pytest.ini_options]
+# Historical implementations under archive/ import modules that no longer
+# exist. Keep default discovery broad so package-local active tests still run.
+norecursedirs = ["archive"]

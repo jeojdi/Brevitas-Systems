@@ -385,6 +385,12 @@ def _cache_for_request(request: Request):
     return _get_cache() if tenant_opt_in or local_opt_in else None
 
 
+def _admission_canceled(request: Request) -> bool:
+    """Cooperatively stop upstream/receipt work after a distributed lease loss."""
+    event = getattr(request.state, "brevitas_admission_cancellation", None)
+    return bool(event is not None and event.is_set())
+
+
 def _usage_tokens(data: dict, provider: str) -> tuple[int, int]:
     """(prompt_tokens, completion_tokens) from a provider response usage object."""
     u = (data or {}).get("usage", {}) or {}
@@ -882,12 +888,15 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             completed = False
             try:
                 async for chunk in provider_http.iter_bytes("anthropic", upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
                     if not released and bg_role == "pathfinder":
                         _bg.release(bg_sig, _BG_WARM["anthropic"])
                         released = True
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
                 if bg_role == "pathfinder" and not released:
@@ -1027,12 +1036,15 @@ async def proxy_openai_chat(request: Request) -> Any:
             completed = False
             try:
                 async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
                     if not released and bg_role == "pathfinder":
                         _bg.release(bg_sig, bg_warm)
                         released = True
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
                 if bg_role == "pathfinder" and not released:
@@ -1144,9 +1156,12 @@ async def proxy_openai_responses(request: Request) -> Any:
             completed = False
             try:
                 async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
                 if completed:
@@ -1213,9 +1228,12 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
             completed = False
             try:
                 async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
                 if completed:

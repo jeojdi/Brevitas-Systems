@@ -40,10 +40,20 @@
     <div class="check" aria-hidden="true">✓</div>
     <h1 id="title">Your email is confirmed.</h1>
     <p id="message">Your account is ready. Sign in to open your token tracking dashboard.</p>
-    <a href="/login">Continue to sign in →</a>
+    <a id="continue" href="/login">Continue to sign in →</a>
   </main>
   <script>
     const params = new URLSearchParams(location.search || location.hash.slice(1));
+    const audience = params.get('audience');
+    const destinations = {
+      personal: '/login/personal',
+      enterprise: '/login/enterprise',
+    };
+    if (destinations[audience]) {
+      const label = audience === 'personal' ? 'personal' : 'enterprise';
+      document.querySelector('#continue').href = destinations[audience];
+      document.querySelector('#continue').textContent = `Continue to ${label} sign in →`;
+    }
     if (params.get('error') || params.get('error_description')) {
       document.querySelector('.check').textContent = '!';
       document.querySelector('#title').textContent = 'That link did not work.';

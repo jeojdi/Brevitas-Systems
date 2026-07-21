@@ -1,4 +1,6 @@
 import { useId, useState } from 'react'
+import InstallCommand from './InstallCommand.jsx'
+import { nextOnboardingStep, ONBOARDING_STEP } from '../lib/onboarding-cli.js'
 import {
   normalizeWorkspaceSelection,
   WORKSPACE_NAME_MAX_LENGTH,
@@ -31,12 +33,14 @@ const choices = [
 ]
 
 export default function OnboardingWorkspaceChoice({
+  initialWorkspaceCreated = false,
   initialWorkspaceType = '',
   initialWorkspaceName = '',
   isSubmitting = false,
   errorMessage = '',
   onContinue,
   onBack,
+  onFinish,
   onWorkspaceTypeChange,
   onWorkspaceNameChange,
 }) {
@@ -46,8 +50,13 @@ export default function OnboardingWorkspaceChoice({
   const fieldName = useId()
   const [workspaceType, setWorkspaceType] = useState(initialWorkspaceType)
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName)
+  const [step, setStep] = useState(
+    initialWorkspaceCreated ? ONBOARDING_STEP.CONNECT : ONBOARDING_STEP.WORKSPACE,
+  )
   const [validationError, setValidationError] = useState('')
   const [localSubmitting, setLocalSubmitting] = useState(false)
+  const [finishing, setFinishing] = useState(false)
+  const [finishError, setFinishError] = useState('')
   const busy = isSubmitting || localSubmitting
   const displayedError = errorMessage || validationError
 
@@ -79,11 +88,86 @@ export default function OnboardingWorkspaceChoice({
     setLocalSubmitting(true)
     try {
       await onContinue?.(selection)
+      setStep(current => nextOnboardingStep(current))
     } catch (reason) {
       setValidationError(reason instanceof Error ? reason.message : 'Workspace setup could not continue.')
     } finally {
       setLocalSubmitting(false)
     }
+  }
+
+  const finish = async () => {
+    setFinishError('')
+    setFinishing(true)
+    try {
+      await onFinish?.()
+    } catch (reason) {
+      setFinishError(reason instanceof Error ? reason.message : 'The dashboard could not finish onboarding.')
+    } finally {
+      setFinishing(false)
+    }
+  }
+
+  if (step === ONBOARDING_STEP.CONNECT) {
+    return (
+      <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
+        <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
+          <p className="annotation mb-3 uppercase tracking-widest">Step 2 of 3 · connect a tool</p>
+          <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
+            Put BVX on the request path.
+          </h1>
+          <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
+            Your workspace is ready. Install the released BVX CLI and let its interactive setup authenticate and configure a local AI tool.
+          </p>
+        </header>
+        <InstallCommand phase="setup" />
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setStep(current => nextOnboardingStep(current))}
+            className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
+          >
+            Continue to verification
+          </button>
+        </div>
+      </section>
+    )
+  }
+
+  if (step === ONBOARDING_STEP.VERIFY) {
+    return (
+      <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
+        <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
+          <p className="annotation mb-3 uppercase tracking-widest">Step 3 of 3 · verify one request</p>
+          <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
+            Prove traffic reaches BVX.
+          </h1>
+          <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
+            A healthy service is not enough. Run diagnostics and make one normal request from a configured tool. Brevitas will unlock the dashboard only after the server records that request through your workspace&apos;s BVX device key.
+          </p>
+        </header>
+        <InstallCommand phase="verify" />
+        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            type="button"
+            onClick={() => setStep(ONBOARDING_STEP.CONNECT)}
+            disabled={finishing}
+            className="min-h-11 rounded-xl border border-brand-border px-5 py-3 text-sm font-medium text-brand-navy disabled:opacity-50 dark:border-brand-dark-border dark:text-brand-dark-navy"
+          >
+            Back to setup
+          </button>
+          <button
+            type="button"
+            onClick={finish}
+            disabled={finishing}
+            className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {finishing ? 'Checking server evidence…' : 'Check for verified request'}
+          </button>
+        </div>
+        {finishError && <p role="alert" className="mt-4 text-sm text-red-500">{finishError}</p>}
+      </section>
+    )
   }
 
   return (

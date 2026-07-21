@@ -1,5 +1,8 @@
 import base64
+import asyncio
 import json
+import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -14,6 +17,7 @@ from brevitas.security import (
     EnvelopeError,
     ExternalManagedKMS,
     KMSConfigurationError,
+    KMSReadinessMonitor,
     KMSUnavailable,
     LegacyFernetDecryptor,
     LocalTestKMS,
@@ -132,6 +136,125 @@ def test_kms_outage_is_content_free_and_uncached_decryption_fails_closed():
     with pytest.raises(KMSUnavailable) as decrypt_error:
         service.decrypt_text(encrypted, context={"record": "1"})
     assert "sk-real-secret-value" not in str(decrypt_error.value)
+
+
+def test_active_kms_probe_round_trips_only_ephemeral_non_customer_data():
+    class RecordingKMS(MockManagedKMS):
+        def __init__(self):
+            super().__init__()
+            self.wrap_inputs = []
+            self.unwrap_contexts = []
+
+        def wrap_data_key(self, **kwargs):
+            self.wrap_inputs.append({
+                "plaintext_key": bytes(kwargs["plaintext_key"]),
+                "encryption_context": dict(kwargs["encryption_context"]),
+            })
+            return super().wrap_data_key(**kwargs)
+
+        def unwrap_data_key(self, wrapped_key, *, encryption_context):
+            self.unwrap_contexts.append(dict(encryption_context))
+            return super().unwrap_data_key(
+                wrapped_key, encryption_context=encryption_context
+            )
+
+    kms = RecordingKMS()
+    service = cipher(kms)
+    assert service.probe_kms() is None
+    assert len(kms.wrap_inputs) == 1
+    assert len(kms.wrap_inputs[0]["plaintext_key"]) == 32
+    assert kms.wrap_inputs[0]["encryption_context"] == {
+        "purpose": "kms-readiness",
+        "schema": "brevitas.kms-readiness.v1",
+    }
+    assert kms.unwrap_contexts == [kms.wrap_inputs[0]["encryption_context"]]
+    assert len(service.cache) == 0
+
+
+def test_active_kms_probe_rejects_wrong_plaintext_without_leaking_it():
+    kms = MockManagedKMS()
+    kms.unwrap_data_key = lambda *_args, **_kwargs: b"private-wrong-result-private-000"
+    with pytest.raises(KMSUnavailable, match="round trip failed") as caught:
+        cipher(kms).probe_kms()
+    assert "private-wrong-result" not in str(caught.value)
+
+
+def test_kms_readiness_monitor_success_staleness_failure_and_recovery():
+    now = [10.0]
+
+    class ProbeCipher:
+        def __init__(self):
+            self.calls = 0
+            self.available = True
+
+        def probe_kms(self):
+            self.calls += 1
+            if not self.available:
+                raise KMSUnavailable("provider-private-detail")
+
+    service = ProbeCipher()
+    monitor = KMSReadinessMonitor(clock=lambda: now[0])
+    try:
+        healthy = asyncio.run(monitor.check(
+            service, timeout_seconds=1, max_age_seconds=5,
+        ))
+        assert healthy.ready is True and healthy.fresh is True
+        assert service.calls == 1
+
+        now[0] = 15.0
+        cached = asyncio.run(monitor.check(
+            service, timeout_seconds=1, max_age_seconds=5,
+        ))
+        assert cached.ready is True
+        assert service.calls == 1
+
+        now[0] = 15.001
+        service.available = False
+        failed = asyncio.run(monitor.check(
+            service, timeout_seconds=1, max_age_seconds=5,
+        ))
+        assert failed.ready is False and failed.fresh is False
+
+        service.available = True
+        recovered = asyncio.run(monitor.check(
+            service, timeout_seconds=1, max_age_seconds=5,
+        ))
+        assert recovered.ready is True and recovered.fresh is True
+        assert service.calls == 3
+    finally:
+        monitor.close()
+
+
+def test_kms_readiness_monitor_timeout_is_bounded_and_late_success_is_rejected():
+    entered = threading.Event()
+    release = threading.Event()
+
+    class ProbeCipher:
+        slow = True
+
+        def probe_kms(self):
+            if self.slow:
+                entered.set()
+                release.wait(1)
+
+    service = ProbeCipher()
+    monitor = KMSReadinessMonitor()
+    try:
+        timed_out = asyncio.run(monitor.check(
+            service, timeout_seconds=0.01, max_age_seconds=5,
+        ))
+        assert entered.is_set() and not release.is_set()
+        assert timed_out.ready is False and timed_out.fresh is False
+
+        release.set()
+        time.sleep(0.02)
+        service.slow = False
+        recovered = asyncio.run(monitor.check(
+            service, timeout_seconds=0.05, max_age_seconds=5,
+        ))
+        assert recovered.ready is True and recovered.fresh is True
+    finally:
+        monitor.close()
 
 
 def test_external_adapter_collapses_provider_exceptions():

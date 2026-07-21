@@ -89,7 +89,7 @@ begin
         exact_hash, context_hash, model_id, embedding, response_json,
         response_ciphertext, tenant_namespace, created_at, expires_at
     ) values (
-        repeat('f', 64), repeat('e', 64), 'future:model', null,
+        repeat('f', 64), repeat('e', 64), 'future:model', null, null,
         'ciphertext-future', repeat('f', 64),
         clock_timestamp() + interval '10 days', clock_timestamp() + interval '20 days'
     );
@@ -106,7 +106,8 @@ begin
         exact_hash, context_hash, model_id, embedding, response_json,
         response_ciphertext, tenant_namespace, created_at, expires_at
     ) values (
-        repeat('d', 64), repeat('c', 64), 'past:model', '{"plaintext":true}'::jsonb,
+        repeat('d', 64), repeat('c', 64), 'past:model', null,
+        '{"plaintext":true}'::jsonb,
         'ciphertext-past', repeat('f', 64),
         clock_timestamp() - interval '90 days', clock_timestamp() + interval '90 days'
     );

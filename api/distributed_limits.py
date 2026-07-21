@@ -124,9 +124,10 @@ class LimitLease:
             await self._limiter.release(self)
             self._concurrency_keys = ()
 
-    async def renew(self) -> None:
+    async def renew(self) -> bool:
         if self.allowed and self._limiter and self._concurrency_keys:
-            await self._limiter.renew(self)
+            return await self._limiter.renew(self)
+        return False
 
 
 _ACQUIRE = r"""
@@ -196,11 +197,16 @@ return 1
 """
 
 _RENEW = r"""
+-- A lease is owned only while this exact, unexpired request member is present
+-- in every hierarchical concurrency set. Validate the complete hierarchy
+-- before changing any score so a partial lease can never be resurrected.
 for i = 1, #KEYS do
-  if redis.call('ZSCORE', KEYS[i], ARGV[1]) then
-    redis.call('ZADD', KEYS[i], tonumber(ARGV[2]), ARGV[1])
-    redis.call('PEXPIRE', KEYS[i], math.max(1000, tonumber(ARGV[2]) - tonumber(ARGV[3]) + 60000))
-  end
+  local score = redis.call('ZSCORE', KEYS[i], ARGV[1])
+  if not score or tonumber(score) <= tonumber(ARGV[3]) then return 0 end
+end
+for i = 1, #KEYS do
+  redis.call('ZADD', KEYS[i], tonumber(ARGV[2]), ARGV[1])
+  redis.call('PEXPIRE', KEYS[i], math.max(1000, tonumber(ARGV[2]) - tonumber(ARGV[3]) + 60000))
 end
 return 1
 """
@@ -348,19 +354,23 @@ class DistributedLimiter:
             raise LimiterUnavailable("Redis concurrency release failed") from exc
         _record_redis_dependency("success", started)
 
-    async def renew(self, lease: LimitLease) -> None:
+    async def renew(self, lease: LimitLease) -> bool:
         if not self.redis:
-            return
+            return not self.production
         now = int(self._clock() * 1000)
         expires = now + self.policy.lease_seconds * 1000
         started = time.perf_counter()
         try:
-            await self.redis.eval(_RENEW, len(lease._concurrency_keys),
-                                  *lease._concurrency_keys, lease.request_id, expires, now)
+            result = await self.redis.eval(
+                _RENEW, len(lease._concurrency_keys), *lease._concurrency_keys,
+                lease.request_id, expires, now,
+            )
+            owned = int(result) == 1
         except Exception as exc:
             _record_redis_dependency(_redis_failure_outcome(exc), started)
             raise LimiterUnavailable("Redis concurrency renewal failed") from exc
         _record_redis_dependency("success", started)
+        return owned
 
     async def close(self) -> None:
         """Release Redis pool resources during replica shutdown."""

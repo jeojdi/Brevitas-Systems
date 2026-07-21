@@ -121,7 +121,7 @@ begin
        or (select revoked_at from public.api_keys where id = first_key_id) is not null
        or exists (select 1 from public.audit_events
                    where request_id = 'release-key-create-failure') then
-        raise exception 'failed creation did not roll back key replacement and audit';
+        raise exception 'failed creation did not preserve existing sessions and audit atomicity';
     end if;
 end;
 $$;
@@ -147,9 +147,9 @@ begin
     );
     second_key_id := (created->>'key_id')::uuid;
     if not coalesce((created->>'ok')::boolean, false)
-       or (select revoked_at from public.api_keys where id = first_key_id) is null
+       or (select revoked_at from public.api_keys where id = first_key_id) is not null
        or (select revoked_at from public.api_keys where id = second_key_id) is not null then
-        raise exception 'atomic dashboard key replacement failed';
+        raise exception 'multi-tab dashboard key coexistence failed';
     end if;
 
     listed := public.company_admin_dashboard_keys_page(

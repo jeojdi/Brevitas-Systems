@@ -107,7 +107,7 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 
   return (
     <div className="space-y-12">
-      <InstallCommand />
+      <InstallCommand phase="all" />
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation hover:text-brand-blue">retry</button></div>}
       {/* ── Section label ── */}
       <div>

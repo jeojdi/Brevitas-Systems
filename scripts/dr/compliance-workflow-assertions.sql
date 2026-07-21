@@ -210,14 +210,16 @@ insert into public.customers(id,organization_id,external_id,display_name) values
     ('da000000-0000-4000-8000-000000000001','d1000000-0000-4000-8000-000000000001','cache-customer','Cache Customer')
 on conflict(id) do nothing;
 insert into public.billing_accounts(
-    user_id,stripe_customer_id,subscription_status,checkout_session_id,
+    organization_id,user_id,stripe_customer_id,subscription_status,checkout_session_id,
     billing_started_at,current_period_start,current_period_end
 ) values (
+    'd1000000-0000-4000-8000-000000000001',
     'd0000000-0000-4000-8000-000000000001','cus_compliance_sole','active',
     'checkout-must-be-minimized',now()-interval '1 year',now()-interval '1 day',now()+interval '29 days'
-) on conflict(user_id) do update set checkout_session_id=excluded.checkout_session_id;
-insert into public.billing_events(user_id,session_id,provider,model) values
-    ('d0000000-0000-4000-8000-000000000001','session-must-be-minimized','test','test');
+) on conflict(organization_id) do update set checkout_session_id=excluded.checkout_session_id;
+insert into public.billing_events(organization_id,user_id,session_id,provider,model) values
+    ('d1000000-0000-4000-8000-000000000001',
+     'd0000000-0000-4000-8000-000000000001','session-must-be-minimized','test','test');
 insert into public.legal_acceptances(user_id,terms_version,accepted_at) values
     ('d0000000-0000-4000-8000-000000000001','compliance-test',now()-interval '1 year')
 on conflict(user_id) do nothing;
@@ -307,11 +309,13 @@ insert into public.organization_members(organization_id,user_id,role,status) val
     ('f2500000-0000-4000-8000-000000000005','f0000000-0000-4000-8000-000000000003','company_owner','active')
 on conflict(organization_id,user_id) do nothing;
 insert into public.billing_accounts(
-    user_id,stripe_customer_id,subscription_status,billing_started_at,current_period_start,current_period_end
+    organization_id,user_id,stripe_customer_id,subscription_status,
+    billing_started_at,current_period_start,current_period_end
 ) values (
+    'f1000000-0000-4000-8000-000000000001',
     'f0000000-0000-4000-8000-000000000001','cus_retention_financial','active',
     now()-interval '7 years',now()-interval '1 day',now()+interval '29 days'
-) on conflict(user_id) do update set subscription_status='active';
+) on conflict(organization_id) do update set subscription_status='active';
 insert into public.usage_log(
     key_hash,owner_id,organization_id,request_id,ts,baseline_tokens,
     optimized_tokens,tokens_saved,pricing_status,verified_savings_usd,
@@ -468,11 +472,12 @@ insert into public.customers(id,organization_id,external_id,display_name) values
     ('ea000000-0000-4000-8000-000000000001','e1000000-0000-4000-8000-000000000001','subject-customer','Subject Customer')
 on conflict(id) do nothing;
 insert into public.billing_accounts(
-    user_id,stripe_customer_id,subscription_status,billing_started_at,current_period_start,current_period_end
+    organization_id,user_id,stripe_customer_id,subscription_status,
+    billing_started_at,current_period_start,current_period_end
 ) values
-    ('e0000000-0000-4000-8000-000000000001','cus_subject_owner','active',now()-interval '1 year',now()-interval '1 day',now()+interval '29 days'),
-    ('e0000000-0000-4000-8000-000000000002','cus_member_subject','active',now()-interval '1 year',now()-interval '1 day',now()+interval '29 days')
-on conflict(user_id) do update set subscription_status='active';
+    ('e1000000-0000-4000-8000-000000000001','e0000000-0000-4000-8000-000000000001','cus_subject_owner','active',now()-interval '1 year',now()-interval '1 day',now()+interval '29 days'),
+    ('e2000000-0000-4000-8000-000000000002','e0000000-0000-4000-8000-000000000002','cus_member_subject','active',now()-interval '1 year',now()-interval '1 day',now()+interval '29 days')
+on conflict(organization_id) do update set subscription_status='active';
 insert into public.organization_invitations(
     id,organization_id,email_lookup_hash,token_hash,role,status,invited_by,
     created_at,expires_at,accepted_at,accepted_by
@@ -874,10 +879,50 @@ insert into public.organization_members(organization_id,user_id,role,status) val
     ('c1000000-0000-4000-8000-000000000001','c0000000-0000-4000-8000-000000000001','company_owner','active'),
     ('c2000000-0000-4000-8000-000000000002','c0000000-0000-4000-8000-000000000002','company_owner','active')
 on conflict (organization_id,user_id) do nothing;
-insert into public.api_keys(key_hash,name,owner_id,organization_id,key_type) values
-    ('compliance-key-a','Key A','c0000000-0000-4000-8000-000000000001','c1000000-0000-4000-8000-000000000001','organization_service'),
-    ('compliance-key-b','Key B','c0000000-0000-4000-8000-000000000002','c2000000-0000-4000-8000-000000000002','organization_service')
+insert into public.service_accounts(
+    id,organization_id,name,environment,created_by,scopes,status
+) values
+    ('c1100000-0000-4000-8000-000000000001',
+     'c1000000-0000-4000-8000-000000000001','Compliance service A','test',
+     'c0000000-0000-4000-8000-000000000001',
+     array['proxy:invoke','provider:read','provider:manage']::text[],'active'),
+    ('c2200000-0000-4000-8000-000000000002',
+     'c2000000-0000-4000-8000-000000000002','Compliance service B','test',
+     'c0000000-0000-4000-8000-000000000002',
+     array['proxy:invoke','provider:read','provider:manage']::text[],'active')
+on conflict (id) do nothing;
+insert into public.api_keys(
+    key_hash,name,owner_id,organization_id,service_account_id,key_type,
+    scopes,environment,created_by
+) values
+    ('compliance-key-a','Key A','c0000000-0000-4000-8000-000000000001',
+     'c1000000-0000-4000-8000-000000000001',
+     'c1100000-0000-4000-8000-000000000001','organization_service',
+     array['proxy:invoke','provider:read','provider:manage']::text[],'test',
+     'c0000000-0000-4000-8000-000000000001'),
+    ('compliance-key-b','Key B','c0000000-0000-4000-8000-000000000002',
+     'c2000000-0000-4000-8000-000000000002',
+     'c2200000-0000-4000-8000-000000000002','organization_service',
+     array['proxy:invoke','provider:read','provider:manage']::text[],'test',
+     'c0000000-0000-4000-8000-000000000002')
 on conflict (key_hash) do nothing;
+do $$
+begin
+    if (select count(*) from public.api_keys credential
+         join public.organizations organization
+           on organization.id=credential.organization_id
+         join public.service_accounts account
+           on account.organization_id=credential.organization_id
+          and account.id=credential.service_account_id
+        where credential.key_hash in ('compliance-key-a','compliance-key-b')
+          and credential.key_type='organization_service'
+          and credential.owner_id=organization.billing_owner_id::text
+          and account.status='active'
+          and account.revoked_at is null)<>2 then
+        raise exception 'compliance organization service fixture is not billing-owner/account bound';
+    end if;
+end;
+$$;
 insert into public.provider_config(key_hash,provider,provider_api_key,model) values
     ('compliance-key-a','openai','provider-private-must-not-export','test-model')
 on conflict (key_hash) do update set provider_api_key=excluded.provider_api_key;
@@ -885,12 +930,13 @@ insert into public.customers(id,organization_id,external_id,display_name) values
     ('ca000000-0000-4000-8000-000000000001','c1000000-0000-4000-8000-000000000001','customer-a','Customer A')
 on conflict (id) do nothing;
 insert into public.billing_accounts(
-    user_id,stripe_customer_id,subscription_status,billing_started_at,
+    organization_id,user_id,stripe_customer_id,subscription_status,billing_started_at,
     current_period_start,current_period_end
 ) values (
+    'c1000000-0000-4000-8000-000000000001',
     'c0000000-0000-4000-8000-000000000001','cus_compliance_a','active',
     now()-interval '1 year',now()-interval '1 day',now()+interval '29 days'
-) on conflict (user_id) do update set subscription_status='active';
+) on conflict (organization_id) do update set subscription_status='active';
 insert into public.usage_log(
     key_hash,owner_id,organization_id,customer_id,request_id,ts,
     baseline_tokens,optimized_tokens,tokens_saved,pricing_status,

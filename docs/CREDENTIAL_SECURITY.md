@@ -28,6 +28,19 @@ The API must never read or create `api/.secret_key`. Undecryptable values must n
 plaintext. KMS downtime fails writes and uncached decrypts closed; callers should return a generic
 dependency-unavailable response and emit only a fixed error type/metric.
 
+API and worker readiness also require fresh evidence from an active KMS round trip whenever KMS is
+configured (and KMS is mandatory in production). The probe generates a random 256-bit DEK, wraps
+and immediately unwraps it under the configured immutable key version with the fixed
+`brevitas.kms-readiness.v1` operational context, compares the result, and wipes mutable plaintext
+buffers.
+It never selects customer data, persists its wrapped key, populates the DEK cache, or returns KMS
+metadata/errors in the health payload. Successful evidence is cached briefly and single-flight;
+errors, an exceeded deadline, invalid bounds, or evidence older than the maximum age fail readiness
+closed. `/v1/health/live` and the worker `/live` endpoint remain process-only.
+Python cannot forcibly stop a provider SDK call already blocked in native/network code. The monitor
+therefore permits only one dedicated in-flight probe and keeps readiness closed after its wait
+deadline; the deployment adapter must also configure the SDK's own connect/read/operation timeout.
+
 ## Configuration contract
 
 These are server-only managed secrets or non-secret settings. None may use a `NEXT_PUBLIC_` or
@@ -42,6 +55,8 @@ These are server-only managed secrets or non-secret settings. None may use a `NE
 | `BREVITAS_KMS_ALGORITHM` | Provider wrapping algorithm recorded in envelopes |
 | `BREVITAS_DATA_KEY_CACHE_TTL_SECONDS` | `1..900`; default `300` |
 | `BREVITAS_DATA_KEY_CACHE_MAX_ENTRIES` | `1..1024`; default `256` |
+| `BREVITAS_KMS_READINESS_TIMEOUT_SECONDS` | Active probe deadline, `0.05..10`; default `1` |
+| `BREVITAS_KMS_READINESS_MAX_AGE_SECONDS` | Maximum age of successful probe evidence, `1..300`; default `30` |
 | `BREVITAS_LOCAL_KMS_KEY` | Base64 256-bit key, development/test only; forbidden in production |
 
 The unwrapped-DEK cache is per process, TTL bounded, LRU size bounded, lock protected, and wiped on
@@ -151,6 +166,7 @@ variables.
 Before release, retain results for:
 
 - KMS unavailable at startup, wrap, and uncached unwrap;
+- active KMS readiness success, error, timeout, stale evidence, and recovery while liveness stays up;
 - envelope/ciphertext/metadata tamper and tenant-context swap;
 - legacy decrypt, dry-run, re-encrypt, rollback window, and new-version verification;
 - cache TTL, maximum size, LRU eviction, and shutdown clear;

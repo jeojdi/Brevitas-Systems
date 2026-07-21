@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +102,13 @@ def write_fake_compliance_psql(directory: Path) -> None:
 import os
 import sys
 
-sql = " ".join(sys.argv[1:])
+arguments = sys.argv[1:]
+if any(value.startswith("--set=") for value in arguments) \
+        and any(value in {"-c", "--command"} or value.startswith("--command=")
+                for value in arguments):
+    print("parameterized SQL passed through non-interpolating psql command mode", file=sys.stderr)
+    raise SystemExit(97)
+sql = " ".join(arguments) + " " + sys.stdin.read()
 status = os.environ.get("FAKE_REQUEST_STATUS", "processing")
 digest = os.environ.get("FAKE_ARTIFACT_SHA", "")
 attestation = os.environ.get("FAKE_ATTESTATION_SHA", "")
@@ -202,7 +209,13 @@ import os
 import pathlib
 import sys
 
-sql = " ".join(sys.argv[1:])
+arguments = sys.argv[1:]
+if any(value.startswith("--set=") for value in arguments) \
+        and any(value in {"-c", "--command"} or value.startswith("--command=")
+                for value in arguments):
+    print("parameterized SQL passed through non-interpolating psql command mode", file=sys.stderr)
+    raise SystemExit(97)
+sql = " ".join(arguments) + " " + sys.stdin.read()
 log = os.environ.get("FAKE_PSQL_LOG")
 if log:
     with pathlib.Path(log).open("a") as output:
@@ -238,8 +251,151 @@ else:
     sys.exit(9)
 """)
     write_executable(directory / "age", "#!/bin/sh\nexit 0\n")
-    write_executable(directory / "pg_restore", "#!/bin/sh\nexit 0\n")
+    write_executable(directory / "pg_restore", """#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+  echo 'pg_restore (PostgreSQL) 16.9'
+fi
+exit 0
+""")
     return log
+
+
+def test_libpq_launcher_decomposes_uri_without_consuming_stdin_or_propagating_it(tmp_path):
+    probe = tmp_path / "probe"
+    write_executable(probe, """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+document = {
+    "argv": sys.argv[1:],
+    "database": os.environ.get("PGDATABASE"),
+    "host": os.environ.get("PGHOST"),
+    "port": os.environ.get("PGPORT"),
+    "user": os.environ.get("PGUSER"),
+    "password_ok": os.environ.get("PGPASSWORD") == "p@ss:word",
+    "sslmode": os.environ.get("PGSSLMODE"),
+    "application_name": os.environ.get("PGAPPNAME"),
+    "connect_timeout": os.environ.get("PGCONNECT_TIMEOUT"),
+    "source_url_propagated": "DATABASE_URL_UNDER_TEST" in os.environ,
+    "service_propagated": "PGSERVICE" in os.environ,
+    "hostaddr_propagated": "PGHOSTADDR" in os.environ,
+    "passfile_propagated": "PGPASSFILE" in os.environ,
+    "localedir_propagated": "PGLOCALEDIR" in os.environ,
+    "stdin": sys.stdin.read(),
+}
+print(json.dumps(document, sort_keys=True))
+""")
+    database_url = (
+        "postgresql://user%2Bname:p%40ss%3Aword@db.example.test:6543/"
+        "sample%2Ddb?sslmode=require&application_name=dr-test"
+    )
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, database_url.encode())
+    finally:
+        os.close(write_fd)
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "DATABASE_URL_UNDER_TEST": database_url,
+        "PGHOST": "inherited-host-must-not-win",
+        "PGHOSTADDR": "192.0.2.1",
+        "PGPORT": "9999",
+        "PGUSER": "inherited-user-must-not-win",
+        "PGPASSWORD": "inherited-password-must-not-win",
+        "PGPASSFILE": "/tmp/inherited-pgpass-must-not-win",
+        "PGLOCALEDIR": "/tmp/inherited-locale-must-not-win",
+        "PGCONNECT_TIMEOUT": "60",
+        "PGSERVICE": "inherited-service-must-not-win",
+    }
+    try:
+        result = subprocess.run(
+            [sys.executable, str(DR / "libpq-exec.py"),
+             "--database-url-fd", str(read_fd), "--connect-timeout", "10", "--",
+             str(probe), "marker"],
+            cwd=ROOT, env=environment, input="stream-intact\n",
+            pass_fds=(read_fd,), capture_output=True, text=True, check=False,
+        )
+    finally:
+        os.close(read_fd)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "application_name": "dr-test",
+        "argv": ["marker"],
+        "connect_timeout": "10",
+        "database": "sample-db",
+        "host": "db.example.test",
+        "hostaddr_propagated": False,
+        "localedir_propagated": False,
+        "password_ok": True,
+        "passfile_propagated": False,
+        "port": "6543",
+        "service_propagated": False,
+        "source_url_propagated": False,
+        "sslmode": "require",
+        "stdin": "stream-intact\n",
+        "user": "user+name",
+    }
+
+
+def test_libpq_launcher_rejects_socket_fallback_and_identity_query_overrides(tmp_path):
+    marker = tmp_path / "executed"
+    probe = tmp_path / "probe"
+    write_executable(probe, f"#!/bin/sh\ntouch '{marker}'\n")
+    invalid_urls = [
+        "postgresql:///database",
+        "postgresql://db.example.test:5432/database",
+        "postgresql://user@db.example.test:5432/database",
+        "postgresql://user:password@db.example.test/database",
+        "postgresql://user:password@first%2Csecond:5432/database",
+        "postgresql://user:password@db.example.test:5432/database?host=elsewhere.example.test",
+        "postgresql://user:password@db.example.test:5432/database?hostaddr=127.0.0.1",
+        "postgresql://user:password@db.example.test:5432/database?connect_timeout=60",
+    ]
+    for database_url in invalid_urls:
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, database_url.encode())
+        finally:
+            os.close(write_fd)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(DR / "libpq-exec.py"),
+                 "--database-url-fd", str(read_fd), "--connect-timeout", "10", "--",
+                 str(probe)],
+                cwd=ROOT, env={"PATH": os.environ.get("PATH", "")},
+                pass_fds=(read_fd,), capture_output=True, text=True, check=False,
+            )
+        finally:
+            os.close(read_fd)
+        assert result.returncode == 2
+        assert "invalid PostgreSQL database URL" in result.stderr
+    assert not marker.exists()
+
+
+def test_parameterized_dr_psql_never_uses_non_interpolating_command_mode():
+    for path in [DR / "retention.sh", DR / "tenant-data.sh", DR / "verify-logical.sh"]:
+        logical_commands = []
+        current = ""
+        for line in path.read_text().splitlines():
+            current += line + "\n"
+            if line.rstrip().endswith("\\"):
+                continue
+            logical_commands.append(current)
+            current = ""
+        for command in logical_commands:
+            if "--set=" in command:
+                assert not re.search(r"(?:^|\s)(?:-c|--command)(?:\s|=|$)", command), (
+                    f"{path.name} sends psql variables through non-interpolating command mode"
+                )
+
+    replay_source = (DR / "replay-deletion-artifact.sh").read_text()
+    for match in re.finditer(r'\["psql"(?P<arguments>.*?)\]', replay_source, re.DOTALL):
+        arguments = match.group("arguments")
+        if "--set=" in arguments:
+            assert not re.search(r'"(?:-c|--command)(?:=|"|\s)', arguments), (
+                "embedded replay psql sends variables through non-interpolating command mode"
+            )
 
 
 def test_dr_scripts_are_executable_syntax_valid_and_default_to_offline_dry_run(tmp_path):
@@ -277,6 +433,14 @@ def test_dr_scripts_are_executable_syntax_valid_and_default_to_offline_dry_run(t
         '"expected_manifest_sha256"',
     }:
         assert field in verify_source
+    replay_source = (DR / "replay-deletion-artifact.sh").read_text()
+    assert "except subprocess.CalledProcessError:" in replay_source
+    assert 'raise SystemExit("ERROR: restore control/evidence preflight mismatch")' in replay_source
+    common_source = (DR / "common.sh").read_text()
+    restore_source = (DR / "restore-logical.sh").read_text()
+    assert "dr_require_postgresql_client_major pg_dump 16" in backup_source
+    assert "dr_require_postgresql_client_major pg_restore 16" in restore_source
+    assert "PostgreSQL 16 restore contract" in common_source
 
     backup = run(
         str(DR / "backup-logical.sh"), "--environment", "staging", "--source-id", "staging-us",
@@ -453,7 +617,7 @@ def test_restore_requires_exact_bootstrap_control_before_decrypting(tmp_path):
     ]
     base_env = {
         "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-        "RESTORE_DATABASE_URL": "restricted-fake-dsn",
+        "RESTORE_DATABASE_URL": "postgresql://fake-user:fake-password@fake-host:5432/fake-db",
         "BREVITAS_BACKUP_AGE_IDENTITY": "restricted-fake-age-identity",
         "FAKE_PSQL_LOG": str(log),
     }
@@ -500,7 +664,7 @@ def test_verify_replays_even_empty_deletion_artifact_before_readiness(tmp_path):
         "VERIFY:production-us:restore-drill",
         env={
             "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-            "RESTORE_DATABASE_URL": "restricted-fake-dsn",
+            "RESTORE_DATABASE_URL": "postgresql://fake-user:fake-password@fake-host:5432/fake-db",
             "FAKE_PSQL_LOG": str(log),
             "FAKE_MANIFEST_SHA": manifest_sha256,
             "FAKE_DELETION_SHA": artifact_sha256,
@@ -682,7 +846,7 @@ def test_export_resume_finalizes_existing_artifact_and_recreates_missing_evidenc
     ]
     base_env = {
         "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-        "COMPLIANCE_DATABASE_URL": "restricted-fake-dsn",
+        "COMPLIANCE_DATABASE_URL": "postgresql://fake-user:fake-password@fake-host:5432/fake-db",
         "FAKE_ARTIFACT_SHA": digest,
         "FAKE_ATTESTATION_SHA": attestation_sha,
         "FAKE_RECORD_COUNT": str(summary["record_count"]),
@@ -738,7 +902,7 @@ def test_export_resume_rejects_artifact_that_conflicts_with_finalized_digest(tmp
         "--apply", "--confirm", f"EXPORT:staging-us:{request_id}",
         env={
             "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-            "COMPLIANCE_DATABASE_URL": "restricted-fake-dsn",
+            "COMPLIANCE_DATABASE_URL": "postgresql://fake-user:fake-password@fake-host:5432/fake-db",
                 "FAKE_REQUEST_STATUS": "completed",
                 "FAKE_ARTIFACT_SHA": "0" * 64,
                 "BREVITAS_EXPORT_AGE_IDENTITY": "AGE-SECRET-KEY-TEST",
@@ -949,7 +1113,10 @@ def test_retention_job_dry_run_counts_bounds_and_apply_confirmation(tmp_path):
     write_executable(fake_bin / "psql", """#!/usr/bin/env python3
 import json
 import sys
-args=" ".join(sys.argv[1:])
+arguments=sys.argv[1:]
+if any(value.startswith("--set=") for value in arguments) and "-c" in arguments:
+    raise SystemExit("parameterized SQL used non-interpolating command mode")
+args=" ".join(arguments) + " " + sys.stdin.read()
 if "to_regprocedure" in args:
     print("t")
 elif "compliance_run_retention" in args:
@@ -978,7 +1145,7 @@ else:
     result = run(
         *arguments, "--dry-run",
         env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
-             "COMPLIANCE_DATABASE_URL": "restricted-fake-dsn"},
+             "COMPLIANCE_DATABASE_URL": "postgresql://fake-user:fake-password@fake-host:5432/fake-db"},
     )
     assert result.returncode == 0, result.stderr
     evidence = json.loads(next(evidence_dir.glob("retention-*-dry-run.json")).read_text())

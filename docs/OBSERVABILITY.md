@@ -280,6 +280,13 @@ p95 latency, provider outcomes, durable jobs, queue lag, billing risk, and depen
 failures. Import it only after verifying the monitoring provider's OpenTelemetry-to-
 Prometheus name translation.
 
+`observability/grafana/per-replica-health.json` separately exposes the opaque
+`service.instance.id` dimension for API, worker, and compressor coverage. Importing either JSON
+file is not proof that telemetry or alert delivery works. The release evidence requirements,
+freshness limits, expected replica counts, test-alert receipt, escalation ownership, and operator
+procedure are enforced by
+[`enterprise/OPERATIONAL_READINESS_GATE.md`](enterprise/OPERATIONAL_READINESS_GATE.md).
+
 `observability/prometheus/alerts.yml` is JSON-compatible YAML so it can be parsed without
 template evaluation. It includes:
 

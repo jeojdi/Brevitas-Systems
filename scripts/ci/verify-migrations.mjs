@@ -35,9 +35,28 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607170011_active_memberships.sql',
   'supabase/migrations/202607170012_receipt_accounting_alignment.sql',
   'supabase/migrations/202607170013_active_company_selection.sql',
+  'supabase/migrations/202607200001_stripe_webhook_durability.sql',
+  'supabase/migrations/202607200002_waitlist_security.sql',
+  'supabase/migrations/202607200003_billing_owner_attribution.sql',
+  'supabase/migrations/202607200004_stripe_event_ordering.sql',
+  'supabase/migrations/202607200005_initial_service_key.sql',
+  'supabase/migrations/202607200006_company_billing_authorization.sql',
+  'supabase/migrations/202607200007_billing_recovery_scope.sql',
+  'supabase/migrations/202607200008_provider_credential_cleanup.sql',
+  'supabase/migrations/202607200009_multitab_dashboard_sessions.sql',
+  'supabase/migrations/202607200010_shared_endpoint_rate_limits.sql',
+  'supabase/migrations/202607200011_compliance_billing_isolation.sql',
+  'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql',
+  'supabase/migrations/202607200013_billing_control_rate_limits.sql',
+  'supabase/migrations/202607200014_billing_checkout_session_reservations.sql',
+  'supabase/migrations/202607200015_provider_outbound_ambiguity.sql',
+  'supabase/migrations/202607200016_durable_onboarding.sql',
+  'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
+
+const atomicForwardMigrationPaths = expectedFreshMigrationOrder.slice(-17)
 
 const expectedFrozenChecksumPaths = [
   'supabase/migrations/202607170007_compliance_workflows.sql',
@@ -47,6 +66,23 @@ const expectedFrozenChecksumPaths = [
   'supabase/migrations/202607170011_active_memberships.sql',
   'supabase/migrations/202607170012_receipt_accounting_alignment.sql',
   'supabase/migrations/202607170013_active_company_selection.sql',
+  'supabase/migrations/202607200001_stripe_webhook_durability.sql',
+  'supabase/migrations/202607200002_waitlist_security.sql',
+  'supabase/migrations/202607200003_billing_owner_attribution.sql',
+  'supabase/migrations/202607200004_stripe_event_ordering.sql',
+  'supabase/migrations/202607200005_initial_service_key.sql',
+  'supabase/migrations/202607200006_company_billing_authorization.sql',
+  'supabase/migrations/202607200007_billing_recovery_scope.sql',
+  'supabase/migrations/202607200008_provider_credential_cleanup.sql',
+  'supabase/migrations/202607200009_multitab_dashboard_sessions.sql',
+  'supabase/migrations/202607200010_shared_endpoint_rate_limits.sql',
+  'supabase/migrations/202607200011_compliance_billing_isolation.sql',
+  'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql',
+  'supabase/migrations/202607200013_billing_control_rate_limits.sql',
+  'supabase/migrations/202607200014_billing_checkout_session_reservations.sql',
+  'supabase/migrations/202607200015_provider_outbound_ambiguity.sql',
+  'supabase/migrations/202607200016_durable_onboarding.sql',
+  'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
 ]
 
 function manifestEntries(path) {
@@ -95,6 +131,313 @@ function verifyManifest() {
   const suffix = expectedFreshMigrationOrder.slice(-expectedUpgradeMigrationOrder.length)
   if (JSON.stringify(suffix) !== JSON.stringify(expectedUpgradeMigrationOrder)) {
     fail('Upgrade manifest must be the exact suffix after the known production baseline')
+  }
+}
+
+function verifyAtomicForwardMigrations() {
+  const nonTransactionalSql = /\b(?:create|drop)\s+index\s+concurrently\b|\bvacuum\b|\breindex\b|\balter\s+type\b[\s\S]*\badd\s+value\b/i
+  for (const path of atomicForwardMigrationPaths) {
+    const migration = read(path)
+    const executableLines = migration
+      .split(/\r?\n/)
+      .map((line) => line.trim().toLowerCase())
+      .filter((line) => line && !line.startsWith('--'))
+    const boundaries = executableLines.filter(
+      (line) => line === 'begin;' || line === 'commit;',
+    )
+    if (executableLines[0] !== 'begin;' || executableLines.at(-1) !== 'commit;' ||
+        JSON.stringify(boundaries) !== JSON.stringify(['begin;', 'commit;'])) {
+      fail(`${path} must have one explicit transaction enclosing the complete migration body`)
+    }
+    if (nonTransactionalSql.test(migration)) {
+      fail(`${path} contains SQL that cannot use the required per-file transaction`)
+    }
+  }
+}
+
+function verifyBillingIdentityRolloutContract() {
+  const serviceKeyMigration = read(
+    'supabase/migrations/202607200005_initial_service_key.sql',
+  ).toLowerCase()
+  for (const contract of [
+    'client_upgrade_required',
+    "'required_contract','initial_service_key'",
+    'uuid,uuid,uuid,text,text,text[],timestamptz,text',
+    'uuid,uuid,uuid,text,text,text[],text,text,timestamptz,text',
+  ]) {
+    if (!serviceKeyMigration.includes(contract)) {
+      fail(`Initial service-key rollout compatibility misses ${contract}`)
+    }
+  }
+
+  const gate = read('scripts/ci/billing-migration-maintenance-gate.mjs')
+  const apply = read('scripts/ci/apply-billing-identity-migrations.sh')
+  const deployedVersion = read('scripts/ci/verify-billing-maintenance-deployment.mjs')
+  const offlineVersionFixture = read(
+    'scripts/ci/billing-maintenance-version-fetch-fixture.mjs',
+  )
+  const expectedRollout = atomicForwardMigrationPaths.slice(3, 6)
+  for (const path of expectedRollout) {
+    if (!gate.includes(`'${path}'`)) fail(`Billing rollout gate misses ${path}`)
+  }
+  if (!gate.includes("BREVITAS_BILLING_ENABLED !== 'false'") ||
+      !gate.includes("BREVITAS_BILLING_MIGRATION_PHASE !== 'api-worker-quiesced'") ||
+      !gate.includes('BREVITAS_BILLING_MAINTENANCE_SHA') ||
+      !gate.includes('billingMaintenanceVersionEndpoints(environment)')) {
+    fail('Billing rollout gate does not require disabled, quiesced, SHA-bound maintenance')
+  }
+  if (!apply.includes('for migration in "${billing_identity_migrations[@]}"') ||
+      !apply.includes('psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file "${migration}"') ||
+      apply.includes('--single-transaction')) {
+    fail('Billing rollout must execute each explicitly transactional file with stop-on-error')
+  }
+  if (!apply.includes("then 'complete'") ||
+      !apply.includes("then 'inconsistent-company-scoped'") ||
+      !apply.includes('initial_state="$(read_billing_identity_state)"') ||
+      !apply.includes('validated the company-scoped postcondition and skipped reapplication') ||
+      apply.indexOf('initial_state="$(read_billing_identity_state)"') >
+        apply.indexOf('for migration in "${billing_identity_migrations[@]}"')) {
+    fail('Billing rollout does not validate and skip completed company-scoped state before replay')
+  }
+  const versionCommand = 'node scripts/ci/verify-billing-maintenance-deployment.mjs'
+  if (!apply.includes(versionCommand) ||
+      apply.indexOf(versionCommand) > apply.indexOf('psql "${DATABASE_URL}"') ||
+      !deployedVersion.includes("redirect: 'manual'") ||
+      !deployedVersion.includes('AbortSignal.timeout(timeoutMs)') ||
+      !deployedVersion.includes("expectedSha, 'dashboard'") ||
+      !deployedVersion.includes("expectedSha, 'worker'") ||
+      !deployedVersion.includes("cryptographic_provenance: false") ||
+      !deployedVersion.includes('new URL(dashboard).origin === new URL(worker).origin') ||
+      !deployedVersion.includes("hostname === '127.0.0.1'") ||
+      !deployedVersion.includes('port >= 1_024 && port <= 65_535')) {
+    fail('Billing rollout does not verify bounded deployed dashboard/worker versions before PostgreSQL')
+  }
+  if (!offlineVersionFixture.includes("new Set(['127.0.0.1', '::1', 'localhost'])") ||
+      !offlineVersionFixture.includes("BREVITAS_BILLING_MAINTENANCE_OFFLINE_LOOPBACK_TEST !== 'true'") ||
+      !offlineVersionFixture.includes('expectedHost !== databaseHost')) {
+    fail('Offline billing-version fixture is not restricted to explicit loopback migration tests')
+  }
+
+  const stripeOrderingMigration = read(
+    'supabase/migrations/202607200004_stripe_event_ordering.sql',
+  ).toLowerCase()
+  for (const functionName of [
+    'compare_and_set_stripe_subscription_snapshot',
+    'compare_and_set_stripe_invoice_snapshot',
+  ]) {
+    const drop = stripeOrderingMigration.indexOf(`drop function if exists public.${functionName}(`)
+    const create = stripeOrderingMigration.indexOf(`create function public.${functionName}(`)
+    if (drop < 0 || create < 0 || drop > create) {
+      fail(`Billing migration 200004 cannot transactionally rename ${functionName} inputs on rerun`)
+    }
+  }
+
+  const webhook = read('src/app/api/billing/webhook/route.ts')
+  if (!webhook.includes('if (!billingIsConfigured())') ||
+      !webhook.includes("'Retry-After': '30'") ||
+      webhook.indexOf('if (!billingIsConfigured())') > webhook.indexOf('await request.text()')) {
+    fail('Stripe webhook does not fail closed before body processing during billing maintenance')
+  }
+}
+
+function verifyStripeSnapshotCasContract() {
+  for (const [path, identityColumn, identityParameter] of [
+    ['supabase/migrations/202607200004_stripe_event_ordering.sql', 'user_id', 'p_user_id'],
+    ['supabase/migrations/202607200006_company_billing_authorization.sql', 'organization_id', 'p_organization_id'],
+  ]) {
+    const migration = read(path).toLowerCase()
+    if (/stripe_event_sequence|stripe_event_order_is_newer|apply_stripe_(?:subscription|invoice)_event|collate\s+"c"/.test(migration)) {
+      fail(`${path} retains event-order authorization instead of authoritative snapshot CAS`)
+    }
+    for (const [domain, signature] of [
+      ['subscription', 'uuid,bigint,bigint,text,text,text,text,timestamptz,timestamptz,timestamptz'],
+      ['invoice', 'uuid,bigint,bigint,text,text,text,text'],
+    ]) {
+      const name = `compare_and_set_stripe_${domain}_snapshot`
+      const start = migration.indexOf(`create function public.${name}(`) >= 0
+        ? migration.indexOf(`create function public.${name}(`)
+        : migration.indexOf(`create or replace function public.${name}(`)
+      const end = migration.indexOf('\n$$;', start)
+      if (start < 0 || end < 0) fail(`${path} misses ${name}`)
+      const body = migration.slice(start, end).replace(/\s+/g, '')
+      const where = body.slice(body.indexOf('whereaccount.'))
+      if (!where.includes(`whereaccount.${identityColumn}=${identityParameter}`) ||
+          !where.includes(`account.stripe_${domain}_reconcile_revision=p_expected_revision`) ||
+          /p_event_(?:created|id|type)/.test(where.slice(0, where.indexOf('returning'))) ||
+          !body.includes(`stripe_${domain}_reconcile_revision=account.stripe_${domain}_reconcile_revision+1`) ||
+          !body.includes('returnv_revision;')) {
+        fail(`${path} ${name} is not identity-and-revision-only compare-and-set`)
+      }
+      if (!migration.includes(`grant execute on function public.${name}(\n    ${signature}\n) to service_role;`) ||
+          !migration.includes(`revoke all on function public.${name}(\n    ${signature}\n) from public, anon, authenticated;`)) {
+        fail(`${path} ${name} is not service-role-only`)
+      }
+    }
+  }
+}
+
+function verifyWebhookLeaseRenewalContract() {
+  const migration = read(
+    'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql',
+  ).toLowerCase()
+  const route = read('src/app/api/billing/webhook/route.ts')
+  const inbox = read('src/lib/billing/webhook-inbox.mjs')
+  const persistence = read('src/lib/billing/canonical-persistence.ts')
+  for (const contract of [
+    'renew_stripe_webhook_event_lease',
+    'lease_owner = p_lease_owner',
+    'lease_expires_at > renewal_time',
+    'lease_expires_at > completion_time',
+    'lease_expires_at > failure_time',
+    'expired webhook lease was resurrected',
+    'stale webhook owner completed a reclaimed event',
+    'stale webhook owner failed a reclaimed event',
+    'compare_and_set_stripe_subscription_snapshot_for_webhook',
+    'compare_and_set_stripe_invoice_snapshot_for_webhook',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Stripe webhook lease-renewal migration misses ${contract}`)
+    }
+  }
+  if (!route.includes("rpc('renew_stripe_webhook_event_lease'") ||
+      (route.match(/await lease\.fence\(\)/g) || []).length !== 2 ||
+      !route.includes('heartbeatIntervalMs: WEBHOOK_HEARTBEAT_INTERVAL_MS')) {
+    fail('Stripe webhook runtime does not heartbeat and fence both canonical database writers')
+  }
+  if (!inbox.includes('await heartbeat.renewAndStop()') ||
+      !inbox.includes('abortController.abort(lostError)') ||
+      !inbox.includes('await fail(error)')) {
+    fail('Stripe webhook inbox does not fail closed across renewal loss and cleanup')
+  }
+  if (!persistence.includes("'compare_and_set_stripe_subscription_snapshot_for_webhook'") ||
+      !persistence.includes("'compare_and_set_stripe_invoice_snapshot_for_webhook'") ||
+      !persistence.includes('...webhookLeaseParameters(lease, diagnostic)')) {
+    fail('Canonical Stripe persistence bypasses the atomic webhook lease fence')
+  }
+}
+
+function verifyBillingControlRateLimitContract() {
+  const migration = read(
+    'supabase/migrations/202607200013_billing_control_rate_limits.sql',
+  ).toLowerCase()
+  const helper = read('src/lib/billing/supabase.ts')
+  const routes = [
+    ['checkout', read('src/app/api/billing/checkout/route.ts')],
+    ['portal', read('src/app/api/billing/portal/route.ts')],
+  ]
+  for (const contract of [
+    'consume_billing_control_attempt',
+    "v_operation not in ('checkout', 'portal')",
+    'pg_advisory_xact_lock',
+    'billing_control.global',
+    'v_identity_hash',
+    'v_global_limit integer := 120',
+    'from public, anon, authenticated, service_role',
+    'to service_role',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Billing control rate-limit migration misses ${contract}`)
+    }
+  }
+  if (!helper.includes("rpc(\n      'consume_billing_control_attempt'") ||
+      !helper.includes('parseBillingControlAdmission(data)') ||
+      !helper.includes('throw new BillingControlAdmissionError()')) {
+    fail('Billing control shared-admission helper is not fail closed')
+  }
+  for (const [operation, route] of routes) {
+    const maintenance = route.indexOf('billingMaintenanceResponse()')
+    const authentication = route.indexOf('authenticatedBillingUser(request)')
+    const authorization = route.indexOf('authorizeActiveBillingCompany(user.id)')
+    const admission = route.indexOf('consumeBillingControlAttempt(')
+    if (maintenance < 0 || !(maintenance < authentication &&
+        authentication < authorization && authorization < admission) ||
+        route.indexOf(`'${operation}'`, admission) < admission ||
+        /withRateLimit|RATE_LIMITS|x-forwarded-for|x-real-ip|x-client-ip/i.test(route)) {
+      fail(`${operation} does not use verified shared admission in the required order`)
+    }
+  }
+}
+
+function verifyBillingCheckoutReservationContract() {
+  const migration = read(
+    'supabase/migrations/202607200014_billing_checkout_session_reservations.sql',
+  ).toLowerCase()
+  const route = read('src/app/api/billing/checkout/route.ts')
+  const helper = read('src/lib/billing/checkout-reservation.mjs')
+  for (const contract of [
+    'billing_checkout_reservations',
+    'reserve_billing_checkout_generation',
+    'persist_billing_checkout_session',
+    'advance_billing_checkout_generation',
+    'release_billing_checkout_generation',
+    "generation_started_at + interval '23 hours'",
+    "v_mode := 'recover_only'",
+    'v_reservation.generation <> p_generation',
+    'v_reservation.reservation_token is distinct from p_reservation_token',
+    'v_reservation.lease_expires_at <= v_now',
+    'checkout_session_id <> p_checkout_session_id',
+    'from public, anon, authenticated, service_role',
+    'to service_role',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Billing Checkout reservation migration misses ${contract}`)
+    }
+  }
+  if (route.includes('Date.now()') || route.includes('300_000') ||
+      !route.includes('checkoutIdempotencyKey(organizationId, generation)') ||
+      !route.includes("status: 'open'") || !route.includes('limit: 100') ||
+      !route.includes('persistBillingCheckoutSession({') ||
+      !route.includes('releaseBillingCheckoutGeneration({') ||
+      !route.includes('returningCheckoutUrl && !released')) {
+    fail('Billing Checkout route bypasses generation recovery or live-token fencing')
+  }
+  if (!helper.includes('openSubscriptionSessions.length > 1') ||
+      !helper.includes('generationMetadata(matching) !== String(generation)') ||
+      !helper.includes('page.has_more')) {
+    fail('Billing Checkout open-session recovery is not bounded and ambiguity-safe')
+  }
+}
+
+function verifyProviderOutboundFenceContract() {
+  const migration = read(
+    'supabase/migrations/202607200015_provider_outbound_ambiguity.sql',
+  ).toLowerCase()
+  for (const contract of [
+    'ai_jobs_provider_outbound_identity_check',
+    'validate constraint ai_jobs_provider_outbound_identity_check',
+    'ai_jobs_provider_outbound_ambiguity_idx',
+    'create or replace function public.mark_ai_job_provider_outbound_started',
+    'and lease_owner = p_worker_id',
+    "and status = 'running'",
+    'and lease_expires_at > pg_catalog.now()',
+    "and operation = 'chat'",
+    'and provider_outbound_started_at is null',
+    "last_error_code = 'provider_outcome_ambiguous'",
+    'set search_path = pg_catalog, public, pg_temp',
+    'from public, anon, authenticated, service_role',
+    'to service_role',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Provider outbound fencing migration misses ${contract}`)
+    }
+  }
+  const marker = migration.slice(
+    migration.indexOf('create or replace function public.mark_ai_job_provider_outbound_started'),
+    migration.indexOf('create or replace function public.claim_ai_job'),
+  )
+  if (!marker.includes('provider_outbound_attempt = attempts') ||
+      !marker.includes('and cancel_requested = false') ||
+      /grant execute[\s\S]*to (?:public|anon|authenticated)/.test(marker)) {
+    fail('Provider outbound marker is not ownership-fenced and service-only')
+  }
+  const claim = migration.slice(
+    migration.indexOf('create or replace function public.claim_ai_job'),
+  )
+  const terminalize = claim.indexOf("last_error_code = 'provider_outcome_ambiguous'")
+  const selectCandidate = claim.indexOf('select id into selected_id')
+  if (terminalize < 0 || selectCandidate < 0 || terminalize > selectCandidate ||
+      !claim.includes('and provider_outbound_started_at is null')) {
+    fail('Provider outbound ambiguity does not terminalize before candidate claim')
   }
 }
 
@@ -296,6 +639,91 @@ function verifyDeviceAndMembershipContracts() {
   }
 }
 
+function verifyDurableOnboardingContract() {
+  const migration = read(
+    'supabase/migrations/202607200016_durable_onboarding.sql',
+  ).toLowerCase()
+  for (const contract of [
+    'register_bvx_installation',
+    'registration_key_hash',
+    'registration_key_id',
+    'device_auth_receipt_id',
+    'installation.registration_key_hash = usage.key_hash',
+    "credential.key_type = 'device'",
+    "usage.authoritative is true",
+    "usage.receipt_source = 'proxy'",
+    "activation.action = 'device_key.activated'",
+    'pg_advisory_xact_lock',
+    'revoke all on function public.register_bvx_installation',
+    'drop function if exists public.register_bvx_installation',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Durable onboarding migration misses ${contract}`)
+    }
+  }
+  if ((migration.match(/set search_path = pg_catalog, public, pg_temp/g) || []).length < 3) {
+    fail('Durable onboarding RPCs do not all use the hardened search path')
+  }
+
+  const assertions = read(
+    'scripts/ci/migration-durable-onboarding-assertions.sql',
+  ).toLowerCase()
+  for (const contract of [
+    'forged unbound installation became onboarding evidence',
+    'sdk telemetry completed onboarding',
+    'non-device authoritative receipt completed onboarding',
+    'registration-key/usage-key mismatch completed onboarding',
+    'cross-tenant actor completed onboarding',
+    'valid receipt-bound bvx proxy request did not complete onboarding',
+  ]) {
+    if (!assertions.includes(contract)) {
+      fail(`Durable onboarding assertions miss ${contract}`)
+    }
+  }
+}
+
+function verifyBillingCustomerOwnerFencingContract() {
+  const migration = read(
+    'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
+  ).toLowerCase()
+  for (const contract of [
+    'create or replace function public.save_billing_customer_identity',
+    'member.user_id = organization.billing_owner_id',
+    "member.status = 'active'",
+    'for update of organization, member',
+    'v_billing_owner_id',
+    'on conflict (organization_id) do update',
+    'account.stripe_customer_id is null',
+    'account.stripe_customer_id = excluded.stripe_customer_id',
+    'from public, anon, authenticated, service_role',
+    'to service_role',
+  ]) {
+    if (!migration.includes(contract)) {
+      fail(`Billing customer owner fencing migration misses ${contract}`)
+    }
+  }
+  if (/p_(?:billing_)?owner_id|p_user_id/.test(migration)) {
+    fail('Billing customer persistence still accepts caller-owned attribution')
+  }
+
+  const route = read('src/app/api/billing/checkout/route.ts')
+  const database = read('src/lib/billing/supabase.ts')
+  if (!route.includes('saveBillingCustomerIdentity(organizationId, customerId)') ||
+      route.includes('const billingOwnerId = authorization.billingOwnerId') ||
+      !database.includes("'save_billing_customer_identity'") ||
+      !database.includes('p_organization_id: organizationId') ||
+      !database.includes('p_stripe_customer_id: stripeCustomerId')) {
+    fail('Checkout bypasses database-derived billing-owner persistence')
+  }
+
+  const race = read('scripts/ci/run-billing-owner-transfer-race-test.sh')
+  if (!race.includes('pg_advisory_lock(170017)') ||
+      !race.includes("set lock_timeout='750ms'") ||
+      !race.includes('canceling statement due to lock timeout')) {
+    fail('Billing owner-transfer race fixture does not prove lock serialization')
+  }
+}
+
 function verifyReceiptAccountingAlignment() {
   const canonical = read('api/migrations/003_receipt_accounting.sql').toLowerCase()
   const deployment = read(
@@ -357,6 +785,13 @@ function verifyHashedLocks() {
 
 export function verifyMigrations() {
   verifyManifest()
+  verifyAtomicForwardMigrations()
+  verifyBillingIdentityRolloutContract()
+  verifyStripeSnapshotCasContract()
+  verifyWebhookLeaseRenewalContract()
+  verifyBillingControlRateLimitContract()
+  verifyBillingCheckoutReservationContract()
+  verifyProviderOutboundFenceContract()
   verifyFrozenChecksums()
   checkDeploymentMigration()
   verifyDatabaseScalingRollback()
@@ -364,6 +799,8 @@ export function verifyMigrations() {
   verifyCacheUpgradeAndRollback()
   verifyAdministrationContract()
   verifyDeviceAndMembershipContracts()
+  verifyDurableOnboardingContract()
+  verifyBillingCustomerOwnerFencingContract()
   verifyReceiptAccountingAlignment()
   verifyHashedLocks()
 }

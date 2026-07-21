@@ -69,6 +69,25 @@ jobs:
           --ignore=unit-tests/test_real_llm_e2e.py
           --ignore=unit-tests/test_structural_real_llm.py
           -k 'not real_encoder_scores_identical_text_as_1'
+      - name: Record unsigned CI test claim
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          github.repository == 'jeojdi/Brevitas-Systems' &&
+          github.event.repository.fork == false
+        run: node scripts/ci/write-unsigned-ci-claim.mjs --output unsigned-ci-test-claim.json
+      - name: Upload unsigned CI test claim
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          github.repository == 'jeojdi/Brevitas-Systems' &&
+          github.event.repository.fork == false
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-ci-test-claim-${{ github.sha }}
+          path: unsigned-ci-test-claim.json
+          if-no-files-found: error
+          retention-days: 30
 
   dependency-audit:
     name: Blocking dependency audits (high/critical)
@@ -173,8 +192,9 @@ jobs:
           persist-credentials: false
       - name: Build release images without publishing
         run: |
-          docker build --pull=false --tag brevitas-api:ci .
+          docker build --pull=false --build-arg BREVITAS_BUILD_SHA="$GITHUB_SHA" --tag brevitas-api:ci .
           docker build --pull=false --file services/compress/Dockerfile --tag brevitas-compressor:ci .
+          test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' brevitas-api:ci)" = "$GITHUB_SHA"
       - name: Scan API image
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:

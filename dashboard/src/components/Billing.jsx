@@ -118,7 +118,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
   const thisWeek       = weeks[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
   const billingActive  = ['active', 'trialing'].includes(billing?.subscription_status)
-  const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'].includes(billing?.subscription_status)
+  const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'paused', 'incomplete'].includes(billing?.subscription_status)
 
   return (
     <div className="space-y-10" data-ph-sensitive>

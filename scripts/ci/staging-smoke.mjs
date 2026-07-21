@@ -99,9 +99,16 @@ async function assertReady(response) {
     payload?.accepting_traffic !== true ||
     payload?.database_ready !== true ||
     payload?.redis_ready !== true ||
+    payload?.kms_ready !== true ||
+    payload?.dependencies?.kms?.status !== 'ready' ||
+    payload?.dependencies?.kms?.configured !== true ||
+    payload?.dependencies?.kms?.active_probe !== true ||
+    payload?.dependencies?.kms?.fresh !== true ||
     payload?.dependencies?.compressor?.status !== 'ready'
   ) {
-    throw new Error('Staging readiness did not confirm API, Postgres, Redis, and compressor')
+    throw new Error(
+      'Staging readiness did not confirm API, Postgres, Redis, fresh active KMS, and compressor',
+    )
   }
 }
 
@@ -124,7 +131,7 @@ export async function runStagingSmoke(
   const tenantACustomer = required(environment, 'STAGING_TENANT_A_CUSTOMER_ID')
   const tenantBCustomer = required(environment, 'STAGING_TENANT_B_CUSTOMER_ID')
   const billingUserToken = required(environment, 'STAGING_BILLING_USER_TOKEN')
-  const billingRecoveryToken = required(environment, 'STAGING_BILLING_RECOVERY_TOKEN')
+  const billingRecoverySecret = required(environment, 'STAGING_BILLING_RECOVERY_SECRET')
   if (tenantAKey === tenantBKey) {
     throw new Error('Staging tenant fixtures require two distinct API keys')
   }
@@ -185,13 +192,31 @@ export async function runStagingSmoke(
     headers: { 'content-type': 'application/json' },
     body: '{}',
   })
+  // The global recovery secret is a second factor, never a user identity.
+  await expectStatus(fetchImpl, `${dashboardOrigin}/api/billing/sync`, 401, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${billingRecoverySecret}`,
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  })
+  await expectStatus(fetchImpl, `${dashboardOrigin}/api/billing/sync`, 401, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${billingUserToken}`,
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  })
   await expectStatus(fetchImpl, `${dashboardOrigin}/api/billing/sync`, 400, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${billingRecoveryToken}`,
+      authorization: `Bearer ${billingUserToken}`,
+      'x-billing-recovery-secret': billingRecoverySecret,
       'content-type': 'application/json',
     },
-    // Deliberately invalid: authenticates the manual-recovery control without mutation.
+    // Deliberately invalid: verifies both factors without mutating a ledger.
     body: '{}',
   })
 

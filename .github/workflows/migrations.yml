@@ -7,9 +7,15 @@ on:
       - 'api/migrations/**'
       - 'supabase/migrations/**'
       - 'scripts/ci/**migration**'
+      - 'scripts/ci/*billing-maintenance*'
+      - 'scripts/ci/*billing-owner-transfer*'
+      - 'scripts/ci/*shared*limit*'
       - 'scripts/ci/run-restore-integration.sh'
       - 'scripts/dr/**'
       - 'tests/release_security.test.mjs'
+      - 'tests/billing_maintenance_deployment.test.mjs'
+      - 'tests/billing_customer_owner_fencing.test.mjs'
+      - 'tests/waitlist_shared_rate_limit.test.mjs'
       - '.github/workflows/migrations.yml'
   pull_request:
     branches: [main]
@@ -17,9 +23,15 @@ on:
       - 'api/migrations/**'
       - 'supabase/migrations/**'
       - 'scripts/ci/**migration**'
+      - 'scripts/ci/*billing-maintenance*'
+      - 'scripts/ci/*billing-owner-transfer*'
+      - 'scripts/ci/*shared*limit*'
       - 'scripts/ci/run-restore-integration.sh'
       - 'scripts/dr/**'
       - 'tests/release_security.test.mjs'
+      - 'tests/billing_maintenance_deployment.test.mjs'
+      - 'tests/billing_customer_owner_fencing.test.mjs'
+      - 'tests/waitlist_shared_rate_limit.test.mjs'
       - '.github/workflows/migrations.yml'
 
 permissions:
@@ -101,6 +113,10 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci
         run: bash scripts/ci/run-migration-tests.sh
+      - name: Race shared endpoint admission across PostgreSQL sessions
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci
+        run: bash scripts/ci/run-waitlist-shared-limit-test.sh
       - name: Restore into the independent PostgreSQL database
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci

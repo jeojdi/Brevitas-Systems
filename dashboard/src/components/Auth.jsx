@@ -1,8 +1,38 @@
 import { useState } from 'react'
-import { resendSignupConfirmation, supabase } from '../lib/supabase.js'
+import {
+  confirmationPathForLoginAudience,
+  LOGIN_AUDIENCE,
+  resendSignupConfirmation,
+  supabase,
+} from '../lib/supabase.js'
 import { capture } from '../lib/analytics.js'
 
-export default function Auth({ darkMode, onToggleDark, initialMode = 'login', onPasswordUpdated }) {
+const AUDIENCE_CONTENT = {
+  [LOGIN_AUDIENCE.PERSONAL]: {
+    label: 'Personal workspace',
+    title: 'Personal sign in',
+    description: 'Open your individual projects, usage, API keys, and billing.',
+    alternative: 'Need a company workspace?',
+    alternativeLabel: 'Enterprise sign in',
+    alternativeHref: '/login/enterprise',
+  },
+  [LOGIN_AUDIENCE.ENTERPRISE]: {
+    label: 'Enterprise workspace',
+    title: 'Enterprise sign in',
+    description: 'Open your company workspace, members, roles, customers, service keys, and consolidated billing.',
+    alternative: 'Signing in for yourself?',
+    alternativeLabel: 'Personal sign in',
+    alternativeHref: '/login/personal',
+  },
+}
+
+export default function Auth({
+  darkMode,
+  onToggleDark,
+  initialMode = 'login',
+  loginAudience = '',
+  onPasswordUpdated,
+}) {
   const [mode, setMode]       = useState(initialMode)
   const [email, setEmail]     = useState('')
   const [password, setPassword] = useState('')
@@ -13,6 +43,8 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
   const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [confirmationEmail, setConfirmationEmail] = useState('')
   const [resending, setResending] = useState(false)
+  const audienceContent = AUDIENCE_CONTENT[loginAudience]
+  const confirmationRedirect = `${window.location.origin}${confirmationPathForLoginAudience(loginAudience)}`
 
   const reset = () => { setError(''); setNotice('') }
 
@@ -25,14 +57,14 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
       if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
-        capture('login_completed')
+        capture('login_completed', { login_audience: loginAudience || 'unspecified' })
       } else if (mode === 'signup') {
         capture('signup_started')
         const { error } = await supabase.auth.signUp({
           email,
           password,
           options: {
-            emailRedirectTo: `${window.location.origin}/email-confirmed`,
+            emailRedirectTo: confirmationRedirect,
             data: {
               accepted_terms_at: new Date().toISOString(),
               terms_version: '2026-07-14',
@@ -79,7 +111,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
     try {
       await resendSignupConfirmation(
         confirmationEmail,
-        `${window.location.origin}/email-confirmed`,
+        confirmationRedirect,
       )
       setNotice('Confirmation request accepted. Check your inbox and its existing Brevitas email thread.')
     } catch (err) {
@@ -91,6 +123,12 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
 
   const isReset = mode === 'reset'
   const isRecovery = mode === 'recovery'
+
+  if (mode === 'login' && !audienceContent && !notice && !confirmationEmail) {
+    return (
+      <LoginAudienceChoice darkMode={darkMode} onToggleDark={onToggleDark} />
+    )
+  }
 
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center px-4 py-8 sm:py-12">
@@ -116,14 +154,19 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
         </div>
 
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl sm:rounded-2xl p-5 sm:p-8 shadow-sm">
+          {audienceContent && (
+            <p className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-brand-blue">
+              {audienceContent.label}
+            </p>
+          )}
           <h1 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy mb-1">
-            {mode === 'login'  && 'Sign in'}
+            {mode === 'login'  && (audienceContent?.title || 'Sign in')}
             {mode === 'signup' && 'Create account'}
             {mode === 'reset'  && 'Reset password'}
             {mode === 'recovery' && 'Choose a new password'}
           </h1>
           <p className="text-[12px] text-brand-muted dark:text-brand-dark-muted mb-6">
-            {mode === 'login'  && 'Welcome back.'}
+            {mode === 'login'  && (audienceContent?.description || 'Welcome back.')}
             {mode === 'signup' && 'Your dashboard is ready in seconds.'}
             {mode === 'reset'  && "We'll email you a reset link."}
             {mode === 'recovery' && 'Enter a new password for your account.'}
@@ -224,7 +267,7 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
             >
               {loading
                 ? 'Please wait…'
-                : mode === 'login'  ? 'Sign in'
+                : mode === 'login'  ? `Sign in${audienceContent ? ` to ${loginAudience}` : ''}`
                 : mode === 'signup' ? 'Create account'
                 : mode === 'recovery' ? 'Update password'
                 : 'Send reset link'}
@@ -247,6 +290,14 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
                 >
                   Forgot password?
                 </button>
+                {audienceContent && (
+                  <p className="pt-2 text-center text-[11px] text-brand-muted dark:text-brand-dark-muted">
+                    {audienceContent.alternative}{' '}
+                    <a href={audienceContent.alternativeHref} className="text-brand-blue hover:underline">
+                      {audienceContent.alternativeLabel}
+                    </a>
+                  </p>
+                )}
               </>
             )}
             {(mode === 'signup' || mode === 'reset') && (
@@ -264,6 +315,82 @@ export default function Auth({ darkMode, onToggleDark, initialMode = 'login', on
           <a href="/terms" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Terms</a>
         </div>
       </div>
+    </div>
+  )
+}
+
+function LoginAudienceChoice({ darkMode, onToggleDark }) {
+  const choices = [
+    {
+      audience: LOGIN_AUDIENCE.PERSONAL,
+      eyebrow: 'For you',
+      title: 'Personal',
+      description: 'Individual projects, usage, API keys, and billing.',
+      href: '/login/personal',
+      action: 'Continue as a user',
+    },
+    {
+      audience: LOGIN_AUDIENCE.ENTERPRISE,
+      eyebrow: 'For your organization',
+      title: 'Enterprise',
+      description: 'Company members, roles, customers, service keys, and consolidated billing.',
+      href: '/login/enterprise',
+      action: 'Continue as an enterprise',
+    },
+  ]
+
+  return (
+    <div className="min-h-screen bg-brand-bg px-4 py-8 dark:bg-brand-dark-bg sm:py-12">
+      <button
+        onClick={onToggleDark}
+        className="fixed right-3 top-3 inline-flex h-11 w-11 items-center justify-center text-brand-muted transition-colors hover:text-brand-navy dark:text-brand-dark-muted dark:hover:text-brand-dark-navy sm:right-5 sm:top-5"
+        aria-label="Toggle dark mode"
+      >
+        {darkMode ? <SunIcon /> : <MoonIcon />}
+      </button>
+
+      <main className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-4xl flex-col justify-center sm:min-h-[calc(100vh-6rem)]">
+        <div className="mb-8 flex justify-center sm:mb-10">
+          <a href="/" className="no-underline" aria-label="Brevitas Systems home">
+            <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-9 w-auto dark:hidden sm:h-10" />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="hidden h-9 w-auto dark:block sm:h-10" />
+          </a>
+        </div>
+
+        <section aria-labelledby="login-workspace-title">
+          <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
+            <p className="annotation mb-3 uppercase tracking-widest">Choose your sign-in</p>
+            <h1 id="login-workspace-title" className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
+              Which workspace are you opening?
+            </h1>
+            <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted sm:text-base">
+              Use one Brevitas account for both. Your verified membership determines which workspaces you can open after sign-in.
+            </p>
+          </header>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {choices.map(choice => (
+              <a
+                key={choice.audience}
+                href={choice.href}
+                className="group flex min-h-64 flex-col rounded-2xl border border-brand-border bg-white p-6 no-underline shadow-sm transition hover:-translate-y-0.5 hover:border-brand-blue/40 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-blue/30 dark:border-brand-dark-border dark:bg-brand-dark-surface dark:hover:border-brand-blue/60 sm:p-8"
+              >
+                <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-brand-blue">{choice.eyebrow}</span>
+                <span className="mt-5 font-serif text-3xl text-brand-navy dark:text-brand-dark-navy">{choice.title}</span>
+                <span className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">{choice.description}</span>
+                <span className="mt-auto pt-8 text-sm font-medium text-brand-blue">
+                  {choice.action} <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">→</span>
+                </span>
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <div className="mt-7 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">
+          <a href="/privacy" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Privacy</a>
+          <a href="/terms" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Terms</a>
+        </div>
+      </main>
     </div>
   )
 }

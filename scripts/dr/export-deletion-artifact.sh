@@ -79,7 +79,7 @@ PY
 database_url="$(dr_secret_from_env "$database_url_env")"
 tombstones_tmp="$(mktemp "${TMPDIR:-/tmp}/brevitas-tombstones.XXXXXX")"
 trap 'rm -f -- "$tombstones_tmp"' EXIT INT TERM
-PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt -c \
+dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt -c \
   "select coalesce(jsonb_agg(jsonb_build_object('request_id',t.request_id,'organization_id',t.organization_id,'requested_at',t.request_received_at,'expires_at',t.expires_at,'request_scope',r.request_scope,'subject_id',r.subject_id) order by t.request_id),'[]'::jsonb) from public.backup_deletion_tombstones t join public.data_subject_requests r on r.id=t.request_id and r.organization_id=t.organization_id where r.status='completed'" \
   > "$tombstones_tmp"
 stamp="$(dr_timestamp)"; base="deletions-${source_id}-${stamp}"

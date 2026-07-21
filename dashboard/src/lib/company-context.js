@@ -1,4 +1,5 @@
 import { redactBrowserError } from './api.js'
+import { fetchOnboardingStatus } from './onboarding-api.js'
 
 export const ACTIVE_COMPANY_MAX = 100
 const COMPANY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -79,7 +80,14 @@ export async function fetchCompanyContext(accessToken, {
       status: response.status,
     })
   }
-  return normalizeCompanyContext(await response.json().catch(() => null))
+  const context = normalizeCompanyContext(await response.json().catch(() => null))
+  const onboarding = await fetchOnboardingStatus(accessToken, {
+    request, requestId, signal,
+  })
+  if (onboarding.companyId !== context.activeCompanyId) {
+    throw new Error('Invalid company access response')
+  }
+  return { ...context, onboarding }
 }
 
 export async function activateCompany(accessToken, companyId, {

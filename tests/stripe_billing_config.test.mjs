@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(resolve(root, path), 'utf8')
 
-const { recoveryBearerAuthorized } = await import(
+const { recoverySecretAuthorized, recoverySecretIsStrong } = await import(
   new URL('../src/lib/billing/recovery-auth.mjs', import.meta.url)
 )
 
@@ -16,7 +16,7 @@ test('checkout accepts no client amount and uses the server price', () => {
   const config = read('src/lib/billing/config.ts')
   assert.match(route, /line_items: \[\{ price: config\.priceId \}\]/)
   assert.match(route, /payment_method_collection: 'always'/)
-  assert.match(route, /client_reference_id: user\.id/)
+  assert.match(route, /client_reference_id: organizationId/)
   assert.doesNotMatch(route, /await req\.json|unit_amount|quantity:/)
   assert.match(route, /validateStripeCatalog\(\)/)
   assert.match(config, /unit_amount_decimal\?\.toString\(\) !== '0\.0001'/)
@@ -71,33 +71,40 @@ test('usage accounting charges 25% of verified savings', () => {
 
 test('Vercel sync endpoint is manual recovery only', () => {
   const sync = read('src/app/api/billing/sync/route.ts')
-  assert.match(sync, /manually_resolve_billing_ledger_entry/)
+  assert.match(sync, /manuallyResolveBillingLedgerEntry/)
   assert.match(sync, /manual_only: true/)
-  assert.match(sync, /recoveryBearerAuthorized/)
+  assert.match(sync, /recoverySecretAuthorized/)
+  assert.match(sync, /authenticatedBillingUser/)
   assert.doesNotMatch(sync, /getStripe|meterEvents|export const GET/)
 })
 
-test('manual billing auth rejects malformed and Unicode-confusable credentials safely', () => {
-  const secret = 'recovery-secret_0123456789'
-  assert.equal(recoveryBearerAuthorized(`Bearer ${secret}`, secret), true)
-  assert.equal(recoveryBearerAuthorized(`bearer ${secret}`, secret), true)
+test('manual recovery second factor is a dedicated exact-value header', () => {
+  const secret = 'Bv9_Qx2Lm7-Rp4Tz8Nc5Hs3Wk6Yf1Da0'
+  assert.equal(recoverySecretIsStrong(secret), true)
+  assert.equal(recoverySecretIsStrong('a'.repeat(64)), false)
+  assert.equal(recoverySecretIsStrong('short-recovery-secret_123'), false)
+  assert.equal(recoverySecretIsStrong(
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+  ), true)
+  assert.equal(recoverySecretAuthorized(secret, secret), true)
   for (const malformed of [
     null,
     '',
-    secret,
     `Basic ${secret}`,
+    `Bearer ${secret}`,
     'Bearer',
     `Bearer  ${secret}`,
     `Bearer ${secret} trailing`,
     `prefix Bearer ${secret}`,
-    'Bearer recovery-secret_012345678🔒',
-    'Bearer recovery-secret_012345678𝟡',
+    `${secret.slice(0, -1)}🔒`,
+    `${secret.slice(0, -1)}𝟡`,
   ]) {
-    assert.doesNotThrow(() => recoveryBearerAuthorized(malformed, secret))
-    assert.equal(recoveryBearerAuthorized(malformed, secret), false)
+    assert.doesNotThrow(() => recoverySecretAuthorized(malformed, secret))
+    assert.equal(recoverySecretAuthorized(malformed, secret), false)
   }
-  assert.doesNotThrow(() => recoveryBearerAuthorized('Bearer é', 'aa'))
-  assert.equal(recoveryBearerAuthorized('Bearer é', 'aa'), false)
+  assert.equal(recoverySecretAuthorized(secret, ''), false)
+  assert.doesNotThrow(() => recoverySecretAuthorized('é', 'aa'))
+  assert.equal(recoverySecretAuthorized('é', 'aa'), false)
 })
 
 test('billing recovery uses database leases, reconciliation, and immutable records', () => {
@@ -113,11 +120,18 @@ test('billing recovery uses database leases, reconciliation, and immutable recor
   assert.match(worker, /billing_entries_require_review/)
 })
 
-test('webhooks verify raw bodies and deduplicate event ids', () => {
+test('webhooks verify raw bodies and durably deduplicate completed event ids', () => {
   const webhook = read('src/app/api/billing/webhook/route.ts')
+  const durability = read('supabase/migrations/202607200001_stripe_webhook_durability.sql')
   assert.match(webhook, /constructEvent\(await request\.text\(\), signature/)
-  assert.match(webhook, /stripe_webhook_events/)
-  assert.match(webhook, /error\.code === '23505'/)
+  assert.match(webhook, /claim_stripe_webhook_event/)
+  assert.match(webhook, /mark_stripe_webhook_event_processed/)
+  assert.match(webhook, /result\.kind === 'busy'[\s\S]+status: 503/)
+  assert.match(durability, /where status = 'processing'/)
+  assert.match(durability, /current_event\.status = 'processed'/)
+  assert.match(durability, /lease_expires_at/)
   assert.match(webhook, /event\.created/)
-  assert.match(read('src/lib/billing/supabase.ts'), /lte\('stripe_subscription_event_created', eventCreated\)/)
+  const persistence = read('src/lib/billing/canonical-persistence.ts')
+  assert.match(persistence, /rpc\([\s\S]+compare_and_set_stripe_subscription_snapshot/)
+  assert.match(persistence, /rpc\([\s\S]+compare_and_set_stripe_invoice_snapshot/)
 })

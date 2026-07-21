@@ -14,6 +14,7 @@ from api.company_admin import (
     CompanyAdminDenied,
     CompanyAdminNotFound,
     CompanyPrincipal,
+    DASHBOARD_SESSION_PER_ACTOR_MAX,
     ROLE_PERMISSIONS,
     SQLiteCompanyAdminService,
     SupabaseCompanyAdminService,
@@ -448,6 +449,10 @@ def test_service_account_keys_rotate_once_are_scoped_hashed_and_revocable(tmp_pa
     account = service.create_service_account(
         admin, "Production worker", "production",
         ["proxy:invoke", "usage:write", "jobs:create"], 90, "request-service-create")
+    initial = account
+    assert initial["secret_available_once"] is True
+    assert service_account_key_context(
+        store, hash_key(initial["api_key"]))["service_account_id"] == account["id"]
     first = service.rotate_service_key(admin, account["id"], 30, "request-key-first")
     second = service.rotate_service_key(admin, account["id"], 30, "request-key-rotate")
 
@@ -457,13 +462,17 @@ def test_service_account_keys_rotate_once_are_scoped_hashed_and_revocable(tmp_pa
             (org_a["id"], account["id"]),
         ).fetchall()
         persisted = repr(db.execute("SELECT * FROM api_keys").fetchall())
-    assert len(rows) == 2
-    assert rows[0][0] == hash_key(first["api_key"])
+    assert len(rows) == 3
+    assert rows[0][0] == hash_key(initial["api_key"])
     assert rows[0][2]
-    assert rows[1][0] == hash_key(second["api_key"])
-    assert rows[1][1].split(",") == ["jobs:create", "proxy:invoke", "usage:write"]
-    assert rows[1][2] == ""
-    assert first["api_key"] not in persisted and second["api_key"] not in persisted
+    assert rows[1][0] == hash_key(first["api_key"])
+    assert rows[1][2]
+    assert rows[2][0] == hash_key(second["api_key"])
+    assert rows[2][1].split(",") == ["jobs:create", "proxy:invoke", "usage:write"]
+    assert rows[2][2] == ""
+    assert all(secret not in persisted for secret in (
+        initial["api_key"], first["api_key"], second["api_key"],
+    ))
 
     service.revoke_service_account(admin, account["id"], "request-service-revoke")
     with sqlite3.connect(store.db_path) as db:
@@ -471,6 +480,140 @@ def test_service_account_keys_rotate_once_are_scoped_hashed_and_revocable(tmp_pa
                           (account["id"],)).fetchone()[0] == "revoked"
         assert db.execute("SELECT revoked_at FROM api_keys WHERE key_hash=?",
                           (hash_key(second["api_key"]),)).fetchone()[0]
+
+
+def test_initial_service_key_is_billing_owned_actor_attributed_and_atomic(tmp_path):
+    store, service, org_a, _ = _setup(tmp_path)
+    admin = _principal("admin-a", org_a["id"], "company_admin")
+    created = service.create_service_account(
+        admin, "Initial production worker", "production",
+        ["proxy:invoke", "usage:write"], 90, "request-initial-service-key")
+
+    with sqlite3.connect(store.db_path) as db:
+        credential = db.execute(
+            "SELECT owner_id,created_by,key_hash,key_prefix,expires_at "
+            "FROM api_keys WHERE id=?", (created["key_id"],),
+        ).fetchone()
+        audit = db.execute(
+            "SELECT actor_user_id,actor_role,action,target_id FROM audit_events "
+            "WHERE request_id='request-initial-service-key'",
+        ).fetchone()
+        persisted = repr(db.execute("SELECT * FROM api_keys").fetchall())
+
+    assert credential == (
+        "owner-a", "admin-a", hash_key(created["api_key"]),
+        created["prefix"], created["expires_at"],
+    )
+    assert audit == (
+        "admin-a", "company_admin", "service_account.created", created["id"],
+    )
+    assert created["api_key"] not in persisted
+
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("""CREATE TRIGGER fail_initial_service_audit
+            BEFORE INSERT ON audit_events
+            WHEN NEW.action='service_account.created'
+            BEGIN SELECT RAISE(ABORT,'simulated initial key audit failure'); END""")
+    with pytest.raises(sqlite3.DatabaseError, match="simulated initial key audit failure"):
+        service.create_service_account(
+            admin, "Must roll back", "production", ["proxy:invoke"], 90,
+            "request-initial-service-rollback")
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT count(*) FROM service_accounts WHERE name='Must roll back'"
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT count(*) FROM api_keys WHERE name='Must roll back'"
+        ).fetchone()[0] == 0
+
+
+def test_service_key_billing_owner_is_authoritative_and_rotator_is_audit_only(
+        tmp_path, monkeypatch):
+    from api import server
+
+    store, service, org_a, _ = _setup(tmp_path)
+    admin = _principal("admin-a", org_a["id"], "company_admin")
+    account = service.create_service_account(
+        admin, "Billing owner worker", "production",
+        ["proxy:invoke", "usage:write"], 90, "request-billing-account")
+    generic_key_hash = hash_key("bvt_generic_service_key")
+    store.create_key(
+        generic_key_hash, "Generic service key", owner_id="admin-a",
+        organization_id=org_a["id"], service_account_id=account["id"],
+        key_type="organization_service", scopes=["proxy:invoke", "usage:write"],
+        created_by="admin-a", request_id="request-generic-service-key",
+        actor_role="company_admin",
+    )
+    key = service.rotate_service_key(
+        admin, account["id"], 30, "request-billing-key")
+    key_hash = hash_key(key["api_key"])
+
+    with sqlite3.connect(store.db_path) as db:
+        credential = db.execute(
+            "SELECT owner_id,created_by FROM api_keys WHERE key_hash=?", (key_hash,),
+        ).fetchone()
+        generic_credential = db.execute(
+            "SELECT owner_id,created_by FROM api_keys WHERE key_hash=?",
+            (generic_key_hash,),
+        ).fetchone()
+        audit = db.execute(
+            "SELECT actor_user_id,actor_role FROM audit_events "
+            "WHERE request_id='request-billing-key'",
+        ).fetchone()
+        # Simulate a pre-migration/stale credential row. Runtime authorization
+        # must resolve the organization relationship instead of trusting it.
+        db.execute(
+            "UPDATE api_keys SET owner_id='admin-a' WHERE key_hash=?", (key_hash,),
+        )
+
+    assert credential == ("owner-a", "admin-a")
+    assert generic_credential == ("owner-a", "admin-a")
+    assert audit == ("admin-a", "company_admin")
+    assert store.key_owner(key_hash) == "owner-a"
+    authoritative = service_account_key_context(store, key_hash)
+    assert authoritative and authoritative["owner_id"] == "owner-a"
+
+    monkeypatch.setattr(server, "_store", store)
+    server._auth_context_cache.clear()
+    context = server._auth_context_for_key(key_hash)
+    assert context.billing_owner_id == "owner-a"
+    assert context.actor_user_id == ""
+    assert len(server._auth_context_cache) == 0
+    assert server._safe_record_usage(
+        auth_context=context, key_hash=key_hash, owner_id="admin-a",
+        baseline_tokens=10, optimized_tokens=8,
+    ) is True
+    with sqlite3.connect(store.db_path) as db:
+        usage_owner = db.execute(
+            "SELECT owner_id FROM usage_log WHERE key_hash=? ORDER BY id DESC LIMIT 1",
+            (key_hash,),
+        ).fetchone()[0]
+    assert usage_owner == "owner-a"
+
+    # Ownership transfer does not rotate the service key. Its next request
+    # must resolve the new billing owner rather than reuse cached attribution.
+    with sqlite3.connect(store.db_path) as db:
+        db.execute(
+            "UPDATE organizations SET billing_owner_id='owner-a-2' WHERE id=?",
+            (org_a["id"],),
+        )
+    transferred = server._auth_context_for_key(key_hash)
+    assert transferred.billing_owner_id == "owner-a-2"
+    assert store.key_owner(key_hash) == "owner-a-2"
+
+
+def test_billing_owner_attribution_migration_preserves_creator_identity():
+    migration = (Path(__file__).parent.parent / "supabase/migrations/"
+                 "202607200003_billing_owner_attribution.sql").read_text()
+    compact = "".join(migration.lower().split())
+
+    assert "new.owner_id:=v_billing_owner_id::text" in compact
+    assert "p_key_hash,v_account.name,now(),v_billing_owner_id::text" in compact
+    assert "p_key_prefix,v_key_expiry,p_actor_user_id" in compact
+    assert "organization.billing_owner_id::text,credential.organization_id" in compact
+    assert "credential.owner_id" not in migration.split(
+        "create function public.service_key_authorization", 1)[1]
+    assert "usage and billing" in migration.lower()
 
 
 def test_service_account_expiry_bounds_rotation_and_runtime_authorization(tmp_path):
@@ -644,7 +787,83 @@ def test_supabase_list_uses_single_authorized_keyset_rpc(monkeypatch):
     assert calls[0][2]["data"]["p_limit"] == 50
 
 
-def test_atomic_dashboard_key_replacement_privilege_and_tenant_isolation(tmp_path):
+def test_supabase_service_account_creation_uses_one_atomic_rpc_and_returns_raw_once(
+        monkeypatch):
+    import api.company_admin as company_admin
+
+    calls = []
+    raw_key = "bvt_InitialServiceSecret123456789"
+    principal = CompanyPrincipal(
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        "company_admin",
+    )
+
+    class Store:
+        def _request(self, method, path, **kwargs):
+            calls.append((method, path, kwargs["data"]))
+            return {
+                "ok": True,
+                "id": kwargs["data"]["p_service_account_id"],
+                "name": kwargs["data"]["p_name"],
+                "environment": kwargs["data"]["p_environment"],
+                "scopes": kwargs["data"]["p_scopes"],
+                "status": "active",
+                "expires_at": kwargs["data"]["p_expires_at"],
+                "key_id": "00000000-0000-4000-8000-000000000003",
+                "prefix": kwargs["data"]["p_key_prefix"],
+            }
+
+    monkeypatch.setattr(company_admin, "generate_api_key", lambda: raw_key)
+    service = SupabaseCompanyAdminService(
+        Store(), cursor_secret="c" * 40, invitee_pepper="i" * 40)
+
+    created = service.create_service_account(
+        principal, "Production worker", "production",
+        ["proxy:invoke", "usage:write"], 90, "request-initial-key-rpc")
+
+    assert created["api_key"] == raw_key
+    assert created["secret_available_once"] is True
+    assert len(calls) == 1
+    method, path, data = calls[0]
+    assert method == "POST" and path == "rpc/company_admin_create_service_account"
+    assert data["p_key_hash"] == hash_key(raw_key)
+    assert data["p_key_prefix"] == raw_key[:12]
+    assert data["p_actor_user_id"] == principal.actor_id
+    assert data["p_organization_id"] == principal.company_id
+    assert raw_key not in repr(calls)
+
+
+def test_initial_service_key_migration_is_atomic_billing_owned_and_service_only():
+    migration = (Path(__file__).parent.parent / "supabase/migrations/"
+                 "202607200005_initial_service_key.sql").read_text()
+    compact = "".join(migration.lower().split())
+
+    old_signature = (
+        "public.company_admin_create_service_account("
+        "uuid,uuid,uuid,text,text,text[],timestamptz,text)"
+    )
+    new_signature = (
+        "public.company_admin_create_service_account("
+        "uuid,uuid,uuid,text,text,text[],text,text,timestamptz,text)"
+    )
+    assert f"dropfunctionifexists{old_signature}" in compact
+    assert f"revokeallonfunction{new_signature}" in compact
+    assert f"grantexecuteonfunction{new_signature}toservice_role" in compact
+    assert "securitydefinersetsearch_path=public,pg_temp" in compact
+    assert "p_key_hash!~'^[0-9a-f]{64}$'" in compact
+    assert "v_billing_owner_id::text" in compact
+    assert "p_key_prefix,v_account.expires_at,p_actor_user_id" in compact
+    assert "exceptionwhenunique_violation" in compact
+    account_insert = compact.index("insertintopublic.service_accounts")
+    key_insert = compact.index("insertintopublic.api_keys")
+    audit_append = compact.index("'service_account.created'")
+    assert account_insert < key_insert < audit_append
+    returned = compact.split("returnjsonb_build_object(", 2)[2].split(";", 1)[0]
+    assert "p_key_hash" not in returned
+
+
+def test_atomic_dashboard_key_multitab_cap_privilege_and_tenant_isolation(tmp_path):
     store, service, org_a, org_b = _setup(tmp_path)
     member = _principal("member-a", org_a["id"], "member")
     owner = _principal("owner-a", org_a["id"], "company_owner")
@@ -657,6 +876,19 @@ def test_atomic_dashboard_key_replacement_privilege_and_tenant_isolation(tmp_pat
     second = service.create_dashboard_session_key(
         member, hash_key(second_raw), second_raw[:12], expires, "request-atomic-second")
     assert "key_hash" not in first and "key_hash" not in second
+
+    additional = []
+    for index in range(2, DASHBOARD_SESSION_PER_ACTOR_MAX):
+        raw_key = f"bvt_atomic_tab_{index}"
+        additional.append(service.create_dashboard_session_key(
+            member, hash_key(raw_key), raw_key[:12], expires,
+            f"request-atomic-tab-{index}",
+        ))
+    ninth_raw = "bvt_atomic_ninth"
+    ninth = service.create_dashboard_session_key(
+        member, hash_key(ninth_raw), ninth_raw[:12], expires,
+        "request-atomic-ninth",
+    )
 
     other_raw = "bvt_atomic_owner"
     other = service.create_dashboard_session_key(
@@ -676,11 +908,20 @@ def test_atomic_dashboard_key_replacement_privilege_and_tenant_isolation(tmp_pat
             "AND created_by='member-a' ORDER BY created", (org_a["id"],)
         ).fetchall()
         audit = db.execute(
-            "SELECT target_id FROM audit_events WHERE request_id='request-atomic-second'"
+            "SELECT target_id FROM audit_events WHERE request_id='request-atomic-second' "
+            "AND action='dashboard_session.created'"
         ).fetchone()[0]
-    assert rows[0][0] == first["key_id"] and rows[0][2]
-    assert rows[1][0] == second["key_id"] and rows[1][2] == ""
-    assert rows[1][1] == hash_key(second_raw)
+        rotated = db.execute(
+            "SELECT target_id FROM audit_events WHERE request_id='request-atomic-ninth' "
+            "AND action='dashboard_session.rotated'"
+        ).fetchone()[0]
+    states = {row[0]: (row[1], row[2]) for row in rows}
+    assert states[first["key_id"]][1]
+    assert states[second["key_id"]] == (hash_key(second_raw), "")
+    assert all(states[item["key_id"]][1] == "" for item in additional)
+    assert states[ninth["key_id"]] == (hash_key(ninth_raw), "")
+    assert sum(not state[1] for state in states.values()) == DASHBOARD_SESSION_PER_ACTOR_MAX
+    assert rotated == first["key_id"]
     assert audit == second["key_id"]
     assert audit != hash_key(second_raw)
 
@@ -1013,7 +1254,7 @@ def test_admin_audit_telemetry_is_content_free_fail_open_and_deduplicated(
 
 
 def test_fastapi_router_derives_company_and_role_from_server_principal(tmp_path):
-    _, service, org_a, org_b = _setup(tmp_path)
+    store, service, org_a, org_b = _setup(tmp_path)
     principals = {
         "owner-a": _principal("owner-a", org_a["id"], "company_owner"),
         "member-a": _principal("member-a", org_a["id"], "member"),
@@ -1045,3 +1286,19 @@ def test_fastapi_router_derives_company_and_role_from_server_principal(tmp_path)
         f"/v1/company/members?company_id={org_b['id']}&limit=50", headers=owner_headers)
     assert members.status_code == 200
     assert "member-b" not in {row["id"] for row in members.json()["items"]}
+
+    service_account = client.post(
+        "/v1/company/service-accounts",
+        headers={**owner_headers, "X-Request-ID": "request-initial-key-api"},
+        json={
+            "name": "API production worker", "environment": "production",
+            "scopes": ["proxy:invoke", "usage:write"], "expires_in_days": 90,
+        },
+    )
+    assert service_account.status_code == 200
+    assert service_account.headers["cache-control"] == "private, no-store"
+    assert service_account.headers["pragma"] == "no-cache"
+    payload = service_account.json()
+    assert payload["secret_available_once"] is True
+    assert service_account_key_context(
+        store, hash_key(payload["api_key"]))["service_account_id"] == payload["id"]

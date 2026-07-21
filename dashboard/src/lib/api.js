@@ -11,19 +11,55 @@ export function redactBrowserError(value) {
 async function responseError(response) {
   const data = await response.json().catch(() => null)
   const detail = redactBrowserError(data?.detail || data?.error)
-  return new Error(detail || `Request failed (${response.status})`)
+  return Object.assign(new Error(detail || `Request failed (${response.status})`), {
+    status: response.status,
+  })
+}
+
+let authenticationRecovery = null
+
+export function configureApiAuthenticationRecovery(recover) {
+  if (recover !== null && typeof recover !== 'function') {
+    throw new Error('Invalid authentication recovery handler')
+  }
+  authenticationRecovery = recover
+  return () => {
+    if (authenticationRecovery === recover) authenticationRecovery = null
+  }
+}
+
+async function recoverApiAuthentication(rejectedApiKey) {
+  if (!authenticationRecovery) return ''
+  const replacement = await authenticationRecovery(rejectedApiKey)
+  return typeof replacement === 'string' && replacement ? replacement : ''
 }
 
 export async function apiJson(path, apiKey, { body, request = fetch, headers, ...options } = {}) {
-  const response = await request(path, {
+  const method = String(options.method || 'GET').toUpperCase()
+  const send = activeApiKey => request(path, {
     ...options,
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      'X-Brevitas-Key': apiKey,
+      'X-Brevitas-Key': activeApiKey,
       ...headers,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
+  let response = await send(apiKey)
+  if (response.status === 401) {
+    let replacement = ''
+    try {
+      replacement = await recoverApiAuthentication(apiKey)
+    } catch {
+      // The original authentication rejection remains the authoritative error.
+    }
+    // A safe read can be repeated once after reminting. Mutations are never
+    // replayed: callers may explicitly retry them after observing the failure.
+    if (['GET', 'HEAD'].includes(method) && replacement && replacement !== apiKey
+        && !options.signal?.aborted) {
+      response = await send(replacement)
+    }
+  }
   if (!response.ok) throw await responseError(response)
   return response.json()
 }
@@ -100,7 +136,16 @@ async function streamEvents(path, apiKey, body, onEvent, { request = fetch, sign
   } catch (error) {
     throw new Error(redactBrowserError(error?.message) || 'Streaming request failed')
   }
-  if (!response.ok) throw await responseError(response)
+  if (!response.ok) {
+    if (response.status === 401) {
+      try {
+        await recoverApiAuthentication(apiKey)
+      } catch {
+        // Streaming POSTs are intentionally never replayed after reminting.
+      }
+    }
+    throw await responseError(response)
+  }
   if (!response.body) throw new Error('Streaming is unavailable in this browser')
 
   let reader

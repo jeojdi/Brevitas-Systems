@@ -13,8 +13,9 @@ from api.distributed_limits import (
 
 
 class FakeRedis:
-    def __init__(self, acquire_result=None):
+    def __init__(self, acquire_result=None, *, renew_result=1):
         self.acquire_result = acquire_result or [1, 0, 0, 17]
+        self.renew_result = renew_result
         self.calls = []
         self.closed = False
 
@@ -22,6 +23,8 @@ class FakeRedis:
         self.calls.append((script, key_count, values))
         if "Validate every fixed-window" in script:
             return self.acquire_result
+        if "A lease is owned only while" in script:
+            return self.renew_result
         return 1
 
     async def ping(self):
@@ -150,6 +153,65 @@ def test_limiter_uses_injected_clock_for_deterministic_expiry():
     now, expires = map(int, values[key_count:][:2])
     assert now == 123_000
     assert expires == 123_000 + policy().lease_seconds * 1000
+
+
+def test_renewal_false_is_reported_as_lost_ownership():
+    redis = FakeRedis(renew_result=0)
+    limiter = DistributedLimiter(redis, policy=policy())
+
+    async def exercise():
+        lease = await limiter.acquire(identity())
+        assert await lease.renew() is False
+
+    asyncio.run(exercise())
+
+
+def test_renewal_exception_fails_closed():
+    class RenewalFailureRedis(FakeRedis):
+        async def eval(self, script, key_count, *values):
+            if "A lease is owned only while" in script:
+                raise TimeoutError("renewal unavailable")
+            return await super().eval(script, key_count, *values)
+
+    limiter = DistributedLimiter(RenewalFailureRedis(), policy=policy())
+
+    async def exercise():
+        lease = await limiter.acquire(identity())
+        with pytest.raises(LimiterUnavailable, match="renewal failed"):
+            await lease.renew()
+
+    asyncio.run(exercise())
+
+
+def test_replaced_owner_cannot_renew_or_release_replacement():
+    class OwnershipRedis:
+        def __init__(self):
+            self.owner = ""
+
+        async def eval(self, script, key_count, *values):
+            arguments = values[key_count:]
+            if "Validate every fixed-window" in script:
+                self.owner = str(arguments[3])
+                return [1, 0, 0, 17]
+            if "A lease is owned only while" in script:
+                return int(self.owner == str(arguments[0]))
+            if "ZREM" in script and self.owner == str(arguments[0]):
+                self.owner = ""
+            return 1
+
+    redis = OwnershipRedis()
+    limiter = DistributedLimiter(redis, policy=policy())
+
+    async def exercise():
+        lease = await limiter.acquire(identity())
+        original_owner = lease.request_id
+        redis.owner = "replacement_owner"
+        assert await lease.renew() is False
+        await lease.release()
+        assert redis.owner == "replacement_owner"
+        assert original_owner != redis.owner
+
+    asyncio.run(exercise())
 
 
 def test_redis_telemetry_uses_fixed_content_free_labels(monkeypatch):

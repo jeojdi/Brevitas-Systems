@@ -181,6 +181,13 @@ Review the current Redis Cloud high-availability and persistence behavior before
 
 ## Evidence and failure handling
 
+For release use, the free-form exercise record is supplemented—not replaced—by the machine-checked
+operational evidence envelope in
+[`OPERATIONAL_READINESS_GATE.md`](OPERATIONAL_READINESS_GATE.md). The gate independently calculates
+RPO and RTO from ordered UTC timestamps, requires isolated restore and deletion-replay receipts, and
+rejects stale, wrong-environment, or wrong-build evidence. A dry run or this draft runbook cannot
+satisfy that gate.
+
 Every quarterly exercise records owner role, incident/change ID, UTC start/end, chosen point,
 observed RPO/RTO, hashes, table-verification evidence, smoke results, exceptions, and remediation
 owners. Keep restore/tabletop evidence with security and administrative evidence for 400 days.

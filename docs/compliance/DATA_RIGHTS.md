@@ -130,10 +130,12 @@ request, hold action, hold, or tombstone exists; compliance evidence must never 
 a rollback.
 
 Optional legacy/platform tables are handled deliberately during identity cleanup. `profiles` is
-deleted for an unshared user. `billing_events` keeps the financial row but clears its session ID;
-`billing_accounts` keeps required Stripe/invoice evidence but clears ephemeral checkout state; and
-`legal_acceptances` remains minimized legal evidence linked only to the non-login UUID shell. Each
-optional path is catalog-checked. Tenant cleanup removes both the exact runtime namespace
+deleted for an unshared user. `billing_events` keeps the financial row but clears its session ID
+only for the exact organization being deleted; legacy rows that cannot be attributed to one
+organization are retained but excluded from tenant/subject exports. `billing_accounts` keeps
+required Stripe/invoice evidence but clears ephemeral checkout state only for that exact company;
+and `legal_acceptances` remains minimized legal evidence linked only to the non-login UUID shell.
+Each optional path is catalog-checked. Tenant cleanup removes both the exact runtime namespace
 `sha256("<organization_uuid>:unattributed")` and every customer namespace.
 
 Tenant exports include organization/member/customer records, full portable usage and billing
@@ -141,9 +143,11 @@ fields, service accounts, installations/devices, invitation and administrative-a
 API key and device-delivery metadata, repository relationships, provider configuration, durable job
 payload/results and lifecycle metadata, and enabled semantic-cache content/derived metadata. For
 identities that tenant deletion may anonymize, the export also includes the user/application
-profile, authentication identity, non-secret session/MFA/one-time-token lifecycle metadata, legacy
-billing events, legal acceptance, and billing-owner relationship. Member/customer exports select
-the matching relationships and encrypted content without widening tenant scope. If the optional
+profile, authentication identity, non-secret session/MFA/one-time-token lifecycle metadata,
+organization-attributed legacy billing events, legal acceptance, and billing-owner relationship.
+Billing accounts and ledger rows are selected by immutable `organization_id`, never by the shared
+billing-owner snapshot. Member/customer exports select the matching relationships and encrypted
+content without widening tenant scope. If the optional
 `support_records` store exists, exports fail closed unless
 `compliance_export_support_records(uuid)` and
 `compliance_export_support_subject(uuid,text,uuid)` provide its explicitly scoped portable rows.

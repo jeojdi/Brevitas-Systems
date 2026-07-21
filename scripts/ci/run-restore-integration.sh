@@ -10,12 +10,24 @@ fi
 node scripts/ci/validate-migration-dsn.mjs
 DATABASE_URL="${RESTORE_DATABASE_URL}" node scripts/ci/validate-migration-dsn.mjs
 
+for client in psql pg_dump pg_restore; do
+  version="$(${client} --version 2>/dev/null)" \
+    || { echo "Unable to identify PostgreSQL client: ${client}" >&2; exit 2; }
+  if [[ "${version}" =~ PostgreSQL\)[[:space:]]+([0-9]+) ]] \
+      && [[ "${BASH_REMATCH[1]}" == "16" ]]; then
+    continue
+  fi
+  echo "${client} major version must be 16 for the PostgreSQL 16 restore contract." >&2
+  exit 2
+done
+
 assert_loopback_server() {
   local dsn="$1"
   local address
   address="$({ PGOPTIONS='-c default_transaction_read_only=on' \
     psql "${dsn}" --no-psqlrc --set ON_ERROR_STOP=1 \
-      --tuples-only --no-align --command 'select inet_server_addr()::text'; } | tr -d '[:space:]')"
+      --tuples-only --no-align \
+      --command 'select pg_catalog.host(pg_catalog.inet_server_addr())'; } | tr -d '[:space:]')"
   case "${address}" in
     127.0.0.1|::1) ;;
     *) echo 'Restore integration refuses a server not reached over loopback.' >&2; exit 2 ;;
@@ -32,6 +44,7 @@ if [[ -z "${source_database}" || -z "${target_database}" || "${source_database}"
 fi
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/brevitas-restore-ci.XXXXXX")"
+workdir="$(cd "${workdir}" && pwd -P)"
 cleanup() { rm -rf -- "${workdir}"; }
 trap cleanup EXIT INT TERM
 dump="${workdir}/migration-source.dump"
@@ -39,7 +52,7 @@ counts="${workdir}/raw-counts.tsv"
 manifest="${workdir}/migration-source.manifest.json"
 artifact="${workdir}/migration-source.deletions.json"
 evidence_dir="${workdir}/evidence"
-mkdir -p "${evidence_dir}"
+mkdir -p -m 700 "${evidence_dir}"
 
 pg_dump "${DATABASE_URL}" --format=custom --no-owner --no-privileges \
   --schema=public --schema=auth --file="${dump}"
@@ -113,7 +126,7 @@ replay_base=(
   --deletion-artifact "${artifact}"
   --expected-deletion-artifact-sha256 "${artifact_sha256}"
   --deletion-evidence-reference deletion:ci:zero:001
-  --evidence-dir "${evidence_dir}" --actor-id system:restore:ci
+  --evidence-dir "${evidence_dir}" --actor-id system:restore:ci-test
   --database-url-env RESTORE_DATABASE_URL --apply
 )
 
@@ -132,7 +145,7 @@ expect_failure() {
   fi
 }
 
-expect_failure missing-control 'brevitas_restore.control' env \
+expect_failure missing-control 'restore control/evidence preflight mismatch' env \
   RESTORE_DATABASE_URL="${RESTORE_DATABASE_URL}" \
   scripts/dr/replay-deletion-artifact.sh "${replay_base[@]}" \
   --confirm REPLAY:migration-source:migration-restore
@@ -154,7 +167,7 @@ expect_failure wrong-control 'preflight mismatch' env \
   --backup-manifest "${manifest}" --expected-manifest-sha256 "${manifest_sha256}" \
   --deletion-artifact "${artifact}" --expected-deletion-artifact-sha256 "${artifact_sha256}" \
   --deletion-evidence-reference deletion:ci:zero:001 --evidence-dir "${evidence_dir}" \
-  --actor-id system:restore:ci --database-url-env RESTORE_DATABASE_URL --apply \
+  --actor-id system:restore:ci-test --database-url-env RESTORE_DATABASE_URL --apply \
   --confirm REPLAY:migration-source:migration-wrong
 expect_failure wrong-hash 'hash mismatch' env \
   RESTORE_DATABASE_URL="${RESTORE_DATABASE_URL}" \
@@ -164,7 +177,7 @@ expect_failure wrong-hash 'hash mismatch' env \
   --backup-manifest "${manifest}" --expected-manifest-sha256 "${manifest_sha256}" \
   --deletion-artifact "${artifact}" --expected-deletion-artifact-sha256 "$(printf '0%.0s' {1..64})" \
   --deletion-evidence-reference deletion:ci:zero:001 --evidence-dir "${evidence_dir}" \
-  --actor-id system:restore:ci --database-url-env RESTORE_DATABASE_URL --apply \
+  --actor-id system:restore:ci-test --database-url-env RESTORE_DATABASE_URL --apply \
   --confirm REPLAY:migration-source:migration-restore
 expect_failure wrong-reference 'evidence binding mismatch' env \
   RESTORE_DATABASE_URL="${RESTORE_DATABASE_URL}" \
@@ -174,11 +187,24 @@ expect_failure wrong-reference 'evidence binding mismatch' env \
   --backup-manifest "${manifest}" --expected-manifest-sha256 "${manifest_sha256}" \
   --deletion-artifact "${artifact}" --expected-deletion-artifact-sha256 "${artifact_sha256}" \
   --deletion-evidence-reference deletion:ci:wrong:001 --evidence-dir "${evidence_dir}" \
-  --actor-id system:restore:ci --database-url-env RESTORE_DATABASE_URL --apply \
+  --actor-id system:restore:ci-test --database-url-env RESTORE_DATABASE_URL --apply \
   --confirm REPLAY:migration-source:migration-restore
 
+restore_list="${workdir}/migration-source.restore-list"
+pg_restore --list "${dump}" | awk '
+  /^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public / {
+    print ";" $0
+    public_schema_entries++
+    next
+  }
+  { print }
+  END { if (public_schema_entries != 1) exit 1 }
+' > "${restore_list}"
+# The isolated target already has the otherwise-empty public schema because
+# pgcrypto and vector are bootstrapped there. Restore every public object but
+# skip the dump's single duplicate CREATE SCHEMA public entry.
 pg_restore --dbname="${RESTORE_DATABASE_URL}" --exit-on-error --single-transaction \
-  --no-owner --no-privileges "${dump}"
+  --no-owner --no-privileges --use-list="${restore_list}" "${dump}"
 
 RESTORE_DATABASE_URL="${RESTORE_DATABASE_URL}" scripts/dr/verify-logical.sh \
   --environment test --target-id migration-restore --target-mode ephemeral-postgres \

@@ -10,6 +10,7 @@ import concurrent.futures
 import importlib
 import json
 import logging
+import math
 import queue
 import re
 import secrets
@@ -46,6 +47,7 @@ from brevitas.security import (
     EnvelopeCipher,
     EnvelopeError,
     KMSConfigurationError,
+    KMSReadinessMonitor,
     KMSUnavailable,
     ManagedKMS,
 )
@@ -119,6 +121,7 @@ def _optimize_message_logged(text: str) -> dict:
 
 
 from .auth import generate_api_key, hash_key
+from .build_info import build_identity, validate_production_build_identity
 from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage, MODEL_PRICES
 from .store import make_store, PROVIDER_COSTS_PER_1M
 from brevitas.semantic_cache import make_semantic_cache
@@ -129,6 +132,7 @@ _RESOURCE_BOUNDS = ResourceBounds.from_env()
 _managed_kms_adapter: ManagedKMS | None = None
 _legacy_credential_keys: tuple[str | bytes, ...] = ()
 _credential_cipher: EnvelopeCipher | None = None
+_kms_readiness_monitor = KMSReadinessMonitor(clock=_time.monotonic)
 _managed_kms_factories: dict[str, object] = {}
 _KMS_FACTORY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _KMS_MODULE_NAME = re.compile(
@@ -207,6 +211,7 @@ def configure_managed_kms(
     _managed_kms_adapter = adapter
     _legacy_credential_keys = tuple(legacy_keys)
     _credential_cipher = None
+    _kms_readiness_monitor.reset()
     service = globals().get("_job_service")
     if service is not None:
         service.crypto = None
@@ -237,6 +242,80 @@ def _require_credential_cipher() -> EnvelopeCipher:
     if cipher is None:  # pragma: no cover - required construction either returns or raises
         raise KMSConfigurationError("credential encryption is unavailable")
     return cipher
+
+
+_KMS_CONFIGURATION_NAMES = (
+    "BREVITAS_KMS_PROVIDER",
+    "BREVITAS_KMS_KEY_ID",
+    "BREVITAS_KMS_KEY_VERSION",
+    "BREVITAS_LOCAL_KMS_KEY",
+    "BREVITAS_KMS_REQUIRED",
+    "BREVITAS_KMS_ADAPTER_FACTORY",
+)
+
+
+def _kms_is_configured() -> bool:
+    return bool(
+        _production_runtime()
+        or _credential_cipher is not None
+        or _managed_kms_adapter is not None
+        or any(os.getenv(name) for name in _KMS_CONFIGURATION_NAMES)
+    )
+
+
+def _kms_readiness_bound(
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        raise KMSConfigurationError("KMS readiness bound is invalid") from None
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise KMSConfigurationError("KMS readiness bound is outside safe limits")
+    return value
+
+
+async def _kms_readiness_status() -> dict[str, bool]:
+    """Return content-free, fail-closed active KMS readiness evidence."""
+    configured = _kms_is_configured()
+    unavailable = {
+        "configured": configured,
+        "active_probe": False,
+        "fresh": False,
+    }
+    if not configured:
+        return unavailable
+    try:
+        cipher = _initialize_credential_cipher(required=True)
+        if cipher is None:
+            return unavailable
+        timeout = _kms_readiness_bound(
+            "BREVITAS_KMS_READINESS_TIMEOUT_SECONDS", 1.0, 0.05, 10.0
+        )
+        max_age = _kms_readiness_bound(
+            "BREVITAS_KMS_READINESS_MAX_AGE_SECONDS", 30.0, 1.0, 300.0
+        )
+        result = await _kms_readiness_monitor.check(
+            cipher,
+            timeout_seconds=timeout,
+            max_age_seconds=max_age,
+        )
+    except (Exception, asyncio.TimeoutError):
+        return unavailable
+    return {
+        "configured": True,
+        "active_probe": result.ready,
+        "fresh": result.fresh,
+    }
+
+
+def _kms_dependency_ready(status: dict[str, bool]) -> bool:
+    return not status["configured"] or bool(
+        status["active_probe"] and status["fresh"]
+    )
 
 
 _CREDENTIAL_DEPENDENCY_ERRORS = (
@@ -359,12 +438,68 @@ def _wait_for_provider_calls(timeout: float) -> bool:
 def _provider_unavailable(exc: Exception, label: str) -> HTTPException:
     if isinstance(exc, ProviderCircuitOpen):
         retry_after = max(1, int(exc.retry_after_s + 0.999))
-        return HTTPException(
+        return ProviderRequestNotAccepted(
             status_code=503,
             detail=f"{label} temporarily unavailable",
             headers={"Retry-After": str(retry_after)},
         )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = int(getattr(exc.response, "status_code", 0) or 0)
+        if status == 429:
+            # A rate-limit response is a definite rejection; no model work was
+            # accepted, so a later durable attempt is safe.
+            return ProviderRequestNotAccepted(
+                status_code=502, detail=f"{label} request failed",
+            )
+        if status >= 500 or status in {408, 409, 425}:
+            return ProviderOutcomeAmbiguous(label)
+        return ProviderRequestRejected(label)
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+        # These fail before request bytes can be accepted by the provider.
+        return ProviderRequestNotAccepted(
+            status_code=502, detail=f"{label} request failed",
+        )
+    if isinstance(exc, httpx.TransportError):
+        return ProviderOutcomeAmbiguous(label)
     return HTTPException(status_code=502, detail=f"{label} request failed")
+
+
+class ProviderOutcomeAmbiguous(HTTPException):
+    """A provider may have accepted billable work but returned no usable result."""
+
+    job_retryable = False
+
+    def __init__(self, label: str) -> None:
+        super().__init__(status_code=502, detail=f"{label} request failed")
+
+
+class ProviderRequestNotAccepted(HTTPException):
+    """A retryable outcome proven to precede provider request acceptance."""
+
+    job_retryable = True
+    provider_outbound_not_accepted = True
+
+
+class ProviderRequestRejected(HTTPException):
+    """A non-transient provider rejection that a queue retry cannot repair."""
+
+    job_retryable = False
+    provider_outbound_not_accepted = True
+
+    def __init__(self, label: str) -> None:
+        super().__init__(status_code=502, detail=f"{label} request failed")
+
+
+def _provider_output_token_limit(request: Request | None) -> int:
+    """Apply a caller-requested ceiling without permitting an unbounded model call."""
+    raw = (request.headers.get("x-brevitas-max-output-tokens", "")
+           if request is not None else "")
+    if raw and not re.fullmatch(r"[1-9][0-9]{0,3}", raw):
+        raise HTTPException(status_code=400, detail="Invalid model output limit")
+    limit = int(raw) if raw else 1024
+    if limit > 1024:
+        raise HTTPException(status_code=400, detail="Invalid model output limit")
+    return limit
 
 
 def _price_usd(input_tokens: int, output_tokens: int) -> float:
@@ -387,7 +522,10 @@ def _make_ollama_backend(model: str, request: Request | None = None):
             with _provider_call():
                 resp = provider_sync_http.request(
                     "ollama", "generate", "POST", f"{_OLLAMA_HOST}/api/generate",
-                    json={"model": model, "prompt": prompt, "stream": False},
+                    json={
+                        "model": model, "prompt": prompt, "stream": False,
+                        "options": {"num_predict": _provider_output_token_limit(request)},
+                    },
                 )
                 try:
                     resp.raise_for_status()
@@ -400,7 +538,7 @@ def _make_ollama_backend(model: str, request: Request | None = None):
             _mark_documented_outage(request, "ollama")
             raise _provider_unavailable(exc, "Ollama") from exc
         except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=502, detail="Ollama response was invalid") from exc
+            raise ProviderOutcomeAmbiguous("Ollama") from exc
     backend.last_complete = True
     return backend
 
@@ -419,7 +557,7 @@ def _make_anthropic_backend(api_key: str, model: str, request: Request | None = 
                     },
                     json={
                         "model": model,
-                        "max_tokens": 1024,
+                        "max_tokens": _provider_output_token_limit(request),
                         "messages": [{"role": "user", "content": prompt}],
                     },
                 )
@@ -435,7 +573,7 @@ def _make_anthropic_backend(api_key: str, model: str, request: Request | None = 
             _mark_documented_outage(request, "anthropic")
             raise _provider_unavailable(exc, "Anthropic") from exc
         except (IndexError, KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=502, detail="Anthropic response was invalid") from exc
+            raise ProviderOutcomeAmbiguous("Anthropic") from exc
     backend.last_complete = True
     return backend
 
@@ -445,14 +583,20 @@ def _make_openai_compat_backend(provider: str, api_key: str, model: str, base_ur
     def backend(prompt: str, _routed: str) -> str:
         try:
             with _provider_call():
+                token_field = ("max_completion_tokens"
+                               if provider == "openai" and model.startswith("o")
+                               else "max_tokens")
                 resp = provider_sync_http.request(
                     provider, "chat.completions", "POST", f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={"model": model,
-                          "messages": [{"role": "user", "content": prompt}]},
+                    json={
+                        "model": model,
+                        token_field: _provider_output_token_limit(request),
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
                 )
                 try:
                     resp.raise_for_status()
@@ -465,7 +609,7 @@ def _make_openai_compat_backend(provider: str, api_key: str, model: str, base_ur
             _mark_documented_outage(request, provider)
             raise _provider_unavailable(exc, "Model provider") from exc
         except (IndexError, KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=502, detail="Model provider response was invalid") from exc
+            raise ProviderOutcomeAmbiguous("Model provider") from exc
     backend.last_complete = True
     return backend
 
@@ -722,6 +866,7 @@ def _validate_runtime_config() -> None:
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.accepting_traffic = False
+    validate_production_build_identity(_production_runtime())
     _validate_runtime_config()
     _configure_managed_kms_from_deployment()
     _initialize_credential_cipher(required=_production_runtime())
@@ -942,6 +1087,7 @@ _CUSTOMER_EXTERNAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 class AuthContext:
     key_hash: str
     organization_id: str = ""
+    billing_owner_id: str = ""
     customer_id: str = ""
     customer_external_id: str = ""
     service_account_id: str = ""
@@ -1012,7 +1158,11 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
     cache_key = (kh, external_id)
     with _auth_context_lock:
         cached = _auth_context_cache.get(cache_key)
-        if cached is not None:
+        # Service-key billing ownership and dashboard-session revocation/expiry
+        # can change independently of this process. Re-resolve both types so a
+        # rotated browser tab cannot spend the generic auth-cache TTL as valid.
+        if cached is not None and cached.key_type not in (
+                "organization_service", "dashboard_session"):
             _require_current_dashboard_membership(cached)
             return cached
     row = _store.key_context(kh)
@@ -1045,7 +1195,8 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
             raise HTTPException(status_code=403, detail="Customer is not active")
         customer_id = str(customer["id"])
     context = AuthContext(
-        key_hash=kh, organization_id=organization_id, customer_id=customer_id,
+        key_hash=kh, organization_id=organization_id,
+        billing_owner_id=str(row.get("owner_id") or ""), customer_id=customer_id,
         customer_external_id=external_id,
         service_account_id=str(row.get("service_account_id") or ""),
         actor_user_id=(str(row.get("owner_id") or "")
@@ -1067,7 +1218,8 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
             configured_cap = _RESOURCE_BOUNDS.registry_max_entries
         _auth_context_cache.max_entries = min(
             _RESOURCE_BOUNDS.registry_max_entries, configured_cap)
-        _auth_context_cache.put(cache_key, context)
+        if context.key_type not in ("organization_service", "dashboard_session"):
+            _auth_context_cache.put(cache_key, context)
     return context
 
 
@@ -1109,6 +1261,103 @@ def _key_exists(kh: str) -> bool:
         with _valid_key_lock:
             _valid_key_cache.put(kh, True)
     return valid
+
+
+def _admission_renewal_interval(lease) -> float:
+    """Renew well before expiry, including for the minimum one-second lease."""
+    return max(0.1, float(lease._limiter.policy.lease_seconds) / 3)
+
+
+async def _lease_guarded_body_iterator(original, lease, release_admission,
+                                       cancellation_event: threading.Event):
+    """Stop a response body immediately when its distributed lease is lost.
+
+    Renewal failure is a loss of ownership, not an observability-only event. Each
+    pending body read races the renewal guard so no later chunk is exposed after
+    Redis reports a missing/expired member or cannot prove ownership.
+    """
+    iterator = original.__aiter__()
+    lease_lost = asyncio.Event()
+    next_chunk = None
+    wait_for_loss = None
+
+    async def renew_while_open():
+        interval = _admission_renewal_interval(lease)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                owned = await lease.renew()
+            except Exception:
+                logger.error("distributed concurrency renewal failed; stream canceled")
+                cancellation_event.set()
+                lease_lost.set()
+                return
+            if not owned:
+                logger.error("distributed concurrency lease lost; stream canceled")
+                cancellation_event.set()
+                lease_lost.set()
+                return
+
+    renewal = None
+    try:
+        # `call_next` may spend most of the original lease waiting for provider
+        # headers. Re-prove ownership before exposing even the first body chunk.
+        try:
+            initially_owned = await lease.renew()
+        except Exception:
+            logger.error("distributed concurrency renewal failed; stream canceled")
+            cancellation_event.set()
+            lease_lost.set()
+            return
+        if not initially_owned:
+            logger.error("distributed concurrency lease lost; stream canceled")
+            cancellation_event.set()
+            lease_lost.set()
+            return
+        renewal = asyncio.create_task(renew_while_open())
+        while not lease_lost.is_set():
+            next_chunk = asyncio.create_task(anext(iterator))
+            wait_for_loss = asyncio.create_task(lease_lost.wait())
+            await asyncio.wait(
+                (next_chunk, wait_for_loss), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if lease_lost.is_set():
+                if not next_chunk.done():
+                    next_chunk.cancel()
+                with suppress(asyncio.CancelledError, StopAsyncIteration, Exception):
+                    await next_chunk
+                next_chunk = None
+                break
+
+            wait_for_loss.cancel()
+            with suppress(asyncio.CancelledError):
+                await wait_for_loss
+            wait_for_loss = None
+            try:
+                chunk = next_chunk.result()
+            except StopAsyncIteration:
+                next_chunk = None
+                break
+            next_chunk = None
+            # Renewal can complete between the wait and result retrieval.
+            if lease_lost.is_set():
+                break
+            yield chunk
+    finally:
+        cancellation_event.set()
+        lease_lost.set()
+        for task in (next_chunk, wait_for_loss, renewal):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (next_chunk, wait_for_loss, renewal):
+            if task is not None:
+                with suppress(asyncio.CancelledError, StopAsyncIteration, Exception):
+                    await task
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            with suppress(asyncio.CancelledError, Exception):
+                await close()
+        await release_admission()
 
 
 @app.middleware("http")
@@ -1225,6 +1474,8 @@ async def _protect_model_proxy(request: Request, call_next):
                 else:
                     _proxy_active.pop(kh, None)
 
+    admission_cancellation = threading.Event()
+    request.state.brevitas_admission_cancellation = admission_cancellation
     try:
         response = await call_next(request)
     except Exception:
@@ -1235,42 +1486,33 @@ async def _protect_model_proxy(request: Request, call_next):
         response.headers.setdefault("X-RateLimit-Reset", str(lease.reset_seconds))
     original = response.body_iterator
 
-    async def release_after_response():
-        renewal = None
-        if lease is not None and lease._limiter is not None:
-            async def renew_while_open():
-                interval = max(1.0, lease._limiter.policy.lease_seconds / 3)
-                while True:
-                    await asyncio.sleep(interval)
-                    try:
-                        await lease.renew()
-                    except LimiterUnavailable:
-                        logger.error("distributed concurrency renewal failed")
-                        return
+    if lease is not None and lease._limiter is not None:
+        response.body_iterator = _lease_guarded_body_iterator(
+            original, lease, release_admission, admission_cancellation,
+        )
+    else:
+        async def release_after_response():
+            try:
+                async for chunk in original:
+                    yield chunk
+            finally:
+                admission_cancellation.set()
+                await release_admission()
 
-            renewal = asyncio.create_task(renew_while_open())
-        try:
-            async for chunk in original:
-                yield chunk
-        finally:
-            if renewal is not None:
-                renewal.cancel()
-                with suppress(asyncio.CancelledError):
-                    await renewal
-            await release_admission()
-
-    response.body_iterator = release_after_response()
+        response.body_iterator = release_after_response()
     return response
 
 
 def _safe_record_usage(*, auth_context: AuthContext | None = None, **values) -> bool:
     """Telemetry is best-effort; it must never damage a model/compression response."""
     try:
-        if "owner_id" not in values and values.get("key_hash"):
-            values["owner_id"] = _store.key_owner(values["key_hash"])
         if auth_context is not None:
             values["organization_id"] = auth_context.organization_id
             values["customer_id"] = auth_context.customer_id
+            if auth_context.billing_owner_id:
+                values["owner_id"] = auth_context.billing_owner_id
+        if "owner_id" not in values and values.get("key_hash"):
+            values["owner_id"] = _store.key_owner(values["key_hash"])
         values.setdefault("authoritative", True)
         return bool(_store.record_usage(**values))
     except Exception as exc:
@@ -1954,6 +2196,71 @@ def bootstrap_organization(request: Request, body: OrganizationBootstrapRequest)
     }, headers={"Cache-Control": "private, no-store"})
 
 
+def _organization_onboarding_status(request: Request, *, complete: bool = False) -> dict:
+    user_id, organization = _member_organization(request)
+    organization_id = str(organization.get("id") or "")
+    if complete and organization.get("role") != "company_owner":
+        raise HTTPException(
+            status_code=403, detail="Company owner access required to finish onboarding")
+    try:
+        if complete:
+            status = _store.complete_onboarding(
+                user_id,
+                organization_id,
+                str(getattr(request.state, "brevitas_request_id", "")),
+            )
+        else:
+            status = _store.onboarding_status(user_id, organization_id)
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403, detail="Active company membership required") from exc
+    except Exception as exc:
+        logger.error(
+            "organization onboarding lookup unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Onboarding verification unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
+    if (not isinstance(status, dict)
+            or status.get("company_id") != organization_id
+            or status.get("status") not in ("pending", "complete")
+            or not isinstance(status.get("cli_connected"), bool)
+            or not isinstance(status.get("proxied_request_observed"), bool)):
+        logger.error("organization onboarding store returned unsafe status")
+        raise HTTPException(
+            status_code=503,
+            detail="Onboarding verification unavailable",
+            headers={"Retry-After": "1"},
+        )
+    return status
+
+
+@app.get("/v1/organization/onboarding")
+@limiter.limit("60/minute")
+def organization_onboarding_status(request: Request):
+    return JSONResponse(
+        _organization_onboarding_status(request),
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.post("/v1/organization/onboarding/complete")
+@limiter.limit("30/minute")
+def complete_organization_onboarding(request: Request):
+    status = _organization_onboarding_status(request, complete=True)
+    if status["status"] != "complete":
+        detail = (
+            "Run bvx install with the released CLI before checking verification."
+            if not status["cli_connected"]
+            else "No successful request from a BVX-configured tool has reached the proxy yet."
+        )
+        raise HTTPException(status_code=409, detail=detail)
+    return JSONResponse(status, headers={"Cache-Control": "private, no-store"})
+
+
 class CreateKeyRequest(BaseModel):
     name: str = Field(default="Company backend", max_length=100)
     environment: str = Field(default="production", min_length=1, max_length=32,
@@ -2041,7 +2348,6 @@ def create_key(request: Request, body: CreateKeyRequest):
     if dashboard_session:
         scopes = ["proxy:invoke", "usage:read_own", "provider:read", "provider:manage"]
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
-        _store.revoke_keys_by_type(organization["id"], "dashboard_session", owner_id)
     else:
         scopes = ["proxy:invoke", "usage:write", "usage:read_own",
                   "customer:route", "customer:auto_provision",
@@ -2049,17 +2355,24 @@ def create_key(request: Request, body: CreateKeyRequest):
                   "provider:read", "provider:manage",
                   "jobs:create", "jobs:read", "jobs:cancel"]
         expires_at = ""
-    _store.create_key(
-        kh, body.name,
-        owner_id=(owner_id if dashboard_session
-                  else organization.get("billing_owner_id") or owner_id),
-        organization_id=organization["id"],
-        service_account_id=service_account["id"] if service_account else "",
-        key_type="dashboard_session" if dashboard_session else "organization_service",
-        scopes=scopes, environment=body.environment, key_prefix=key[:12],
-        created_by=owner_id, expires_at=expires_at,
-        request_id=request_id, actor_role=actor_role,
-    )
+    try:
+        _store.create_key(
+            kh, body.name,
+            owner_id=(owner_id if dashboard_session
+                      else organization.get("billing_owner_id") or owner_id),
+            organization_id=organization["id"],
+            service_account_id=service_account["id"] if service_account else "",
+            key_type="dashboard_session" if dashboard_session else "organization_service",
+            scopes=scopes, environment=body.environment, key_prefix=key[:12],
+            created_by=owner_id, expires_at=expires_at,
+            request_id=request_id, actor_role=actor_role,
+        )
+    except RuntimeError as exc:
+        if dashboard_session and str(exc) in (
+                "duplicate key", "dashboard session company cap reached"):
+            raise HTTPException(
+                status_code=409, detail="Dashboard session limit reached") from exc
+        raise _key_admin_unavailable(exc) from exc
     with _valid_key_lock:
         _valid_key_cache.put(kh, True)
     return {"api_key": key, "name": body.name, "organization_id": organization["id"],
@@ -2445,6 +2758,7 @@ def _register_installation(request: Request, kh: str, installation_id: str,
             repository.label if repository else None, environment or context.environment,
             client.version, device.id, repository_id=repository.id if repository else "",
             device_platform=device.platform, device_arch=device.arch, client_name=client.name,
+            registration_key_hash=kh,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2754,6 +3068,54 @@ class _ClientGone(Exception):
     """Raised inside the worker thread to unwind the pipeline when the client disconnects."""
 
 
+_SAFE_ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _safe_error_type(exc: BaseException | None) -> str:
+    if exc is None:
+        return "none"
+    name = type(exc).__name__
+    return name if _SAFE_ERROR_TYPE.fullmatch(name) else "Exception"
+
+
+def _stream_error_event(route: str, exc: Exception, request: Request,
+                        provider: str = "") -> dict:
+    """Return a stable SSE error without copying exception/provider content.
+
+    Provider response bodies, transport URLs, credentials, and exception text are
+    deliberately excluded from both the client payload and server log. The log
+    retains bounded operational dimensions that are sufficient to correlate and
+    classify the failure without turning an upstream message into a secret sink.
+    """
+    status_code = int(exc.status_code) if isinstance(exc, HTTPException) else 0
+    if status_code == 503 or isinstance(exc, ProviderCircuitOpen):
+        code = "provider_stream_unavailable"
+        message = "Model provider temporarily unavailable"
+    elif status_code == 502 or isinstance(exc, httpx.HTTPError):
+        code = "provider_stream_failed"
+        message = "Model provider stream failed"
+    elif route == "playground":
+        code = "playground_stream_failed"
+        message = "Playground stream failed"
+    else:
+        code = "compression_stream_failed"
+        message = "Compression stream failed"
+
+    request_id = str(getattr(request.state, "brevitas_request_id", "") or "")
+    if not _SAFE_REQUEST_ID.fullmatch(request_id):
+        request_id = "unavailable"
+    safe_provider = provider if provider in _PROVIDER_MODELS else "none"
+    cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else None
+    logger.error(
+        "stream_failure route=%s code=%s provider=%s http_status=%d "
+        "error_type=%s cause_type=%s request_id=%s",
+        route, code, safe_provider, status_code, _safe_error_type(exc),
+        _safe_error_type(cause), request_id,
+    )
+    return {"stage": "error", "code": code, "message": message}
+
+
 @app.post("/v1/compress/stream")
 @limiter.limit("60/minute")
 async def compress_stream(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
@@ -2832,7 +3194,12 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
         except _ClientGone:
             pass
         except Exception as exc:
-            event_queue.put({"stage": "error", "message": str(exc)})
+            if cancel_event.is_set():
+                return
+            event_queue.put(_stream_error_event(
+                "compress", exc, request,
+                str((config or {}).get("provider") or ""),
+            ))
         finally:
             event_queue.put(SENTINEL)
 
@@ -3049,7 +3416,11 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
         except _ClientGone:
             pass
         except Exception as exc:
-            event_queue.put({"stage": "error", "message": str(exc)})
+            if cancel_event.is_set():
+                return
+            event_queue.put(_stream_error_event(
+                "playground", exc, request, provider,
+            ))
         finally:
             event_queue.put(SENTINEL)
 
@@ -3237,7 +3608,7 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
 
     inserted = _store.record_usage(
         key_hash=kh,
-        owner_id=_store.key_owner(kh),
+        owner_id=(auth_context.billing_owner_id if auth_context else _store.key_owner(kh)),
         organization_id=auth_context.organization_id if auth_context else "",
         customer_id=auth_context.customer_id if auth_context else "",
         authoritative=authoritative,
@@ -3663,8 +4034,10 @@ async def health():
         )
     except (Exception, asyncio.TimeoutError):
         redis_ready = False
+    kms = await _kms_readiness_status()
+    kms_ready = _kms_dependency_ready(kms)
     accepting_traffic = bool(getattr(app.state, "accepting_traffic", False))
-    core_ready = accepting_traffic and database_ready and redis_ready
+    core_ready = accepting_traffic and database_ready and redis_ready and kms_ready
     compressor_blocks_readiness = compressor_required and not compressor_healthy
     payload = {
         "status": ("unavailable" if not core_ready or compressor_blocks_readiness else
@@ -3672,6 +4045,7 @@ async def health():
         "accepting_traffic": accepting_traffic,
         "database_ready": database_ready,
         "redis_ready": redis_ready,
+        "kms_ready": kms_ready,
         "compressor": compressor,
         "dependencies": {
             "postgres": {
@@ -3682,6 +4056,13 @@ async def health():
                 "status": "ready" if redis_ready else "unavailable",
                 "authoritative": False,
                 "role": "coordination",
+            },
+            "kms": {
+                "status": (
+                    "disabled" if not kms["configured"] else
+                    "ready" if kms_ready else "unavailable"
+                ),
+                **kms,
             },
             "compressor": {
                 "status": "ready" if compressor_healthy else "unavailable",
@@ -3697,6 +4078,12 @@ async def health():
 async def liveness():
     """Process-only probe: dependency outages must not trigger a restart storm."""
     return {"status": "ok"}
+
+
+@app.get("/v1/version")
+async def version():
+    """Public, non-secret identity for matching a deployment to its tested source."""
+    return {"service": "api", "build": build_identity(required=_production_runtime())}
 
 
 def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:

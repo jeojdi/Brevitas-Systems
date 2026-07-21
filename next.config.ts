@@ -33,7 +33,7 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
-      ...["/dashboard/:path*", "/login", "/signup", "/waitlist", "/invite"]
+      ...["/dashboard/:path*", "/login", "/login/personal", "/login/enterprise", "/signup", "/waitlist", "/invite"]
         .map((source) => ({ source, headers: dashboardHeaders })),
       ...["/email-confirmed", "/welcome"]
         .map((source) => ({ source, headers: noIndexHeaders })),
@@ -54,6 +54,8 @@ const nextConfig: NextConfig = {
         { source: '/terms', destination: '/terms.html' },
         { source: '/waitlist', destination: '/dashboard/index.html' },
         { source: '/login', destination: '/dashboard/index.html' },
+        { source: '/login/personal', destination: '/dashboard/index.html' },
+        { source: '/login/enterprise', destination: '/dashboard/index.html' },
         { source: '/signup', destination: '/dashboard/index.html' },
         { source: '/invite', destination: '/dashboard/index.html' },
         { source: '/email-confirmed', destination: '/email-confirmed.html' },

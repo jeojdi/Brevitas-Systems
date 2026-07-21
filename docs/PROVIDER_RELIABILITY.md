@@ -112,6 +112,28 @@ continues to call `await close_provider_clients()` through its router shutdown h
 
 A client retrying a proxy `502`, `503`, or `504` remains responsible for idempotency; a
 non-deduplicated request may have been accepted upstream even when its response was lost.
+The hosted proxy also closes an active downstream/upstream stream when Redis cannot renew
+its hierarchical concurrency lease or reports that its exact lease member is no longer
+owned. This prevents further response delivery and receipt work, but cancellation cannot
+retract provider work or charges already accepted before lease loss. Provider idempotency
+and restricted provider-side budgets remain necessary for that external side effect.
+
+## Durable worker ambiguity fence
+
+Durable chat jobs persist an ownership- and lease-fenced outbound marker immediately before the
+provider POST. If the worker crashes or loses its lease after that marker, a later claim moves the
+job to `dead` with the content-free code `provider_outcome_ambiguous`; it never automatically
+replays the provider call. Proven pre-acceptance outcomes—circuit admission rejection, connection
+or pool failure, and a definite 429 rejection—may clear the marker and use the bounded job retry.
+Read/write ambiguity, provider 5xx responses, and malformed success responses retain the marker.
+Compression jobs do not use this marker.
+
+This is an at-most-once replay fence, not an exactly-once provider guarantee. A remote call may
+have completed even when Brevitas cannot commit its result. Automatic recovery would require a
+verified provider idempotency or result-reconciliation contract; the current supported Chat
+Completions contracts do not provide one that this worker can rely on. Migration
+`202607200015_provider_outbound_ambiguity.sql` must be applied before deploying the matching
+worker, and marker fields are never returned in the public job status.
 
 ## Public SDK client lifecycle
 

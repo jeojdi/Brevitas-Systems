@@ -10,7 +10,9 @@ patterns=(
   "sb_secret_[a-zA-Z0-9_]+"
   "\bsk-[a-zA-Z0-9]{20,}"
   "api[_-]?key.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
-  "password.*=.*['\"][^'\"]+['\"]"
+  # Match a quoted assignment while avoiding comparisons such as
+  # `password_ok = value == "fixture"` in security regression tests.
+  "password[[:alnum:]_-]*[[:space:]]*=[[:space:]]*['\"][^'\"]+['\"]"
   "token.*=.*['\"][a-zA-Z0-9]{20,}['\"]"
   # Generic opaque bearer credentials are long; shorter literals are commonly
   # protocol examples and test fixtures. Structured secret prefixes are

@@ -1,25 +1,25 @@
 \set ON_ERROR_STOP on
 
 do $$
-declare organization_id uuid;
+declare v_organization_id uuid;
 begin
-    select organization.id into organization_id
+    select organization.id into v_organization_id
       from public.organizations organization
      where organization.legacy_owner_id = 'e0000000-0000-4000-8000-000000000001';
-    if organization_id is null then
+    if v_organization_id is null then
         raise exception 'upgrade did not create the legacy owner organization';
     end if;
     if not exists (
         select 1 from public.api_keys key
          where key.key_hash = 'upgrade-baseline-key'
-           and key.organization_id = organization_id
+           and key.organization_id = v_organization_id
            and key.id is not null
            and key.key_type = 'legacy'
     ) then raise exception 'upgrade did not preserve and tenant-scope the legacy key'; end if;
     if not exists (
         select 1 from public.usage_log usage
          where usage.request_id = 'upgrade-baseline-usage'
-           and usage.organization_id = organization_id
+           and usage.organization_id = v_organization_id
            and not usage.authoritative
            and usage.cache_write_5m_tokens = 0
            and usage.cache_write_1h_tokens = 0

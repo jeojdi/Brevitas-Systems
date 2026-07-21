@@ -41,6 +41,22 @@ export const supabase = supabaseMisconfigured
 
 export const authModeForPath = pathname => /^\/(signup|waitlist)\/?$/.test(pathname) ? 'signup' : 'login'
 
+export const LOGIN_AUDIENCE = Object.freeze({
+  PERSONAL: 'personal',
+  ENTERPRISE: 'enterprise',
+})
+
+export const loginAudienceForPath = pathname => {
+  const match = /^\/login\/(personal|enterprise)\/?$/.exec(String(pathname || ''))
+  return match?.[1] || ''
+}
+
+export const confirmationPathForLoginAudience = audience => (
+  Object.values(LOGIN_AUDIENCE).includes(audience)
+    ? `/email-confirmed?audience=${audience}`
+    : '/email-confirmed'
+)
+
 export const SESSION_KEY_CACHE_MAX_ENTRIES = 128
 export const SESSION_KEY_CACHE_TTL_MS = 15 * 60 * 1000
 export const SESSION_KEY_MINT_MAX_IN_FLIGHT = 128
@@ -48,19 +64,21 @@ const inMemorySessionKeys = new Map()
 const mintInFlight = new Map()
 let sessionCacheGeneration = 0
 
+const sessionScope = (userId, companyId) => `${userId}\u0000${companyId}`
+
 const pruneSessionKeys = (now = Date.now()) => {
   for (const [userId, entry] of inMemorySessionKeys) {
     if (entry.expiresAt <= now) inMemorySessionKeys.delete(userId)
   }
 }
 
-const cachedApiKey = (userId, now = Date.now()) => {
+const cachedApiKey = (scope, now = Date.now()) => {
   pruneSessionKeys(now)
-  const entry = inMemorySessionKeys.get(userId)
+  const entry = inMemorySessionKeys.get(scope)
   if (!entry) return null
   // Refresh LRU order without extending the absolute credential lifetime.
-  inMemorySessionKeys.delete(userId)
-  inMemorySessionKeys.set(userId, entry)
+  inMemorySessionKeys.delete(scope)
+  inMemorySessionKeys.set(scope, entry)
   return entry.apiKey
 }
 
@@ -77,7 +95,7 @@ export const sessionKeyCacheSize = () => {
  * Mint a fresh Brevitas API key from the backend.
  * @returns {Promise<string>}
  */
-async function mintApiKey(accessToken, request = fetch) {
+async function mintApiKey(accessToken, companyId, request = fetch) {
   let res
   try {
     res = await request('/v1/keys', {
@@ -96,6 +114,9 @@ async function mintApiKey(accessToken, request = fetch) {
   const api_key = result?.api_key
   if (typeof api_key !== 'string' || !api_key || api_key.length > 4096) {
     throw new Error('Invalid session credential response')
+  }
+  if (result?.organization_id !== companyId) {
+    throw new Error('Session credential tenant mismatch')
   }
   return api_key
 }
@@ -123,21 +144,29 @@ export async function resendSignupConfirmation(email, redirectTo, auth = supabas
   if (error) throw error
 }
 
-export async function cacheApiKey(userId, apiKey, client = supabase) {
+export async function cacheApiKey(userId, companyId, apiKey, client = supabase) {
   void client
   if (
     typeof userId !== 'string' || !userId || userId.length > 256
+    || typeof companyId !== 'string' || !companyId || companyId.length > 256
     || typeof apiKey !== 'string' || !apiKey || apiKey.length > 4096
   ) {
     throw new Error('Invalid session credential')
   }
+  const scope = sessionScope(userId, companyId)
   const now = Date.now()
   pruneSessionKeys(now)
-  inMemorySessionKeys.delete(userId)
-  inMemorySessionKeys.set(userId, { apiKey, expiresAt: now + SESSION_KEY_CACHE_TTL_MS })
+  inMemorySessionKeys.delete(scope)
+  inMemorySessionKeys.set(scope, { apiKey, expiresAt: now + SESSION_KEY_CACHE_TTL_MS })
   while (inMemorySessionKeys.size > SESSION_KEY_CACHE_MAX_ENTRIES) {
     inMemorySessionKeys.delete(inMemorySessionKeys.keys().next().value)
   }
+}
+
+export function invalidateCachedApiKey(userId, companyId, rejectedApiKey) {
+  const scope = sessionScope(userId, companyId)
+  const entry = inMemorySessionKeys.get(scope)
+  if (entry?.apiKey === rejectedApiKey) inMemorySessionKeys.delete(scope)
 }
 
 /**
@@ -147,17 +176,22 @@ export async function cacheApiKey(userId, apiKey, client = supabase) {
  * written to Supabase/Postgres; the backend displays each newly minted secret once.
  *
  * @param {string} userId
+ * @param {string} companyId
  * @returns {Promise<string>}
  */
-export async function getOrCreateApiKey(userId, accessToken, client = supabase, request = fetch) {
+export async function getOrCreateApiKey(
+  userId, accessToken, companyId, client = supabase, request = fetch,
+) {
   void client
   if (
     typeof userId !== 'string' || !userId || userId.length > 256
     || typeof accessToken !== 'string' || !accessToken || accessToken.length > 16_384
+    || typeof companyId !== 'string' || !companyId || companyId.length > 256
   ) {
     throw new Error('Invalid authenticated session')
   }
-  const existing = mintInFlight.get(userId)
+  const scope = sessionScope(userId, companyId)
+  const existing = mintInFlight.get(scope)
   if (existing) return existing
   if (mintInFlight.size >= SESSION_KEY_MINT_MAX_IN_FLIGHT) {
     throw new Error('Too many concurrent credential requests')
@@ -168,29 +202,29 @@ export async function getOrCreateApiKey(userId, accessToken, client = supabase, 
     if (generation !== sessionCacheGeneration) {
       throw new Error('Session credential request was cancelled')
     }
-    const cached = cachedApiKey(userId)
+    const cached = cachedApiKey(scope)
     if (cached) {
       const valid = await cachedKeyIsValid(cached, request)
       if (generation !== sessionCacheGeneration) {
         throw new Error('Session credential request was cancelled')
       }
       if (valid) return cached
-      inMemorySessionKeys.delete(userId)
+      inMemorySessionKeys.delete(scope)
     }
 
     // Missing/stale key -> replace the short-lived dashboard credential. Long-lived
     // organization service keys are created only by an explicit admin action.
-    const apiKey = await mintApiKey(accessToken, request)
+    const apiKey = await mintApiKey(accessToken, companyId, request)
     if (generation !== sessionCacheGeneration) {
       throw new Error('Session credential request was cancelled')
     }
-    await cacheApiKey(userId, apiKey, client)
+    await cacheApiKey(userId, companyId, apiKey, client)
     return apiKey
   })
-  mintInFlight.set(userId, operation)
+  mintInFlight.set(scope, operation)
   try {
     return await operation
   } finally {
-    if (mintInFlight.get(userId) === operation) mintInFlight.delete(userId)
+    if (mintInFlight.get(scope) === operation) mintInFlight.delete(scope)
   }
 }

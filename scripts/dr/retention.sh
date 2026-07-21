@@ -58,14 +58,17 @@ evidence="$evidence_dir/retention-${run_id}-${mode}.json"
 [[ ! -e "$evidence" && ! -L "$evidence" ]] \
   || dr_die "retention evidence already exists; refusing database operation"
 database_url="$(dr_secret_from_env "$database_url_env")"
-capability="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt -c \
+capability="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt -c \
   "select to_regprocedure('public.compliance_run_retention(uuid,text,integer,boolean)') is not null")"
 [[ "$capability" == "t" ]] || dr_die "compliance retention RPC is unavailable"
 apply_value="false"; [[ "$mode" == "apply" ]] && apply_value="true"
-result="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-  --set=run_id="$run_id" --set=actor_id="$actor_id" --set=batch_limit="$batch_limit" \
-  --set=apply_value="$apply_value" -c \
-  "select public.compliance_run_retention(:'run_id'::uuid,:'actor_id',:'batch_limit'::integer,:'apply_value'::boolean)")"
+result="$(
+  dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+    --set=run_id="$run_id" --set=actor_id="$actor_id" --set=batch_limit="$batch_limit" \
+    --set=apply_value="$apply_value" <<'SQL'
+select public.compliance_run_retention(:'run_id'::uuid,:'actor_id',:'batch_limit'::integer,:'apply_value'::boolean);
+SQL
+)"
 python3 - "$result" "$evidence" "$environment" "$target_id" "$actor_id" "$mode" "$run_id" "$batch_limit" <<'PY'
 import json,os,sys
 

@@ -103,15 +103,18 @@ dr_require_command python3
 database_url="$(dr_secret_from_env "$database_url_env")"
 
 # Capability preflight. to_reg* returns null rather than executing partial work.
-capabilities="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+capabilities="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select to_regclass('public.data_subject_requests') is not null, to_regclass('public.legal_holds') is not null, to_regclass('public.backup_deletion_tombstones') is not null, to_regprocedure('public.compliance_export_tenant(uuid,uuid,text)') is not null, to_regprocedure('public.compliance_export_subject(uuid,uuid,text)') is not null, to_regprocedure('public.compliance_complete_export(uuid,uuid,text,text,text,integer,text)') is not null, to_regprocedure('public.compliance_delete_tenant(uuid,uuid,text)') is not null, to_regprocedure('public.compliance_delete_subject(uuid,uuid,text)') is not null")"
 [[ "$capabilities" == "t|t|t|t|t|t|t|t" ]] || dr_die "required compliance migration/RPC capabilities are absent; refusing partial processing"
 
 subject_query_id="${subject_id:-00000000-0000-4000-8000-000000000000}"
-request_state="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' \
-  --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=action="$action" \
-  --set=scope="$scope" --set=subject_id="$subject_query_id" -c \
-  "select status, (deadline_breached or (status<>'completed' and due_at<now())), (due_at <= requested_at + interval '30 days'), not exists (select 1 from public.legal_holds h where h.organization_id=r.organization_id and h.active and (h.expires_at is null or h.expires_at > now()) and h.scope in ('all', r.request_type)), coalesce(export_artifact_sha256,''), request_scope, coalesce(subject_id::text,''), to_char(requested_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), to_char(due_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from public.data_subject_requests r where r.id=:'request_id'::uuid and r.organization_id=:'tenant_id'::uuid and r.request_type=:'action' and r.request_scope=:'scope' and (r.request_scope='tenant' or r.subject_id=:'subject_id'::uuid)")"
+request_state="$(
+  dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' \
+    --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=action="$action" \
+    --set=scope="$scope" --set=subject_id="$subject_query_id" <<'SQL'
+select status, (deadline_breached or (status<>'completed' and due_at<now())), (due_at <= requested_at + interval '30 days'), not exists (select 1 from public.legal_holds h where h.organization_id=r.organization_id and h.active and (h.expires_at is null or h.expires_at > now()) and h.scope in ('all', r.request_type)), coalesce(export_artifact_sha256,''), request_scope, coalesce(subject_id::text,''), to_char(requested_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'), to_char(due_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') from public.data_subject_requests r where r.id=:'request_id'::uuid and r.organization_id=:'tenant_id'::uuid and r.request_type=:'action' and r.request_scope=:'scope' and (r.request_scope='tenant' or r.subject_id=:'subject_id'::uuid);
+SQL
+)"
 IFS='|' read -r request_status deadline_breached valid_due_bound hold_free stored_artifact_sha256 request_scope stored_subject_id requested_at due_at <<< "$request_state"
 [[ "$request_scope" == "$scope" && "$stored_subject_id" == "$subject_id" ]] \
   || dr_die "request is absent, tenant-mismatched, or subject-mismatched"
@@ -158,11 +161,13 @@ if [[ "$action" == "export" ]]; then
     else
       export_rpc="compliance_export_subject"
     fi
-    PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-      --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" -c \
-      "select public.${export_rpc}(:'tenant_id'::uuid, :'request_id'::uuid, :'actor_id') as record" \
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+      --set=export_rpc="$export_rpc" --set=request_id="$request_id" \
+      --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" <<'SQL' \
       | "$SCRIPT_DIR/portable-export.py" --decrypt-command-env "$decrypt_command_env" \
       | age --encrypt --recipient "$age_recipient" --output "$export_partial"
+select public.:"export_rpc"(:'tenant_id'::uuid, :'request_id'::uuid, :'actor_id') as record;
+SQL
     chmod 600 "$export_partial"
     python3 - "$export_partial" "$export_path" <<'PY'
 import os,sys
@@ -195,12 +200,15 @@ PY
   if [[ -n "$stored_artifact_sha256" && "$stored_artifact_sha256" != "$artifact_sha256" ]]; then
     dr_die "existing export artifact digest does not match finalized database evidence"
   fi
-  finalized="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-    --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" \
-    --set=artifact_sha256="$artifact_sha256" --set=attestation_sha256="$attestation_sha256" \
-    --set=portable_record_count="$portable_record_count" \
-    --set=portable_records_sha256="$portable_records_sha256" -c \
-    "select public.compliance_complete_export(:'tenant_id'::uuid,:'request_id'::uuid,:'actor_id',:'artifact_sha256',:'attestation_sha256',:'portable_record_count'::integer,:'portable_records_sha256')")"
+  finalized="$(
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+      --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" \
+      --set=artifact_sha256="$artifact_sha256" --set=attestation_sha256="$attestation_sha256" \
+      --set=portable_record_count="$portable_record_count" \
+      --set=portable_records_sha256="$portable_records_sha256" <<'SQL'
+select public.compliance_complete_export(:'tenant_id'::uuid,:'request_id'::uuid,:'actor_id',:'artifact_sha256',:'attestation_sha256',:'portable_record_count'::integer,:'portable_records_sha256');
+SQL
+  )"
   [[ "$finalized" == "completed" ]] || dr_die "encrypted export was not transactionally finalized"
 else
   if [[ "$scope" == "tenant" ]]; then
@@ -208,21 +216,31 @@ else
   else
     delete_rpc="compliance_delete_subject"
   fi
-  result="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -qAt \
-    --set=request_id="$request_id" --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" -c \
-    "select public.${delete_rpc}(:'tenant_id'::uuid, :'request_id'::uuid, :'actor_id')")"
+  result="$(
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -qAt \
+      --set=delete_rpc="$delete_rpc" --set=request_id="$request_id" \
+      --set=tenant_id="$tenant_id" --set=actor_id="$actor_id" <<'SQL'
+select public.:"delete_rpc"(:'tenant_id'::uuid, :'request_id'::uuid, :'actor_id');
+SQL
+  )"
   [[ "$result" == "completed" ]] || dr_die "transactional scoped deletion did not complete"
-  tombstone="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At \
-    --set=request_id="$request_id" --set=tenant_id="$tenant_id" -c \
-    "select exists(select 1 from public.backup_deletion_tombstones t join public.data_subject_requests r on r.id=t.request_id where t.request_id=:'request_id'::uuid and t.organization_id=:'tenant_id'::uuid and t.expires_at <= r.requested_at + interval '35 days')")"
+  tombstone="$(
+    dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At \
+      --set=request_id="$request_id" --set=tenant_id="$tenant_id" <<'SQL'
+select exists(select 1 from public.backup_deletion_tombstones t join public.data_subject_requests r on r.id=t.request_id where t.request_id=:'request_id'::uuid and t.organization_id=:'tenant_id'::uuid and t.expires_at <= r.requested_at + interval '35 days');
+SQL
+  )"
   [[ "$tombstone" == "t" ]] || dr_die "deletion completed without a valid <=35-day backup tombstone"
   artifact_name=""
   artifact_sha256=""
 fi
 
-completion="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' \
-  --set=request_id="$request_id" --set=tenant_id="$tenant_id" -c \
-  "select status,deadline_breached::text,coalesce(export_artifact_sha256,''),coalesce(export_attestation_sha256,''),coalesce(portable_record_count::text,''),coalesce(portable_records_sha256,''),to_char(completed_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from public.data_subject_requests where id=:'request_id'::uuid and organization_id=:'tenant_id'::uuid")"
+completion="$(
+  dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' \
+    --set=request_id="$request_id" --set=tenant_id="$tenant_id" <<'SQL'
+select status,deadline_breached::text,coalesce(export_artifact_sha256,''),coalesce(export_attestation_sha256,''),coalesce(portable_record_count::text,''),coalesce(portable_records_sha256,''),to_char(completed_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') from public.data_subject_requests where id=:'request_id'::uuid and organization_id=:'tenant_id'::uuid;
+SQL
+)"
 IFS='|' read -r completion_status recorded_deadline_breach completed_artifact_sha256 completed_attestation_sha256 completed_portable_record_count completed_portable_records_sha256 completed_at <<< "$completion"
 [[ "$completion_status" == "completed" ]] || dr_die "request completion evidence is missing"
 if [[ "$deadline_breached" == "t" && "$recorded_deadline_breach" != "true" ]]; then

@@ -73,7 +73,7 @@ const PARTS = [
 ]
 
 const COMMANDS = [
-  ['bvx install',   'Configure AI coding tools (install ai) or a codebase (install <repo>)'],
+  ['bvx install',   'Configure AI coding tools (install ai) or choose a codebase (install repo)'],
   ['bvx uninstall', 'Restore all tool configs and remove the background service'],
   ['bvx status',    'Show proxy, service, and provider status'],
   ['bvx stats',     'Show cumulative token-savings metrics from the proxy'],
@@ -84,7 +84,9 @@ const COMMANDS = [
   ['bvx logs',      'Print (or follow, with -f) the proxy logs'],
   ['bvx config',    'Print or edit Brevitas configuration'],
   ['bvx login / logout', 'Connect through the dashboard / remove the stored key'],
-  ['bvx update',    'Check for and upgrade the brevitas-systems package'],
+  ['bvx onboard',   'Scan a company backend and import existing customers safely'],
+  ['bvx serve / optimizer', 'Run the proxy or optimization adapter in the foreground'],
+  ['bvx update',    'Check for BVX and optimization-engine updates'],
   ['bvx version',   'Print version information'],
 ]
 
@@ -186,7 +188,7 @@ export default function Docs() {
         </Section>
 
         <Section id="install" title="Install">
-          <p className="annotation mt-1 mb-1">// macOS / Linux (Homebrew)</p>
+          <p className="annotation mt-1 mb-1">// macOS (Homebrew)</p>
           <CodeBlock lang="bash" code={`brew tap Brevitas-ai/brevitas
 brew install bvx`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">Or as a single command:</p>
@@ -195,6 +197,12 @@ brew install bvx`} />
             To build the latest <code className="font-mono text-brand-blue text-xs">main</code> from source instead of a release binary:
           </p>
           <CodeBlock lang="bash" code={`brew install --HEAD Brevitas-ai/brevitas/bvx`} />
+
+          <p className="annotation mt-4 mb-1">// Linux (Homebrew)</p>
+          <CodeBlock lang="bash" code={`brew install Brevitas-ai/brevitas/bvx`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            The released Homebrew formula includes Linux x86-64 and ARM64 binaries and installs Python 3.13 as a dependency.
+          </p>
 
           <p className="annotation mt-4 mb-1">// Windows (PowerShell)</p>
           <CodeBlock lang="powershell" code={`irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
@@ -249,14 +257,22 @@ Installing...
             <span className="text-brand-navy dark:text-brand-dark-navy font-medium">Wiring up a codebase instead.</span> To
             route every LLM call in a project through Brevitas (rather than configuring interactive tools):
           </p>
-          <CodeBlock lang="bash" code={`bvx install <repo>                 # scan + open the AI-call map
-bvx install <repo> --apply         # write a .env.agentmap you can source
-bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs`} />
+          <CodeBlock lang="bash" code={`bvx install repo                 # choose a codebase, scan, and open its AI-call map
+bvx install repo --apply         # also write a .env.agentmap you can source
+bvx install repo --apply --auto  # also rewrite hardcoded provider URLs`} />
         </Section>
 
         <Section id="verify" title="Verify it works">
           <CodeBlock lang="bash" code={`bvx status     # proxy, service, and provider status
 bvx doctor     # full diagnostics across the installation`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Require diagnostics to pass, then send one ordinary prompt from a tool BVX reported as configured. Prove that
+            request used the proxy by checking its local counters:
+          </p>
+          <CodeBlock lang="bash" code={`bvx stats      # “Requests proxied” must increase after the prompt`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Login success and a healthy service do not prove an AI tool is routed through BVX. The request counter does.
+          </p>
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             If something looks off, re-apply config and restart the service:
           </p>
@@ -282,7 +298,7 @@ brew upgrade bvx
 # Windows — just re-run the installer; it fetches the latest release
 irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Upgrade the optimization engine (<code className="font-mono text-brand-blue text-xs">brevitas-systems</code>):
+            Ask BVX to check both the CLI and compatible optimization engine:
           </p>
           <CodeBlock lang="bash" code={`bvx update`} />
         </Section>

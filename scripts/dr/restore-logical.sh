@@ -156,10 +156,10 @@ if not isinstance(artifact.get("tombstones"), list):
     raise SystemExit("ERROR: deletion artifact tombstones are invalid")
 PY
 
-dr_require_command age; dr_require_command pg_restore; dr_require_command psql
+dr_require_command age; dr_require_postgresql_client_major pg_restore 16; dr_require_command psql
 database_url="$(dr_secret_from_env "$database_url_env")"
 age_identity="$(dr_secret_from_env "$age_identity_env")"
-preflight="$(PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
+preflight="$(dr_database_exec "$database_url" psql -X -v ON_ERROR_STOP=1 -At -F '|' -c \
   "select current_database(),current_setting('server_version_num')::integer,(select count(*) from pg_extension where extname in ('pgcrypto','vector')),(select count(*) from pg_roles where rolname in ('anon','authenticated','service_role')),(select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind in ('r','p') and n.nspname in ('public','auth')),target_mode,target_id,target_environment,expected_database_name,backup_source_id,source_environment,backup_manifest_sha256,deletion_artifact_sha256,deletion_evidence_reference,(raw_verified_at is null),(replay_verified_at is null),(ready_at is null) from brevitas_restore.control where singleton")"
 IFS='|' read -r actual_database version_num extension_count role_count application_tables \
   control_mode control_target control_environment control_database control_source control_source_environment \
@@ -182,7 +182,7 @@ trap 'rm -f -- "$identity_file"' EXIT
 printf '%s\n' "$age_identity" > "$identity_file"
 chmod 600 "$identity_file"
 age --decrypt --identity "$identity_file" "$encrypted" \
-  | PGDATABASE="$database_url" PGCONNECT_TIMEOUT=10 pg_restore --dbname="" \
+  | dr_database_exec "$database_url" pg_restore --dbname="" \
       --exit-on-error --no-owner --no-privileges
 
 verify_args=(

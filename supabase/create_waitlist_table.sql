@@ -25,14 +25,16 @@ CREATE INDEX IF NOT EXISTS idx_waitlist_created_at ON waitlist(created_at DESC);
 -- Add RLS (Row Level Security) policies
 ALTER TABLE waitlist ENABLE ROW LEVEL SECURITY;
 
--- Public submissions may insert, but no browser role may read waitlist PII.
+-- Legacy bootstrap only. Production must apply the tracked migration chain,
+-- including 202607200002_waitlist_security.sql, before serving /api/waitlist.
+-- Browser roles may neither read nor write waitlist PII.
 DROP POLICY IF EXISTS "Allow anonymous inserts" ON waitlist;
 DROP POLICY IF EXISTS "Allow authenticated select" ON waitlist;
 DROP POLICY IF EXISTS "Enable insert for anon users" ON waitlist;
 DROP POLICY IF EXISTS "Enable select for authenticated users" ON waitlist;
 DROP POLICY IF EXISTS "Enable select for anon to check email" ON waitlist;
-CREATE POLICY "Enable insert for anon users" ON waitlist
-  FOR INSERT TO anon WITH CHECK (true);
+REVOKE ALL ON TABLE waitlist FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON SEQUENCE waitlist_id_seq FROM PUBLIC, anon, authenticated;
 
 -- Create a function to update the updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
