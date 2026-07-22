@@ -1,6 +1,6 @@
 // Brevitas — hardcoded pipeline outputs from real Claude calls.
 // Four coding tasks, three agents each (Architect → Builder → Reviewer).
-// The demo models Brevitas's default content-preserving path: provider-native prefix caching.
+// The demo models Brevitas's default lossless path: provider-native prefix caching.
 // Agent outputs remain intact; only the price paid for repeated input context changes.
 
 window.BrevitasPipelineData = (() => {

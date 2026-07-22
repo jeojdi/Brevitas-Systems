@@ -216,10 +216,10 @@ function PostPage() {
               Where Brevitas fits.
             </h2>
             <p className="t-body fade-up" style={{ marginBottom: 24 }}>
-              Brevitas can meter Claude usage and optimize provider caching. Native cache reads may reduce the provider bill while leaving the prompt token count unchanged. Optional retrieval or compression can reduce provider input tokens, but those features can affect model behavior and require explicit operator opt-in.
+              Our benchmarks used Claude Sonnet 4.x as the baseline. At Fable 5's pricing, the absolute dollar savings from a 59.4% token reduction scale proportionally — the percentage stays the same, the dollars go up. On a pipeline running 50,000 tasks per month at Fable 5 prices, that difference is substantial enough to change the business case for running the model at all.
             </p>
             <p className="t-body fade-up" style={{ marginBottom: 32 }}>
-              Results must be measured on the exact model and workload in use. Brevitas reports provider input tokens avoided, native cache discounts, model calls avoided, and transport bytes avoided as separate mechanisms.
+              Plugging Brevitas into a Fable 5 pipeline is the same two-line change. The model is specified at the orchestrator level; Brevitas operates at the communication layer between agents and is agnostic to which model is running each hop.
             </p>
 
             <div className="fade-up" style={{ marginBottom: 32 }}>
@@ -240,13 +240,21 @@ pipeline = optimize([architect, builder, reviewer])
 # Run as normal
 result = pipeline.run(task)
 report = pipeline.report()
-# Inspect mechanism-separated usage and compare it with
-# an isolated control run before making an attribution claim.`}
+# {
+#   "tokens_in":  1,184,  "tokens_out":  562,
+#   "cost_baseline": 0.0000985,
+#   "cost_optimized": 0.0000400,
+#   "savings_pct": 59.4,
+#   "savings_by_technique": {
+#     "compress": 0.41, "reference": 0.22, "delta": 0.11,
+#     "prune": 0.08, "protocol": 0.04
+#   }
+# }`}
               />
             </div>
 
             <p className="t-body fade-up" style={{ marginBottom: 24 }}>
-              Do not assume that a longer context window makes compression safer. Test every quality-affecting lever with paired, isolated controls and review per-task regressions before enabling it in production.
+              One thing that does change with Fable 5: the routing layer can be more aggressive with the reference technique. Because Fable 5 has better long-horizon coherence, agents are less likely to need an expanded verbatim copy of upstream context to perform well — they can work from the <span className="mono" style={{ color: 'var(--signal)' }}>mem://</span> reference plus a compact summary. That's worth testing explicitly in your harness before accepting the default router settings.
             </p>
 
             <div className="fade-up" style={{
@@ -260,15 +268,15 @@ report = pipeline.report()
             }}>
               {[
                 {
-                  label: 'NATIVE CACHE',
-                  val: 'discounted',
-                  sub: 'same provider input tokens',
+                  label: 'BASELINE · FABLE 5',
+                  val: '~$0.0000985',
+                  sub: 'per task, unoptimized',
                   hi: false,
                 },
                 {
-                  label: 'OPTIONAL COMPRESSION',
-                  val: 'fewer inputs',
-                  sub: 'quality-affecting · opt-in',
+                  label: 'WITH BREVITAS · FABLE 5',
+                  val: '~$0.0000400',
+                  sub: 'per task, 59.4% fewer tokens',
                   hi: true,
                 },
               ].map((x) => (

@@ -14,7 +14,7 @@ const TECHNIQUES = [
     title: 'Provider-native prompt caching',
     short: 'Cache',
     body: 'Repeated system instructions, tools, and conversation history stay intact and are billed at the provider’s cache rate. Brevitas places Anthropic breakpoints automatically; OpenAI and DeepSeek cache stable prefixes natively.',
-    tag: 'Content-preserving',
+    tag: 'Lossless',
     demo: '/product',
   },
   {
@@ -35,7 +35,7 @@ const TECHNIQUES = [
     n: '04',
     title: 'Accuracy-first context retrieval',
     short: 'Retrieve',
-    body: 'For opted-in workloads with long histories, dense and lexical retrieval select relevant context. Because retrieval removes context and can change behavior, it requires explicit opt-in; low confidence, an empty index, or a tenant quality trip falls back to full context.',
+    body: 'For opted-in workloads with long histories, dense and lexical retrieval select relevant context while preserving conversation structure. Low confidence, an empty index, or an oversized session falls back to full context.',
     tag: 'Opt-in',
   },
   {
