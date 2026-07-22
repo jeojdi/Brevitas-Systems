@@ -28,6 +28,7 @@
     "posthog-node": "^5.44.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sharp": "0.35.3",
     "stripe": "^22.3.2"
   },
   "devDependencies": {
@@ -44,7 +45,8 @@
   },
   "overrides": {
     "next": {
-      "postcss": "8.5.16"
+      "postcss": "8.5.16",
+      "sharp": "0.35.3"
     },
     "ws": "8.21.0"
   }
