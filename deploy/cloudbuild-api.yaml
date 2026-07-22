@@ -1,0 +1,16 @@
+steps:
+  - name: gcr.io/cloud-builders/docker@sha256:4a33059c95a600582497fac50780c1c4f683883383fb54002a95b99af85b8f651
+    args:
+      - build
+      - --pull=false
+      - --build-arg
+      - BREVITAS_BUILD_SHA=${_BREVITAS_BUILD_SHA}
+      - --tag
+      - us-west1-docker.pkg.dev/divine-camera-465917-j7/brevitas-staging/api:${_BREVITAS_BUILD_SHA}
+      - .
+images:
+  - us-west1-docker.pkg.dev/divine-camera-465917-j7/brevitas-staging/api:${_BREVITAS_BUILD_SHA}
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _BREVITAS_BUILD_SHA: REPLACE_WITH_COMMIT_SHA

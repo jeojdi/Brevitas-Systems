@@ -12,6 +12,9 @@ spec:
   template:
     metadata:
       annotations:
+        run.googleapis.com/network-interfaces: >-
+          [{"network":"brevitas-staging-vpc","subnetwork":"brevitas-staging-run-us-west1","tags":"brevitas-staging-run"}]
+        run.googleapis.com/vpc-access-egress: all-traffic
         run.googleapis.com/secrets: >-
           supabase-url:projects/975273324573/secrets/brevitas-staging-supabase-url,
           supabase-service-role:projects/975273324573/secrets/brevitas-staging-supabase-service-role-key,

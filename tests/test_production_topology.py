@@ -70,6 +70,7 @@ def test_railway_templates_split_api_workers_and_private_compressor():
 def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
     api = (ROOT / "deploy/cloud-run-api-staging.yaml").read_text()
     worker = (ROOT / "deploy/cloud-run-worker-staging.yaml").read_text()
+    cloud_build = (ROOT / "deploy/cloudbuild-api.yaml").read_text()
     runtime_identity = (
         "brevitas-staging-runtime@divine-camera-465917-j7.iam.gserviceaccount.com"
     )
@@ -88,6 +89,13 @@ def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
         assert "GOOGLE_APPLICATION_CREDENTIALS" not in manifest
         assert "serviceAccountKey" not in manifest
         assert "brevitas-staging-redis-url" in manifest
+        assert 'run.googleapis.com/vpc-access-egress: all-traffic' in manifest
+        assert '"network":"brevitas-staging-vpc"' in manifest
+        assert '"subnetwork":"brevitas-staging-run-us-west1"' in manifest
+
+    assert "gcr.io/cloud-builders/docker@sha256:" in cloud_build
+    assert "BREVITAS_BUILD_SHA=${_BREVITAS_BUILD_SHA}" in cloud_build
+    assert "api:${_BREVITAS_BUILD_SHA}" in cloud_build
 
 
 def test_shared_dependencies_are_same_region_tls_and_non_authoritative():

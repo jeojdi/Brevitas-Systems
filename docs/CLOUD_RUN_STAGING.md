@@ -14,7 +14,8 @@ for the promoted revision.
 
 ## Bootstrap resources
 
-1. Enable Cloud Run, Cloud Build, Artifact Registry, Secret Manager, and Resource Manager APIs.
+1. Enable Cloud Run, Cloud Build, Artifact Registry, Secret Manager, IAM Credentials, Cloud KMS,
+   and Compute Engine APIs.
 2. Create the `brevitas-staging` Docker repository in Artifact Registry, region `us-west1`.
 3. Create these Secret Manager resources and add version `1` without printing values:
    - `brevitas-staging-supabase-url`
@@ -24,10 +25,15 @@ for the promoted revision.
    - `brevitas-staging-company-admin-invitee-pepper`
 4. Grant the runtime service account `roles/secretmanager.secretAccessor` on only those five
    secrets. Keep its existing KMS encrypt/decrypt grant scoped to the staging CryptoKey.
-5. Build the root `Dockerfile` with `BREVITAS_BUILD_SHA` set to the full source commit, push the
-   image, replace both manifest placeholders, deploy the API service and Worker Pool, and then
-   make only the API service publicly invokable.
-6. Keep `BREVITAS_BILLING_ENABLED=false` and the worker role `nonbilling` until the Stripe and
+5. Route both workloads through Direct VPC egress using `brevitas-staging-vpc` and the
+   `brevitas-staging-run-us-west1` (`10.42.0.0/24`) subnet. The
+   `brevitas-staging-nat-us-west1` Cloud NAT uses the reserved
+   `brevitas-staging-egress-us-west1` address, `34.105.116.148`.
+6. Build the root `Dockerfile` with the pinned `deploy/cloudbuild-api.yaml` configuration and the
+   full source commit (for example, `gcloud builds submit --config=deploy/cloudbuild-api.yaml
+   --substitutions=_BREVITAS_BUILD_SHA=$COMMIT_SHA .`). Replace both manifest placeholders,
+   deploy the API service and Worker Pool, and then make only the API service publicly invokable.
+7. Keep `BREVITAS_BILLING_ENABLED=false` and the worker role `nonbilling` until the Stripe and
    Supabase gates below pass.
 
 ## Supabase inputs and gates
@@ -85,8 +91,9 @@ Do not disable the Redis default user before the Cloud Run revision has a tested
 credential. Create a named staging ACL user with only the data permissions the application needs,
 store its TLS URL as a new Secret Manager version, deploy and verify API/worker readiness, and
 then disable the default user. CIDR allow-listing requires a stable Cloud Run egress address
-(Direct VPC egress plus Cloud NAT); add that `/32` only after the egress path is active, or the
-cutover will lock out every instance.
+(Direct VPC egress plus Cloud NAT). The staging CIDR is `34.105.116.148/32`; add only that CIDR
+after the replacement user is live and the egress path is verified, or the cutover will lock out
+every instance.
 
 ## Smoke checks
 
