@@ -50,6 +50,7 @@ def test_sqlite_selection_persists_only_live_actor_membership(tmp_path):
         "name": "Second company",
         "role": "member",
         "billing_owner_id": "owner-b",
+        "account_type": "company",
     }
     with sqlite3.connect(store.db_path) as db:
         assert db.execute(

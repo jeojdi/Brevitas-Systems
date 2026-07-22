@@ -20,16 +20,18 @@ test('onboarding has a real three-step workspace, connection, and verification f
     component('OnboardingWorkspaceChoice'),
     readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
   ])
-  assert.match(onboarding, /Step 1 of 3 · choose your workspace/)
-  assert.match(onboarding, /Step 2 of 3 · connect a tool/)
-  assert.match(onboarding, /Step 3 of 3 · verify one request/)
+  assert.match(onboarding, /Step 1 of 3 ·/)
+  assert.match(onboarding, /Step 2 of 3 ·/)
+  assert.match(onboarding, /Step 3 of 3 · live verification/)
   assert.match(onboarding, /<InstallCommand phase="setup"/)
   assert.match(onboarding, /<InstallCommand phase="verify"/)
   assert.match(app, /onFinish=\{finishWorkspaceSetup\}/)
+  assert.match(app, /onCheck=\{checkWorkspaceSetup\}/)
   assert.match(app, /needsOnboarding: context\.onboarding\.status !== 'complete'/)
   assert.match(app, /initialWorkspaceCreated=\{companyContext\.workspaceCreated\}/)
   assert.match(app, /deviceCode && companyContext\.activeCompanyId/)
-  assert.match(onboarding, /Check for verified request/)
+  assert.match(onboarding, /window\.setInterval\(checkVerification, 3000\)/)
+  assert.match(onboarding, /First request observed/)
   assert.doesNotMatch(onboarding, /Finish this later|I verified a proxied request/)
 })
 
@@ -41,6 +43,8 @@ test('platform install commands match the distributed BVX installation paths', (
     'brew install Brevitas-ai/brevitas/bvx')
   assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'windows').installCommand,
     'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex')
+  assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'macos').quickStartCommand,
+    'brew install Brevitas-ai/brevitas/bvx && bvx install')
 })
 
 test('setup authenticates and configures through install, then proves a real proxied request', async () => {
@@ -62,4 +66,6 @@ test('setup authenticates and configures through install, then proves a real pro
   assert.match(overview, /<InstallCommand phase="all"/)
   assert.match(docs, /Requests proxied/)
   assert.doesNotMatch(install, /&& bvx login/)
+  assert.match(install, /One command connects your tools/)
+  assert.match(install, /No API key copying is required/)
 })

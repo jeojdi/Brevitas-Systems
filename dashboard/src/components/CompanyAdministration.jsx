@@ -189,7 +189,7 @@ function useCursorPage(accessToken, path, enabled) {
   }
 }
 
-export default function CompanyAdministration({ accessToken, onCompanyContextChange }) {
+export default function CompanyAdministration({ accessToken, onCompanyContextChange, personal = false }) {
   const [capabilities, setCapabilities] = useState(null)
   const [capabilityError, setCapabilityError] = useState('')
   const [inviteEmail, setInviteEmail] = useState('')
@@ -260,9 +260,15 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
       onConfirm={confirmPrivilegedAction}
     />
     <header>
-      <p className="annotation tracking-widest uppercase">Company administration</p>
-      <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">Invite your team and connect your systems.</h2>
-      <p className="text-sm text-brand-muted mt-3">You are signed in as {label(capabilities.role)}. Invite people below; use service accounts for production servers and workers. Administration activity is recorded without names, email addresses, request bodies, or secrets.</p>
+      <p className="annotation tracking-widest uppercase">{personal ? 'Workspace settings' : 'Enterprise administration'}</p>
+      <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">
+        {personal ? 'Keep it personal—or bring in your team.' : 'Invite your team and connect production systems.'}
+      </h2>
+      <p className="text-sm text-brand-muted mt-3">
+        You are signed in as {label(capabilities.role)}. {personal
+          ? 'Nothing changes until you invite someone or create a service account. Your existing projects, usage, and billing stay in this workspace.'
+          : 'Invite people below; use scoped service accounts for production servers and workers.'} Administration activity is recorded without names, email addresses, request bodies, or secrets.
+      </p>
     </header>
 
     {mutationError && <p role="alert" className="font-mono text-xs text-red-500">{mutationError}</p>}

@@ -2162,7 +2162,7 @@ def bootstrap_organization(request: Request, body: OrganizationBootstrapRequest)
         organization = _store.member_organization(user_id)
         created = organization is None
         if created:
-            _store.ensure_organization(user_id, workspace_name)
+            _store.ensure_organization(user_id, workspace_name, body.account_type)
             organization = _store.member_organization(user_id)
     except Exception as exc:
         logger.error("workspace bootstrap unavailable error_type=%s", type(exc).__name__)
@@ -2180,7 +2180,9 @@ def bootstrap_organization(request: Request, body: OrganizationBootstrapRequest)
     role = _canonical_company_role(organization.get("role"))
     organization_id = str(organization.get("id") or "")
     organization_name = str(organization.get("name") or "").strip()
-    if not organization_id or role not in COMPANY_ROLES or not organization_name:
+    account_type = str(organization.get("account_type") or "")
+    if (not organization_id or role not in COMPANY_ROLES or not organization_name
+            or account_type not in {"individual", "company"}):
         logger.error("workspace bootstrap returned unsafe membership")
         raise HTTPException(
             status_code=503,
@@ -2191,7 +2193,7 @@ def bootstrap_organization(request: Request, body: OrganizationBootstrapRequest)
         "company_id": organization_id,
         "company_name": organization_name,
         "role": role,
-        "account_type": body.account_type,
+        "account_type": account_type,
         "created": created,
     }, headers={"Cache-Control": "private, no-store"})
 

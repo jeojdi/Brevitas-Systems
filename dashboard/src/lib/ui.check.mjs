@@ -53,7 +53,9 @@ test('overview uses a savings-focused per-call area chart', async () => {
 test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
   const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
   assert.match(app, /\['localhost', '127\.0\.0\.1'\]\.includes\(window\.location\.hostname\)/)
-  assert.match(app, /\['dashboard', 'billing', 'onboarding', 'invitation'\]\.includes\(PREVIEW_SECTION\)/)
+  assert.match(app, /'onboarding-personal'/)
+  assert.match(app, /'onboarding-enterprise'/)
+  assert.match(app, /'personal', 'enterprise'/)
   assert.match(app, /previewStats=\{PREVIEW_STATS\}/)
   assert.match(app, /previewBilling=\{PREVIEW_BILLING\}/)
   assert.match(app, /if \(PREVIEW_MODE\) \{\s*return <DashboardPreview/)

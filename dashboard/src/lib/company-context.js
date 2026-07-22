@@ -10,12 +10,14 @@ const cleanCompany = value => {
   const company_id = typeof value.company_id === 'string' ? value.company_id.toLowerCase() : ''
   const company_name = typeof value.company_name === 'string' ? value.company_name.trim() : ''
   const role = typeof value.role === 'string' ? value.role : ''
+  const account_type = typeof value.account_type === 'string' ? value.account_type : ''
   if (
     !COMPANY_ID.test(company_id)
     || !company_name || company_name.length > 200 || /[\u0000-\u001f]/.test(company_name)
     || !COMPANY_ROLES.has(role)
+    || !['individual', 'company'].includes(account_type)
   ) throw new Error('Invalid company access response')
-  return { company_id, company_name, role }
+  return { company_id, company_name, role, account_type }
 }
 
 export function normalizeCompanyContext(payload) {

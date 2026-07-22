@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -26,8 +27,35 @@ def test_individual_bootstrap_creates_one_personal_workspace(tmp_path, monkeypat
     assert response.headers["cache-control"] == "private, no-store"
     assert response.json()["company_name"] == "Personal workspace"
     assert response.json()["role"] == "company_owner"
+    assert response.json()["account_type"] == "individual"
     assert response.json()["created"] is True
     assert store.member_organization("onboarding-user")["id"] == response.json()["company_id"]
+
+    # A later presentation route cannot reclassify the persisted workspace.
+    repeated = client.post(
+        "/v1/organization/bootstrap",
+        json={"account_type": "company", "name": "Untrusted company route"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["company_id"] == response.json()["company_id"]
+    assert repeated.json()["account_type"] == "individual"
+    assert repeated.json()["company_name"] == "Personal workspace"
+
+
+def test_workspace_experience_migration_is_bounded_and_service_only():
+    migration = (Path(__file__).parent.parent / "supabase/migrations/"
+                 "202607200018_workspace_experiences.sql").read_text().lower()
+    compact = "".join(migration.split())
+
+    assert "check(account_typein('individual','company'))" in compact
+    assert "public.ensure_workspace_organization(uuid,text,text)" in migration
+    assert "p_account_type not in ('individual','company')" in migration
+    assert "on conflict (legacy_owner_id) do update" in migration
+    assert "set legacy_owner_id = excluded.legacy_owner_id" in migration
+    assert "set account_type" not in migration
+    assert "'account_type',page.account_type" in compact
+    assert "from public, anon, authenticated, service_role" in migration
+    assert "grant execute on function public.ensure_workspace_organization(uuid,text,text)\n    to service_role" in migration
 
 
 def test_company_bootstrap_requires_name_and_is_idempotent(tmp_path, monkeypatch):
@@ -52,6 +80,7 @@ def test_company_bootstrap_requires_name_and_is_idempotent(tmp_path, monkeypatch
     assert repeated.status_code == 200
     assert repeated.json()["company_id"] == created.json()["company_id"]
     assert repeated.json()["company_name"] == "Acme Systems"
+    assert repeated.json()["account_type"] == "company"
     assert repeated.json()["created"] is False
     assert store.member_organization("company-founder")["name"] == "Acme Systems"
 

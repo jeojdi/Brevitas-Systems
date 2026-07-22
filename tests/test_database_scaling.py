@@ -622,6 +622,7 @@ def test_member_organization_requires_active_finite_canonical_role(tmp_path):
     assert store.member_organization(user_id) == {
         "id": organization["id"], "name": "My organization",
         "role": "company_owner", "billing_owner_id": user_id,
+        "account_type": "company",
     }
     with store._conn() as db:
         db.execute(

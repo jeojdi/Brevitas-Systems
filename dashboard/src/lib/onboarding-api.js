@@ -105,6 +105,7 @@ export async function bootstrapWorkspace(accessToken, selection, request = fetch
     typeof body.company_id !== 'string'
     || typeof body.company_name !== 'string'
     || body.role !== 'company_owner'
+    || !['individual', 'company'].includes(body.account_type)
   ) {
     throw new Error('Invalid workspace setup response')
   }

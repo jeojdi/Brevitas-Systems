@@ -125,8 +125,9 @@ def test_capabilities_returns_only_verified_actor_active_company_choices(tmp_pat
     assert {item["company_id"] for item in result["companies"]} == {
         org_a["id"], org_b["id"],
     }
-    assert all(set(item) == {"company_id", "company_name", "role"}
+    assert all(set(item) == {"company_id", "company_name", "role", "account_type"}
                for item in result["companies"])
+    assert all(item["account_type"] == "company" for item in result["companies"])
     assert disabled["id"] not in {item["company_id"] for item in result["companies"]}
     assert foreign["id"] not in {item["company_id"] for item in result["companies"]}
 
@@ -1116,6 +1117,7 @@ def test_supabase_capabilities_uses_verified_actor_active_membership_rpc():
                 "company_id": active_company,
                 "company_name": "Verified company",
                 "role": "member",
+                "account_type": "company",
             }]}
 
     service = SupabaseCompanyAdminService(
@@ -1129,6 +1131,7 @@ def test_supabase_capabilities_uses_verified_actor_active_membership_rpc():
         "company_id": active_company,
         "company_name": "Verified company",
         "role": "member",
+        "account_type": "company",
     }]
     assert calls[-1] == (
         "POST", "rpc/company_admin_active_memberships", {

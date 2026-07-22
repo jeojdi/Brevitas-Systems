@@ -12,24 +12,25 @@ test('authenticated company context keeps the active company first and supports 
   const context = normalizeCompanyContext({
     company_id: SECOND,
     companies: [
-      { company_id: FIRST, company_name: 'Alpha', role: 'company_owner' },
-      { company_id: SECOND, company_name: 'Beta', role: 'member' },
+      { company_id: FIRST, company_name: 'Alpha', role: 'company_owner', account_type: 'individual' },
+      { company_id: SECOND, company_name: 'Beta', role: 'member', account_type: 'company' },
     ],
   })
   assert.equal(context.activeCompanyId, SECOND)
   assert.deepEqual(context.companies.map(company => company.company_id), [SECOND, FIRST])
+  assert.equal(context.companies[0].account_type, 'company')
 })
 
 test('company context rejects unbound, duplicate, unbounded, and invalid-role choices', () => {
   assert.throws(() => normalizeCompanyContext({
     company_id: SECOND,
-    companies: [{ company_id: FIRST, company_name: 'Alpha', role: 'member' }],
+    companies: [{ company_id: FIRST, company_name: 'Alpha', role: 'member', account_type: 'company' }],
   }), /Invalid company access response/)
   assert.throws(() => normalizeCompanyContext({
     company_id: FIRST,
     companies: [
-      { company_id: FIRST, company_name: 'Alpha', role: 'member' },
-      { company_id: FIRST, company_name: 'Duplicate', role: 'member' },
+      { company_id: FIRST, company_name: 'Alpha', role: 'member', account_type: 'company' },
+      { company_id: FIRST, company_name: 'Duplicate', role: 'member', account_type: 'company' },
     ],
   }), /Invalid company access response/)
   assert.throws(() => normalizeCompanyContext({
@@ -38,11 +39,16 @@ test('company context rejects unbound, duplicate, unbounded, and invalid-role ch
       company_id: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111`,
       company_name: `Company ${index}`,
       role: 'member',
+      account_type: 'company',
     })),
   }), /Invalid company access response/)
   assert.throws(() => normalizeCompanyContext({
     company_id: FIRST,
-    companies: [{ company_id: FIRST, company_name: 'Alpha', role: 'super_admin' }],
+    companies: [{ company_id: FIRST, company_name: 'Alpha', role: 'super_admin', account_type: 'company' }],
+  }), /Invalid company access response/)
+  assert.throws(() => normalizeCompanyContext({
+    company_id: FIRST,
+    companies: [{ company_id: FIRST, company_name: 'Alpha', role: 'member', account_type: 'consumer' }],
   }), /Invalid company access response/)
 })
 
@@ -64,7 +70,7 @@ test('company context comes only from the authenticated capabilities endpoint', 
       return Response.json({
         company_id: FIRST,
         companies: [{
-          company_id: FIRST, company_name: 'Verified company', role: 'company_admin',
+          company_id: FIRST, company_name: 'Verified company', role: 'company_admin', account_type: 'company',
         }],
       })
     },
@@ -87,7 +93,7 @@ test('company context comes only from the authenticated capabilities endpoint', 
     request: async path => path === '/api/admin/company/capabilities'
       ? Response.json({
         company_id: FIRST,
-        companies: [{ company_id: FIRST, company_name: 'First', role: 'company_owner' }],
+        companies: [{ company_id: FIRST, company_name: 'First', role: 'company_owner', account_type: 'individual' }],
       })
       : Response.json({
         company_id: SECOND, status: 'pending', cli_connected: false,

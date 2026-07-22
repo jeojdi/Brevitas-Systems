@@ -4,21 +4,28 @@ Brevitas uses one identity model for every account. A personal workspace is a
 one-person company workspace; it can become a team workspace later without moving
 projects, usage, keys, or billing data.
 
+The selected experience is persisted on the workspace, not inferred from the login
+URL. Personal workspaces get a focused **Projects / Connect / Workspace** view.
+Enterprise workspaces get **Repositories / Connect / Team & keys / API Keys** so
+human roles, local device credentials, and production service identities stay
+visibly separate. Authorization remains membership-derived in both views.
+
 ## Individual
 
 1. Create an account at `/signup` and confirm the email address.
 2. Choose **Personal workspace** and optionally name it.
 3. The signed-in browser session can authorize BVX during onboarding. A short-lived
    dashboard credential is not minted until the server verifies onboarding evidence.
-4. Install the released BVX manager and run `bvx install`. The interactive installer
+4. Copy the operating-system quick-start command from **Connect**. On macOS and Linux
+   it installs the released BVX manager and runs `bvx install` in one command. The installer
    authenticates through the dashboard, configures an approved local AI tool, starts the
    local services, and performs its setup checks.
-5. Run `bvx doctor` and require every installation diagnostic to pass. Send one normal
-   prompt from a tool BVX reported as configured, then run `bvx stats`. Onboarding is
-   verified only when **Requests proxied** increases; login or a healthy process alone is
-   not sufficient.
+5. Run `bvx doctor` and require every installation diagnostic to pass, then send one normal
+   prompt from a configured tool. The website checks server evidence every three seconds
+   and opens the dashboard automatically. `bvx stats` remains available as a terminal-side
+   confirmation. Login or a healthy process alone is not sufficient.
 6. Configure billing when ready.
-7. Open **Company** later to invite teammates.
+7. Open **Workspace** later to invite teammates.
 
 The dashboard does not accept a browser checkbox as proof of setup. The API keeps the
 workspace pending until it has both a receipt-bound BVX device registration and a later
@@ -31,11 +38,13 @@ separately released CLI and its checksums as part of release onboarding.
 
 1. The first user creates an account and chooses **Company workspace**.
 2. They enter the company name and become `company_owner`.
-3. In **Company**, they invite people and choose the least-privileged role:
+3. The enterprise view explains the key distinction during setup: `bvx install` creates
+   a revocable key for that admin device; production systems never reuse it.
+4. In **Team & keys**, they invite people and choose the least-privileged role:
    - `member`: shared workspace and roster access.
    - `company_admin`: member and service-account administration.
    - `billing_admin`: billing and administration-audit access.
-4. An owner or company admin creates a scoped, expiring service account for each
+5. An owner or company admin creates a scoped, expiring service account for each
    production environment. Human dashboard credentials are not production keys.
 
 ## Joining an existing company
@@ -67,7 +76,8 @@ Brevitas service key.
 
 1. Apply all `supabase/migrations/` files in timestamp order, including active-company
    selection migration `202607170013_active_company_selection.sql` and durable onboarding
-   migration `202607200016_durable_onboarding.sql`.
+   migration `202607200016_durable_onboarding.sql`, followed by workspace-experience
+   migration `202607200018_workspace_experiences.sql`.
 2. Configure Supabase email confirmation and allow the production `/invite` and
    `/email-confirmed` redirect URLs.
 3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPANY_ADMIN_CURSOR_SECRET`, and

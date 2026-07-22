@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import InstallCommand from './InstallCommand.jsx'
 import { nextOnboardingStep, ONBOARDING_STEP } from '../lib/onboarding-cli.js'
 import {
@@ -40,6 +40,7 @@ export default function OnboardingWorkspaceChoice({
   errorMessage = '',
   onContinue,
   onBack,
+  onCheck,
   onFinish,
   onWorkspaceTypeChange,
   onWorkspaceNameChange,
@@ -50,6 +51,7 @@ export default function OnboardingWorkspaceChoice({
   const fieldName = useId()
   const [workspaceType, setWorkspaceType] = useState(initialWorkspaceType)
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName)
+  const [showAllChoices, setShowAllChoices] = useState(!initialWorkspaceType)
   const [step, setStep] = useState(
     initialWorkspaceCreated ? ONBOARDING_STEP.CONNECT : ONBOARDING_STEP.WORKSPACE,
   )
@@ -57,6 +59,13 @@ export default function OnboardingWorkspaceChoice({
   const [localSubmitting, setLocalSubmitting] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState('')
+  const [verification, setVerification] = useState({
+    checking: false,
+    cliConnected: false,
+    proxiedRequestObserved: false,
+  })
+  const verificationInFlight = useRef(false)
+  const completionStarted = useRef(false)
   const busy = isSubmitting || localSubmitting
   const displayedError = errorMessage || validationError
 
@@ -108,19 +117,60 @@ export default function OnboardingWorkspaceChoice({
     }
   }
 
+  const checkVerification = useCallback(async () => {
+    if (!onCheck || verificationInFlight.current || completionStarted.current) return
+    verificationInFlight.current = true
+    setVerification(current => ({ ...current, checking: true }))
+    setFinishError('')
+    try {
+      const status = await onCheck()
+      setVerification({
+        checking: false,
+        cliConnected: status.cliConnected,
+        proxiedRequestObserved: status.proxiedRequestObserved,
+      })
+      if (status.cliConnected && status.proxiedRequestObserved) {
+        completionStarted.current = true
+        setFinishing(true)
+        await onFinish?.()
+      }
+    } catch (reason) {
+      completionStarted.current = false
+      setVerification(current => ({ ...current, checking: false }))
+      setFinishError(reason instanceof Error ? reason.message : 'Onboarding status is temporarily unavailable.')
+    } finally {
+      verificationInFlight.current = false
+      if (!completionStarted.current) setFinishing(false)
+    }
+  }, [onCheck, onFinish])
+
+  useEffect(() => {
+    if (step !== ONBOARDING_STEP.VERIFY || !onCheck) return undefined
+    checkVerification()
+    const timer = window.setInterval(checkVerification, 3000)
+    return () => window.clearInterval(timer)
+  }, [checkVerification, onCheck, step])
+
+  const isCompany = workspaceType === WORKSPACE_TYPE.COMPANY
+  const visibleChoices = showAllChoices
+    ? choices
+    : choices.filter(choice => choice.value === workspaceType)
+
   if (step === ONBOARDING_STEP.CONNECT) {
     return (
       <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
         <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
-          <p className="annotation mb-3 uppercase tracking-widest">Step 2 of 3 · connect a tool</p>
+          <p className="annotation mb-3 uppercase tracking-widest">Step 2 of 3 · {isCompany ? 'connect an admin device' : 'connect your tool'}</p>
           <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
-            Put BVX on the request path.
+            {isCompany ? 'Connect the first admin device.' : 'Connect your tools in one command.'}
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
-            Your workspace is ready. Install the released BVX CLI and let its interactive setup authenticate and configure a local AI tool.
+            {isCompany
+              ? 'Use a revocable device credential for local work. Production systems get separate scoped service keys after setup.'
+              : 'The BVX installer opens this dashboard for approval, configures supported tools, starts its service, and runs setup checks.'}
           </p>
         </header>
-        <InstallCommand phase="setup" />
+        <InstallCommand phase="setup" audience={isCompany ? 'company' : 'personal'} />
         <div className="mt-6 flex justify-end">
           <button
             type="button"
@@ -138,15 +188,29 @@ export default function OnboardingWorkspaceChoice({
     return (
       <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
         <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
-          <p className="annotation mb-3 uppercase tracking-widest">Step 3 of 3 · verify one request</p>
+          <p className="annotation mb-3 uppercase tracking-widest">Step 3 of 3 · live verification</p>
           <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
-            Prove traffic reaches BVX.
+            Make one normal request. We’ll detect it.
           </h1>
           <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
-            A healthy service is not enough. Run diagnostics and make one normal request from a configured tool. Brevitas will unlock the dashboard only after the server records that request through your workspace&apos;s BVX device key.
+            Run diagnostics, then send a prompt from a tool BVX configured. This page checks the server automatically and opens your {isCompany ? 'enterprise' : 'personal'} dashboard when the request arrives.
           </p>
         </header>
-        <InstallCommand phase="verify" />
+        <InstallCommand phase="verify" audience={isCompany ? 'company' : 'personal'} />
+        <div className="mt-5 grid gap-3 sm:grid-cols-2" aria-live="polite">
+          <div className={`rounded-xl border p-4 ${verification.cliConnected ? 'border-brand-teal/40 bg-brand-teal-dim dark:bg-brand-dark-teal-dim' : 'border-brand-border bg-white dark:border-brand-dark-border dark:bg-brand-dark-surface'}`}>
+            <p className={`text-sm font-medium ${verification.cliConnected ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
+              {verification.cliConnected ? '✓' : '1'} CLI connected
+            </p>
+            <p className="mt-1 text-xs text-brand-muted dark:text-brand-dark-muted">A revocable BVX device key is registered to this workspace.</p>
+          </div>
+          <div className={`rounded-xl border p-4 ${verification.proxiedRequestObserved ? 'border-brand-teal/40 bg-brand-teal-dim dark:bg-brand-dark-teal-dim' : 'border-brand-border bg-white dark:border-brand-dark-border dark:bg-brand-dark-surface'}`}>
+            <p className={`text-sm font-medium ${verification.proxiedRequestObserved ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
+              {verification.proxiedRequestObserved ? '✓' : '2'} First request observed
+            </p>
+            <p className="mt-1 text-xs text-brand-muted dark:text-brand-dark-muted">Server evidence confirms a configured tool used that exact device key.</p>
+          </div>
+        </div>
         <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
           <button
             type="button"
@@ -158,11 +222,15 @@ export default function OnboardingWorkspaceChoice({
           </button>
           <button
             type="button"
-            onClick={finish}
+            onClick={onCheck ? checkVerification : finish}
             disabled={finishing}
             className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            {finishing ? 'Checking server evidence…' : 'Check for verified request'}
+            {finishing
+              ? 'Opening your dashboard…'
+              : verification.checking
+                ? 'Checking…'
+                : 'Check now'}
           </button>
         </div>
         {finishError && <p role="alert" className="mt-4 text-sm text-red-500">{finishError}</p>}
@@ -173,12 +241,16 @@ export default function OnboardingWorkspaceChoice({
   return (
     <section aria-labelledby={headingId} className="w-full max-w-5xl mx-auto">
       <header className="max-w-2xl mx-auto text-center mb-7 sm:mb-10">
-        <p className="annotation tracking-widest uppercase mb-3">Step 1 of 3 · choose your workspace</p>
+        <p className="annotation tracking-widest uppercase mb-3">Step 1 of 3 · {isCompany ? 'enterprise setup' : workspaceType ? 'personal setup' : 'choose your path'}</p>
         <h1 id={headingId} className="font-serif text-4xl sm:text-5xl leading-tight text-brand-navy dark:text-brand-dark-navy">
-          How will you use Brevitas?
+          {isCompany ? 'Set up your enterprise boundary.' : workspaceType ? 'Set up your personal workspace.' : 'How will you use Brevitas?'}
         </h1>
         <p id={helpId} className="mt-3 text-sm sm:text-base leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid">
-          A workspace controls who can access projects, usage, API keys, and billing. You can add a company workspace later.
+          {isCompany
+            ? 'Your company gets shared repositories, role-based access, scoped service keys, consolidated usage, and billing.'
+            : workspaceType
+              ? 'Start with one private workspace and one guided tool connection. You can add enterprise controls later without moving your work.'
+              : 'Choose the lighter personal experience or a company boundary with roles and production credentials.'}
         </p>
       </header>
 
@@ -186,7 +258,7 @@ export default function OnboardingWorkspaceChoice({
         <fieldset disabled={busy}>
           <legend className="sr-only">Choose a workspace type</legend>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5">
-            {choices.map(choice => {
+            {visibleChoices.map(choice => {
               const selected = workspaceType === choice.value
               const inputId = `${fieldName}-${choice.value}`
               return (
@@ -238,6 +310,17 @@ export default function OnboardingWorkspaceChoice({
             })}
           </div>
         </fieldset>
+
+        {!showAllChoices && (
+          <button
+            type="button"
+            onClick={() => setShowAllChoices(true)}
+            disabled={busy}
+            className="mx-auto mt-4 block min-h-11 px-4 py-2 text-xs font-medium text-brand-blue hover:underline disabled:opacity-50"
+          >
+            Compare personal and enterprise setup
+          </button>
+        )}
 
         {workspaceType && (
           <div className="mt-5 rounded-2xl border border-brand-border bg-white p-5 sm:p-6 dark:border-brand-dark-border dark:bg-brand-dark-surface">

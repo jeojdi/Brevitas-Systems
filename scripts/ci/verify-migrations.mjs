@@ -52,11 +52,12 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607200015_provider_outbound_ambiguity.sql',
   'supabase/migrations/202607200016_durable_onboarding.sql',
   'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
+  'supabase/migrations/202607200018_workspace_experiences.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
 
-const atomicForwardMigrationPaths = expectedFreshMigrationOrder.slice(-17)
+const atomicForwardMigrationPaths = expectedFreshMigrationOrder.slice(-18)
 
 const expectedFrozenChecksumPaths = [
   'supabase/migrations/202607170007_compliance_workflows.sql',

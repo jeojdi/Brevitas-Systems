@@ -131,8 +131,10 @@ def _validated_company_choices(value: Any, active_company_id: str) -> list[dict[
         company_id = str(item.get("company_id") or "")
         company_name = str(item.get("company_name") or "").strip()
         role = str(item.get("role") or "")
+        account_type = str(item.get("account_type") or "")
         if (not _OPAQUE_ID.fullmatch(company_id) or company_id in seen
                 or role not in COMPANY_ROLES
+                or account_type not in {"individual", "company"}
                 or not company_name or len(company_name) > 200
                 or any(ord(character) < 32 for character in company_name)):
             raise CompanyAdminDenied
@@ -141,6 +143,7 @@ def _validated_company_choices(value: Any, active_company_id: str) -> list[dict[
             "company_id": company_id,
             "company_name": company_name,
             "role": role,
+            "account_type": account_type,
         })
     if active_company_id not in seen:
         raise CompanyAdminDenied
@@ -462,7 +465,8 @@ class SQLiteCompanyAdminService:
                                    "company.read", "company", principal.company_id)
             rows = db.execute(
                 "SELECT member.organization_id AS company_id,"
-                "substr(organization.name,1,200) AS company_name,member.role "
+                "substr(organization.name,1,200) AS company_name,member.role,"
+                "organization.account_type "
                 "FROM organization_members member JOIN organizations organization "
                 "ON organization.id=member.organization_id "
                 "WHERE member.user_id=? AND member.status='active' "

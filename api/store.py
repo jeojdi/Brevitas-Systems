@@ -793,10 +793,12 @@ class UsageStore:
                 "ON api_keys(organization_id,created_by,created,id) "
                 "WHERE key_type='dashboard_session'"
             )
-            db.execute("CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, legacy_owner_id TEXT NOT NULL DEFAULT '' UNIQUE, cache_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, legacy_owner_id TEXT NOT NULL DEFAULT '' UNIQUE, account_type TEXT NOT NULL DEFAULT 'company', cache_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)")
             organization_cols = {r[1] for r in db.execute("PRAGMA table_info(organizations)")}
             if "billing_owner_id" not in organization_cols:
                 db.execute("ALTER TABLE organizations ADD COLUMN billing_owner_id TEXT NOT NULL DEFAULT ''")
+            if "account_type" not in organization_cols:
+                db.execute("ALTER TABLE organizations ADD COLUMN account_type TEXT NOT NULL DEFAULT 'company'")
             for name, definition in {
                 "onboarding_started_at": "TEXT NOT NULL DEFAULT ''",
                 "onboarding_completed_at": "TEXT NOT NULL DEFAULT ''",
@@ -950,22 +952,27 @@ class UsageStore:
                 db.execute(f"CREATE INDEX IF NOT EXISTS usage_org_{column}_idx ON usage_log(organization_id, {column}, ts DESC, id DESC)")
             db.execute("UPDATE usage_log SET measured_savings_usd=cost_saved_usd, verified_savings_usd=cost_saved_usd WHERE measured_savings_usd IS NULL")
 
-    def ensure_organization(self, user_id: str, name: str = "") -> dict[str, Any]:
+    def ensure_organization(self, user_id: str, name: str = "",
+                            account_type: str = "company") -> dict[str, Any]:
         """Idempotently create the human member's default organization."""
+        if account_type not in {"individual", "company"}:
+            raise ValueError("invalid account type")
         with self._conn() as db:
             row = db.execute(
-                "SELECT o.id,o.name,o.billing_owner_id FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=? ORDER BY m.created_at LIMIT 1",
+                "SELECT o.id,o.name,o.billing_owner_id,o.account_type FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=? ORDER BY m.created_at LIMIT 1",
                 (user_id,),
             ).fetchone()
             if not row:
                 organization_id = str(uuid.uuid4())
                 now = _now()
-                db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,created_at,onboarding_started_at) VALUES(?,?,?,?,?,?)",
-                           (organization_id, name or "My organization", user_id, user_id, now, now))
+                db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,account_type,created_at,onboarding_started_at) VALUES(?,?,?,?,?,?,?)",
+                           (organization_id, name or "My organization", user_id, user_id,
+                            account_type, now, now))
                 db.execute("INSERT INTO organization_members(organization_id,user_id,role,created_at) VALUES(?,?,?,?)",
                            (organization_id, user_id, "owner", now))
-                row = db.execute("SELECT id,name,billing_owner_id FROM organizations WHERE id=?", (organization_id,)).fetchone()
-        return {"id": row[0], "name": row[1], "billing_owner_id": row[2]}
+                row = db.execute("SELECT id,name,billing_owner_id,account_type FROM organizations WHERE id=?", (organization_id,)).fetchone()
+        return {"id": row[0], "name": row[1], "billing_owner_id": row[2],
+                "account_type": row[3]}
 
     def member_organization(self, user_id: str) -> dict[str, Any] | None:
         with self._conn() as db:
@@ -983,7 +990,7 @@ class UsageStore:
                 # can never authorize a disabled/removed membership.
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT o.id,o.name,m.role,o.billing_owner_id FROM "
+                    "SELECT o.id,o.name,m.role,o.billing_owner_id,o.account_type FROM "
                     "active_company_selections selected "
                     "JOIN organization_members m ON m.user_id=selected.user_id "
                     "AND m.organization_id=selected.organization_id "
@@ -994,7 +1001,7 @@ class UsageStore:
                 ).fetchone()
                 if not row:
                     row = db.execute(
-                        "SELECT o.id,o.name,m.role,o.billing_owner_id FROM organizations o "
+                        "SELECT o.id,o.name,m.role,o.billing_owner_id,o.account_type FROM organizations o "
                         "JOIN organization_members m ON m.organization_id=o.id "
                         "WHERE m.user_id=? AND m.status='active' AND m.role IN "
                         "('owner','admin','billing','company_owner','company_admin','member','billing_admin') "
@@ -1015,7 +1022,7 @@ class UsageStore:
                         )
             else:
                 row = db.execute(
-                    "SELECT o.id,o.name,m.role,o.billing_owner_id FROM organizations o "
+                    "SELECT o.id,o.name,m.role,o.billing_owner_id,o.account_type FROM organizations o "
                     "JOIN organization_members m ON m.organization_id=o.id "
                     "WHERE m.user_id=? AND m.role IN "
                     "('owner','admin','billing','company_owner','company_admin','member','billing_admin')"
@@ -1029,7 +1036,7 @@ class UsageStore:
         if role not in COMPANY_ROLES:
             return None
         return {"id": row[0], "name": row[1], "role": role,
-                "billing_owner_id": row[3]}
+                "billing_owner_id": row[3], "account_type": row[4]}
 
     @staticmethod
     def _onboarding_evidence(
@@ -2311,21 +2318,27 @@ class SupabaseUsageStore:
         self._request("GET", "organizations", params={"select": "id", "limit": "1"})
         return True
 
-    def ensure_organization(self, user_id: str, name: str = "") -> dict[str, Any]:
+    def ensure_organization(self, user_id: str, name: str = "",
+                            account_type: str = "company") -> dict[str, Any]:
+        if account_type not in {"individual", "company"}:
+            raise ValueError("invalid account type")
         member = self._request("GET", "organization_members", params={
             "select": "organization_id", "user_id": f"eq.{user_id}", "limit": "1",
         }) or []
         if member:
             organization_id = member[0]["organization_id"]
             rows = self._request("GET", "organizations", params={
-                "select": "id,name,billing_owner_id", "id": f"eq.{organization_id}", "limit": "1",
+                "select": "id,name,billing_owner_id,account_type",
+                "id": f"eq.{organization_id}", "limit": "1",
             }) or []
             return rows[0]
-        rows = self._request("POST", "rpc/ensure_enterprise_organization", data={
+        rows = self._request("POST", "rpc/ensure_workspace_organization", data={
             "p_user_id": user_id, "p_name": name or "My organization",
+            "p_account_type": account_type,
         }) or []
         return {"id": rows[0]["id"], "name": rows[0]["name"],
-                "billing_owner_id": rows[0].get("billing_owner_id") or user_id}
+                "billing_owner_id": rows[0].get("billing_owner_id") or user_id,
+                "account_type": rows[0]["account_type"]}
 
     def cache_enabled(self, organization_id: str, customer_id: str = "") -> bool:
         if not organization_id:
@@ -2375,7 +2388,8 @@ class SupabaseUsageStore:
         except ValueError as exc:
             raise RuntimeError("active company resolver returned unsafe tenant") from exc
         rows = self._request("GET", "organizations", params={
-            "select": "id,name,billing_owner_id", "id": f"eq.{organization_id}", "limit": "1",
+            "select": "id,name,billing_owner_id,account_type",
+            "id": f"eq.{organization_id}", "limit": "1",
         }) or []
         return ({**rows[0], "role": role}) if rows else None
 

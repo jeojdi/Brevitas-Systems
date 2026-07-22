@@ -39,8 +39,8 @@ done < <(
   sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
     scripts/ci/migration-upgrade-manifest.txt
 )
-if [[ "${#fresh_migrations[@]}" -ne 42 || "${#upgrade_migrations[@]}" -ne 30 ]]; then
-  echo 'Migration manifests differ from the verified 42-file fresh / 30-file upgrade contract.' >&2
+if [[ "${#fresh_migrations[@]}" -ne 43 || "${#upgrade_migrations[@]}" -ne 31 ]]; then
+  echo 'Migration manifests differ from the verified 43-file fresh / 31-file upgrade contract.' >&2
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))

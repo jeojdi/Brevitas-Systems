@@ -221,7 +221,7 @@ test('release Docker bases and Python installs are immutable', () => {
 test('migration order, generated drift, idempotence, and rollback contracts pass', () => {
   verifyMigrations()
   const securitySuffix = Array.from(
-    { length: 17 },
+    { length: 18 },
     (_, index) => `supabase/migrations/20260720${String(index + 1).padStart(4, '0')}_${[
       'stripe_webhook_durability',
       'waitlist_security',
@@ -240,12 +240,13 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
       'provider_outbound_ambiguity',
       'durable_onboarding',
       'billing_customer_owner_fencing',
+      'workspace_experiences',
     ][index]}.sql`,
   )
-  assert.equal(expectedFreshMigrationOrder.length, 42)
-  assert.equal(expectedUpgradeMigrationOrder.length, 30)
-  assert.deepEqual(expectedFreshMigrationOrder.slice(-17), securitySuffix)
-  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-17), securitySuffix)
+  assert.equal(expectedFreshMigrationOrder.length, 43)
+  assert.equal(expectedUpgradeMigrationOrder.length, 31)
+  assert.deepEqual(expectedFreshMigrationOrder.slice(-18), securitySuffix)
+  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-18), securitySuffix)
   const workflow = read('.github/workflows/migrations.yml')
   assert.match(workflow, /pgvector\/pgvector:pg16-bookworm@sha256:[0-9a-f]{64}/)
   assert.match(workflow, /docker run --detach --rm --network host/)
@@ -309,8 +310,8 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
   assert.match(runner, /scripts\/dr\/compliance-workflow-assertions\.sql/)
   assert.match(runner, /cache_pids/)
   assert.match(runner, /127\.0\.0\.1/)
-  assert.match(runner, /#fresh_migrations\[@\]\}" -ne 42/)
-  assert.match(runner, /#upgrade_migrations\[@\]\}" -ne 30/)
+  assert.match(runner, /#fresh_migrations\[@\]\}" -ne 43/)
+  assert.match(runner, /#upgrade_migrations\[@\]\}" -ne 31/)
   assert.equal((runner.match(/apply_migration "\$\{device_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{membership_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{receipt_migration\}"/g) || []).length, 4)

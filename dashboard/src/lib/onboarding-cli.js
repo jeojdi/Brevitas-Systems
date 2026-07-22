@@ -17,6 +17,7 @@ export const BVX_PLATFORMS = Object.freeze([
     prompt: '$',
     language: 'bash',
     installCommand: 'brew install Brevitas-ai/brevitas/bvx',
+    quickStartCommand: 'brew install Brevitas-ai/brevitas/bvx && bvx install',
     note: 'Homebrew installs the supported Python dependency with BVX.',
   },
   {
@@ -25,6 +26,7 @@ export const BVX_PLATFORMS = Object.freeze([
     prompt: '$',
     language: 'bash',
     installCommand: 'brew install Brevitas-ai/brevitas/bvx',
+    quickStartCommand: 'brew install Brevitas-ai/brevitas/bvx && bvx install',
     note: 'This uses Homebrew on Linux and installs the supported Python dependency with BVX.',
   },
   {
@@ -33,6 +35,7 @@ export const BVX_PLATFORMS = Object.freeze([
     prompt: 'PS>',
     language: 'powershell',
     installCommand: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex',
+    quickStartCommand: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex; if ($?) { bvx install }',
     note: 'Install Python 3.13 or newer first, then open a new PowerShell window after this installer updates PATH.',
   },
 ])

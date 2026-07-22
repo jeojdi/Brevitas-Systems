@@ -16,8 +16,12 @@ test('personal and enterprise entry pages share authentication and preserve serv
 
   assert.match(app, /useState\(\(\) => loginAudienceForPath\(window\.location\.pathname\)\)/)
   assert.match(app, /if \(session && loginAudience\) history\.replaceState\(null, '', '\/dashboard'\)/)
-  assert.match(app, /initialWorkspaceType=\{loginAudience === LOGIN_AUDIENCE\.PERSONAL/)
+  assert.match(app, /activeWorkspace\?\.account_type === 'individual'/)
+  assert.match(app, /loginAudience === LOGIN_AUDIENCE\.PERSONAL/)
   assert.match(app, /fetchCompanyContext\(session\.access_token/)
+  assert.match(app, /const PERSONAL_TABS/)
+  assert.match(app, /const ENTERPRISE_TABS/)
+  assert.match(app, /enterpriseWorkspace \? ENTERPRISE_TABS : PERSONAL_TABS/)
   assert.match(app, /companyContext\.companies\.map\(company/)
   assert.match(app, /activateCompany\(session\.access_token, companyId\)/)
 })

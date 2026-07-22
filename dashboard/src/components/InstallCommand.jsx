@@ -39,7 +39,7 @@ function CommandRow({ label, prompt = '$', command }) {
   )
 }
 
-export default function InstallCommand({ phase = 'all' }) {
+export default function InstallCommand({ phase = 'all', audience = 'personal' }) {
   const [activePlatform, setActivePlatform] = useState(BVX_PLATFORMS[0].id)
   const platform = BVX_PLATFORMS.find(item => item.id === activePlatform) || BVX_PLATFORMS[0]
   const showSetup = phase === 'all' || phase === 'setup'
@@ -52,11 +52,11 @@ export default function InstallCommand({ phase = 'all' }) {
           <div>
             <p className="annotation uppercase tracking-widest">// install, authenticate, configure</p>
             <h2 id="bvx-setup-heading" className="mt-1 font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
-              Connect a local AI tool with BVX
+              One command connects your tools
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">
-              Choose your operating system. The setup command opens the dashboard for authorization, stores a revocable
-              device key, configures detected tools, starts the local services, and runs setup checks.
+              Choose your operating system, copy the command, and follow the prompts. BVX opens this dashboard for
+              authorization, stores a revocable device key, configures detected tools, starts local services, and checks the setup.
             </p>
           </div>
 
@@ -78,13 +78,24 @@ export default function InstallCommand({ phase = 'all' }) {
             ))}
           </div>
 
-          <CommandRow label={`1. Install BVX on ${platform.label}`} prompt={platform.prompt} command={platform.installCommand} />
-          <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">{platform.note}</p>
-          <CommandRow label="2. Confirm the installed binary" prompt={platform.prompt} command={BVX_COMMANDS.version} />
-          <CommandRow label="3. Authorize, configure tools, and start services" prompt={platform.prompt} command={BVX_COMMANDS.setup} />
+          <CommandRow label={`Copy and run on ${platform.label}`} prompt={platform.prompt} command={platform.quickStartCommand} />
+          <div className="rounded-xl border border-brand-teal/30 bg-brand-teal-dim px-4 py-3 text-xs leading-relaxed text-brand-teal dark:bg-brand-dark-teal-dim">
+            {audience === 'company'
+              ? 'This key belongs to this device only. Use Team & keys for production services and teammate access.'
+              : 'No API key copying is required. Approve the browser prompt and BVX handles the local configuration.'}
+          </div>
+          <details className="rounded-xl border border-brand-border px-4 py-3 dark:border-brand-dark-border">
+            <summary className="cursor-pointer text-xs font-medium text-brand-navy dark:text-brand-dark-navy">Show manual steps</summary>
+            <div className="mt-4 space-y-4">
+              <CommandRow label="1. Install BVX" prompt={platform.prompt} command={platform.installCommand} />
+              <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">{platform.note}</p>
+              <CommandRow label="2. Confirm the installed binary" prompt={platform.prompt} command={BVX_COMMANDS.version} />
+              <CommandRow label="3. Authorize and configure tools" prompt={platform.prompt} command={BVX_COMMANDS.setup} />
+            </div>
+          </details>
           <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
             <code className="font-mono text-brand-blue">bvx install</code> includes browser authentication. Use{' '}
-            <code className="font-mono text-brand-blue">bvx login</code> separately only when you need to reconnect the stored account.
+            <code className="font-mono text-brand-blue">bvx login</code> only when you need to reconnect the stored account.
           </p>
         </section>
       )}
@@ -94,21 +105,23 @@ export default function InstallCommand({ phase = 'all' }) {
       {showVerification && (
         <section aria-labelledby="bvx-verify-heading" className="space-y-4">
           <div>
-            <p className="annotation uppercase tracking-widest">// diagnose, then prove one request</p>
+            <p className="annotation uppercase tracking-widest">// one check, one normal prompt</p>
             <h2 id="bvx-verify-heading" className="mt-1 font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
-              Verify the complete local path
+              Verify the complete path
             </h2>
           </div>
-          <CommandRow label="1. Require all installation diagnostics to pass" command={BVX_COMMANDS.diagnose} />
+          <CommandRow label="1. Run the automatic diagnostics" command={BVX_COMMANDS.diagnose} />
           <ol className="space-y-2 text-sm leading-relaxed text-brand-navy-mid dark:text-brand-dark-navy-mid">
             <li><span className="mr-2 font-mono text-brand-blue">2.</span>Send one ordinary prompt from a tool that BVX reported as configured.</li>
-            <li><span className="mr-2 font-mono text-brand-blue">3.</span>Check the local, content-free proxy counters:</li>
+            <li><span className="mr-2 font-mono text-brand-blue">3.</span>Return to this page; it detects the request automatically.</li>
           </ol>
-          <CommandRow command={BVX_COMMANDS.verifyRequest} />
-          <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
-            The first request is verified only when <span className="font-medium text-brand-navy dark:text-brand-dark-navy">Requests proxied</span>{' '}
-            increases. A successful login or a healthy service alone does not prove that your AI tool is routed through BVX.
-          </p>
+          <details className="rounded-xl border border-brand-border px-4 py-3 dark:border-brand-dark-border">
+            <summary className="cursor-pointer text-xs font-medium text-brand-navy dark:text-brand-dark-navy">Want to verify in the terminal too?</summary>
+            <div className="mt-4"><CommandRow command={BVX_COMMANDS.verifyRequest} /></div>
+            <p className="mt-3 text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+              <span className="font-medium text-brand-navy dark:text-brand-dark-navy">Requests proxied</span> must increase.
+            </p>
+          </details>
         </section>
       )}
     </div>
