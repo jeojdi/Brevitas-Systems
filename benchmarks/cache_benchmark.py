@@ -24,7 +24,8 @@ from typing import Optional
 # Env + keys
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).parent.parent
-for line in (ROOT / ".env.local").read_text().splitlines():
+env_path = ROOT / ".env.local"
+for line in env_path.read_text().splitlines() if env_path.is_file() else ():
     if "=" in line and not line.strip().startswith("#"):
         k, _, v = line.partition("=")
         os.environ.setdefault(k.strip(), v.strip())

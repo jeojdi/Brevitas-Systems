@@ -35,7 +35,8 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-for ln in (ROOT / ".env.local").read_text().splitlines():
+env_path = ROOT / ".env.local"
+for ln in env_path.read_text().splitlines() if env_path.is_file() else ():
     if "=" in ln and not ln.strip().startswith("#"):
         k, _, v = ln.partition("="); os.environ.setdefault(k.strip(), v.strip())
 

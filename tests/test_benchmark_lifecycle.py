@@ -97,6 +97,12 @@ def test_incremental_session_does_not_close_injected_client(monkeypatch):
 
 
 def test_cache_benchmark_closes_owned_failure_but_not_injected(monkeypatch):
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path.name == ".env.local" else real_is_file(path),
+    )
     monkeypatch.setenv("Deepseek_api_key", "offline-test-key")
     monkeypatch.setitem(
         sys.modules, "datasets", SimpleNamespace(load_dataset=lambda *_args, **_kwargs: [])
@@ -198,6 +204,12 @@ def test_live_e2e_closes_dropin_on_success_and_retry_exhaustion(monkeypatch, fai
 
 
 def test_accuracy_suite_closes_raw_client_after_partial_progress(monkeypatch):
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path.name == ".env.local" else real_is_file(path),
+    )
     from benchmarks import accuracy_suite
 
     client = _ClosableClient()
