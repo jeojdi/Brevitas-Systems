@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from brevitas.resource_bounds import clamp_int
+from .runtime import hosted_runtime
 
 
 def _redis_failure_outcome(exc: BaseException) -> str:
@@ -218,11 +219,7 @@ class DistributedLimiter:
         self.policy = policy or LimitPolicy.from_env()
         self.redis = redis_client
         self._clock = clock
-        self.production = (
-            os.getenv("BREVITAS_ENV", "").lower() in {"prod", "production"}
-            or bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT_NAME")
-                    or os.getenv("RAILWAY_PROJECT_ID"))
-        )
+        self.production = hosted_runtime()
         if self.redis is None and os.getenv("REDIS_URL"):
             started = time.perf_counter()
             try:

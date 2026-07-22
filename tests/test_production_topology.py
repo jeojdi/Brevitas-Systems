@@ -6,8 +6,8 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import httpx
+import pytest
 import requests
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -67,6 +67,29 @@ def test_railway_templates_split_api_workers_and_private_compressor():
     assert "COPY brevitas/security/ brevitas/security/" not in compressor_dockerfile
 
 
+def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
+    api = (ROOT / "deploy/cloud-run-api-staging.yaml").read_text()
+    worker = (ROOT / "deploy/cloud-run-worker-staging.yaml").read_text()
+    runtime_identity = (
+        "brevitas-staging-runtime@divine-camera-465917-j7.iam.gserviceaccount.com"
+    )
+    kms_key = (
+        "projects/divine-camera-465917-j7/locations/global/keyRings/"
+        "brevitas-staging/cryptoKeys/credential-envelope"
+    )
+
+    assert "kind: Service" in api
+    assert "kind: WorkerPool" in worker
+    assert 'run.googleapis.com/manualInstanceCount: "1"' in worker
+    for manifest in (api, worker):
+        assert f"serviceAccountName: {runtime_identity}" in manifest
+        assert "name: BREVITAS_KMS_REQUIRED\n              value: \"true\"" in manifest
+        assert f"value: {kms_key}" in manifest
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in manifest
+        assert "serviceAccountKey" not in manifest
+        assert "brevitas-staging-redis-url" in manifest
+
+
 def test_shared_dependencies_are_same_region_tls_and_non_authoritative():
     guide = (ROOT / "DEPLOYMENT_GUIDE.md").read_text()
     assert "one primary US region" in guide
@@ -92,6 +115,15 @@ def test_production_compressor_address_must_be_private(monkeypatch):
     assert server._private_compressor_url("http://compressor.railway.internal:8080") is True
     assert server._private_compressor_url("https://compressor.example.com") is False
     assert server._private_compressor_url("http://127.0.0.1:8080") is False
+
+
+@pytest.mark.parametrize("marker", ["K_SERVICE", "K_REVISION", "CLOUD_RUN_WORKER_POOL"])
+def test_cloud_run_platform_markers_enable_hosted_fail_closed_runtime(monkeypatch, marker):
+    import api.server as server
+
+    monkeypatch.delenv("BREVITAS_ENV", raising=False)
+    monkeypatch.setenv(marker, "brevitas-staging")
+    assert server._production_runtime() is True
 
 
 @pytest.mark.parametrize(("url", "token", "message"), [

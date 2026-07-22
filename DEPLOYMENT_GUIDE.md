@@ -41,6 +41,10 @@ headers cannot select or override the compliance actor or organization.
 
 ## 2. Railway
 
+For the keyless Google Cloud staging cutover, use the Cloud Run service and Worker Pool procedure
+in `docs/CLOUD_RUN_STAGING.md`. Cloud Run's attached service identity replaces external workload
+credentials; never copy a service-account JSON key into Railway, Cloud Run, or Secret Manager.
+
 Create three services from the same repository in one primary US region, colocated with Supabase
 and Redis Cloud:
 
@@ -79,11 +83,13 @@ BREVITAS_IMAGE_DIGEST=sha256:FULL_64_CHARACTER_REGISTRY_DIGEST
 ALLOWED_ORIGINS=https://YOUR_VERCEL_DOMAIN
 BREVITAS_PROXY_AUTH=true
 REDIS_URL=rediss://...
-BREVITAS_KMS_PROVIDER=YOUR_MANAGED_KMS_PROVIDER
-BREVITAS_KMS_KEY_ID=YOUR_IMMUTABLE_MANAGED_KEY_ID
-BREVITAS_KMS_KEY_VERSION=YOUR_IMMUTABLE_KEY_VERSION
-BREVITAS_KMS_ADAPTER_FACTORY=your_runtime.kms:create_adapter
-BREVITAS_KMS_ADAPTER_TRUSTED_MODULES=your_runtime.kms
+BREVITAS_KMS_PROVIDER=google-cloud-kms
+BREVITAS_KMS_KEY_ID=projects/YOUR_GCP_PROJECT/locations/YOUR_LOCATION/keyRings/YOUR_KEY_RING/cryptoKeys/YOUR_KEY
+BREVITAS_KMS_KEY_VERSION=1
+BREVITAS_KMS_ALGORITHM=GOOGLE_SYMMETRIC_ENCRYPTION
+BREVITAS_KMS_ADAPTER_FACTORY=brevitas.security.google_cloud_kms:create_adapter
+BREVITAS_KMS_ADAPTER_TRUSTED_MODULES=brevitas.security.google_cloud_kms
+BREVITAS_GCP_KMS_TIMEOUT_SECONDS=0.75
 BREVITAS_KMS_READINESS_TIMEOUT_SECONDS=1
 BREVITAS_KMS_READINESS_MAX_AGE_SECONDS=30
 COMPANY_ADMIN_CURSOR_SECRET=YOUR_RANDOM_32_PLUS_CHARACTER_CURSOR_SECRET
@@ -112,6 +118,15 @@ encryption, and legacy keys may only be supplied as explicit decrypt-only migrat
 API and worker readiness actively wrap and unwrap one ephemeral random data key with a fixed,
 non-customer context. They fail closed on KMS errors, probe timeouts, or evidence older than the
 configured maximum age; process-only liveness remains up during a KMS outage.
+
+The tracked Google Cloud adapter uses Application Default Credentials, pins encryption to the
+configured immutable `CryptoKeyVersion`, binds the Brevitas encryption context as Cloud KMS AAD,
+and verifies CRC32C request/response integrity. Grant the runtime identity only
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` on the environment-specific key. Prefer Workload
+Identity Federation for external workloads. If the hosting platform cannot issue a workload
+identity token, treat any service-account key as a temporary staging exception: store it only in
+a sealed secret, scope it to this key, record an owner and expiry, and migrate away from it before
+production approval.
 Set the same environment-specific `COMPANY_ADMIN_CURSOR_SECRET` value on every API replica and
 worker that constructs the Supabase store; it signs both company-administration and usage
 pagination cursors. Set `COMPANY_ADMIN_INVITEE_PEPPER` independently to another environment-

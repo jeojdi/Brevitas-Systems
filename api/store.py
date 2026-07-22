@@ -19,6 +19,7 @@ from typing import Any, Optional
 import requests
 
 from .auth import generate_api_key, hash_key
+from .runtime import hosted_runtime
 from brevitas.receipts import MODEL_PRICES, canonical_provider, model_price
 
 
@@ -3390,9 +3391,7 @@ def make_store():
     backend = os.getenv("BREVITAS_STORE", "").lower()
     configured = bool((os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"))
                       and os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
-    hosted = (os.getenv("BREVITAS_ENV", "").lower() in ("prod", "production")
-              or bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT_NAME")
-                      or os.getenv("RAILWAY_PROJECT_ID")))
+    hosted = hosted_runtime()
     if hosted and (backend != "supabase" or not configured):
         raise RuntimeError("Production requires BREVITAS_STORE=supabase and Supabase credentials")
     if backend == "supabase" or (backend != "sqlite" and configured):

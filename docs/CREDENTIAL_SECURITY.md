@@ -65,10 +65,12 @@ authoritative key store. Clear it during graceful shutdown and after a key is di
 DEK may allow a previously accessed record to decrypt only until its short TTL expires during a
 KMS outage.
 
-The repository deliberately has no fake production adapter and no provider SDK dependency. Add
-the selected managed-KMS SDK only with a pinned dependency and review its workload-identity,
-timeouts, retry, audit-log, and key-version APIs before provisioning. Never log adapter request or
-response objects.
+The production adapter is `brevitas.security.google_cloud_kms.GoogleCloudKMS`, using the pinned
+Google Cloud KMS SDK and Application Default Credentials. It targets the configured immutable key
+version for encryption, uses the caller context as Cloud KMS additional authenticated data, checks
+CRC32C integrity in both directions, disables SDK retries, and enforces a bounded operation
+timeout. Prefer Workload Identity Federation and grant only key-scoped encrypt/decrypt access.
+Never log adapter request or response objects.
 
 Provider, key ID, version, and algorithm metadata are ASCII/length bounded before use. The
 adapter-returned key ID and immutable version must exactly match the requested values. When

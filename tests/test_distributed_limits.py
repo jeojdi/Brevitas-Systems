@@ -119,6 +119,16 @@ def test_railway_runtime_is_production_even_without_manual_env_flag(monkeypatch)
     assert asyncio.run(limiter.healthy()) is False
 
 
+@pytest.mark.parametrize("marker", ["K_SERVICE", "K_REVISION", "CLOUD_RUN_WORKER_POOL"])
+def test_cloud_run_runtime_fails_closed_without_redis(monkeypatch, marker):
+    monkeypatch.delenv("BREVITAS_ENV", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv(marker, "brevitas-staging")
+    limiter = DistributedLimiter(policy=policy())
+    assert limiter.production is True
+    assert asyncio.run(limiter.healthy()) is False
+
+
 def test_identity_rejects_credential_shaped_values():
     limiter = DistributedLimiter(FakeRedis(), policy=policy())
     bad = LimitIdentity("org_1", "customer_1", "bvt_secret.value", "openai")

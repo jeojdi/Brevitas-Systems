@@ -24,6 +24,7 @@ from .kms import (
     is_production_environment,
     kms_from_environment,
 )
+from .google_cloud_kms import GoogleCloudKMS
 from .readiness import KMSReadinessMonitor, KMSReadinessResult
 from .redaction import REDACTED, REDACTED_KEY, redact, redact_exception, redact_text, redact_url
 
@@ -32,7 +33,7 @@ __all__ = [
     "EnvelopeDecryptionError", "EnvelopeError", "EnvelopeFormatError",
     "ExternalManagedKMS", "KMSConfigurationError", "KMSReadinessMonitor",
     "KMSReadinessResult", "KMSSettings", "KMSUnavailable",
-    "LegacyFernetDecryptor", "LocalTestKMS", "ManagedKMS", "REDACTED", "REDACTED_KEY",
+    "GoogleCloudKMS", "LegacyFernetDecryptor", "LocalTestKMS", "ManagedKMS", "REDACTED", "REDACTED_KEY",
     "RotationRecord", "RotationSummary", "WrappedDataKey", "build_envelope_cipher",
     "is_production_environment", "kms_from_environment", "redact", "redact_exception",
     "redact_text", "redact_url", "rotate_envelopes",

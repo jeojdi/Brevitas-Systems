@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.import_usage import import_sqlite
@@ -134,6 +136,16 @@ def test_cloud_configuration_selects_supabase_and_sqlite_is_explicit_fallback(mo
     monkeypatch.setenv("BREVITAS_STORE", "sqlite")
     monkeypatch.setenv("BREVITAS_SQLITE_PATH", str(tmp_path / "fallback.db"))
     assert isinstance(make_store(), UsageStore)
+
+
+def test_cloud_run_requires_authoritative_supabase_configuration(monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "brevitas-api-staging")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("NEXT_PUBLIC_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.setenv("BREVITAS_STORE", "sqlite")
+    with pytest.raises(RuntimeError, match="requires BREVITAS_STORE=supabase"):
+        make_store()
 
 
 def test_duplicate_and_breakdown_reconcile(tmp_path):

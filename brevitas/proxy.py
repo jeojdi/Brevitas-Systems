@@ -25,8 +25,12 @@ import os
 import time
 import asyncio
 import inspect
+import math
+import threading
 import uuid
+from collections import deque
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import httpx
@@ -36,7 +40,16 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from ._compress import count_messages_tokens, report_usage
 from .identity import CUSTOMER_ID_HEADER, normalize_customer_id, short_tenant_key, tenant_key
 from .labels import _git_root_name
+from .provider_reliability import ProviderCircuitOpen, provider_http
 from .receipts import SSEUsageParser, TokenReceipt, count_request_tokens, normalize_usage
+from .resource_bounds import (
+    BoundedTTLMap,
+    ResourceBounds,
+    ResourceLimitExceeded,
+    safe_close_resource,
+    serialized_size_bytes,
+    utf8_size,
+)
 from .session import BrevitasSession
 from token_efficiency_model.lossless import state_store
 from token_efficiency_model.lossless.batch_group import BatchGroupGate
@@ -53,14 +66,224 @@ _BG_ON = os.environ.get("BREVITAS_BATCH_GROUP", "1") not in ("0", "false", "no")
 _bg = BatchGroupGate(max_wait=float(os.environ.get("BREVITAS_BATCH_GROUP_MAX_WAIT", "15")))
 _BG_WARM = {"deepseek": 2880.0, "anthropic": 240.0, "openai": 240.0}  # ~0.8x cache TTL
 
-# one router per (provider, key) — learns each session's repeat + real cache behavior
-_routers: dict[str, BrevitasRouter] = {}
+_RESOURCE_BOUNDS = ResourceBounds.from_env()
+_ROUTER_SESSION_FIELDS = (
+    "msg_hashes", "msg_tokens", "last_ts", "obs_hit", "obs_count", "keep_frac",
+    "last_est", "tok_ratio", "last_strategy", "gap_ewma", "repeat_observations",
+    "cache_read_tokens", "cache_write_tokens", "cache_net_units",
+    "cache_negative_writes", "cache_blocked_until",
+)
 
 
-def _router_for(key: str, provider: str) -> BrevitasRouter:
-    if key not in _routers:
-        _routers[key] = BrevitasRouter(provider=provider)
-    return _routers[key]
+def _copy_router(router: BrevitasRouter) -> BrevitasRouter:
+    """Return an isolated router; never expose the registry-owned mutable value."""
+    client = getattr(router, "client", None)
+    memo = {id(client): client} if client is not None else None
+    return deepcopy(router, memo)
+
+
+def _registry_resource(value: object) -> object:
+    """Return the pool owned by a registry value, or the value itself."""
+    client = getattr(value, "client", None)
+    return client if client is not None else value
+
+
+def _close_registry_value(value: object) -> None:
+    safe_close_resource(_registry_resource(value))
+
+
+def _router_size(router: BrevitasRouter) -> int:
+    sessions = {
+        str(session_id): {
+            name: getattr(state, name, None) for name in _ROUTER_SESSION_FIELDS
+        }
+        for session_id, state in getattr(router._sessions, "_sessions", {}).items()
+    }
+    return serialized_size_bytes({
+        "provider": router.provider,
+        "model": router.model,
+        "retrieve_keep_frac": router.retrieve_keep_frac,
+        "sessions": sessions,
+    })
+
+
+def _copy_session(session: BrevitasSession) -> BrevitasSession:
+    """Copy content and counters while retaining only the original clock handle."""
+    copied = BrevitasSession(
+        session_id=session.session_id,
+        prior_ttl_s=session.prior_ttl_s,
+        max_prior_items=session.max_prior_items,
+        max_prior_bytes=session.max_prior_bytes,
+        max_prior_item_bytes=session.max_prior_item_bytes,
+        clock=session._clock,
+    )
+    with session._lock:
+        copied._prior_content = deque(session._prior_content)
+        copied._prior_bytes = session._prior_bytes
+        copied.hop_count = session.hop_count
+        copied.last_quality = session.last_quality
+    if hasattr(session, "client"):
+        copied.client = session.client
+    return copied
+
+
+def _session_size(session: BrevitasSession) -> int:
+    return 512 + utf8_size(session.session_id) + session.retained_bytes
+
+
+def _make_router_registry(
+    bounds: ResourceBounds, *, clock: Callable[[], float] = time.monotonic,
+) -> BoundedTTLMap[str, BrevitasRouter]:
+    return BoundedTTLMap(
+        ttl_s=bounds.registry_ttl_s,
+        max_entries=bounds.registry_max_entries,
+        max_value_bytes=bounds.registry_max_value_bytes,
+        clock=clock,
+        sizer=_router_size,
+        copier=_copy_router,
+        snapshotter=_copy_router,
+        on_remove=_close_registry_value,
+        resource_key=_registry_resource,
+    )
+
+
+def _make_session_registry(
+    bounds: ResourceBounds, *, clock: Callable[[], float] = time.monotonic,
+) -> BoundedTTLMap[str, BrevitasSession]:
+    return BoundedTTLMap(
+        ttl_s=min(bounds.registry_ttl_s, bounds.session_content_ttl_s),
+        max_entries=bounds.registry_max_entries,
+        max_value_bytes=bounds.registry_max_value_bytes,
+        clock=clock,
+        sizer=_session_size,
+        copier=_copy_session,
+        snapshotter=_copy_session,
+        on_remove=_close_registry_value,
+        resource_key=_registry_resource,
+    )
+
+
+_routers = _make_router_registry(_RESOURCE_BOUNDS)
+_sessions = _make_session_registry(_RESOURCE_BOUNDS)
+_router_registry_lock = threading.RLock()
+_session_registry_lock = threading.RLock()
+_SESSION_CONTENT_BUDGET = max(
+    1, min(_RESOURCE_BOUNDS.session_max_bytes,
+           _RESOURCE_BOUNDS.registry_max_value_bytes - 512)
+)
+
+
+@dataclass(frozen=True)
+class _RouterHandle:
+    key: str
+    provider: str
+
+
+def _router_for(key: str, provider: str) -> _RouterHandle:
+    with _router_registry_lock:
+        _routers.get_or_create(key, lambda: BrevitasRouter(provider=provider))
+    return _RouterHandle(key, provider)
+
+
+def _mutate_router(handle: _RouterHandle, mutator: Callable[[BrevitasRouter], Any]) -> Any:
+    result: list[Any] = []
+
+    def apply(router: BrevitasRouter) -> BrevitasRouter:
+        result.append(mutator(router))
+        return router
+
+    with _router_registry_lock:
+        _routers.get_or_create(
+            handle.key, lambda: BrevitasRouter(provider=handle.provider))
+        _routers.mutate(handle.key, apply, copier=_copy_router)
+    return result[0] if result else None
+
+
+@dataclass
+class _SessionHandle:
+    key: str
+    session_id: str
+
+    @property
+    def last_quality(self) -> float | None:
+        snapshot = _sessions.get(self.key)
+        return snapshot.last_quality if snapshot is not None else None
+
+    @last_quality.setter
+    def last_quality(self, value: float | None) -> None:
+        _mutate_session(self, lambda session: setattr(session, "last_quality", value))
+
+    def record_response(self, text: str) -> None:
+        try:
+            _mutate_session(self, lambda session: session.record_response(text))
+        except ResourceLimitExceeded:
+            pass
+
+    def advance(self) -> None:
+        _mutate_session(self, lambda session: session.advance())
+
+    def prior_context(self) -> list[str]:
+        snapshot = _sessions.get(self.key)
+        return snapshot.prior_context() if snapshot is not None else []
+
+
+def _new_session(session_id: str = "") -> BrevitasSession:
+    return BrevitasSession(
+        session_id=session_id,
+        max_prior_items=_RESOURCE_BOUNDS.session_max_items,
+        max_prior_bytes=_SESSION_CONTENT_BUDGET,
+        max_prior_item_bytes=min(
+            _RESOURCE_BOUNDS.session_max_item_bytes, _SESSION_CONTENT_BUDGET),
+    )
+
+
+def _session_for(key: str) -> _SessionHandle:
+    with _session_registry_lock:
+        snapshot = _sessions.get_or_create(key, _new_session)
+    return _SessionHandle(key, snapshot.session_id)
+
+
+def _mutate_session(handle: _SessionHandle,
+                    mutator: Callable[[BrevitasSession], Any]) -> Any:
+    result: list[Any] = []
+
+    def apply(session: BrevitasSession) -> BrevitasSession:
+        result.append(mutator(session))
+        return session
+
+    with _session_registry_lock:
+        updated = _sessions.mutate(handle.key, apply, copier=_copy_session)
+        if updated is None:
+            replacement = _new_session(handle.session_id)
+            _sessions.put(handle.key, replacement)
+            _sessions.mutate(handle.key, apply, copier=_copy_session)
+    return result[0] if result else None
+
+
+def _optimize_fail_open(body: dict, provider: str, router: _RouterHandle,
+                        session_id: str, **kwargs: Any) -> dict:
+    """Optimize transactionally; any failure restores the exact caller body.
+
+    The proxy is shared infrastructure for multiple API dialects. An optimizer bug must
+    therefore degrade to passthrough for one request, never corrupt a partially-mutated
+    payload or take every configured client offline.
+    """
+    original = deepcopy(body)
+    try:
+        return _mutate_router(
+            router,
+            lambda value: optimize_request(
+                body, provider, value, session_id, **kwargs),
+        )
+    except Exception as exc:
+        body.clear()
+        body.update(original)
+        return {
+            "strategy": "passthrough",
+            "reason": "optimizer_fail_open",
+            "quality_status": "byte_preserving",
+            "optimizer_error": type(exc).__name__,
+        }
 
 
 # ── cross-run state persistence (lossless — decision state only, content-free) ──
@@ -80,8 +303,14 @@ def _key_id(secret: str) -> str:
 
 
 if _STATE_FILE:
-    _restored = state_store.load(_STATE_FILE, _routers,
-                                 lambda prov: BrevitasRouter(provider=prov))
+    _restore_target: dict[str, BrevitasRouter] = {}
+    _restored = state_store.load(
+        _STATE_FILE, _restore_target, lambda prov: BrevitasRouter(provider=prov))
+    for _restored_key, _restored_router in _restore_target.items():
+        try:
+            _routers.put(_restored_key, _restored_router)
+        except ResourceLimitExceeded:
+            pass
     if _restored:
         print(f"[brevitas] cross-run state: restored {_restored} sessions from {_STATE_FILE}",
               flush=True)
@@ -94,7 +323,8 @@ def _state_save() -> None:
     now = time.time()
     if now - _state_last_save >= _STATE_EVERY_S:
         _state_last_save = now
-        state_store.save(_STATE_FILE, _routers)
+        with _router_registry_lock:
+            state_store.save(_STATE_FILE, dict(_routers.items()))
 
 _ANTHROPIC_API = "https://api.anthropic.com"
 _UPSTREAMS = {
@@ -127,7 +357,8 @@ def set_usage_reporter(callback: Callable | None) -> None:
 # the router/engine's provider-native prompt caching (which discounts a call that still
 # happens); the semantic cache eliminates the call. Lazy singleton; any failure disables
 # it silently so the cache can NEVER break a customer's pipeline.
-# Toggle: BREVITAS_CACHE_ENABLED=false.
+# Hosted caching is fail-closed and tenant opt-in. Standalone local proxy users may
+# explicitly opt in with BREVITAS_CACHE_LOCAL=true.
 _cache_singleton: Any = None
 _cache_init_done = False
 
@@ -137,7 +368,7 @@ def _get_cache():
     if _cache_init_done:
         return _cache_singleton
     _cache_init_done = True
-    if os.getenv("BREVITAS_CACHE_ENABLED", "true").lower() == "false":
+    if os.getenv("BREVITAS_CACHE_ENABLED", "false").lower() not in ("1", "true", "yes"):
         _cache_singleton = None
         return None
     try:
@@ -146,6 +377,19 @@ def _get_cache():
     except Exception:
         _cache_singleton = None
     return _cache_singleton
+
+
+def _cache_for_request(request: Request):
+    """Return a cache only after the authenticated tenant explicitly opted in."""
+    tenant_opt_in = bool(getattr(request.state, "brevitas_cache_enabled", False))
+    local_opt_in = os.getenv("BREVITAS_CACHE_LOCAL", "false").lower() in ("1", "true", "yes")
+    return _get_cache() if tenant_opt_in or local_opt_in else None
+
+
+def _admission_canceled(request: Request) -> bool:
+    """Cooperatively stop upstream/receipt work after a distributed lease loss."""
+    event = getattr(request.state, "brevitas_admission_cancellation", None)
+    return bool(event is not None and event.is_set())
 
 
 def _usage_tokens(data: dict, provider: str) -> tuple[int, int]:
@@ -193,17 +437,24 @@ def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> No
 def _cache_body(body: dict, request: Request, *credentials: str) -> dict:
     """Original request plus safe cache-vary metadata; never persist raw credentials."""
     cached = deepcopy(body)
-    customer_id = _customer_id(request)
-    namespace_parts = [value for value in credentials if value]
-    if customer_id:
-        namespace_parts.extend(("brevitas-customer", customer_id))
-    cached["_brevitas_cache_namespace"] = _key_id("\0".join(namespace_parts))
+    organization_id = str(getattr(request.state, "brevitas_organization_id", "") or "")
+    customer_id = str(getattr(request.state, "brevitas_customer_id", "") or "") or _customer_id(request)
+    if organization_id:
+        cached["_brevitas_cache_namespace"] = f"{organization_id}:{customer_id or 'unattributed'}"
+    else:
+        namespace_parts = [value for value in credentials if value]
+        if customer_id:
+            namespace_parts.extend(("brevitas-customer", customer_id))
+        cached["_brevitas_cache_namespace"] = _key_id("\0".join(namespace_parts))
     cached["_brevitas_cache_vary"] = {
         name: request.headers.get(name, "") for name in (
             "anthropic-version", "anthropic-beta", "openai-organization",
             "openai-project", "openai-beta", "idempotency-key", "x-brevitas-upstream",
         ) if request.headers.get(name)
     }
+    cached["_brevitas_cache_vary"]["provider_credential"] = _key_id("\0".join(
+        value for value in credentials if value
+    ))
     return cached
 
 
@@ -222,13 +473,35 @@ def _tenant_context(request: Request, fallback_credential: str = "") -> tuple[st
 
 
 async def _json_object(request: Request) -> tuple[bytes, dict]:
-    raw = await request.body()
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > _RESOURCE_BOUNDS.request_max_bytes:
+                raise HTTPException(status_code=413, detail="Request body is too large")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from exc
+
+    raw_buffer = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > _RESOURCE_BOUNDS.request_max_bytes - len(raw_buffer):
+            raise HTTPException(status_code=413, detail="Request body is too large")
+        raw_buffer.extend(chunk)
+    raw = bytes(raw_buffer)
     try:
         body = json.loads(raw)
-    except (TypeError, ValueError) as exc:
+    except (RecursionError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    pending: list[Any] = [body]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            if len(value) > _RESOURCE_BOUNDS.request_max_items:
+                raise HTTPException(status_code=413, detail="Request contains too many items")
+            pending.extend(value)
+        elif isinstance(value, dict):
+            pending.extend(value.values())
     return raw, body
 
 
@@ -237,7 +510,7 @@ def _upstream_ok(response: httpx.Response) -> bool:
 
 
 async def _report_cache_hit(request: Request, provider: str, model: str, hit,
-                            session: BrevitasSession, labels: dict) -> None:
+                            session: _SessionHandle, labels: dict) -> None:
     """A cache hit avoided both the recorded prompt and completion costs."""
     baseline = int(hit.prompt_tokens) + int(hit.completion_tokens)
     if baseline > 0:
@@ -255,6 +528,48 @@ async def _report_cache_hit(request: Request, provider: str, model: str, hit,
 
 
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
+
+
+async def close_provider_clients() -> None:
+    """Close pools, persist content-free learning, and release bounded registries."""
+    try:
+        if _STATE_FILE:
+            with _router_registry_lock:
+                state_store.save(_STATE_FILE, dict(_routers.items()))
+        await provider_http.aclose()
+    finally:
+        with _router_registry_lock:
+            _routers.clear()
+        with _session_registry_lock:
+            _sessions.clear()
+
+
+# Keep this on the router so FastAPI propagates it when api.server includes the proxy
+# routes instead of mounting proxy_app as a child ASGI application.
+proxy_app.router.on_shutdown.append(close_provider_clients)
+
+
+async def _provider_request(provider: str, operation: str, method: str, endpoint: str, *,
+                            headers: dict[str, str], stream: bool = False,
+                            json_body: Any = None,
+                            content: bytes | None = None) -> Any:
+    """Send without exposing credentials, content, URLs, or raw transport errors."""
+    try:
+        return await provider_http.request(
+            provider, operation, method, endpoint, headers=headers, stream=stream,
+            json=json_body, content=content,
+        )
+    except ProviderCircuitOpen as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Model provider is temporarily unavailable",
+            headers={"Retry-After": str(max(1, math.ceil(exc.retry_after_s)))},
+        ) from None
+    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout,
+            httpx.PoolTimeout):
+        raise HTTPException(status_code=504, detail="Model provider timed out") from None
+    except httpx.TransportError:
+        raise HTTPException(status_code=502, detail="Model provider connection failed") from None
 
 
 def _provider_for(model: str, explicit: str = "") -> str:
@@ -328,8 +643,8 @@ def _router_usage(receipt: TokenReceipt, provider: str) -> dict:
 
 
 async def _record_receipt(request: Request, provider: str, model: str, operation: str,
-                          baseline: int, receipt: TokenReceipt, session: BrevitasSession,
-                          router: BrevitasRouter, labels: dict, optimized: bool,
+                          baseline: int, receipt: TokenReceipt, session: _SessionHandle,
+                          router: _RouterHandle, labels: dict, optimized: bool,
                           response_id: str = "", strategy: str = "native_cache",
                           fleet_pipe: str = "", cache_attributable: bool = False,
                           optimized_tokens: int | None = None,
@@ -339,9 +654,16 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
     if has_receipt:
         _meter(provider, model, usage, labels, optimized)
     if optimized and has_receipt:
-        record_usage(usage, provider, router, session.session_id,
-                     pipeline=fleet_pipe, model=model, tenant_key=tenant_key)
-        _state_save()
+        try:
+            _mutate_router(
+                router,
+                lambda value: record_usage(
+                    usage, provider, value, session.session_id,
+                    pipeline=fleet_pipe, model=model, tenant_key=tenant_key),
+            )
+            _state_save()
+        except Exception:
+            pass
     receipt_fields = receipt.as_dict() if has_receipt else {}
     await _emit_usage(request, {
         "provider": provider, "model": model, "operation": operation,
@@ -391,17 +713,6 @@ def get_openai_compatible_upstream(model: str, override_header: str | None = Non
         return override_header
 
     return _UPSTREAMS[_provider_for(model, provider)]
-
-# One session per (proxy instance, provider-key) pair is fine for single-user
-# local use; for multi-user, pass session_id in a custom header.
-_sessions: dict[str, BrevitasSession] = {}
-
-
-def _session_for(key: str) -> BrevitasSession:
-    if key not in _sessions:
-        _sessions[key] = BrevitasSession()
-    return _sessions[key]
-
 
 def parse_brevitas_headers(headers: dict) -> dict[str, str]:
     """Extract brevitas tracking labels from request headers (x-brevitas-pipeline/agent/run-id).
@@ -484,18 +795,6 @@ def _passthrough_mode() -> bool:
     return os.environ.get("BREVITAS_PASSTHROUGH", "") in ("1", "true", "yes")
 
 
-def _safe_optimize_request(body: dict, provider: str, router: BrevitasRouter,
-                           session_id: str, **kwargs) -> dict:
-    """Run optional optimization fail-open and restore the exact parsed request on error."""
-    original = deepcopy(body)
-    try:
-        return optimize_request(body, provider, router, session_id, **kwargs)
-    except Exception:
-        body.clear()
-        body.update(original)
-        return {"strategy": "passthrough:optimizer_error", "response_faithful": True}
-
-
 def _meter(provider: str, model: str, usage: dict, labels: dict, optimized: bool) -> None:
     """Append one JSONL usage record per call when BREVITAS_METER_FILE is set.
     Works identically in passthrough and optimized modes so A/B runs are compared
@@ -554,7 +853,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
-    cache = _get_cache()
+    cache = _cache_for_request(request)
     cache_body = (_cache_body(body, request, brevitas_key, provider_auth)
                   if cache is not None else None)
     if cache is not None and lever_allowed("cache", gate_key):
@@ -572,10 +871,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     # response is valid to cache under the original key. Retrieval/reorder set it False.
     response_faithful = True
     if optimized:
-        meta = _safe_optimize_request(
-            body, "anthropic", router, session.session_id,
-            pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key,
-        )
+        meta = _optimize_fail_open(body, "anthropic", router, session.session_id,
+                                   pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key)
         strategy = meta.get("strategy", "native_cache")
         cache_attributable = meta.get("cache_control_owner") == "brevitas"
         response_faithful = bool(meta.get("response_faithful", True))
@@ -591,15 +888,19 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     is_stream = body.get("stream", False)
     endpoint = f"{_ANTHROPIC_API}/v1/messages"
     if is_stream:
-        client = httpx.AsyncClient(timeout=120)
-        upstream = await client.send(
-            client.build_request("POST", endpoint, headers=headers, json=body), stream=True
-        )
+        try:
+            upstream = await _provider_request(
+                "anthropic", "messages", "POST", endpoint, headers=headers,
+                stream=True, json_body=body
+            )
+        except BaseException:
+            if bg_role == "pathfinder":
+                _bg.release(bg_sig, _BG_WARM["anthropic"])
+            raise
         if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
-            await client.aclose()
             if bg_role == "pathfinder":
                 _bg.release(bg_sig, _BG_WARM["anthropic"])
             return Response(content=content, status_code=upstream.status_code,
@@ -610,16 +911,18 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             released = False
             completed = False
             try:
-                async for chunk in upstream.aiter_bytes():
+                async for chunk in provider_http.iter_bytes("anthropic", upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
                     if not released and bg_role == "pathfinder":
                         _bg.release(bg_sig, _BG_WARM["anthropic"])
                         released = True
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
-                await client.aclose()
                 if bg_role == "pathfinder" and not released:
                     _bg.release(bg_sig, _BG_WARM["anthropic"])
                 if completed:
@@ -635,12 +938,13 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        try:
-            upstream = await client.post(endpoint, headers=headers, json=body)
-        finally:
-            if bg_role == "pathfinder":
-                _bg.release(bg_sig, _BG_WARM["anthropic"])
+    try:
+        upstream = await _provider_request(
+            "anthropic", "messages", "POST", endpoint, headers=headers, json_body=body
+        )
+    finally:
+        if bg_role == "pathfinder":
+            _bg.release(bg_sig, _BG_WARM["anthropic"])
     try:
         data = upstream.json()
     except Exception:
@@ -689,7 +993,7 @@ async def proxy_openai_chat(request: Request) -> Any:
     router = _router_for(sess_key, provider)
 
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
-    cache = _get_cache()
+    cache = _cache_for_request(request)
     cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
     if cache is not None and lever_allowed("cache", gate_key):
         hit = _cache_lookup(cache, cache_body, provider, model, gate_key)
@@ -707,10 +1011,8 @@ async def proxy_openai_chat(request: Request) -> Any:
     response_faithful = True
     cache_attributable = False
     if optimized:
-        meta = _safe_optimize_request(
-            body, provider, router, session.session_id,
-            pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key,
-        )
+        meta = _optimize_fail_open(body, provider, router, session.session_id,
+                                   pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key)
         strategy = meta.get("strategy", "native_cache")
         response_faithful = bool(meta.get("response_faithful", True))
         cache_attributable = bool(meta.get("cache_attributable", False))
@@ -733,15 +1035,19 @@ async def proxy_openai_chat(request: Request) -> Any:
     if override_upstream:
         endpoint = f"{upstream_base.rstrip('/')}/v1/chat/completions"
     if is_stream:
-        client = httpx.AsyncClient(timeout=120)
-        upstream = await client.send(
-            client.build_request("POST", endpoint, headers=headers, json=body), stream=True
-        )
+        try:
+            upstream = await _provider_request(
+                provider, "chat.completions", "POST", endpoint, headers=headers,
+                stream=True, json_body=body
+            )
+        except BaseException:
+            if bg_role == "pathfinder":
+                _bg.release(bg_sig, bg_warm)
+            raise
         if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
-            await client.aclose()
             if bg_role == "pathfinder":
                 _bg.release(bg_sig, bg_warm)
             return Response(content=content, status_code=upstream.status_code,
@@ -752,16 +1058,18 @@ async def proxy_openai_chat(request: Request) -> Any:
             released = False
             completed = False
             try:
-                async for chunk in upstream.aiter_bytes():
+                async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
                     if not released and bg_role == "pathfinder":
                         _bg.release(bg_sig, bg_warm)
                         released = True
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
-                await client.aclose()
                 if bg_role == "pathfinder" and not released:
                     _bg.release(bg_sig, bg_warm)
                 if completed:
@@ -777,12 +1085,14 @@ async def proxy_openai_chat(request: Request) -> Any:
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        try:
-            upstream = await client.post(endpoint, headers=headers, json=body)
-        finally:
-            if bg_role == "pathfinder":
-                _bg.release(bg_sig, bg_warm)
+    try:
+        upstream = await _provider_request(
+            provider, "chat.completions", "POST", endpoint,
+            headers=headers, json_body=body
+        )
+    finally:
+        if bg_role == "pathfinder":
+            _bg.release(bg_sig, bg_warm)
     try:
         data = upstream.json()
     except Exception:
@@ -838,11 +1148,9 @@ async def proxy_openai_responses(request: Request) -> Any:
                      "_brevitas_operation": "responses"}
         if body.get("instructions"):
             temporary["system"] = body["instructions"]
-        meta = _safe_optimize_request(
-            temporary, provider, router, session.session_id,
-            pipeline=labels.get("pipeline", ""), agent=labels.get("agent", ""),
-            tenant_key=gate_key,
-        )
+        meta = _optimize_fail_open(temporary, provider, router, session.session_id,
+                                   pipeline=labels.get("pipeline", ""),
+                                   agent=labels.get("agent", ""), tenant_key=gate_key)
         body["input"] = temporary["messages"]
         for cache_field in ("prompt_cache_key", "prompt_cache_options"):
             if cache_field in temporary:
@@ -859,17 +1167,17 @@ async def proxy_openai_responses(request: Request) -> Any:
     endpoint = f"{base.rstrip('/')}/v1/responses"
     headers = _passthrough_headers(request, "openai")
     is_stream = bool(body.get("stream"))
+    request_content = None if body_changed else raw_body
+    request_json = body if body_changed else None
     if is_stream:
-        client = httpx.AsyncClient(timeout=120)
-        request_body = {"json": body} if body_changed else {"content": raw_body}
-        upstream = await client.send(
-            client.build_request("POST", endpoint, headers=headers, **request_body), stream=True
+        upstream = await _provider_request(
+            provider, "responses", "POST", endpoint, headers=headers, stream=True,
+            json_body=request_json, content=request_content,
         )
         if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
             await upstream.aclose()
-            await client.aclose()
             return Response(content=content, status_code=upstream.status_code,
                             headers=response_headers)
         parser = SSEUsageParser(provider)
@@ -877,13 +1185,15 @@ async def proxy_openai_responses(request: Request) -> Any:
         async def stream_gen():
             completed = False
             try:
-                async for chunk in upstream.aiter_bytes():
+                async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
                 await upstream.aclose()
-                await client.aclose()
                 if completed:
                     await _record_receipt(
                         request, provider, model, "responses", baseline, parser.finish(),
@@ -898,9 +1208,10 @@ async def proxy_openai_responses(request: Request) -> Any:
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        request_body = {"json": body} if body_changed else {"content": raw_body}
-        upstream = await client.post(endpoint, headers=headers, **request_body)
+    upstream = await _provider_request(
+        provider, "responses", "POST", endpoint, headers=headers,
+        json_body=request_json, content=request_content,
+    )
     try:
         data = upstream.json()
     except Exception:
@@ -936,14 +1247,14 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
     endpoint = f"{base.rstrip('/')}/v1/{operation}"
     headers = _passthrough_headers(request, "openai")
     if body.get("stream"):
-        client = httpx.AsyncClient(timeout=120)
-        upstream = await client.send(
-            client.build_request("POST", endpoint, headers=headers, json=body), stream=True
+        upstream = await _provider_request(
+            provider, operation, "POST", endpoint,
+            headers=headers, stream=True, json_body=body
         )
         if not _upstream_ok(upstream):
             content = await upstream.aread()
             response_headers = _response_headers(upstream)
-            await upstream.aclose(); await client.aclose()
+            await upstream.aclose()
             return Response(content=content, status_code=upstream.status_code,
                             headers=response_headers)
         parser = SSEUsageParser(provider)
@@ -951,12 +1262,15 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
         async def stream_gen():
             completed = False
             try:
-                async for chunk in upstream.aiter_bytes():
+                async for chunk in provider_http.iter_bytes(provider, upstream):
+                    if _admission_canceled(request):
+                        break
                     parser.feed(chunk)
-                    yield chunk
-                completed = True
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
             finally:
-                await upstream.aclose(); await client.aclose()
+                await upstream.aclose()
                 if completed:
                     await _record_receipt(request, provider, model, operation, baseline,
                         parser.finish(), session, router, labels, False, parser.response_id,
@@ -964,8 +1278,9 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
                     session.advance()
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
-    async with httpx.AsyncClient(timeout=120) as client:
-        upstream = await client.post(endpoint, headers=headers, json=body)
+    upstream = await _provider_request(
+        provider, operation, "POST", endpoint, headers=headers, json_body=body
+    )
     try:
         data = upstream.json()
     except Exception:

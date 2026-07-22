@@ -29,6 +29,7 @@ from brevitas.resource_bounds import (
 from brevitas.security import (
     EnvelopeCipher, EnvelopeError, KMSConfigurationError, KMSUnavailable,
 )
+from .runtime import hosted_runtime
 
 
 _SAFE_IDEMPOTENCY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -736,9 +737,7 @@ class RedisJobDispatcher:
 
     async def enqueue(self, job_id: str) -> None:
         if self.redis is None:
-            if (os.getenv("BREVITAS_ENV", "").lower() in ("prod", "production")
-                    or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT_NAME")
-                    or os.getenv("RAILWAY_PROJECT_ID")):
+            if hosted_runtime():
                 raise RuntimeError("Redis is required for production jobs")
             return
         await self.redis.xadd(

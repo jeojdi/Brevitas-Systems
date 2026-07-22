@@ -78,6 +78,7 @@ from .observability import (
     mark_documented_upstream_outage,
 )
 from .security import credential_cipher_from_environment
+from .runtime import hosted_runtime
 
 logger = logging.getLogger("brevitas.api")
 # Give the logger its own handler so compression telemetry is emitted even under uvicorn (whose
@@ -3962,11 +3963,8 @@ _COMPRESSOR_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 
 
 def _production_runtime() -> bool:
-    return (
-        os.getenv("BREVITAS_ENV", "").lower() in {"prod", "production"}
-        or bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT_NAME")
-                or os.getenv("RAILWAY_PROJECT_ID"))
-    )
+    """Compatibility name for the hosted fail-closed runtime boundary."""
+    return hosted_runtime()
 
 
 def _private_compressor_url(url: str) -> bool:

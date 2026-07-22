@@ -195,25 +195,23 @@ jobs:
           docker build --pull=false --build-arg BREVITAS_BUILD_SHA="$GITHUB_SHA" --tag brevitas-api:ci .
           docker build --pull=false --file services/compress/Dockerfile --tag brevitas-compressor:ci .
           test "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' brevitas-api:ci)" = "$GITHUB_SHA"
+      - name: Save images for scanning
+        run: |
+          docker save --output /tmp/brevitas-api.tar brevitas-api:ci
+          docker save --output /tmp/brevitas-compressor.tar brevitas-compressor:ci
+      - name: Pull pinned Trivy scanner
+        run: docker pull aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
       - name: Scan API image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
-        with:
-          scan-type: image
-          image-ref: brevitas-api:ci
-          version: v0.65.0
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
+        run: |
+          docker run --rm \
+            --volume /tmp/brevitas-api.tar:/tmp/image.tar:ro \
+            --volume trivy-db-cache:/root/.cache/trivy \
+            aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 \
+            image --input /tmp/image.tar --format table --exit-code 1 --ignore-unfixed --vuln-type os,library --severity HIGH,CRITICAL
       - name: Scan compressor image
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
-        with:
-          scan-type: image
-          image-ref: brevitas-compressor:ci
-          version: v0.65.0
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
+        run: |
+          docker run --rm \
+            --volume /tmp/brevitas-compressor.tar:/tmp/image.tar:ro \
+            --volume trivy-db-cache:/root/.cache/trivy \
+            aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 \
+            image --input /tmp/image.tar --format table --exit-code 1 --ignore-unfixed --vuln-type os,library --severity HIGH,CRITICAL
