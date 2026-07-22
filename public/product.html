@@ -71,10 +71,10 @@ function ProductPage() {
       {/* Hero */}
       <SectionShell>
         <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          Your AI agents are expensive. We make every cost mechanism <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>visible.</em>
+          Your AI agents are expensive. We make them <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>a lot cheaper.</em>
         </h1>
         <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-          Two lines wrap your existing pipeline. Brevitas meters provider receipts, keeps reusable prefixes cache-stable, and reports each cost mechanism separately. Quality-affecting input reduction stays off until you enable it.
+          Two lines wrap your existing pipeline. Your agents, prompts, and providers stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> them and quietly cuts your bill, typically 40–60%.
         </p>
       </SectionShell>
 
@@ -95,8 +95,8 @@ function ProductPage() {
             />
             <MatrixRow
               label="PROVIDERS"
-              items={['OpenAI', 'Anthropic', 'DeepSeek', 'Groq', 'Together', 'OpenAI-compatible /chat/completions']}
-              caption="Native proxy coverage is OpenAI-compatible APIs and Anthropic Messages. Gemini receipts can be normalized for accounting, but Gemini is not wrapped or proxied."
+              items={['OpenAI', 'Anthropic', 'Google', 'DeepSeek', 'Groq', 'Together', 'any /chat/completions']}
+              caption="We don't require a specific provider. Three providers running simultaneously in one pipeline is the common case we validate against."
             />
             <MatrixRow
               label="RUNTIMES"
@@ -111,38 +111,38 @@ function ProductPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 56, maxWidth: 900 }}>
-            Five mechanisms, with token reduction, cache discounts, and avoided calls kept separate.
+            Five ways we cut your bill. Routed per call so you only pay for what earns its keep.
           </h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             {[
               {
                 n: '01',
-                h: 'Measure. Start with provider receipts.',
-                b: 'Fresh input, cache reads, cache writes, output, input reduction, avoided calls, and transport bytes are recorded as different categories. Native provider discounts are not presented as Brevitas token reduction.',
-                code: `receipt = normalize_usage(response.usage)`,
+                h: 'Compress. The biggest single lever.',
+                b: 'Every inter-agent message is compressed before the next model bills for it. Connective filler drops; the meaning-bearing tokens stay, checked against a semantic-similarity floor so nothing load-bearing is lost. On context-heavy hops this alone can recover roughly 40% of inter-agent token spend.',
+                code: `msg = compress(agent1.output, task_class="code")`,
               },
               {
                 n: '02',
                 h: 'Cache. Stop paying full price for context the model already saw.',
-                b: 'Repeated context can receive the provider\'s native cache discount while the provider token count stays unchanged. Brevitas preserves caller cache policy; its own billable cache writes require explicit opt-in.',
+                b: 'Repeated context (system prompts, prior turns, shared tools) is served from the provider\'s prompt cache at a fraction of the input rate. Brevitas places the cache breakpoints and keeps the prefix byte-stable across hops so it actually hits.',
                 code: `body = mark_cacheable(stable_prefix)`,
               },
               {
                 n: '03',
                 h: 'Reuse. Skip the call when the answer already exists.',
-                b: 'Byte-identical requests can return a stored complete response instead of re-running the model. Fuzzy semantic reuse is a separate risky lever and requires explicit opt-in.',
+                b: 'Identical requests (and, optionally, semantically equivalent ones) return a stored response instead of re-running the model. Retries, parallel agents, and repeated sub-tasks cost nothing the second time.',
                 code: `hit = cache.lookup(request)`,
               },
               {
                 n: '04',
-                h: 'Reduce. Optional, quality-affecting input reduction.',
-                b: 'Retrieval and LLMLingua can remove or rewrite context. They reduce provider input tokens, but they are not lossless; they fail closed behind explicit operator opt-in and per-tenant quality trips.',
+                h: 'Prune. Cut what the next agent won\'t use.',
+                b: 'A relevance pass drops context the next agent, given its role and task class, is statistically unlikely to use. Lossy by design, gated so the load-bearing facts stay. You stop paying for tokens that were never going to matter.',
                 code: `ctx = prune(ctx, role="reviewer")`,
               },
               {
                 n: '05',
                 h: 'Route. Apply only what earns its keep.',
-                b: 'A cost-aware router uses provider receipts and tenant-isolated state. Brevitas-attributable savings are shown only when an isolated paired control provides evidence.',
+                b: 'A cost-aware router prices each strategy per call and picks the cheapest, correcting itself from the provider\'s real usage as it goes. Not every call benefits from every technique, so you only spend compute where it moves the number.',
                 code: `router.decide(call) -> "cache_only"`,
               },
             ].map((x, i) => (
@@ -194,7 +194,7 @@ function ProductPage() {
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
             {[
               ['Not an orchestrator.', 'Use yours.'],
-              ['Not blanket lossless token compression.', 'Provider caching changes price, not token count; optional compression and retrieval can affect quality.'],
+              ['Not a prompt compressor for single calls.', 'See The Token Company or LLMLingua for that.'],
               ['Not a model router.', 'See Martian or OpenRouter.'],
               ['Not an observability tool.', 'See Helicone, Langfuse, Portkey.'],
               ['Not opinionated about your agents\' prompts.', 'They\'re yours.'],
@@ -217,7 +217,7 @@ function ProductPage() {
           <div style={{ maxWidth: 820 }}>
             <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get your pipeline benchmarked.</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              Tell us what you're running. We'll separate provider-native discounts from Brevitas lift using an isolated paired control.
+              Tell us what you're running. We'll show you exactly where the money is going, and how much we'd put back in your pocket.
             </p>
             <WaitlistInput variant="inline" source="product-final" />
           </div>
