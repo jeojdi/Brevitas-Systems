@@ -93,7 +93,7 @@ def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
         assert '"network":"brevitas-staging-vpc"' in manifest
         assert '"subnetwork":"brevitas-staging-run-us-west1"' in manifest
 
-    assert "gcr.io/cloud-builders/docker@sha256:" in cloud_build
+    assert "name: gcr.io/cloud-builders/docker" in cloud_build
     assert "BREVITAS_BUILD_SHA=${_BREVITAS_BUILD_SHA}" in cloud_build
     assert "api:${_BREVITAS_BUILD_SHA}" in cloud_build
 

@@ -29,7 +29,7 @@ for the promoted revision.
    `brevitas-staging-run-us-west1` (`10.42.0.0/24`) subnet. The
    `brevitas-staging-nat-us-west1` Cloud NAT uses the reserved
    `brevitas-staging-egress-us-west1` address, `34.105.116.148`.
-6. Build the root `Dockerfile` with the pinned `deploy/cloudbuild-api.yaml` configuration and the
+6. Build the root `Dockerfile` with the checked-in `deploy/cloudbuild-api.yaml` configuration and the
    full source commit (for example, `gcloud builds submit --config=deploy/cloudbuild-api.yaml
    --substitutions=_BREVITAS_BUILD_SHA=$COMMIT_SHA .`). Replace both manifest placeholders,
    deploy the API service and Worker Pool, and then make only the API service publicly invokable.

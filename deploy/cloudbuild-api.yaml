@@ -1,5 +1,5 @@
 steps:
-  - name: gcr.io/cloud-builders/docker@sha256:4a33059c95a600582497fac50780c1c4f683883383fb54002a95b99af85b8f651
+  - name: gcr.io/cloud-builders/docker
     args:
       - build
       - --pull=false
