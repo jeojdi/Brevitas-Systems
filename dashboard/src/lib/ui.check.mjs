@@ -16,7 +16,7 @@ test('savings UI explains Stripe-hosted billing and the exact fee boundary', asy
   assert.doesNotMatch(billing, /card(number|_number)|payment_method_data/i)
 })
 
-test('customer savings UI shows signed verified savings without a measured duplicate', async () => {
+test('customer UI separates input reduction, native caching, avoided calls, and controls', async () => {
   const [billing, overview, projects] = await Promise.all([
     source('Billing'), source('Overview'), source('Projects'),
   ])
@@ -25,8 +25,12 @@ test('customer savings UI shows signed verified savings without a measured dupli
     assert.doesNotMatch(component, /Math\.abs/)
   }
   assert.match(billing, /Verified savings/)
-  assert.match(overview, /verified savings/)
-  assert.match(projects, /Verified savings/)
+  assert.match(overview, /provider input tokens avoided/)
+  assert.match(overview, /model calls avoided/)
+  assert.match(overview, /net native-cache discount/)
+  assert.match(overview, /paired control/)
+  assert.match(projects, /Input avoided/)
+  assert.match(projects, /Calls avoided/)
 })
 
 test('dashboard navigation is separated and exposes its active section', async () => {
@@ -35,10 +39,10 @@ test('dashboard navigation is separated and exposes its active section', async (
   assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
 })
 
-test('overview uses a savings-focused per-call area chart', async () => {
+test('overview uses an input-avoidance per-call area chart', async () => {
   const overview = await source('Overview')
   assert.match(overview, /AreaChart, Area/)
-  assert.match(overview, /dataKey="saved"/)
+  assert.match(overview, /dataKey="inputAvoided"/)
   assert.match(overview, /fill="url\(#savedArea\)"/)
   assert.doesNotMatch(overview, /notSavedArea|totalNotSaved/)
   assert.equal((overview.match(/type="monotone"/g) || []).length, 1)

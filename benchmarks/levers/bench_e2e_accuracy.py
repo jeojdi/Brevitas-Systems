@@ -8,7 +8,7 @@ Scoring : official HotpotQA / SQuAD Exact-Match and F1 (normalize_answer below i
 What it measures (accuracy-first thesis): does Lever 4 retrieval preserve answer accuracy
 while cutting prompt tokens? For each question we ask DeepSeek twice:
   (A) FULL context  : all 10 passages
-  (B) LOSSLESS       : only the top-k passages from the DPR retriever (Lever 4)
+  (B) RETRIEVAL      : only the top-k passages from the DPR retriever (Lever 4; quality-affecting)
 and compare EM/F1 against the gold answer, plus real token usage (incl. DeepSeek cache hits).
 
 NO fabricated data, NO self-made benchmark. Run:
@@ -145,7 +145,7 @@ def main():
         full["f1"].append(f1_score(ans_full, ex["answer"]))
         full["ptok"] += int(u_full.get("prompt_tokens", 0))
 
-        # (B) lossless retrieval (Lever 4)
+        # (B) quality-affecting retrieval (Lever 4)
         r = DenseRetriever(enc)
         r.index(ex["passages"])
         hits = r.retrieve(ex["q"], k=top_k)

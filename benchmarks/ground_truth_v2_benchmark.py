@@ -1,12 +1,12 @@
 """
 Brevitas × DeepSeek Ground-Truth Benchmark V2
 ==============================================
-BEFORE (full context) vs OLD-LOSSY (legacy TokenEfficientPipeline) vs NEW (lossless orchestrator)
+BEFORE (full context) vs OLD-LOSSY (legacy TokenEfficientPipeline) vs NEW (cache-first orchestrator)
 
 Modes:
   BEFORE   = full multi-agent context (baseline ceiling)
   OLD-LOSSY = legacy TokenEfficientPipeline default (compression+pruning)
-  NEW      = revamped lossless path (native cache + RLM retrieval, BrevitasMode.LOSSLESS)
+  NEW      = cache-first path with optional RLM retrieval (quality-affecting)
 
 Datasets: arc, bbh, humaneval, mmlu_cs, mmlu_logic
 Same datasets and scoring as v1 — pure accuracy vs ground truth, no self-eval.
@@ -35,14 +35,13 @@ from openai import OpenAI
 sys.path.insert(0, str(ROOT))
 from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipeline
 from token_efficiency_model.common.metrics import estimate_tokens, estimate_tokens_many
-from brevitas.resource_bounds import safe_close_resource
 from token_efficiency_model.modes.tiered_orchestrator import (
     TieredModeOrchestrator,
     BrevitasMode,
     ModeConfig,
 )
 
-ds_client = None
+ds_client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
 brevitas = TokenEfficientPipeline(model_backend=None, quality_floor=0.80, savings_target=20.0)
 orchestrator = TieredModeOrchestrator()
 
@@ -82,8 +81,6 @@ datasets_to_run = [dataset_map.get(d.lower(), d.lower()) for d in args.datasets]
 # API call — temperature=0 for reproducibility
 # ---------------------------------------------------------------------------
 def call_ds(model: str, system: str, user: str, max_tokens: int = 1024) -> tuple[str, float]:
-    if ds_client is None:
-        raise RuntimeError("DeepSeek client is not initialized")
     t0 = time.time()
     r = ds_client.chat.completions.create(
         model=model,
@@ -142,7 +139,7 @@ def compress_lossy(messages: list[str], prior_context: list[str], task: str) -> 
     return comp_msgs, pruned_ctx, baseline, out_toks
 
 def process_lossless(messages: list[str], prior_context: list[str], task: str) -> tuple[list[str], list[str], int]:
-    """Apply lossless mode (NEW path)."""
+    """Apply the legacy-named NEW path; retrieval is not strictly lossless."""
     config = ModeConfig(mode=BrevitasMode.LOSSLESS, enable_rlm_retrieval=True)
     result = orchestrator.process(
         task_text=task,
@@ -150,7 +147,7 @@ def process_lossless(messages: list[str], prior_context: list[str], task: str) -
         prior_context=prior_context,
         config=config,
     )
-    # In lossless mode, we return full context but with RLM retrieval prepared
+    # This historical mode name does not imply byte-identical provider input.
     out_toks = estimate_tokens_many(result.optimized_messages) + estimate_tokens_many(result.optimized_context)
     return result.optimized_messages, result.optimized_context, out_toks
 
@@ -528,102 +525,81 @@ def run_mmlu_logic():
             all_results.append(BenchResult("MMLU-FormalLogic", "reviewing", label, mode,
                                             len(logic_samples), correct, acc, tok_sum/len(logic_samples), lat_sum/len(logic_samples)))
 
-def _run_benchmarks_with_client():
-    # ---------------------------------------------------------------------------
-    # RUN SELECTED BENCHMARKS
-    # ---------------------------------------------------------------------------
-    benchmark_runners = {
-        "arc": run_arc_challenge,
-        "bbh": run_bbh,
-        "humaneval": run_humaneval,
-        "mmlu_cs": run_mmlu_cs,
-        "mmlu_logic": run_mmlu_logic,
-    }
+# ---------------------------------------------------------------------------
+# RUN SELECTED BENCHMARKS
+# ---------------------------------------------------------------------------
+benchmark_runners = {
+    "arc": run_arc_challenge,
+    "bbh": run_bbh,
+    "humaneval": run_humaneval,
+    "mmlu_cs": run_mmlu_cs,
+    "mmlu_logic": run_mmlu_logic,
+}
 
-    for dataset in datasets_to_run:
-        if dataset in benchmark_runners:
-            benchmark_runners[dataset]()
+for dataset in datasets_to_run:
+    if dataset in benchmark_runners:
+        benchmark_runners[dataset]()
 
-    # ---------------------------------------------------------------------------
-    # Final report
-    # ---------------------------------------------------------------------------
-    print("\n\n" + "="*100)
-    print("  BREVITAS × DEEPSEEK  ·  GROUND-TRUTH BENCHMARK V2 RESULTS")
-    print("="*100)
-    HDR = f"{'Benchmark':<22} {'Model':<4}  {'BEFORE':>7}  {'OLD-LOSSY':>10}  {'NEW':>7}  {'OLD Δ':>7}  {'NEW Δ':>7}"
-    print(HDR)
-    print("-" * 100)
+# ---------------------------------------------------------------------------
+# Final report
+# ---------------------------------------------------------------------------
+print("\n\n" + "="*100)
+print("  BREVITAS × DEEPSEEK  ·  GROUND-TRUTH BENCHMARK V2 RESULTS")
+print("="*100)
+HDR = f"{'Benchmark':<22} {'Model':<4}  {'BEFORE':>7}  {'OLD-LOSSY':>10}  {'NEW':>7}  {'OLD Δ':>7}  {'NEW Δ':>7}"
+print(HDR)
+print("-" * 100)
 
-    benchmarks = list(dict.fromkeys(r.benchmark for r in all_results))
-    for bm in benchmarks:
-        for _, label in MODELS:
-            b = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="BEFORE"), None)
-            o = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="OLD-LOSSY"), None)
-            n = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="NEW"), None)
-            if not b:
-                continue
-            old_delta = (o.accuracy - b.accuracy) if o else None
-            new_delta = (n.accuracy - b.accuracy) if n else None
-            old_str = f"{o.accuracy:6.1f}%" if o else "N/A"
-            new_str = f"{n.accuracy:6.1f}%" if n else "N/A"
-            old_d_str = f"{old_delta:+6.1f}%" if old_delta is not None else "N/A"
-            new_d_str = f"{new_delta:+6.1f}%" if new_delta is not None else "N/A"
-            print(f"{bm:<22} {label:<4}  {b.accuracy:>6.1f}%  {old_str:>10}  {new_str:>7}  {old_d_str:>7}  {new_d_str:>7}")
-
-    print("\n" + "-"*100)
-    print("AGGREGATE (all benchmarks):")
+benchmarks = list(dict.fromkeys(r.benchmark for r in all_results))
+for bm in benchmarks:
     for _, label in MODELS:
-        b_all = [r for r in all_results if r.model==label and r.mode=="BEFORE"]
-        o_all = [r for r in all_results if r.model==label and r.mode=="OLD-LOSSY"]
-        n_all = [r for r in all_results if r.model==label and r.mode=="NEW"]
+        b = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="BEFORE"), None)
+        o = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="OLD-LOSSY"), None)
+        n = next((r for r in all_results if r.benchmark==bm and r.model==label and r.mode=="NEW"), None)
+        if not b:
+            continue
+        old_delta = (o.accuracy - b.accuracy) if o else None
+        new_delta = (n.accuracy - b.accuracy) if n else None
+        old_str = f"{o.accuracy:6.1f}%" if o else "N/A"
+        new_str = f"{n.accuracy:6.1f}%" if n else "N/A"
+        old_d_str = f"{old_delta:+6.1f}%" if old_delta is not None else "N/A"
+        new_d_str = f"{new_delta:+6.1f}%" if new_delta is not None else "N/A"
+        print(f"{bm:<22} {label:<4}  {b.accuracy:>6.1f}%  {old_str:>10}  {new_str:>7}  {old_d_str:>7}  {new_d_str:>7}")
 
-        if b_all:
-            avg_b = sum(r.accuracy for r in b_all) / len(b_all)
-            print(f"  {label} BEFORE: {avg_b:.1f}%")
-        if o_all:
-            avg_o = sum(r.accuracy for r in o_all) / len(o_all)
-            old_retention = (avg_o / max(0.01, avg_b) * 100) if b_all else 0
-            print(f"  {label} OLD-LOSSY: {avg_o:.1f}% (Δ={avg_o-avg_b:+.1f}%)")
-        if n_all:
-            avg_n = sum(r.accuracy for r in n_all) / len(n_all)
-            new_retention = (avg_n / max(0.01, avg_b) * 100) if b_all else 0
-            print(f"  {label} NEW: {avg_n:.1f}% (Δ={avg_n-avg_b:+.1f}%)")
+print("\n" + "-"*100)
+print("AGGREGATE (all benchmarks):")
+for _, label in MODELS:
+    b_all = [r for r in all_results if r.model==label and r.mode=="BEFORE"]
+    o_all = [r for r in all_results if r.model==label and r.mode=="OLD-LOSSY"]
+    n_all = [r for r in all_results if r.model==label and r.mode=="NEW"]
 
-    print("\n" + "-"*100)
-    print("NOTES:")
-    print("  · BEFORE = full multi-agent context (baseline)")
-    print("  · OLD-LOSSY = legacy TokenEfficientPipeline (compression+pruning)")
-    print("  · NEW = lossless orchestrator (native cache + RLM retrieval, no lossy compression)")
-    print("  · Accuracy measured purely against dataset ground truth (no self-eval)")
-    print(f"  · Total API calls (live): {api_call_count}")
-    print(f"  · Models tested: {', '.join(label for _, label in MODELS)}")
-    print(f"  · Datasets tested: {', '.join(datasets_to_run)}")
-    print(f"  · Samples per condition: {N_SAMPLES}")
-    print(f"  · Seed: {SEED}")
+    if b_all:
+        avg_b = sum(r.accuracy for r in b_all) / len(b_all)
+        print(f"  {label} BEFORE: {avg_b:.1f}%")
+    if o_all:
+        avg_o = sum(r.accuracy for r in o_all) / len(o_all)
+        old_retention = (avg_o / max(0.01, avg_b) * 100) if b_all else 0
+        print(f"  {label} OLD-LOSSY: {avg_o:.1f}% (Δ={avg_o-avg_b:+.1f}%)")
+    if n_all:
+        avg_n = sum(r.accuracy for r in n_all) / len(n_all)
+        new_retention = (avg_n / max(0.01, avg_b) * 100) if b_all else 0
+        print(f"  {label} NEW: {avg_n:.1f}% (Δ={avg_n-avg_b:+.1f}%)")
 
-    # Save raw results
-    out = ROOT / "benchmarks" / f"ground_truth_v2_results_n{N_SAMPLES}.json"
-    with open(out, "w") as f:
-        json.dump([asdict(r) for r in all_results], f, indent=2)
-    print(f"\nRaw results saved → {out}")
-    print("="*100)
+print("\n" + "-"*100)
+print("NOTES:")
+print("  · BEFORE = full multi-agent context (baseline)")
+print("  · OLD-LOSSY = legacy TokenEfficientPipeline (compression+pruning)")
+print("  · NEW = cache-first orchestrator with optional quality-affecting RLM retrieval")
+print("  · Accuracy measured purely against dataset ground truth (no self-eval)")
+print(f"  · Total API calls (live): {api_call_count}")
+print(f"  · Models tested: {', '.join(label for _, label in MODELS)}")
+print(f"  · Datasets tested: {', '.join(datasets_to_run)}")
+print(f"  · Samples per condition: {N_SAMPLES}")
+print(f"  · Seed: {SEED}")
 
-
-def main(client=None):
-    """Run with one owned pool, leaving an injected client under caller ownership."""
-    global ds_client
-    owned = client is None
-    active = (client if client is not None else
-              OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com"))
-    previous = ds_client
-    ds_client = active
-    try:
-        return _run_benchmarks_with_client()
-    finally:
-        ds_client = previous
-        if owned:
-            safe_close_resource(active)
-
-
-if __name__ == "__main__":
-    main()
+# Save raw results
+out = ROOT / "benchmarks" / f"ground_truth_v2_results_n{N_SAMPLES}.json"
+with open(out, "w") as f:
+    json.dump([asdict(r) for r in all_results], f, indent=2)
+print(f"\nRaw results saved → {out}")
+print("="*100)

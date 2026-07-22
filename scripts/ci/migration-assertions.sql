@@ -4,6 +4,41 @@ do $$
 declare
     missing text;
 begin
+    select string_agg(column_name, ', ')
+      into missing
+      from unnest(array[
+        'provider_input_tokens_avoided',
+        'native_cache_discount_usd',
+        'calls_avoided',
+        'transport_bytes_avoided',
+        'brevitas_incremental_savings_usd'
+      ]) expected(column_name)
+     where not exists (
+        select 1
+          from information_schema.columns actual
+         where actual.table_schema = 'public'
+           and actual.table_name = 'usage_log'
+           and actual.column_name = expected.column_name
+     );
+    if missing is not null then
+        raise exception 'mechanism-separated usage columns are missing: %', missing;
+    end if;
+    if not exists (
+        select 1
+          from information_schema.columns
+         where table_schema = 'public'
+           and table_name = 'organizations'
+           and column_name = 'account_type'
+    ) then
+        raise exception 'workspace account type is missing';
+    end if;
+end;
+$$;
+
+do $$
+declare
+    missing text;
+begin
     select string_agg(index_name, ', ')
       into missing
       from unnest(array[

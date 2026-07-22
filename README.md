@@ -1,14 +1,19 @@
-# Brevitas — drop-in token savings for your LLM agents
+# Brevitas — provider-cache optimization and metering for LLM agents
 
 Brevitas is middleware that sits between your code and the model providers
-(Anthropic, OpenAI, DeepSeek, Groq) and **cuts your token bill losslessly** —
-caching, retrieval and cost-aware routing are applied automatically, and every
-optimization fails safe to sending your request untouched.
+(Anthropic, OpenAI, DeepSeek, Groq). Its default request path preserves prompt
+content while measuring provider-native cache reads and writes. Optional retrieval,
+compression, message reordering, and fuzzy response reuse can reduce provider work,
+but can affect behavior and are disabled until explicitly enabled.
 
-- **Lossless first.** No answer degradation from the caching/retrieval path; the
-  optional lossy compressor is off by default and gated behind a quality check.
-- **Honest savings.** Cost is computed from the provider's real usage fields
-  (including cached-token discounts), not estimates.
+- **Content-preserving default.** Requests pass through unchanged except for explicitly
+  enabled provider cache metadata. Provider caching can lower cost without lowering the
+  provider's token count.
+- **Quality-affecting levers fail closed.** Retrieval, LLMLingua, reordering, and fuzzy
+  semantic response reuse require explicit operator opt-in and an untripped tenant gate.
+- **Mechanism-separated evidence.** Reports distinguish provider input tokens avoided,
+  native-cache discount, model calls avoided, transport bytes avoided, and measured
+  Brevitas lift from an isolated control arm.
 - **Two ways in**, both drop-in: a zero-code proxy, or a one-line client wrap.
 
 Site: https://brevitassystems.com
@@ -48,37 +53,39 @@ Your existing SDK code now runs through Brevitas unchanged.
 ```python
 import openai, brevitas
 client = brevitas.wrap(openai.OpenAI())      # or anthropic.Anthropic()
-# use `client` exactly as before — savings applied automatically
+# use `client` exactly as before — requests are metered and safe cache routing is applied
 ```
 
 `brevitas apply --write` can insert that wrap for you (shows a diff and asks first).
 
 ## What it does per request
 
-A router estimates, in **cache-adjusted dollars**, whether to lean on the provider's
-prefix cache, retrieve only the relevant context, or pass through — using
-longest-common-prefix matching (the rule providers actually cache by) and the real
-observed cache-hit rate. Retrieval uses an append-only layout so its context stays
-cache-stable across turns. Anthropic cache breakpoints are placed automatically.
+A router measures provider prefix-cache behavior and preserves stable prompt prefixes.
+OpenAI-compatible providers normally cache those prefixes automatically. For GPT-5.6,
+Brevitas can add a tenant-scoped `prompt_cache_key`; billable explicit breakpoints require
+`BREVITAS_OPENAI_CACHE_BREAKPOINTS=1`. Brevitas-owned Anthropic cache writes require
+`BREVITAS_ANTHROPIC_CACHE=1`, because a write has a premium and no online router can prove
+that a future read will occur. Caller-owned cache policy is always preserved.
 
-## Measured savings (real APIs, lossless)
+Quality-affecting features are separately opt-in:
 
-| Workload | Provider | Input savings | Total savings |
-|---|---|---|---|
-| Multi-turn Q&A over a doc / coding agent | Anthropic (Haiku) | ~88% (warm turns) | ~82% |
-| Same | DeepSeek | ~73% | ~70% |
-| Same | OpenAI (gpt-4o-mini) | ~49% | ~48% |
-| ai-hedge-fund style 6-analyst pipeline | DeepSeek | — | ~30% |
-| crewAI marketing 5-agent pipeline | DeepSeek | — | ~5%* |
+- `BREVITAS_RETRIEVAL_ENABLED=1` can omit context.
+- `BREVITAS_COMPRESS_LOSSY=1` can rewrite context.
+- `BREVITAS_MESSAGE_REORDER=1` can change conversational ordering.
+- `BREVITAS_SEMANTIC_CACHE=1` can reuse a response for a non-identical prompt.
 
-\* Multi-agent pipelines where **each agent has a distinct system prompt** benefit
-less from prefix caching (the shared context sits behind the differing prefix). The
-big wins are in repeated-context patterns (chatbots, coding agents, doc analysis,
-single-persona multi-turn). Turn 1 on Anthropic shows a small *negative* due to the
-cache-write premium, repaid within one warm turn.
+The byte-identical exact response cache is separate and remains available by default;
+it skips a model call by replaying a prior complete response. That is reported as a
+**call avoided**, not as prompt compression or a blanket losslessness claim.
 
-Numbers are from `benchmarks/live_e2e.py` and `benchmarks/oss_ab.py` (real DeepSeek /
-OpenAI / Anthropic calls) — reproduce them yourself with your keys in `.env.local`.
+## Evidence and benchmarks
+
+Historical benchmark percentages in this repository are not product claims. Provider
+cache discounts are not Brevitas-incremental savings unless an isolated control arm proves
+the difference. New benchmark output must report randomized paired control/treatment runs,
+isolated cache namespaces, fixed transcripts, cold and warm results, repeated trials, and
+confidence intervals. Without that control evidence, the dashboard shows the provider's
+native cache discount but leaves “Brevitas vs control” unmeasured.
 
 ## Billing (if you use the hosted metering)
 
@@ -115,10 +122,11 @@ headers. Provider keys use their normal `Authorization` or `X-Api-Key` header. U
 models retain token totals and are shown as **Unpriced** rather than receiving a guessed
 price.
 
-The gateway meters Anthropic Messages plus OpenAI Responses, Chat Completions, Completions,
-and Embeddings (including AgentMap's OpenAI-compatible providers). Native Gemini/Vertex,
-Bedrock, Cohere, Replicate, Hugging Face, Ollama, LiteLLM, and framework calls submit the
-numeric receipt through the same adapter—no model content is sent:
+The gateway natively proxies Anthropic Messages plus OpenAI Responses, Chat Completions,
+Completions, and Embeddings (including compatible providers). Gemini is **not** currently
+a native wrapper or proxy integration. `report_receipt()` can normalize Gemini SDK
+`usage_metadata` objects for accounting—including cached, candidate, and thinking tokens—
+but it does not optimize Gemini requests or establish Brevitas-attributable savings:
 
 ```python
 import brevitas
@@ -164,6 +172,6 @@ request and response bytes in transit; use the SDK/direct receipt path when that
 
 ## Status
 
-Active development on `algo/wave-a`. Core levers (caching, retrieval, cost-aware
-router, billing gate) are implemented, tested (250+ tests), and live-verified on all
-three providers.
+Active development on `main`. The maintained test suites cover the provider proxy,
+tenant isolation, receipt accounting, cache safety, and quality gates. Provider support
+is described above; no unsupported provider or benchmark percentage is implied.

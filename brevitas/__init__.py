@@ -1,5 +1,5 @@
 """
-Brevitas — add measured token savings between your agents and the model.
+Brevitas — add provider-cache optimization and mechanism-separated metering.
 
 Quick start (importable service — recommended):
     from brevitas import BrevitasClient
@@ -13,7 +13,8 @@ Quick start (importable service — recommended):
     print(savings.savings_pct, savings.cache_placement["strategy"])
 
 The client keeps cacheable prefixes byte-identical, learns each provider's real cache-hit
-rate, and reports measured savings. Provider caching is byte-preserving. Context-reducing
+rate, and reports provider usage without relabeling cache discounts as removed tokens.
+Provider caching is content-preserving. Context-reducing
 retrieval is experimental and requires ``BREVITAS_RETRIEVAL_ENABLED=1`` after a paired
 workload quality test.
 
@@ -21,7 +22,8 @@ Quick start (SDK wrapper around an existing client):
     import anthropic, brevitas
     client = brevitas.wrap(anthropic.Anthropic(api_key="sk-ant-..."))
 
-    # All calls are now automatically compressed
+    # Calls now use content-preserving cache optimization by default.
+    # Quality-affecting compression/retrieval remains explicit opt-in.
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
@@ -82,8 +84,14 @@ def wrap(client, session: BrevitasSession | None = None):
         from .wrappers.anthropic import BrevitasAnthropicClient
         return BrevitasAnthropicClient(client, session=session)
 
-    # OpenAI detection: has .chat.completions
+    # OpenAI detection: has .chat.completions. Async clients need an async-aware
+    # wrapper so awaiting, streaming, and usage reporting retain SDK semantics.
     if hasattr(client, "chat") and hasattr(getattr(client, "chat", None), "completions"):
+        import inspect
+        create = getattr(getattr(client.chat, "completions", None), "create", None)
+        if inspect.iscoroutinefunction(create):
+            from .wrappers.openai import BrevitasAsyncOpenAIClient
+            return BrevitasAsyncOpenAIClient(client, session=session)
         from .wrappers.openai import BrevitasOpenAIClient
         return BrevitasOpenAIClient(client, session=session)
 

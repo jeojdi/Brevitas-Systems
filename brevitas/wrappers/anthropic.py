@@ -1,6 +1,6 @@
 """
-Wraps anthropic.Anthropic so messages.create()/stream() apply LOSSLESS token savings
-(auto-router: cache_control breakpoints vs retrieval) before forwarding to Anthropic.
+Wraps anthropic.Anthropic so messages.create()/stream() can apply content-preserving
+cache optimization before forwarding to Anthropic. Quality-affecting retrieval is opt-in.
 
 Usage:
     import anthropic, brevitas
@@ -9,6 +9,7 @@ Usage:
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from .._compress import report_usage
@@ -31,9 +32,19 @@ class _BrevitasMessages:
     def _optimize(self, messages, model, kwargs):
         sid = kwargs.pop("_brevitas_session", self._session.session_id)
         labels = resolve_labels(kwargs.pop("_brevitas_meta", None))
-        body = {"messages": list(messages), "model": model, **kwargs}
+        # The optimizer adds cache metadata in place. SDK callers commonly reuse the
+        # same message dictionaries across turns, so always work on a deep copy.
+        body = {"messages": deepcopy(list(messages)), "model": model, **deepcopy(kwargs)}
         baseline = count_request_tokens(body, "messages")
-        meta = optimize_request(body, _PROVIDER, self._router, sid)   # in-place
+        original = deepcopy(body)
+        try:
+            meta = optimize_request(body, _PROVIDER, self._router, sid)   # in-place
+        except Exception:
+            # Optimization is optional middleware. Any failure must preserve the
+            # provider call exactly and never break the user's request path.
+            body = original
+            meta = {"strategy": "passthrough:optimizer_error",
+                    "response_faithful": True}
         compressed = count_request_tokens(body, "messages")
         return body, sid, labels, baseline, compressed, meta
 
@@ -53,7 +64,9 @@ class _BrevitasMessages:
                          metadata={**labels, **receipt.as_dict(), "operation": "messages",
                                    "cache_attributable":
                                        meta.get("cache_control_owner") == "brevitas"})
-        except (AttributeError, IndexError):
+        except Exception:
+            # The provider response is authoritative. Metering/reporting is best-effort
+            # middleware and must never turn a successful model call into a failure.
             pass
         self._session.advance()
         return response
@@ -117,7 +130,7 @@ class _MeteredAnthropicStream:
                 metadata={**self._labels, **receipt.as_dict(), "operation": "messages",
                           "is_stream": True, "cache_attributable":
                               self._meta.get("cache_control_owner") == "brevitas"})
-        except (AttributeError, TypeError):
+        except Exception:
             pass
         self._session.advance()
 

@@ -301,6 +301,50 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     assert admin.json()["total_calls"] == 2
 
 
+def test_quality_stream_and_reset_are_scoped_to_end_customer(tmp_path, monkeypatch):
+    import api.server as server
+    from brevitas.identity import tenant_key
+    from token_efficiency_model.quality import gate
+
+    store = UsageStore(str(tmp_path / "customer-quality.db"))
+    raw_key = "bvt_shared_service"
+    organization = store.ensure_organization("owner-1", "Shared service organization")
+    service = store.ensure_service_account(
+        organization["id"], "test", "owner-1")
+    store.create_key(
+        hash_key(raw_key), "shared", owner_id="owner-1",
+        organization_id=organization["id"], service_account_id=service["id"],
+        key_type="organization_service", environment="test",
+        scopes=["proxy:invoke", "usage:read_own", "customer:route",
+                "customer:auto_provision"],
+    )
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+    headers_a = {"X-Brevitas-Key": raw_key, "X-Brevitas-Customer-Id": "customer-a"}
+    headers_b = {"X-Brevitas-Key": raw_key, "X-Brevitas-Customer-Id": "customer-b"}
+    key_a = tenant_key(raw_key, "customer-a")
+    key_b = tenant_key(raw_key, "customer-b")
+
+    gate.trip_lever("retrieval", key=key_a)
+    gate.trip_lever("retrieval", key=key_b)
+    try:
+        assert client.get("/v1/quality/stream", headers=headers_a).status_code == 200
+        assert client.get("/v1/quality/stream", headers=headers_b).status_code == 200
+        assert {key for key, _value in server._seq_streams.items()} == {key_a, key_b}
+
+        assert client.post("/v1/quality/stream/reset", headers=headers_a).status_code == 200
+        assert key_a not in server._seq_streams and key_b in server._seq_streams
+        assert gate.lever_allowed("retrieval", key=key_a) is True
+        assert gate.lever_allowed("retrieval", key=key_b) is False
+    finally:
+        gate.reset_all_levers(key=key_a)
+        gate.reset_all_levers(key=key_b)
+
+
 def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeypatch):
     import api.server as server
 

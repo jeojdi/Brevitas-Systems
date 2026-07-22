@@ -80,19 +80,16 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
     .reverse()
     .slice(-20)
     .map((h, i) => {
-      const baseline = Math.max(0, Number(h.baseline_tokens) || 0)
-      const notSaved = Math.max(0, Number(h.optimized_tokens) || 0)
-      const saved = Math.max(0, baseline - notSaved)
+      const inputAvoided = Math.max(0, Number(h.provider_input_tokens_avoided) || 0)
 
       return {
         call: i + 1,
-        saved,
-        notSaved,
+        inputAvoided,
         repo: h.repo || h.project || 'Unattributed',
       }
     })
 
-  const recentSaved = recentCalls.reduce((total, row) => total + row.saved, 0)
+  const recentAvoided = recentCalls.reduce((total, row) => total + row.inputAvoided, 0)
   const chartData = recentCalls
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
@@ -127,11 +124,16 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
       </div>
 
       {/* ── Big stats row ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
         <BigStat value={stats.total_calls} label="// ai calls" />
-        <BigStat value={fmt(stats.total_tokens_saved)} label="// tokens saved" valueClass="text-brand-blue" />
+        <BigStat value={fmt(stats.total_provider_input_tokens_avoided || 0)} label="// provider input tokens avoided" valueClass="text-brand-blue" />
+        <BigStat value={fmt(stats.total_calls_avoided || 0)} label="// model calls avoided" valueClass="text-brand-blue" />
+        <BigStat value={`$${Number(stats.total_native_cache_discount_usd || 0).toFixed(2)}`} label="// net native-cache discount" />
         <BigStat value={`$${Number(stats.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
-        <BigStat value={`$${Number(stats.total_verified_savings_usd || 0).toFixed(2)}`} label="// verified savings" valueClass="text-brand-teal" />
+        <BigStat
+          value={stats.total_brevitas_incremental_savings_usd == null ? 'Not measured' : `$${Number(stats.total_brevitas_incremental_savings_usd).toFixed(2)}`}
+          label="// Brevitas lift vs paired control"
+        />
       </div>
 
       {chartData.length === 0 ? (
@@ -147,20 +149,20 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-6">
             <div>
               <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
-                tokens <em className="italic text-brand-blue">saved</em> on each call
+                provider input <em className="italic text-brand-blue">avoided</em> on each call
               </p>
-              <p className="annotation mt-2">// last {chartData.length} calls · based on provider receipts</p>
+              <p className="annotation mt-2">// excludes native cache discounts and transport-only savings</p>
             </div>
             <div className="min-w-0 sm:min-w-[180px]">
               <div className="rounded-xl border border-brand-blue/20 bg-brand-blue/5 dark:bg-brand-dark-blue-dim/40 px-4 py-3">
                 <p className="annotation flex items-center gap-2">
-                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> saved in range
+                  <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> input avoided in range
                 </p>
-                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(recentSaved)}</p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(recentAvoided)}</p>
               </div>
             </div>
           </div>
-          <div role="img" aria-label="Area chart showing tokens saved on each recent call">
+          <div role="img" aria-label="Area chart showing provider input tokens avoided on each recent call">
             <ResponsiveContainer width="100%" height={320}>
               <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
                 <defs>
@@ -192,8 +194,8 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                 />
                 <Area
                   type="monotone"
-                  dataKey="saved"
-                  name="Tokens saved"
+                  dataKey="inputAvoided"
+                  name="Input tokens avoided"
                   stroke={savedColor}
                   fill="url(#savedArea)"
                   strokeWidth={3}

@@ -2,6 +2,7 @@
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -19,6 +20,9 @@ def test_provider_receipt_categories():
                     "completion_tokens": 8}, (18, 12, 0, 8)),
         ("openai", {"input_tokens": 40, "input_tokens_details": {"cached_tokens": 15},
                     "output_tokens": 9}, (25, 15, 0, 9)),
+        ("openai", {"prompt_tokens": 2_000, "prompt_tokens_details": {
+                    "cached_tokens": 0, "cache_write_tokens": 2_000},
+                    "completion_tokens": 9}, (0, 0, 2_000, 9)),
         ("deepseek", {"prompt_cache_hit_tokens": 45, "prompt_cache_miss_tokens": 5,
                       "completion_tokens": 6}, (5, 45, 0, 6)),
         ("google_gemini", {"promptTokenCount": 50, "cachedContentTokenCount": 10,
@@ -42,6 +46,15 @@ def test_provider_receipt_categories():
     }, "anthropic")
     assert tiered.cache_write_5m_tokens == 40
     assert tiered.cache_write_1h_tokens == 60
+
+    typed_gemini = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=50, cached_content_token_count=10,
+        candidates_token_count=11, thoughts_token_count=7,
+        tool_use_prompt_token_count=3, total_token_count=68,
+    ))
+    gemini = normalize_usage(typed_gemini, "google_gemini")
+    assert (gemini.fresh_input_tokens, gemini.cached_input_tokens,
+            gemini.output_tokens) == (40, 10, 18)
 
 
 def test_one_hour_cache_writes_use_two_x_price():

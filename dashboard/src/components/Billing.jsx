@@ -182,9 +182,9 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           sub="recorded usage"
         />
         <StatCard
-          label="Total tokens saved"
-          value={fmtK(stats?.total_tokens_saved)}
-          sub="across all calls"
+          label="Input tokens avoided"
+          value={fmtK(stats?.total_provider_input_tokens_avoided)}
+          sub="actually not sent to providers"
         />
         <StatCard
           label="Provider spend"
@@ -192,9 +192,9 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           sub="from provider receipts"
         />
         <StatCard
-          label="Verified savings"
-          value={`$${fmt(verifiedSaved, 4)}`}
-          sub="quality-safe methods only"
+          label="Calls avoided"
+          value={fmtK(stats?.total_calls_avoided)}
+          sub="exact or opted-in response reuse"
           accent
         />
       </div>
@@ -205,7 +205,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           <p className="annotation tracking-widest uppercase mb-4">// week of {thisWeek.week_start}</p>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Calls"         value={fmtK(thisWeek.calls)} />
-            <StatCard label="Tokens saved"  value={fmtK(thisWeek.tokens_saved)} />
+            <StatCard label="Input tokens avoided" value={fmtK(thisWeek.provider_input_tokens_avoided)} />
             <StatCard label="Provider spend" value={`$${fmt(thisWeek.actual_cost_usd, 4)}`} />
             <StatCard label="Verified savings" value={`$${fmt(thisWeek.verified_savings_usd ?? thisWeek.cost_saved_usd, 4)}`} accent />
           </div>
@@ -218,7 +218,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           <p className="annotation tracking-widest uppercase mb-4">// weekly usage history</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
             <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Week of', 'Calls', 'Tokens saved', 'Provider spend', 'Verified savings'].map(h => (
+              {['Week of', 'Calls', 'Input avoided', 'Provider spend', 'Verified benefit'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
@@ -226,7 +226,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
               <div key={m.week_start} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
                 <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.week_start}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
-                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.tokens_saved)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.provider_input_tokens_avoided)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">${fmt(m.actual_cost_usd, 4)}</span>
                 <span className="font-mono text-xs text-brand-teal">${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}</span>
               </div>
@@ -248,11 +248,12 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
         <p className="annotation tracking-widest uppercase mb-2">// how it works</p>
         <div className="space-y-2">
           {[
-            ['Baseline tokens', 'What you would have sent to Anthropic/OpenAI without Brevitas'],
-            ['Compressed tokens', 'What Brevitas actually sent after compression'],
-            ['Tokens saved', 'The difference — real input tokens that never reached the provider'],
+            ['Input avoided', 'Provider input tokens not sent after an input-reducing transform'],
+            ['Native discount', 'Provider cache-read discount minus cache-write premiums; not automatically Brevitas-attributable'],
+            ['Calls avoided', 'Model calls skipped by exact or explicitly enabled fuzzy response reuse'],
+            ['Transport avoided', 'Network bytes removed by CID/delta transport; provider tokens are unchanged'],
             ['Provider spend', 'What provider receipts say the optimized calls actually cost'],
-            ['Verified savings', 'Positive savings from byte-preserving or workload-verified methods'],
+            ['Brevitas vs control', 'Shown only when an isolated paired control arm was measured'],
           ].map(([term, def]) => (
             <div key={term} className="flex flex-col sm:flex-row gap-1 sm:gap-4">
               <span className="font-mono text-[11px] text-brand-blue shrink-0 sm:w-36">{term}</span>

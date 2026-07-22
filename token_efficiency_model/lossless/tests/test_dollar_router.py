@@ -14,7 +14,7 @@ from token_efficiency_model.lossless.router import (CACHE_DISCOUNT, BrevitasRout
                                                     _SessionState)
 
 
-def _seg(tag: str, n_words: int = 600) -> str:
+def _seg(tag: str, n_words: int = 900) -> str:
     # ~1200 tokens per segment ("xN" ≈ 2 tokens each) — a single segment must
     # already exceed MIN_CACHEABLE (1024) so no test accidentally hits passthrough
     return " ".join(f"{tag}{i}" for i in range(n_words))

@@ -33,9 +33,10 @@ export default function Projects({ apiKey, refreshTick }) {
 
   const projects = useMemo(() => Object.values(rows.reduce((all, row) => {
     const name = row.repo || row.project || 'Unattributed'
-    const project = all[name] ||= { name, calls: 0, tokens: 0, spend: 0, verified: 0, unpriced: 0, rows: [] }
+    const project = all[name] ||= { name, calls: 0, inputAvoided: 0, callsAvoided: 0, spend: 0, verified: 0, unpriced: 0, rows: [] }
     project.calls += Number(row.calls || 0)
-    project.tokens += Number(row.tokens_saved || 0)
+    project.inputAvoided += Number(row.provider_input_tokens_avoided || 0)
+    project.callsAvoided += Number(row.calls_avoided || 0)
     project.spend += Number(row.actual_cost_usd || 0)
     project.verified += Number(row.verified_savings_usd || 0)
     project.unpriced += Number(row.unpriced_calls || 0)
@@ -55,15 +56,15 @@ export default function Projects({ apiKey, refreshTick }) {
       <div><p className="annotation tracking-widest uppercase">Repository</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">{current.name}</h2></div>
       <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
         <table className="w-full min-w-[760px] text-left">
-          <thead><tr className="border-b border-brand-border dark:border-brand-dark-border">{['Client', 'Provider / model', 'Operation', 'Calls', 'Tokens saved', 'Provider spend', 'Verified savings'].map(label => <th key={label} className="annotation px-4 py-3">{label}</th>)}</tr></thead>
+          <thead><tr className="border-b border-brand-border dark:border-brand-dark-border">{['Client', 'Provider / model', 'Operation', 'Calls', 'Input avoided', 'Calls avoided', 'Provider spend'].map(label => <th key={label} className="annotation px-4 py-3">{label}</th>)}</tr></thead>
           <tbody>{current.rows.map((row, index) => <tr key={`${row.client}-${row.provider}-${row.model}-${index}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
             <td className="font-mono text-xs px-4 py-3 text-brand-navy dark:text-brand-dark-navy">{row.client || row.source || 'Unattributed'}{row.environment ? ` / ${row.environment}` : ''}{row.agent ? ` / ${row.agent}` : ''}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-blue">{row.gateway ? `${row.gateway} → ` : ''}{row.provider || 'unknown'} / {row.model || 'unknown'}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-muted">{row.operation}</td>
             <td className="font-mono text-xs px-4 py-3">{number(row.calls)}</td>
-            <td className="font-mono text-xs px-4 py-3">{number(row.tokens_saved)}</td>
+            <td className="font-mono text-xs px-4 py-3">{number(row.provider_input_tokens_avoided)}</td>
+            <td className="font-mono text-xs px-4 py-3">{number(row.calls_avoided)}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-navy-mid dark:text-brand-dark-navy-mid">{row.unpriced_calls === row.calls ? 'Unpriced' : usd(row.actual_cost_usd)}</td>
-            <td className="font-mono text-xs px-4 py-3 text-brand-teal">{usd(row.verified_savings_usd)}</td>
           </tr>)}</tbody>
         </table>
       </div>
@@ -75,7 +76,7 @@ export default function Projects({ apiKey, refreshTick }) {
     <div><p className="annotation tracking-widest uppercase">Repositories</p><h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy mt-2">Every codebase and agent.</h2><p className="text-brand-muted mt-3">Runtime usage discovered through AgentMap integrations.</p></div>
     <div className="grid md:grid-cols-2 gap-4">{projects.map(project => <button key={project.name} onClick={() => setSelected(project.name)} className="text-left bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border hover:border-brand-blue rounded-2xl p-6 transition-colors">
       <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">{project.name}</p>
-      <p className="annotation mt-2">{number(project.calls)} calls · {number(project.tokens)} tokens saved</p>
+      <p className="annotation mt-2">{number(project.calls)} calls · {number(project.inputAvoided)} provider input tokens avoided · {number(project.callsAvoided)} calls avoided</p>
       <div className="flex flex-wrap gap-6 mt-5"><div><p className="annotation">Provider spend</p><p className="font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid">{project.unpriced === project.calls ? 'Unpriced' : usd(project.spend)}</p></div><div><p className="annotation">Verified savings</p><p className="font-mono text-brand-teal">{usd(project.verified)}</p></div></div>
     </button>)}</div>
   </div>

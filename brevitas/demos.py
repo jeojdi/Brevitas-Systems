@@ -462,10 +462,10 @@ _TEXTBOOK_HTML = """<!doctype html><html><head><title>Brevitas · Chat with a do
     <input type="file" id="file" multiple hidden></div>
 
   <div class="hero">
-    <div class="stat good"><div class="lbl">Total input tokens saved</div><div class="big" id="tokDrop">—</div>
+    <div class="stat good"><div class="lbl">Provider input tokens avoided vs control</div><div class="big" id="tokDrop">—</div>
       <div class="note2" id="tokDetail">load a document & ask a question</div></div>
-    <div class="stat good"><div class="lbl">Total cost saved · incl. provider caching</div><div class="big" id="costDrop">—</div>
-      <div class="note2">honest, apples-to-apples</div></div>
+    <div class="stat good"><div class="lbl">Observed cost delta</div><div class="big" id="costDrop">—</div>
+      <div class="note2">sequential demo · not isolated attribution</div></div>
     <div class="stat"><div class="lbl">Turns / context</div><div class="big" id="turns">0</div>
       <div class="note2"><span id="dtok">—</span> tokens in the document</div></div>
   </div>
@@ -540,10 +540,10 @@ _AGENT_HTML = """<!doctype html><html><head><title>Brevitas · Coding agent</tit
     <span class="sub" id="status" style="margin-left:12px"></span></div>
 
   <div class="hero">
-    <div class="stat good"><div class="lbl">Total input tokens saved</div><div class="big" id="tokDrop">—</div>
+    <div class="stat good"><div class="lbl">Provider input tokens avoided vs control</div><div class="big" id="tokDrop">—</div>
       <div class="note2" id="tokDetail">press run</div></div>
-    <div class="stat good"><div class="lbl">Total cost saved · incl. provider caching</div><div class="big" id="costDrop">—</div>
-      <div class="note2">muted by DeepSeek caching — see note</div></div>
+    <div class="stat good"><div class="lbl">Observed cost delta</div><div class="big" id="costDrop">—</div>
+      <div class="note2">sequential demo · not isolated attribution</div></div>
     <div class="stat"><div class="lbl">Turn</div><div class="big" id="turn">0/8</div>
       <div class="note2" id="ctx">growing context re-sent each turn</div></div>
   </div>

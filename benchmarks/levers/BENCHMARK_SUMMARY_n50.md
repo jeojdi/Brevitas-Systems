@@ -1,4 +1,8 @@
-# Brevitas lossless levers — real benchmark results (n=50, DeepSeek + gpt-4o-mini)
+# Historical exploratory results — not Brevitas-attributable evidence
+
+> These runs predate the paired-control protocol. Arm order and cache namespaces were not
+> isolated, so the percentages below must not be used as product savings claims. Retrieval
+> also removes context and is quality-affecting; it is not a lossless lever.
 
 Real public datasets (HotpotQA, BBH, HumanEval), real models, official metrics, real token
 usage from the providers. No fabricated data. HumanEval pass@1 is REAL code execution.
@@ -46,16 +50,12 @@ This empirically reproduces the warning in the project's own REVAMP_PLAN: lossy/
 contaminates cache measurement (later conditions reuse earlier ones' cache). The DIRECTION is
 robust and theory-backed; exact cost % needs an isolated per-condition run.
 
-## Honest conclusions
-1. **Native provider caching is the dominant, universal, lossless money-saver.** Keep the full
-   context, send it byte-identical, let the provider cache it. Retrieval can *break* this.
-2. **Retrieval/context-reduction saves real money only when** the context is large AND largely
-   non-repeating across requests AND the provider caches weakly. Then ~30-50% cost cut.
-3. **Accuracy of retrieval is model+task dependent:** matches full on DeepSeek HotpotQA & both
-   HumanEval; BEATS full on gpt-4o-mini HumanEval (+18); LOSES on gpt-4o-mini HotpotQA (-6) and
-   BBH (-10). On BBH logic, demos HURT — zero-shot (100% DeepSeek) wins; best compression there
-   is to send NO demos.
-4. The earlier n=8 "adaptive beats full (62.5)" was sampling noise; n=50 corrects it.
+## Defensible conclusions
+1. Provider caching can reduce billed cost without reducing provider input tokens. Cache writes
+   may carry a premium, so no universal positive ROI follows from these runs.
+2. Retrieval reduces provider input by removing context and can change per-example behavior.
+3. The observed task and provider differences justify paired, randomized, isolated reruns; they
+   do not establish a general Brevitas-incremental percentage.
 
 ## ISOLATED COST TEST (clean, no cache contamination) — n=30, real USD
 
@@ -69,7 +69,5 @@ varying tokens) can't beat it when context repeats. OpenAI caches at only 0.5x �
 still wins. The earlier "retrieval +54% more expensive everywhere" was a contaminated artifact;
 clean isolated test shows it is PATTERN- and PROVIDER-dependent.
 
-RECOMMENDATION:
-- Caching = universal safe win (lossless, always on, never costs more).
-- Retrieval ON when: unique large context per call, OR provider with weak caching (OpenAI).
-- Retrieval OFF when: same big context reused every turn AND strong-caching provider (DeepSeek/Anthropic).
+RECOMMENDATION: rerun with separate control/treatment credentials, isolated cache namespaces,
+randomized arm order, fixed transcripts, cold/warm results, repeated trials, and confidence intervals.

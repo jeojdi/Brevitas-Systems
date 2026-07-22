@@ -39,8 +39,8 @@ done < <(
   sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
     scripts/ci/migration-upgrade-manifest.txt
 )
-if [[ "${#fresh_migrations[@]}" -ne 43 || "${#upgrade_migrations[@]}" -ne 31 ]]; then
-  echo 'Migration manifests differ from the verified 43-file fresh / 31-file upgrade contract.' >&2
+if [[ "${#fresh_migrations[@]}" -ne 44 || "${#upgrade_migrations[@]}" -ne 32 ]]; then
+  echo 'Migration manifests differ from the verified 44-file fresh / 32-file upgrade contract.' >&2
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))
@@ -65,6 +65,8 @@ checkout_reservation_migration="${upgrade_migrations[26]}"
 provider_outbound_migration="${upgrade_migrations[27]}"
 durable_onboarding_migration="${upgrade_migrations[28]}"
 billing_customer_owner_migration="${upgrade_migrations[29]}"
+workspace_experiences_migration="${upgrade_migrations[30]}"
+split_savings_migration="${upgrade_migrations[31]}"
 if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
    || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
    || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
@@ -85,8 +87,10 @@ if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery
    || "${checkout_reservation_migration}" != 'supabase/migrations/202607200014_billing_checkout_session_reservations.sql' \
    || "${provider_outbound_migration}" != 'supabase/migrations/202607200015_provider_outbound_ambiguity.sql' \
    || "${durable_onboarding_migration}" != 'supabase/migrations/202607200016_durable_onboarding.sql' \
-   || "${billing_customer_owner_migration}" != 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql' ]]; then
-  echo 'Frozen migrations 010-013 or the 20260720 forward suffix through 017 are out of order.' >&2
+   || "${billing_customer_owner_migration}" != 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql' \
+   || "${workspace_experiences_migration}" != 'supabase/migrations/202607200018_workspace_experiences.sql' \
+   || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' ]]; then
+  echo 'Frozen migrations 010-013 or the 20260720 forward suffix are out of order.' >&2
   exit 1
 fi
 
@@ -236,7 +240,7 @@ assert_atomic_migration_rollback "${waitlist_migration}" \
   "to_regprocedure('public.submit_waitlist_signup(text,text,text,text,text,text,text,text,boolean)') is null"
 apply_migration "${waitlist_migration}"
 apply_migration "${waitlist_migration}"
-echo 'Applying migrations 202607200003-200017 in release order.'
+echo 'Applying migrations 202607200003 through the complete release suffix in order.'
 assert_atomic_migration_rollback "${billing_owner_migration}" \
   "to_regprocedure('public.enforce_service_key_billing_owner()') is null"
 apply_migration "${billing_owner_migration}"
@@ -315,6 +319,14 @@ assert_atomic_migration_rollback "${billing_customer_owner_migration}" \
   "to_regprocedure('public.save_billing_customer_identity(uuid,text)') is null"
 apply_migration "${billing_customer_owner_migration}"
 apply_migration "${billing_customer_owner_migration}"
+assert_atomic_migration_rollback "${workspace_experiences_migration}" \
+  "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='organizations' and column_name='account_type') and to_regprocedure('public.ensure_workspace_organization(uuid,text,text)') is null"
+apply_migration "${workspace_experiences_migration}"
+apply_migration "${workspace_experiences_migration}"
+assert_atomic_migration_rollback "${split_savings_migration}" \
+  "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='usage_log' and column_name='provider_input_tokens_avoided')"
+apply_migration "${split_savings_migration}"
+apply_migration "${split_savings_migration}"
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions
@@ -429,6 +441,8 @@ apply_migration "${checkout_reservation_migration}"
 apply_migration "${provider_outbound_migration}"
 apply_migration "${durable_onboarding_migration}"
 apply_migration "${billing_customer_owner_migration}"
+apply_migration "${workspace_experiences_migration}"
+apply_migration "${split_savings_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-fresh-assertions.sql
 run_forward_assertions

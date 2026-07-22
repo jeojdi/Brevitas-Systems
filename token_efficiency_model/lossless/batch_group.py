@@ -55,7 +55,7 @@ class BatchGroupGate:
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------- signature
-    def signature(self, body: dict) -> Optional[str]:
+    def signature(self, body: dict, namespace: str = "") -> Optional[str]:
         """Hash of the leading stable bytes (system + all but the final message).
         None when too small to be cacheable — the gate then stays out of the way.
         Computed AFTER optimization so it reflects the bytes actually sent."""
@@ -80,7 +80,8 @@ class BatchGroupGate:
         stable = "\x1e".join(parts)
         if len(stable) < self.min_chars:
             return None
-        return hashlib.sha256(stable[:16384].encode("utf-8")).hexdigest()
+        scoped = f"{namespace}\0{stable[:16384]}" if namespace else stable[:16384]
+        return hashlib.sha256(scoped.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------ gate
     async def acquire(self, sig: str) -> Tuple[str, float]:

@@ -232,12 +232,12 @@ export default function Admin({ accessToken, refreshTick }) {
       </div>
       {error && <p className="font-mono text-xs text-red-500">{error}</p>}
       <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
-        <table className="w-full min-w-[1180px] text-left"><thead><tr>{['Account', 'Project / client', 'Provider / model', 'Calls', 'Tokens saved', 'Actual spend', 'Baseline', 'Verified savings', 'Brevitas fee'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
+        <table className="w-full min-w-[1180px] text-left"><thead><tr>{['Account', 'Project / client', 'Provider / model', 'Calls', 'Input avoided', 'Actual spend', 'Baseline', 'Verified benefit', 'Brevitas fee'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
           <tbody>{data.rows.map((row, index) => <tr key={`${row.account_id}-${row.project}-${row.client}-${row.model}-${index}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
             <td className="font-mono text-xs px-4 py-3 ph-no-capture" data-ph-sensitive><span>{row.account_email || 'No email'}</span><br/><span className="text-brand-muted">{row.account_id}</span></td>
             <td className="font-mono text-xs px-4 py-3">{row.project}<br/><span className="text-brand-muted">{row.client || row.source}</span></td>
             <td className="font-mono text-xs px-4 py-3 text-brand-blue">{row.provider}<br/><span>{row.model}</span></td>
-            <td className="font-mono text-xs px-4 py-3">{num(row.calls)}</td><td className="font-mono text-xs px-4 py-3">{num(row.tokens_saved)}</td>
+            <td className="font-mono text-xs px-4 py-3">{num(row.calls)}</td><td className="font-mono text-xs px-4 py-3">{num(row.provider_input_tokens_avoided)}</td>
             <td className="font-mono text-xs px-4 py-3">{usd(row.actual_cost_usd)}</td><td className="font-mono text-xs px-4 py-3">{usd(row.baseline_cost_usd)}</td>
             <td className="font-mono text-xs px-4 py-3 text-brand-teal">{usd(row.verified_savings_usd)}</td><td className="font-mono text-xs px-4 py-3 text-brand-blue">{usd(row.brevitas_fee_usd)}</td>
           </tr>)}</tbody></table>

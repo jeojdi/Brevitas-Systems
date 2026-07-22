@@ -156,8 +156,11 @@ def status(api_key: str, base_url: str) -> None:
                 data = r.json()
                 _print(f"[green]✓ API key valid[/green]")
                 _print(f"  Total calls:       {data.get('total_calls', 0)}")
-                _print(f"  Total tokens saved: {data.get('total_tokens_saved', 0):,}")
-                _print(f"  Total cost saved:  ${data.get('total_cost_saved_usd', 0):.4f}")
+                _print(f"  Provider input tokens avoided: {data.get('total_provider_input_tokens_avoided', 0):,}")
+                _print(f"  Model calls avoided:           {data.get('total_calls_avoided', 0):,}")
+                _print(f"  Native cache discount:         ${data.get('total_native_cache_discount_usd', 0):.4f}")
+                lift = data.get('total_brevitas_incremental_savings_usd')
+                _print(f"  Brevitas lift vs control:      {'not measured' if lift is None else f'${lift:.4f}'}")
                 _print(f"  Brevitas fee owed: ${data.get('total_brevitas_fee_usd', 0):.4f}")
             else:
                 _print(f"[red]✗ API key invalid (status {r.status_code})[/red]")
