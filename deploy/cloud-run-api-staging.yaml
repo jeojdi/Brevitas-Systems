@@ -81,7 +81,7 @@ spec:
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
-                  key: "1"
+                  key: "3"
                   name: redis-url
             - name: COMPANY_ADMIN_CURSOR_SECRET
               valueFrom:
