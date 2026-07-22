@@ -20,7 +20,9 @@ spec:
           supabase-service-role:projects/975273324573/secrets/brevitas-staging-supabase-service-role-key,
           redis-url:projects/975273324573/secrets/brevitas-staging-redis-url,
           cursor-secret:projects/975273324573/secrets/brevitas-staging-company-admin-cursor-secret,
-          invitee-pepper:projects/975273324573/secrets/brevitas-staging-company-admin-invitee-pepper
+          invitee-pepper:projects/975273324573/secrets/brevitas-staging-company-admin-invitee-pepper,
+          stripe-secret-key:projects/975273324573/secrets/brevitas-staging-stripe-secret-key,
+          stripe-price-id:projects/975273324573/secrets/brevitas-staging-stripe-price-id
     spec:
       serviceAccountName: brevitas-staging-runtime@divine-camera-465917-j7.iam.gserviceaccount.com
       containers:
@@ -61,6 +63,22 @@ spec:
             - name: BREVITAS_WORKER_BILLING_ROLE
               value: nonbilling
             - name: BREVITAS_BILLING_ENABLED
+              value: "false"
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: stripe-secret-key
+            - name: STRIPE_PRICE_ID
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: stripe-price-id
+            - name: STRIPE_METER_EVENT_NAME
+              value: brevitas_fee_microusd
+            - name: BREVITAS_BILLING_WEEKLY_CAP_USD
+              value: "100"
+            - name: BREVITAS_STRIPE_METER_EXCLUSIVE_WRITER
               value: "false"
             - name: SUPABASE_URL
               valueFrom:

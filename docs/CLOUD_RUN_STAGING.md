@@ -23,7 +23,9 @@ for the promoted revision.
    - `brevitas-staging-redis-url`
    - `brevitas-staging-company-admin-cursor-secret`
    - `brevitas-staging-company-admin-invitee-pepper`
-4. Grant the runtime service account `roles/secretmanager.secretAccessor` on only those five
+   - `brevitas-staging-stripe-secret-key`
+   - `brevitas-staging-stripe-price-id`
+4. Grant the runtime service account `roles/secretmanager.secretAccessor` on only those seven
    secrets. Keep its existing KMS encrypt/decrypt grant scoped to the staging CryptoKey.
 5. Route both workloads through Direct VPC egress using `brevitas-staging-vpc` and the
    `brevitas-staging-run-us-west1` (`10.42.0.0/24`) subnet. The
@@ -40,7 +42,8 @@ for the promoted revision.
 
 Required inputs:
 
-- The staging project URL and a staging-only service-role key.
+- A dedicated staging project URL and staging-only secret/service-role key. Never point the
+  Cloud Run staging manifests at the Supabase production project.
 - A separate browser-safe publishable/anon key for Vercel; it never belongs in the API or worker
   secret set.
 - The Supavisor transaction-pooler database URL for maintenance tooling, not application request
@@ -50,6 +53,9 @@ Required inputs:
 
 Required gates:
 
+- Create a replacement secret key for the Cloud Run/Vercel server runtimes and revoke the
+  previously used server key only after both deployments pass readiness. Never copy the key into
+  chat, source control, build arguments, or a public environment variable.
 - Apply the ordered release migration manifest through
   `202607200018_workspace_experiences.sql`. Run `202607200004` through `202607200006` only with
   the guarded billing-maintenance procedure in `docs/STRIPE_BILLING.md`.
@@ -69,6 +75,24 @@ Keep Stripe in test mode for staging. Required inputs are:
 - `BREVITAS_BILLING_WEEKLY_CAP_USD` and the manual `BILLING_RECOVERY_SECRET`.
 - `BREVITAS_PUBLIC_URL` for the staging Vercel origin; keep automatic tax disabled until tax
   registration and product tax behavior are reviewed.
+
+Credential destinations:
+
+| Value | Google Secret Manager | Vercel staging | GitHub Actions |
+| --- | --- | --- | --- |
+| Supabase project URL | `brevitas-staging-supabase-url` | `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_URL` | staging smoke/canary environment when required |
+| Supabase publishable key | no | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | staging browser canary when required |
+| Supabase server secret key | `brevitas-staging-supabase-service-role-key` | `SUPABASE_SERVICE_ROLE_KEY` | never unless a named workflow requires it |
+| Redis TLS URL | `brevitas-staging-redis-url` | no | no |
+| Stripe test secret key | `brevitas-staging-stripe-secret-key` | `STRIPE_SECRET_KEY` | `STAGING_CANARY_STRIPE_SECRET_KEY` only for the approved canary |
+| Stripe Price ID | `brevitas-staging-stripe-price-id` | `STRIPE_PRICE_ID` | no |
+| Stripe webhook signing secret | no | `STRIPE_WEBHOOK_SECRET` | `STAGING_CANARY_STRIPE_WEBHOOK_SECRET` only for the approved canary |
+| Billing recovery second factor | no | `BILLING_RECOVERY_SECRET` | `STAGING_BILLING_RECOVERY_SECRET` only for approved smoke/canary workflows |
+
+Keep `BREVITAS_BILLING_ENABLED=false`, `STRIPE_AUTOMATIC_TAX=false`, and
+`BREVITAS_STRIPE_METER_EXCLUSIVE_WRITER=false` while credentials, catalog, migrations, webhook,
+and the end-to-end staging canary are incomplete. The staging weekly cap is `$100`; production
+requires an explicit business-owner cap decision before billing is enabled.
 
 Required gates:
 
