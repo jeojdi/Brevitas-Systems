@@ -81,6 +81,13 @@ def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
 
     assert "kind: Service" in api
     assert "kind: WorkerPool" in worker
+    assert "app: brevitas-api" in api
+    assert "app: brevitas-worker" in worker
+    assert "app.kubernetes.io/" not in api
+    assert "app.kubernetes.io/" not in worker
+    assert "brevitas.io/" not in api
+    assert "brevitas.io/" not in worker
+    assert 'run.googleapis.com/scalingMode: "manual"' in worker
     assert 'run.googleapis.com/manualInstanceCount: "1"' in worker
     for manifest in (api, worker):
         assert f"serviceAccountName: {runtime_identity}" in manifest
@@ -92,6 +99,8 @@ def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
         assert 'run.googleapis.com/vpc-access-egress: all-traffic' in manifest
         assert '"network":"brevitas-staging-vpc"' in manifest
         assert '"subnetwork":"brevitas-staging-run-us-west1"' in manifest
+        assert '"tags":["brevitas-staging-run"]' in manifest
+        assert '"tags":"brevitas-staging-run"' not in manifest
 
     assert "name: gcr.io/cloud-builders/docker" in cloud_build
     assert "BREVITAS_BUILD_SHA=${_BREVITAS_BUILD_SHA}" in cloud_build

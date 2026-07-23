@@ -3,17 +3,18 @@ kind: WorkerPool
 metadata:
   name: brevitas-worker-staging
   labels:
-    app.kubernetes.io/name: brevitas-worker
-    app.kubernetes.io/part-of: brevitas
-    brevitas.io/environment: staging
+    app: brevitas-worker
+    system: brevitas
+    environment: staging
   annotations:
+    run.googleapis.com/scalingMode: "manual"
     run.googleapis.com/manualInstanceCount: "1"
 spec:
   template:
     metadata:
       annotations:
         run.googleapis.com/network-interfaces: >-
-          [{"network":"brevitas-staging-vpc","subnetwork":"brevitas-staging-run-us-west1","tags":"brevitas-staging-run"}]
+          [{"network":"brevitas-staging-vpc","subnetwork":"brevitas-staging-run-us-west1","tags":["brevitas-staging-run"]}]
         run.googleapis.com/vpc-access-egress: all-traffic
         run.googleapis.com/secrets: "supabase-url:projects/975273324573/secrets/brevitas-staging-supabase-url,supabase-service-role:projects/975273324573/secrets/brevitas-staging-supabase-service-role-key,redis-url:projects/975273324573/secrets/brevitas-staging-redis-url,cursor-secret:projects/975273324573/secrets/brevitas-staging-company-admin-cursor-secret,invitee-pepper:projects/975273324573/secrets/brevitas-staging-company-admin-invitee-pepper,stripe-secret-key:projects/975273324573/secrets/brevitas-staging-stripe-secret-key,stripe-price-id:projects/975273324573/secrets/brevitas-staging-stripe-price-id"
     spec:
