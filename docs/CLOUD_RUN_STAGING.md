@@ -12,6 +12,11 @@ manifests are `deploy/cloud-run-api-staging.yaml` and
 same full commit SHA that passed release CI, and deploy the resulting image by immutable digest
 for the promoted revision.
 
+The release gates use the deterministic API origin
+`https://brevitas-api-staging-975273324573.us-west1.run.app` and the Vercel staging origin
+`https://brevitas-systems-staging.vercel.app`. Keep those fixed targets aligned with the service
+name, project number, region, and API CORS allowlist; do not substitute an operator-supplied URL.
+
 ## Bootstrap resources
 
 1. Enable Cloud Run, Cloud Build, Artifact Registry, Secret Manager, IAM Credentials, Cloud KMS,

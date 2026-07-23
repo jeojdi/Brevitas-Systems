@@ -192,8 +192,8 @@ function successfulCanaryFetch({ streamError = false } = {}) {
 
 test('journey canary has fixed staging-only targets and fails closed on authority or secret gaps', () => {
   assert.deepEqual(STAGING_CANARY_TARGETS, {
-    api: 'https://staging-api.brevitassystems.com',
-    dashboard: 'https://staging.brevitassystems.com',
+    api: 'https://brevitas-api-staging-975273324573.us-west1.run.app',
+    dashboard: 'https://brevitas-systems-staging.vercel.app',
     stripeApi: 'https://api.stripe.com',
   })
   assert.throws(() => assertStagingCanaryGuard({}), /explicit mutating workflow guard/)

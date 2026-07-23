@@ -2,34 +2,18 @@ import { resolve4, resolve6, resolveCname } from 'node:dns/promises'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
+import { RELEASE_TARGETS } from './release-targets.mjs'
+
+export { RELEASE_TARGETS } from './release-targets.mjs'
+
 const VERCEL_APEX_IPV4 = new Set(['76.76.21.21'])
+const CLOUD_RUN_DETERMINISTIC_HOST =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?-[1-9][0-9]{5,19}\.[a-z0-9]+(?:-[a-z0-9]+)+\.run\.app$/
+const CLOUD_TRACE_CONTEXT = /^[0-9a-f]{32}(?:\/[0-9]{1,20})?(?:;o=[01])?$/
 const FULL_COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/
 const RELEASE_VERSION = /^(?=.{1,64}$)v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
-
-export const RELEASE_TARGETS = Object.freeze({
-  staging: Object.freeze({
-    dashboard: Object.freeze({
-      origin: 'https://staging.brevitassystems.com',
-      platform: 'vercel',
-    }),
-    api: Object.freeze({
-      origin: 'https://staging-api.brevitassystems.com',
-      platform: 'railway',
-    }),
-  }),
-  production: Object.freeze({
-    dashboard: Object.freeze({
-      origin: 'https://brevitassystems.com',
-      platform: 'vercel',
-    }),
-    api: Object.freeze({
-      origin: 'https://api.brevitassystems.com',
-      platform: 'railway',
-    }),
-  }),
-})
 
 function targetFor(name) {
   if (name !== 'staging' && name !== 'production') {
@@ -77,9 +61,10 @@ export function assertPlatformDns(hostname, platform, records) {
     const vercelCname = records.cnames.some(value =>
       value === 'cname.vercel-dns.com' || value.endsWith('.vercel-dns.com'))
     const vercelApex = records.addresses.some(value => VERCEL_APEX_IPV4.has(value))
-    if (!vercelCname && !vercelApex) {
+    const vercelOwnedHost = hostname.endsWith('.vercel.app') && records.addresses.length > 0
+    if (!vercelCname && !vercelApex && !vercelOwnedHost) {
       throw new Error(
-        `DNS ${hostname} is not routed to Vercel (expected *.vercel-dns.com or the approved Vercel apex address)`,
+        `DNS ${hostname} is not routed to Vercel (expected *.vercel.app, *.vercel-dns.com, or the approved Vercel apex address)`,
       )
     }
     return
@@ -88,6 +73,14 @@ export function assertPlatformDns(hostname, platform, records) {
     const railwayCname = records.cnames.some(value => value.endsWith('.up.railway.app'))
     if (!railwayCname) {
       throw new Error(`DNS ${hostname} is not routed to Railway (expected a *.up.railway.app CNAME)`)
+    }
+    return
+  }
+  if (platform === 'cloud-run') {
+    if (!CLOUD_RUN_DETERMINISTIC_HOST.test(hostname) || records.addresses.length === 0) {
+      throw new Error(
+        `DNS ${hostname} is not a deterministic Cloud Run service hostname`,
+      )
     }
     return
   }
@@ -105,6 +98,13 @@ function assertPlatformResponse(hostname, platform, response) {
   if (platform === 'railway') {
     if (!server.includes('railway') && !response.headers.get('x-railway-request-id')) {
       throw new Error(`HTTPS ${hostname} did not return a Railway routing signature`)
+    }
+    return
+  }
+  if (platform === 'cloud-run') {
+    const traceContext = (response.headers.get('x-cloud-trace-context') || '').toLowerCase()
+    if (server !== 'google frontend' || !CLOUD_TRACE_CONTEXT.test(traceContext)) {
+      throw new Error(`HTTPS ${hostname} did not return a Cloud Run routing signature`)
     }
     return
   }
@@ -192,9 +192,15 @@ export function assertBuildIdentityContract(payload, expectedSha, expectedServic
   }
 }
 
-export function assertReadinessContract(payload) {
+export function assertReadinessContract(payload, compressorRequired = true) {
+  const compressorReady = payload?.dependencies?.compressor?.status === 'ready'
+  const optionalCompressorUnavailable =
+    compressorRequired === false &&
+    payload?.dependencies?.compressor?.required === false &&
+    payload?.dependencies?.compressor?.status === 'unavailable'
+  const expectedStatus = optionalCompressorUnavailable ? 'degraded' : 'ok'
   const ready =
-    payload?.status === 'ok' &&
+    payload?.status === expectedStatus &&
     payload?.accepting_traffic === true &&
     payload?.database_ready === true &&
     payload?.redis_ready === true &&
@@ -207,10 +213,12 @@ export function assertReadinessContract(payload) {
     payload?.dependencies?.kms?.configured === true &&
     payload?.dependencies?.kms?.active_probe === true &&
     payload?.dependencies?.kms?.fresh === true &&
-    payload?.dependencies?.compressor?.status === 'ready'
+    (compressorReady || optionalCompressorUnavailable)
   if (!ready) {
     throw new Error(
-      'API readiness contract requires status="ok", traffic acceptance, ready Postgres/Redis/KMS/compressor, authoritative Postgres, coordination Redis, and fresh active KMS evidence',
+      compressorRequired
+        ? 'API readiness contract requires status="ok", traffic acceptance, ready Postgres/Redis/KMS/compressor, authoritative Postgres, coordination Redis, and fresh active KMS evidence'
+        : 'API readiness contract permits only a compressor-only status="degraded" response with an explicitly optional unavailable compressor; Postgres, Redis, KMS, traffic acceptance, and all authoritative dependency evidence must remain ready',
     )
   }
 }
@@ -259,7 +267,7 @@ export async function runReleasePreflight(targetName, dependencies = {}) {
     await get(fetchImpl, `${target.api.origin}/v1/health/ready`, target.api.platform),
     'API readiness',
   )
-  assertReadinessContract(readiness)
+  assertReadinessContract(readiness, target.api.compressorRequired)
 
   return {
     target: targetName,

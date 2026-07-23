@@ -6,12 +6,12 @@ on:
       api_url:
         description: HTTPS staging FastAPI origin
         required: true
-        default: https://staging-api.brevitassystems.com
+        default: https://brevitas-api-staging-975273324573.us-west1.run.app
         type: string
       dashboard_url:
         description: HTTPS staging Vercel origin
         required: true
-        default: https://staging.brevitassystems.com
+        default: https://brevitas-systems-staging.vercel.app
         type: string
       environment_confirmation:
         description: Explicit non-production target confirmation

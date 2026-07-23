@@ -2,9 +2,14 @@ import { createHmac, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
+import {
+  STAGING_API_ORIGIN,
+  STAGING_DASHBOARD_ORIGIN,
+} from './release-targets.mjs'
+
 export const STAGING_CANARY_TARGETS = Object.freeze({
-  api: 'https://staging-api.brevitassystems.com',
-  dashboard: 'https://staging.brevitassystems.com',
+  api: STAGING_API_ORIGIN,
+  dashboard: STAGING_DASHBOARD_ORIGIN,
   stripeApi: 'https://api.stripe.com',
 })
 

@@ -152,8 +152,9 @@ changed artifact and its checksum together.
 
 Run the credential-free infrastructure preflight first. `.github/workflows/release-preflight.yml`
 accepts only the fixed `staging` or `production` profiles and validates public DNS, verified HTTPS,
-Vercel/Railway routing, each application's self-reported full SHA against the workflow SHA, and the
-exact liveness/readiness contract using five read-only GETs. It rejects redirects, missing or
+Vercel plus Cloud Run/Railway routing, and the exact liveness/readiness contract using five
+read-only GETs. It checks each application's self-reported full SHA against the workflow SHA. It
+rejects redirects, missing or
 mismatched full SHAs, legacy health, and degraded readiness. This detects identity disagreement; it
 does not cryptographically bind served bytes or images to that SHA. See `docs/RELEASE_PREFLIGHT.md`.
 

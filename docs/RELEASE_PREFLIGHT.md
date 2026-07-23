@@ -7,16 +7,18 @@ follows a redirect, or probes an operator-supplied URL.
 
 The only accepted target profiles are:
 
-| Target | Dashboard (Vercel) | API (Railway) |
+| Target | Dashboard | API |
 | --- | --- | --- |
-| `staging` | `https://staging.brevitassystems.com/` | `https://staging-api.brevitassystems.com` |
-| `production` | `https://brevitassystems.com/` | `https://api.brevitassystems.com` |
+| `staging` | `https://brevitas-systems-staging.vercel.app/` (Vercel) | `https://brevitas-api-staging-975273324573.us-west1.run.app` (Cloud Run) |
+| `production` | `https://brevitassystems.com/` (Vercel) | `https://api.brevitassystems.com` (Railway) |
 
-For each profile the gate resolves DNS and requires the documented Vercel or Railway DNS target,
+For each profile the gate resolves DNS and requires the documented Vercel, Cloud Run, or Railway
+target,
 then performs five read-only `GET` requests: the dashboard root, dashboard `/api/version`, API
 `/v1/version`, `/v1/health/live`, and `/v1/health/ready`. Redirects fail. Normal certificate and
-hostname verification are mandatory. The HTTPS responses must also carry the expected Vercel or
-Railway routing signature.
+hostname verification are mandatory. The HTTPS responses must also carry the expected platform
+routing signature. Staging uses Cloud Run's fixed deterministic service URL so the gate cannot
+silently drift back to the retired Railway staging origin.
 
 Both version endpoints must report the exact full commit SHA supplied in
 `BREVITAS_EXPECTED_RELEASE_SHA`. Missing, abbreviated, conflicting, or different SHAs are hard
@@ -29,11 +31,13 @@ SHA, verify who built it, or provide cryptographic provenance. Even a matching `
 only an asserted value until an independently signed registry artifact and workflow-identity
 attestation are verified.
 
-Readiness must report `status="ok"`, traffic acceptance, authoritative ready Postgres,
-coordination Redis, fresh successful active KMS evidence, and a ready compressor. KMS evidence is
-content-free and is required by the API's overall `status="ok"` result; it does not expose a key
-identifier, provider response, ciphertext, or customer data. A legacy `/v1/health` response, `404`,
-incomplete JSON, or `status="degraded"` is a hard failure and cannot satisfy this gate.
+Readiness must report traffic acceptance, authoritative ready Postgres, coordination Redis, and
+fresh successful active KMS evidence. Production additionally requires `status="ok"` and a ready
+private compressor. Cloud Run staging may report `status="degraded"` only when the compressor is
+explicitly `required=false` and is the sole unavailable dependency; every core dependency must
+remain ready. KMS evidence is content-free and does not expose a key identifier, provider
+response, ciphertext, or customer data. A legacy `/v1/health` response, `404`, incomplete JSON, or
+any other degraded dependency shape is a hard failure and cannot satisfy this gate.
 
 Run it manually from a trusted checkout:
 
@@ -63,14 +67,16 @@ rollback evidence, or a substitute for the tenant smoke.
 
 Repository code cannot create or repair public records. An operator must:
 
-1. create the staging and production dashboard records using Vercel's verified domain target;
-2. create the staging and production API CNAMEs using the exact Railway-provided
-   `*.up.railway.app` target and attach those domains to the correct Railway environment;
-3. wait for public DNS and managed TLS issuance, then review platform domain ownership;
+1. keep the fixed Vercel staging alias attached to the approved staging project and create the
+   production dashboard record using Vercel's verified domain target;
+2. keep the deterministic Cloud Run staging endpoint enabled and publicly invokable, and create
+   the production API CNAME using the exact Railway-provided `*.up.railway.app` target;
+3. verify public DNS, managed TLS, and platform ownership for every fixed endpoint;
 4. configure required reviewers on the GitHub `staging` and `production` environments; and
 5. run the staging preflight, approved staging smoke, and production preflight at the appropriate
    release stages;
-6. verify Vercel and Railway both self-report the expected full SHA before promotion; and
+6. verify Vercel and the target API platform both self-report the expected full SHA before
+   promotion; and
 7. if cryptographic provenance is required, sign the published image digest and generate a
    repository/workflow-identity attestation in the registry, then verify both under an approved
    keyless identity policy. Repository CI deliberately does not publish, sign, or deploy images.

@@ -646,17 +646,20 @@ test('organization key mutations append immutable audit evidence atomically', ()
 
 test('staging target allowlist rejects local, production, and attacker-controlled URLs', () => {
   assert.equal(
-    assertStagingTarget('https://staging-api.brevitassystems.com', 'api'),
-    'https://staging-api.brevitassystems.com',
+    assertStagingTarget(
+      'https://brevitas-api-staging-975273324573.us-west1.run.app',
+      'api',
+    ),
+    'https://brevitas-api-staging-975273324573.us-west1.run.app',
   )
   for (const value of [
-    'http://staging-api.brevitassystems.com',
+    'http://brevitas-api-staging-975273324573.us-west1.run.app',
     'https://api.brevitassystems.com',
     'https://localhost',
     'https://127.0.0.1',
-    'https://staging-api.brevitassystems.com.evil.example',
-    'https://staging-api.brevitassystems.com/path',
-    'https://user:password@staging-api.brevitassystems.com',
+    'https://brevitas-api-staging-975273324573.us-west1.run.app.evil.example',
+    'https://brevitas-api-staging-975273324573.us-west1.run.app/path',
+    'https://user:password@brevitas-api-staging-975273324573.us-west1.run.app',
   ]) {
     assert.throws(() => assertStagingTarget(value, 'api'))
   }
@@ -682,8 +685,8 @@ test('staging smoke is manual, fork-safe, approval-gated, and non-mutating', asy
     STAGING_REPOSITORY_FORK: 'false',
     STAGING_GITHUB_EVENT: 'workflow_dispatch',
     STAGING_GITHUB_REF: 'refs/heads/main',
-    STAGING_API_URL: 'https://staging-api.brevitassystems.com',
-    STAGING_DASHBOARD_URL: 'https://staging.brevitassystems.com',
+    STAGING_API_URL: 'https://brevitas-api-staging-975273324573.us-west1.run.app',
+    STAGING_DASHBOARD_URL: 'https://brevitas-systems-staging.vercel.app',
     STAGING_TENANT_A_API_KEY: 'tenant-a-secret',
     STAGING_TENANT_B_API_KEY: 'tenant-b-secret',
     STAGING_TENANT_A_JOB_ID: '10000000-0000-4000-8000-000000000001',

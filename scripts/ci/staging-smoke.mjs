@@ -2,9 +2,14 @@ import { isIP } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
+import {
+  STAGING_API_ORIGIN,
+  STAGING_DASHBOARD_ORIGIN,
+} from './release-targets.mjs'
+
 const allowedHosts = Object.freeze({
-  api: new Set(['staging-api.brevitassystems.com', 'api-staging.brevitassystems.com']),
-  dashboard: new Set(['staging.brevitassystems.com', 'dashboard-staging.brevitassystems.com']),
+  api: new Set([new URL(STAGING_API_ORIGIN).hostname]),
+  dashboard: new Set([new URL(STAGING_DASHBOARD_ORIGIN).hostname]),
 })
 
 function required(environment, name) {

@@ -16,17 +16,26 @@ const EXPECTED_SHA = 'a'.repeat(40)
 
 function approvedDns() {
   return {
-    resolve4: async hostname => hostname.includes('api.') || hostname.startsWith('api-')
-      ? ['35.214.10.10']
-      : ['76.76.21.21'],
+    resolve4: async hostname => hostname.endsWith('.run.app')
+      ? ['34.143.72.2']
+      : hostname.startsWith('api.')
+        ? ['35.214.10.10']
+        : ['76.76.21.21'],
     resolve6: async () => {
       const error = new Error('no AAAA records')
       error.code = 'ENODATA'
       throw error
     },
-    resolveCname: async hostname => hostname.includes('api.') || hostname.startsWith('api-')
-      ? ['brevitas-release.up.railway.app']
-      : ['cname.vercel-dns.com'],
+    resolveCname: async hostname => {
+      if (hostname.endsWith('.run.app')) {
+        const error = new Error('no CNAME records')
+        error.code = 'ENODATA'
+        throw error
+      }
+      return hostname.startsWith('api.')
+        ? ['brevitas-release.up.railway.app']
+        : ['cname.vercel-dns.com']
+    },
   }
 }
 
@@ -70,17 +79,22 @@ function approvedFetch(overrides = {}) {
         : overrides.readiness || ready
     }
     const dashboardResponse = parsed.pathname === '/api/version'
+    const cloudRunResponse = parsed.hostname.endsWith('.run.app')
     return Response.json(payload, {
       status: overrides.status || 200,
       headers: {
         server: dashboardResponse
           ? overrides.dashboardServer || 'Vercel'
-          : overrides.server || 'railway-edge',
+          : overrides.server || (cloudRunResponse ? 'Google Frontend' : 'railway-edge'),
         ...(dashboardResponse
           ? { 'x-vercel-id': 'iad1::version-test' }
-          : overrides.railwayRequestId === null
-            ? {}
-            : { 'x-railway-request-id': overrides.railwayRequestId || 'test-request' }),
+          : cloudRunResponse
+            ? overrides.cloudTraceContext === null
+              ? {}
+              : { 'x-cloud-trace-context': overrides.cloudTraceContext || 'a'.repeat(32) }
+            : overrides.railwayRequestId === null
+              ? {}
+              : { 'x-railway-request-id': overrides.railwayRequestId || 'test-request' }),
       },
     })
   }
@@ -91,8 +105,17 @@ test('release preflight uses fixed staging and production origins only', async (
   assert.deepEqual(Object.keys(RELEASE_TARGETS).sort(), ['production', 'staging'])
   assert.equal(RELEASE_TARGETS.production.dashboard.origin, 'https://brevitassystems.com')
   assert.equal(RELEASE_TARGETS.production.api.origin, 'https://api.brevitassystems.com')
-  assert.equal(RELEASE_TARGETS.staging.dashboard.origin, 'https://staging.brevitassystems.com')
-  assert.equal(RELEASE_TARGETS.staging.api.origin, 'https://staging-api.brevitassystems.com')
+  assert.equal(
+    RELEASE_TARGETS.staging.dashboard.origin,
+    'https://brevitas-systems-staging.vercel.app',
+  )
+  assert.equal(
+    RELEASE_TARGETS.staging.api.origin,
+    'https://brevitas-api-staging-975273324573.us-west1.run.app',
+  )
+  assert.equal(RELEASE_TARGETS.staging.api.platform, 'cloud-run')
+  assert.equal(RELEASE_TARGETS.staging.api.compressorRequired, false)
+  assert.equal(RELEASE_TARGETS.production.api.compressorRequired, true)
 
   for (const target of ['', 'prod', 'preview', 'https://attacker.example']) {
     await assert.rejects(() => runReleasePreflight(target), /exactly "staging" or "production"/)
@@ -110,11 +133,11 @@ test('release preflight probes only non-mutating allowlisted paths and validates
   assert.equal(result.build_identity, 'self-reported-sha-match')
   assert.equal(result.cryptographic_provenance, false)
   assert.deepEqual(calls.map(call => call.url), [
-    'https://staging.brevitassystems.com/',
-    'https://staging.brevitassystems.com/api/version',
-    'https://staging-api.brevitassystems.com/v1/version',
-    'https://staging-api.brevitassystems.com/v1/health/live',
-    'https://staging-api.brevitassystems.com/v1/health/ready',
+    'https://brevitas-systems-staging.vercel.app/',
+    'https://brevitas-systems-staging.vercel.app/api/version',
+    'https://brevitas-api-staging-975273324573.us-west1.run.app/v1/version',
+    'https://brevitas-api-staging-975273324573.us-west1.run.app/v1/health/live',
+    'https://brevitas-api-staging-975273324573.us-west1.run.app/v1/health/ready',
   ])
   for (const { options } of calls) {
     assert.equal(options.method, 'GET')
@@ -127,12 +150,12 @@ test('release preflight probes only non-mutating allowlisted paths and validates
 test('release preflight fails clearly on unresolved and misrouted DNS', async () => {
   const unresolved = {
     resolve4: async () => {
-      const error = new Error('queryA ENOTFOUND staging.brevitassystems.com')
+      const error = new Error('queryA ENOTFOUND brevitas-systems-staging.vercel.app')
       error.code = 'ENOTFOUND'
       throw error
     },
     resolve6: async () => {
-      const error = new Error('queryAaaa ENOTFOUND staging.brevitassystems.com')
+      const error = new Error('queryAaaa ENOTFOUND brevitas-systems-staging.vercel.app')
       error.code = 'ENOTFOUND'
       throw error
     },
@@ -142,7 +165,7 @@ test('release preflight fails clearly on unresolved and misrouted DNS', async ()
     () => runReleasePreflight('staging', {
       dns: unresolved, fetchImpl: approvedFetch().fetchImpl, expectedSha: EXPECTED_SHA,
     }),
-    /DNS staging\.brevitassystems\.com did not resolve.*ENOTFOUND/,
+    /DNS brevitas-systems-staging\.vercel\.app did not resolve.*ENOTFOUND/,
   )
 
   assert.throws(
@@ -151,11 +174,22 @@ test('release preflight fails clearly on unresolved and misrouted DNS', async ()
     }),
     /not routed to Vercel/,
   )
+  assert.doesNotThrow(
+    () => assertPlatformDns('brevitas-systems-staging.vercel.app', 'vercel', {
+      addresses: ['216.198.79.1'], cnames: [],
+    }),
+  )
   assert.throws(
     () => assertPlatformDns('staging-api.brevitassystems.com', 'railway', {
       addresses: ['203.0.113.21'], cnames: ['attacker.example'],
     }),
     /not routed to Railway/,
+  )
+  assert.throws(
+    () => assertPlatformDns('attacker.run.app', 'cloud-run', {
+      addresses: ['203.0.113.22'], cnames: [],
+    }),
+    /not a deterministic Cloud Run service hostname/,
   )
 })
 
@@ -177,13 +211,56 @@ test('release preflight rejects legacy degraded readiness and incomplete depende
   }
 })
 
+test('staging permits only the documented optional-compressor degradation', async () => {
+  const optionalCompressorReadiness = {
+    ...ready,
+    status: 'degraded',
+    dependencies: {
+      ...ready.dependencies,
+      compressor: { status: 'unavailable', required: false },
+    },
+  }
+  const accepted = approvedFetch({ readiness: optionalCompressorReadiness })
+  await assert.doesNotReject(() => runReleasePreflight('staging', {
+    dns: approvedDns(), fetchImpl: accepted.fetchImpl, expectedSha: EXPECTED_SHA,
+  }))
+
+  const rejected = approvedFetch({ readiness: optionalCompressorReadiness })
+  await assert.rejects(
+    () => runReleasePreflight('production', {
+      dns: approvedDns(), fetchImpl: rejected.fetchImpl, expectedSha: EXPECTED_SHA,
+    }),
+    /requires status="ok"/,
+  )
+
+  for (const readiness of [
+    { ...optionalCompressorReadiness, status: 'ok' },
+    {
+      ...optionalCompressorReadiness,
+      dependencies: {
+        ...optionalCompressorReadiness.dependencies,
+        compressor: { status: 'unavailable', required: true },
+      },
+    },
+    { ...optionalCompressorReadiness, database_ready: false },
+  ]) {
+    const { fetchImpl } = approvedFetch({ readiness })
+    await assert.rejects(
+      () => runReleasePreflight('staging', {
+        dns: approvedDns(), fetchImpl, expectedSha: EXPECTED_SHA,
+      }),
+      /permits only a compressor-only/,
+    )
+  }
+})
+
 test('release preflight rejects HTTPS misrouting, redirects, and missing health routes', async () => {
-  const misrouted = approvedFetch({ server: 'nginx', railwayRequestId: null }).fetchImpl
+  const misrouted = approvedFetch({ server: 'nginx', cloudTraceContext: null }).fetchImpl
   await assert.rejects(
     () => runReleasePreflight('staging', {
       dns: approvedDns(), fetchImpl: misrouted, expectedSha: EXPECTED_SHA,
     }),
-    /Railway routing signature/,
+    /Cloud Run routing signature/,
   )
 
   const redirecting = async url => new Response(null, {

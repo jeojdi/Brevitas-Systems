@@ -9,8 +9,8 @@ workflow after a reviewer approves the protected `staging` environment.
 
 The script has no URL input. It can contact only:
 
-- `https://staging-api.brevitassystems.com`
-- `https://staging.brevitassystems.com`
+- `https://brevitas-api-staging-975273324573.us-west1.run.app`
+- `https://brevitas-systems-staging.vercel.app`
 - `https://api.stripe.com`
 
 It refuses forks, non-`main` refs, non-manual events, missing confirmation, production-marked
