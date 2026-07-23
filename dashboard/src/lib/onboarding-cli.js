@@ -36,7 +36,7 @@ export const BVX_PLATFORMS = Object.freeze([
     language: 'powershell',
     installCommand: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex',
     quickStartCommand: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex; if ($?) { bvx install }',
-    note: 'Install Python 3.13 or newer first, then open a new PowerShell window after this installer updates PATH.',
+    note: 'No GitHub account or API token is required. Install Python 3.13 or newer first, then open a new PowerShell window after this installer updates PATH.',
   },
 ])
 

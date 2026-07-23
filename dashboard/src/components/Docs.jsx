@@ -92,6 +92,7 @@ const COMMANDS = [
 
 const TROUBLESHOOTING = [
   ['bvx: command not found (Windows)', 'Open a new terminal; PATH updates only apply to shells started after install.'],
+  ['GitHub API rate limit (Windows)', 'Download and run the current install command again. The current installer resolves releases without GitHub’s rate-limited REST API and does not require a GitHub token.'],
   ['A tool still hits the provider directly', 'Run bvx status to confirm it was configured, then bvx repair to re-apply.'],
   ["Optimizer won't start", 'Make sure Python 3.13+ is installed and on your PATH, then run bvx update followed by bvx doctor.'],
   ['Anything else', 'bvx doctor inspects the whole installation and points at the specific problem.'],
@@ -212,7 +213,7 @@ brew install bvx`} />
             the release <code className="font-mono text-brand-blue text-xs">checksums.txt</code>, installs it to{' '}
             <code className="font-mono text-brand-blue text-xs">%LOCALAPPDATA%\Programs\bvx</code>, and adds that folder to
             your user PATH. Open a <span className="text-brand-navy dark:text-brand-dark-navy font-medium">new</span> terminal
-            afterward so the updated PATH takes effect. To pin a version, set{' '}
+            afterward so the updated PATH takes effect. It does not require a GitHub account or API token. To pin a version, set{' '}
             <code className="font-mono text-brand-blue text-xs">$env:BVX_VERSION</code> before running.
           </p>
 

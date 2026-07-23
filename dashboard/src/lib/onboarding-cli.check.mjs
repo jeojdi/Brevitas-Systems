@@ -43,6 +43,8 @@ test('platform install commands match the distributed BVX installation paths', (
     'brew install Brevitas-ai/brevitas/bvx')
   assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'windows').installCommand,
     'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex')
+  assert.match(BVX_PLATFORMS.find(platform => platform.id === 'windows').note,
+    /No GitHub account or API token is required/)
   assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'macos').quickStartCommand,
     'brew install Brevitas-ai/brevitas/bvx && bvx install')
 })

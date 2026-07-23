@@ -83,6 +83,8 @@ irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | ie
 This downloads the prebuilt `bvx.exe` for your architecture, **verifies its
 SHA-256** against the release `checksums.txt`, installs it to
 `%LOCALAPPDATA%\Programs\bvx`, and adds that folder to your user `PATH`.
+It resolves the latest release without GitHub's rate-limited REST API, so no
+GitHub account or API token is required.
 
 - Open a **new** terminal afterward so the updated `PATH` takes effect.
 - To pin a specific version, set `$env:BVX_VERSION` before running:
@@ -268,6 +270,9 @@ Run `bvx help` to see the full list at any time.
 
 - **`bvx: command not found` (Windows)** — open a new terminal; `PATH` updates
   only apply to shells started after install.
+- **GitHub API rate limit (Windows)** — download and run the current install
+  command again. The current installer resolves releases without GitHub's
+  rate-limited REST API and does not require a GitHub token.
 - **A tool still hits the provider directly** — run `bvx status` to confirm it
   was configured, then `bvx repair` to re-apply.
 - **Optimizer won't start** — make sure Python 3.13+ is installed and on your

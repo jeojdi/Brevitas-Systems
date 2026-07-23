@@ -160,6 +160,7 @@ brew install bvx`} />
 
               <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 12 }}>{'// Windows (PowerShell)'}</div>
               <CodeBlock lang="powershell" code={`irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+              <p className="t-body">No GitHub account or API token is required; the installer resolves the latest release without GitHub's rate-limited REST API.</p>
               <p className="t-body">
                 This downloads the prebuilt <span className="mono">bvx.exe</span> for your architecture,
                 <strong style={{ color: 'var(--fg)' }}> verifies its SHA-256</strong> against the release
@@ -285,6 +286,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Programs\\bvx"
                 <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
                 <tbody>
                   <tr><td><span className="mono">bvx: command not found</span> (Windows)</td><td>Open a new terminal; PATH updates only apply to shells started after install.</td></tr>
+                  <tr><td>GitHub API rate limit (Windows)</td><td>Download and run the current install command again. The current installer does not use GitHub's rate-limited REST API and does not require a GitHub token.</td></tr>
                   <tr><td>A tool still hits the provider directly</td><td>Run <span className="mono">bvx status</span> to confirm it was configured, then <span className="mono">bvx repair</span> to re-apply.</td></tr>
                   <tr><td>Optimizer won't start</td><td>Make sure Python 3.13+ is installed and on your PATH, then run <span className="mono">bvx update</span> followed by <span className="mono">bvx doctor</span>.</td></tr>
                   <tr><td>Anything else</td><td><span className="mono">bvx doctor</span> inspects the whole installation and points at the specific problem.</td></tr>
