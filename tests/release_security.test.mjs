@@ -245,17 +245,21 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
       'workspace_experiences',
     ][index]}.sql`,
   )
-  assert.equal(expectedFreshMigrationOrder.length, 45)
-  assert.equal(expectedUpgradeMigrationOrder.length, 33)
-  assert.deepEqual(expectedFreshMigrationOrder.slice(-20, -2), securitySuffix)
-  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-20, -2), securitySuffix)
+  assert.equal(expectedFreshMigrationOrder.length, 46)
+  assert.equal(expectedUpgradeMigrationOrder.length, 34)
+  assert.deepEqual(expectedFreshMigrationOrder.slice(-21, -3), securitySuffix)
+  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-21, -3), securitySuffix)
   assert.equal(
-    expectedFreshMigrationOrder.at(-2),
+    expectedFreshMigrationOrder.at(-3),
     'supabase/migrations/20260720_split_savings_metrics.sql',
   )
   assert.equal(
-    expectedFreshMigrationOrder.at(-1),
+    expectedFreshMigrationOrder.at(-2),
     'supabase/migrations/202607220001_service_role_data_plane.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-1),
+    'supabase/migrations/202607220002_supabase_advisor_hardening.sql',
   )
   const workflow = read('.github/workflows/migrations.yml')
   assert.match(workflow, /pgvector\/pgvector:pg16-bookworm@sha256:[0-9a-f]{64}/)
@@ -320,8 +324,9 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
   assert.match(runner, /scripts\/dr\/compliance-workflow-assertions\.sql/)
   assert.match(runner, /cache_pids/)
   assert.match(runner, /127\.0\.0\.1/)
-  assert.match(runner, /#fresh_migrations\[@\]\}" -ne 45/)
-  assert.match(runner, /#upgrade_migrations\[@\]\}" -ne 33/)
+  assert.match(runner, /#fresh_migrations\[@\]\}" -ne 46/)
+  assert.match(runner, /#upgrade_migrations\[@\]\}" -ne 34/)
+  assert.match(runner, /migration-supabase-advisor-hardening-assertions\.sql/)
   assert.equal((runner.match(/apply_migration "\$\{device_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{membership_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{receipt_migration\}"/g) || []).length, 4)
@@ -344,6 +349,7 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
     'workspace_experiences_migration',
     'split_savings_migration',
     'service_role_data_plane_migration',
+    'supabase_advisor_hardening_migration',
   ]) {
     assert.equal(
       (runner.match(new RegExp(`apply_migration "\\$\\{${variable}\\}"`, 'g')) || []).length,
@@ -554,7 +560,7 @@ test('billing identity rollout is disabled, quiesced, target-bound, and per-file
   const runner = read('scripts/ci/run-migration-tests.sh')
   assert.equal(
     (runner.match(/assert_atomic_migration_rollback "\$\{/g) || []).length,
-    20,
+    21,
   )
   assert.match(runner, /print "select 1\/0;"/)
   assert.match(runner, /Failure-injected migration left partial state/)

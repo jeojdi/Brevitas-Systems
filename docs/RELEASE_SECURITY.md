@@ -65,8 +65,8 @@ pgvector service, parses the database URI, opens its first session read-only, an
 1. builds the documented 12-file production baseline through
    `20260716_stripe_billing_rate_25pct.sql`, inserts representative key/usage/billing state, and
    proves database scaling fails before its tenancy prerequisite;
-2. applies the exact 33-file upgrade suffix `202607170001` through
-   `202607220001_service_role_data_plane`, including a
+2. applies the exact 34-file upgrade suffix `202607170001` through
+   `202607220002_supabase_advisor_hardening`, including a
    legacy plaintext-cache fixture before canonical cache migration 002;
 3. pre-stages production-upgrade indexes outside a transaction before migration 006;
 4. verifies legacy keys and usage gain tenant identity, the raw browser-key table and plaintext
@@ -92,7 +92,7 @@ pgvector service, parses the database URI, opens its first session read-only, an
    rolls back/reapplies the cache RPC/constraint layer, database-scaling read path, and only the
    receipt-accounting validation layer while
    proving encrypted cache and authoritative usage/billing/audit row counts are unchanged; and
-8. resets only the verified loopback database, applies all 45 forward Supabase files as an
+8. resets only the verified loopback database, applies all 46 forward Supabase files as an
    isolated fresh install, reapplies migrations 010–013 and the full `20260720`–`20260722`
    forward suffix, and reruns the forward-contract
    assertions.

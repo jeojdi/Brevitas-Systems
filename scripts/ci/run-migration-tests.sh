@@ -39,8 +39,8 @@ done < <(
   sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
     scripts/ci/migration-upgrade-manifest.txt
 )
-if [[ "${#fresh_migrations[@]}" -ne 45 || "${#upgrade_migrations[@]}" -ne 33 ]]; then
-  echo 'Migration manifests differ from the verified 45-file fresh / 33-file upgrade contract.' >&2
+if [[ "${#fresh_migrations[@]}" -ne 46 || "${#upgrade_migrations[@]}" -ne 34 ]]; then
+  echo 'Migration manifests differ from the verified 46-file fresh / 34-file upgrade contract.' >&2
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))
@@ -68,6 +68,7 @@ billing_customer_owner_migration="${upgrade_migrations[29]}"
 workspace_experiences_migration="${upgrade_migrations[30]}"
 split_savings_migration="${upgrade_migrations[31]}"
 service_role_data_plane_migration="${upgrade_migrations[32]}"
+supabase_advisor_hardening_migration="${upgrade_migrations[33]}"
 if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
    || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
    || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
@@ -91,7 +92,8 @@ if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery
    || "${billing_customer_owner_migration}" != 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql' \
    || "${workspace_experiences_migration}" != 'supabase/migrations/202607200018_workspace_experiences.sql' \
    || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' \
-   || "${service_role_data_plane_migration}" != 'supabase/migrations/202607220001_service_role_data_plane.sql' ]]; then
+   || "${service_role_data_plane_migration}" != 'supabase/migrations/202607220001_service_role_data_plane.sql' \
+   || "${supabase_advisor_hardening_migration}" != 'supabase/migrations/202607220002_supabase_advisor_hardening.sql' ]]; then
   echo 'Frozen migrations 010-013 or the 20260720 forward suffix are out of order.' >&2
   exit 1
 fi
@@ -178,6 +180,8 @@ run_forward_assertions() {
     --file scripts/ci/billing-control-shared-rate-limit-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-checkout-session-reservation-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-supabase-advisor-hardening-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-provider-outbound-ambiguity-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
@@ -333,6 +337,10 @@ assert_atomic_migration_rollback "${service_role_data_plane_migration}" \
   "not has_table_privilege('service_role','public.organizations','SELECT')"
 apply_migration "${service_role_data_plane_migration}"
 apply_migration "${service_role_data_plane_migration}"
+assert_atomic_migration_rollback "${supabase_advisor_hardening_migration}" \
+  "(select proconfig is null from pg_proc where oid='public.company_role_permissions(text)'::regprocedure) and has_function_privilege('anon','public.handle_new_user()','EXECUTE')"
+apply_migration "${supabase_advisor_hardening_migration}"
+apply_migration "${supabase_advisor_hardening_migration}"
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions
@@ -450,6 +458,7 @@ apply_migration "${billing_customer_owner_migration}"
 apply_migration "${workspace_experiences_migration}"
 apply_migration "${split_savings_migration}"
 apply_migration "${service_role_data_plane_migration}"
+apply_migration "${supabase_advisor_hardening_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-fresh-assertions.sql
 run_forward_assertions
