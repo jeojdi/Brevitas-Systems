@@ -54,6 +54,7 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
   'supabase/migrations/202607200018_workspace_experiences.sql',
   'supabase/migrations/20260720_split_savings_metrics.sql',
+  'supabase/migrations/202607220001_service_role_data_plane.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)

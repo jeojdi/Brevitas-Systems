@@ -39,8 +39,8 @@ done < <(
   sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
     scripts/ci/migration-upgrade-manifest.txt
 )
-if [[ "${#fresh_migrations[@]}" -ne 44 || "${#upgrade_migrations[@]}" -ne 32 ]]; then
-  echo 'Migration manifests differ from the verified 44-file fresh / 32-file upgrade contract.' >&2
+if [[ "${#fresh_migrations[@]}" -ne 45 || "${#upgrade_migrations[@]}" -ne 33 ]]; then
+  echo 'Migration manifests differ from the verified 45-file fresh / 33-file upgrade contract.' >&2
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))
@@ -67,6 +67,7 @@ durable_onboarding_migration="${upgrade_migrations[28]}"
 billing_customer_owner_migration="${upgrade_migrations[29]}"
 workspace_experiences_migration="${upgrade_migrations[30]}"
 split_savings_migration="${upgrade_migrations[31]}"
+service_role_data_plane_migration="${upgrade_migrations[32]}"
 if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
    || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
    || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
@@ -89,7 +90,8 @@ if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery
    || "${durable_onboarding_migration}" != 'supabase/migrations/202607200016_durable_onboarding.sql' \
    || "${billing_customer_owner_migration}" != 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql' \
    || "${workspace_experiences_migration}" != 'supabase/migrations/202607200018_workspace_experiences.sql' \
-   || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' ]]; then
+   || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' \
+   || "${service_role_data_plane_migration}" != 'supabase/migrations/202607220001_service_role_data_plane.sql' ]]; then
   echo 'Frozen migrations 010-013 or the 20260720 forward suffix are out of order.' >&2
   exit 1
 fi
@@ -327,6 +329,10 @@ assert_atomic_migration_rollback "${split_savings_migration}" \
   "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='usage_log' and column_name='provider_input_tokens_avoided')"
 apply_migration "${split_savings_migration}"
 apply_migration "${split_savings_migration}"
+assert_atomic_migration_rollback "${service_role_data_plane_migration}" \
+  "not has_table_privilege('service_role','public.organizations','SELECT')"
+apply_migration "${service_role_data_plane_migration}"
+apply_migration "${service_role_data_plane_migration}"
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions
@@ -443,6 +449,7 @@ apply_migration "${durable_onboarding_migration}"
 apply_migration "${billing_customer_owner_migration}"
 apply_migration "${workspace_experiences_migration}"
 apply_migration "${split_savings_migration}"
+apply_migration "${service_role_data_plane_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-fresh-assertions.sql
 run_forward_assertions
