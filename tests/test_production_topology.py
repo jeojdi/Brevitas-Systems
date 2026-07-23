@@ -176,6 +176,7 @@ def test_absent_optional_compressor_is_valid_in_production(monkeypatch):
     monkeypatch.setenv("BREVITAS_ENV", "production")
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com")
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
     server._validate_runtime_config()
@@ -186,6 +187,7 @@ def test_production_requires_shared_cursor_secret(monkeypatch):
 
     monkeypatch.setenv("BREVITAS_ENV", "production")
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com")
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "too-short")
@@ -194,6 +196,84 @@ def test_production_requires_shared_cursor_secret(monkeypatch):
 
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
     server._validate_runtime_config()
+
+
+def test_production_requires_explicit_cors_allowlist_and_tls_redis(monkeypatch):
+    import api.server as server
+
+    monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
+    monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
+    monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
+    monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    with pytest.raises(RuntimeError, match="ALLOWED_ORIGINS"):
+        server._validate_runtime_config()
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com,*")
+    with pytest.raises(RuntimeError, match="ALLOWED_ORIGINS"):
+        server._validate_runtime_config()
+    monkeypatch.setenv("ALLOWED_ORIGINS", " , ")
+    with pytest.raises(RuntimeError, match="ALLOWED_ORIGINS"):
+        server._validate_runtime_config()
+
+    monkeypatch.setenv(
+        "ALLOWED_ORIGINS",
+        " , https://brevitassystems.com, https://www.brevitassystems.com, ",
+    )
+    assert server._configured_allowed_origins() == [
+        "https://brevitassystems.com",
+        "https://www.brevitassystems.com",
+    ]
+    monkeypatch.setenv("REDIS_URL", "redis://limits.internal:6379/0")
+    with pytest.raises(RuntimeError, match="rediss://"):
+        server._validate_runtime_config()
+
+    monkeypatch.setenv("REDIS_URL", "rediss://limits.internal:6380/0")
+    server._validate_runtime_config()
+
+
+def test_hosted_job_dispatcher_requires_tls_redis(monkeypatch):
+    from api.jobs import RedisJobDispatcher
+
+    monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("REDIS_URL", "redis://jobs.internal:6379/0")
+    with pytest.raises(RuntimeError, match="rediss://"):
+        RedisJobDispatcher()
+
+    monkeypatch.setenv("BREVITAS_ENV", "development")
+    dispatcher = RedisJobDispatcher()
+    assert dispatcher.redis is not None
+
+
+def test_job_dispatcher_configures_bounded_redis_timeouts(monkeypatch):
+    from redis.asyncio import Redis
+
+    from api.jobs import RedisJobDispatcher
+
+    configured = {}
+    redis_client = object()
+
+    def from_url(url, **kwargs):
+        configured["url"] = url
+        configured.update(kwargs)
+        return redis_client
+
+    monkeypatch.setattr(Redis, "from_url", staticmethod(from_url))
+    monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("REDIS_URL", "rediss://jobs.internal:6380/0")
+
+    dispatcher = RedisJobDispatcher()
+
+    assert dispatcher.redis is redis_client
+    assert configured == {
+        "url": "rediss://jobs.internal:6380/0",
+        "decode_responses": True,
+        "socket_connect_timeout": 2,
+        "socket_timeout": 10,
+        "health_check_interval": 30,
+    }
 
 
 def test_production_fails_closed_without_postgres_or_job_crypto(monkeypatch):

@@ -841,7 +841,18 @@ limiter = Limiter(key_func=_rate_key)
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
-_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
+def _configured_allowed_origins() -> list[str]:
+    """Return the normalized CORS allowlist used by middleware and startup checks."""
+
+    origins = [
+        origin.strip()
+        for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+        if origin.strip()
+    ]
+    return origins or ["*"]
+
+
+_ALLOWED_ORIGINS = _configured_allowed_origins()
 
 
 def _proxy_auth_enabled() -> bool:
@@ -863,6 +874,13 @@ def _validate_runtime_config() -> None:
     if compressor_url and not os.getenv("BREVITAS_COMPRESS_TOKEN", "").strip():
         raise RuntimeError(
             "Production compressor configuration requires BREVITAS_COMPRESS_TOKEN")
+    origins = _configured_allowed_origins()
+    if "*" in origins:
+        raise RuntimeError(
+            "Production requires an explicit ALLOWED_ORIGINS allowlist")
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if redis_url and not redis_url.startswith("rediss://"):
+        raise RuntimeError("Production REDIS_URL must use TLS (rediss://)")
 
 
 @asynccontextmanager

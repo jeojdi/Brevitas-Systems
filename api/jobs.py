@@ -731,9 +731,18 @@ class RedisJobDispatcher:
         self.bounds = bounds or ResourceBounds.from_env()
         self.stream = os.getenv("BREVITAS_JOB_STREAM", "brevitas:jobs")
         if self.redis is None and os.getenv("REDIS_URL"):
+            url = os.environ["REDIS_URL"]
+            if hosted_runtime() and not url.startswith("rediss://"):
+                raise RuntimeError("Hosted REDIS_URL must use TLS (rediss://)")
             from redis.asyncio import Redis
 
-            self.redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+            # socket_timeout must stay above the blocking-XREAD window used by
+            # wait_for_notification; the worker separately bounds that await.
+            self.redis = Redis.from_url(
+                url, decode_responses=True,
+                socket_connect_timeout=2, socket_timeout=10,
+                health_check_interval=30,
+            )
 
     async def enqueue(self, job_id: str) -> None:
         if self.redis is None:
