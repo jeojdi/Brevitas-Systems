@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
 const num = value => Number(value || 0).toLocaleString()
@@ -6,6 +6,8 @@ const usd = value => `$${Number(value || 0).toFixed(4)}`
 const billingUsd = value => `$${Number(value || 0).toFixed(2)}`
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${Math.round(seconds)}s`
 const ranges = ['7d', '30d', '90d', 'all']
+const sessionWhen = iso => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const sessionTime = iso => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 const sortFields = ['actual_cost_usd', 'baseline_cost_usd', 'verified_savings_usd', 'brevitas_fee_usd', 'calls', 'tokens_saved']
 
 function StatCard({ label, value, accent = '' }) {
@@ -40,6 +42,17 @@ export default function Admin({ accessToken, refreshTick }) {
   const [billingOpen, setBillingOpen] = useState(false)
   const [billing, setBilling] = useState(null)
   const [billingError, setBillingError] = useState('')
+  const [expandedRow, setExpandedRow] = useState(null)
+  const [accountDetails, setAccountDetails] = useState({})
+
+  const toggleAccount = (rowKey, accountId) => {
+    setExpandedRow(current => (current === rowKey ? null : rowKey))
+    if (accountDetails[accountId]) return
+    setAccountDetails(current => ({ ...current, [accountId]: { loading: true } }))
+    adminJson(`/v1/admin/accounts/${encodeURIComponent(accountId)}/usage`, accessToken)
+      .then(detail => setAccountDetails(current => ({ ...current, [accountId]: { data: detail } })))
+      .catch(error => setAccountDetails(current => ({ ...current, [accountId]: { error: error.message } })))
+  }
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ range, limit: '100', sort, direction })
@@ -234,14 +247,62 @@ export default function Admin({ accessToken, refreshTick }) {
       {error && <p className="font-mono text-xs text-red-500">{error}</p>}
       <div className="overflow-x-auto rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
         <table className="w-full min-w-[1180px] text-left"><thead><tr>{['Account', 'Project / client', 'Provider / model', 'Calls', 'Input avoided', 'Actual spend', 'Baseline', 'Verified benefit', 'Brevitas fee'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
-          <tbody>{data.rows.map((row, index) => <tr key={`${row.account_id}-${row.project}-${row.client}-${row.model}-${index}`} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
-            <td className="font-mono text-xs px-4 py-3 ph-no-capture" data-ph-sensitive><span>{row.account_email || 'No email'}</span><br/><span className="text-brand-muted">{row.account_id}</span></td>
-            <td className="font-mono text-xs px-4 py-3">{row.project}<br/><span className="text-brand-muted">{row.client || row.source}</span></td>
-            <td className="font-mono text-xs px-4 py-3 text-brand-blue">{row.provider}<br/><span>{row.model}</span></td>
-            <td className="font-mono text-xs px-4 py-3">{num(row.calls)}</td><td className="font-mono text-xs px-4 py-3">{num(row.provider_input_tokens_avoided)}</td>
-            <td className="font-mono text-xs px-4 py-3">{usd(row.actual_cost_usd)}</td><td className="font-mono text-xs px-4 py-3">{usd(row.baseline_cost_usd)}</td>
-            <td className="font-mono text-xs px-4 py-3 text-brand-teal">{usd(row.verified_savings_usd)}</td><td className="font-mono text-xs px-4 py-3 text-brand-blue">{usd(row.brevitas_fee_usd)}</td>
-          </tr>)}</tbody></table>
+          <tbody>{data.rows.map((row, index) => {
+            const rowKey = `${row.account_id}-${row.project}-${row.client}-${row.model}-${index}`
+            const expandable = row.account_id && row.account_id !== 'Unattributed'
+            const expanded = expandedRow === rowKey
+            const detail = accountDetails[row.account_id]
+            return <Fragment key={rowKey}>
+              <tr className={expanded ? 'border-b-0' : 'border-b last:border-0 border-brand-border dark:border-brand-dark-border'}>
+                <td className="font-mono text-xs px-4 py-3 ph-no-capture" data-ph-sensitive>
+                  {expandable ? <button type="button" onClick={() => toggleAccount(rowKey, row.account_id)} aria-expanded={expanded}
+                    className="text-left hover:text-brand-blue transition-colors">
+                    <span className="text-brand-muted mr-1">{expanded ? '▾' : '▸'}</span>
+                    <span>{row.account_email || 'No email'}</span><br/><span className="text-brand-muted pl-4">{row.account_id}</span>
+                  </button> : <><span>{row.account_email || 'No email'}</span><br/><span className="text-brand-muted">{row.account_id}</span></>}
+                </td>
+                <td className="font-mono text-xs px-4 py-3">{row.project}<br/><span className="text-brand-muted">{row.client || row.source}</span></td>
+                <td className="font-mono text-xs px-4 py-3 text-brand-blue">{row.provider}<br/><span>{row.model}</span></td>
+                <td className="font-mono text-xs px-4 py-3">{num(row.calls)}</td><td className="font-mono text-xs px-4 py-3">{num(row.provider_input_tokens_avoided)}</td>
+                <td className="font-mono text-xs px-4 py-3">{usd(row.actual_cost_usd)}</td><td className="font-mono text-xs px-4 py-3">{usd(row.baseline_cost_usd)}</td>
+                <td className="font-mono text-xs px-4 py-3 text-brand-teal">{usd(row.verified_savings_usd)}</td><td className="font-mono text-xs px-4 py-3 text-brand-blue">{usd(row.brevitas_fee_usd)}</td>
+              </tr>
+              {expanded && <tr className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
+                <td colSpan="9" className="px-4 pb-4 pt-0">
+                  <div className="rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg/60 dark:bg-brand-dark-elevated p-4 ph-no-capture" data-ph-sensitive>
+                    {!detail || detail.loading ? <p className="annotation">// loading account usage…</p>
+                      : detail.error ? <p className="font-mono text-xs text-red-500">{detail.error}</p>
+                      : <div className="space-y-4">
+                        <p className="annotation tracking-widest uppercase">Usage with Brevitas · last {num(detail.data.window_calls)} calls</p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+                          {[
+                            ['tokens processed', num(detail.data.totals.total_actual_tokens)],
+                            ['baseline tokens', num(detail.data.totals.total_baseline_tokens)],
+                            ['tokens saved', `${num(detail.data.totals.total_tokens_saved)} (${Number(detail.data.totals.avg_savings_pct || 0).toFixed(1)}%)`],
+                            ['input avoided', num(detail.data.totals.total_provider_input_tokens_avoided)],
+                            ['verified savings', usd(detail.data.totals.total_verified_savings_usd)],
+                            ['brevitas fee', usd(detail.data.totals.total_brevitas_fee_usd)],
+                          ].map(([label, value]) => <div key={label}>
+                            <p className="annotation">{label}</p>
+                            <p className="font-mono text-sm text-brand-navy dark:text-brand-dark-navy tabular-nums mt-1">{value}</p>
+                          </div>)}
+                        </div>
+                        {detail.data.activity?.sessions?.length > 0 && <div>
+                          <p className="annotation mb-2">// recent sessions — when this account was using Brevitas</p>
+                          <div className="space-y-1">
+                            {detail.data.activity.sessions.slice(0, 6).map((session, i) => <p key={i} className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy tabular-nums">
+                              <span className={session.active ? 'text-emerald-500' : 'text-brand-muted'}>{session.active ? '●' : '○'}</span>
+                              {' '}{session.client} · {sessionWhen(session.started_at)} → {session.active ? <span className="text-emerald-500">active now</span> : sessionTime(session.last_seen_at)}
+                              {' '}· {num(session.calls)} calls
+                            </p>)}
+                          </div>
+                        </div>}
+                      </div>}
+                  </div>
+                </td>
+              </tr>}
+            </Fragment>
+          })}</tbody></table>
       </div>
       <div className="flex items-center justify-between"><p className="annotation">{page.total ? `Page ${cursorStack.length + 1} · ${page.total} matching rows` : 'No matching rows'}</p><div className="flex gap-2"><button disabled={!cursorStack.length} onClick={previousPage} className="annotation disabled:opacity-40">Previous</button><button disabled={!page.has_more || !page.next_cursor} onClick={nextPage} className="annotation disabled:opacity-40">Next</button></div></div>
     </section>

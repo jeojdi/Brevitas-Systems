@@ -690,6 +690,72 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+ACTIVITY_IDLE_MINUTES = 30
+ACTIVITY_SESSION_MAX = 100
+ACTIVITY_SCAN_MAX = 1000
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _activity(rows: list[dict[str, Any]], *, idle_minutes: int = ACTIVITY_IDLE_MINUTES,
+              now: datetime | None = None) -> dict[str, Any]:
+    """Sessionize usage events per client (cli, sdk, proxy, …) so the dashboard
+    can show when each client was in use and when it went quiet. A session ends
+    once the client reports nothing for `idle_minutes`."""
+    now = now or datetime.now(timezone.utc)
+    idle = timedelta(minutes=idle_minutes)
+    events: dict[str, list[datetime]] = defaultdict(list)
+    for row in rows:
+        ts = _parse_ts(row.get("ts"))
+        if ts is None:
+            continue
+        events[str(row.get("client") or row.get("source") or "Unattributed")].append(ts)
+    sessions: list[dict[str, Any]] = []
+    clients: list[dict[str, Any]] = []
+    for client, stamps in events.items():
+        stamps.sort()
+        spans: list[list[datetime]] = []
+        for ts in stamps:
+            if spans and ts - spans[-1][-1] <= idle:
+                spans[-1].append(ts)
+            else:
+                spans.append([ts])
+        for span in spans:
+            start, last = span[0], span[-1]
+            sessions.append({
+                "client": client,
+                "started_at": start.isoformat(),
+                "last_seen_at": last.isoformat(),
+                "calls": len(span),
+                "duration_seconds": int((last - start).total_seconds()),
+                "active": now - last <= idle,
+            })
+        clients.append({
+            "client": client,
+            "first_seen_at": stamps[0].isoformat(),
+            "last_seen_at": stamps[-1].isoformat(),
+            "active": now - stamps[-1] <= idle,
+            "sessions": len(spans),
+            "total_calls": len(stamps),
+        })
+    sessions.sort(key=lambda s: s["last_seen_at"], reverse=True)
+    clients.sort(key=lambda c: c["last_seen_at"], reverse=True)
+    return {
+        "idle_minutes": idle_minutes,
+        "generated_at": now.isoformat(),
+        "clients": clients,
+        "sessions": sessions[:ACTIVITY_SESSION_MAX],
+    }
+
+
 _BREAKDOWN_FIELDS = ("repo", "environment", "client", "agent",
                      "call_site_id", "framework", "gateway", "provider", "model", "operation")
 
@@ -2189,6 +2255,14 @@ class UsageStore:
     def get_breakdown(self, key_hash: str) -> list[dict[str, Any]]:
         return _breakdown(self._rows(key_hash))
 
+    def get_activity(self, key_hash: str) -> dict[str, Any]:
+        return _activity(self._rows(key_hash))
+
+    def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
+        rows = [r for r in self._all_rows() if str(r.get("owner_id") or "") == owner_id]
+        return {"owner_id": owner_id, "window_calls": len(rows),
+                "totals": _stats(rows), "activity": _activity(rows)}
+
     def get_admin_stats(self) -> dict[str, Any]:
         return _stats(self._all_rows())
 
@@ -3080,6 +3154,34 @@ class SupabaseUsageStore:
         return self._request("POST", "rpc/usage_breakdown", data={
             **self._usage_scope(key_hash), "p_limit": ADMIN_RESULT_MAX,
         }) or []
+
+    def _collect_usage_rows(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
+        # usage_page caps each page at USAGE_PAGE_MAX, so walk the cursor until
+        # the history window is filled.
+        rows: list[dict[str, Any]] = []
+        cursor_ts = cursor_id = None
+        while len(rows) < ACTIVITY_SCAN_MAX:
+            page = self._request("POST", "rpc/usage_page", data={
+                **scope, "p_cursor_ts": cursor_ts, "p_cursor_id": cursor_id,
+                "p_limit": USAGE_PAGE_MAX,
+            }) or []
+            has_more = len(page) > USAGE_PAGE_MAX
+            page = page[:USAGE_PAGE_MAX]
+            rows.extend(page)
+            if not has_more or not page:
+                break
+            cursor_ts, cursor_id = page[-1]["ts"], page[-1]["id"]
+        return rows[:ACTIVITY_SCAN_MAX]
+
+    def get_activity(self, key_hash: str) -> dict[str, Any]:
+        return _activity(self._collect_usage_rows(self._usage_scope(key_hash)))
+
+    def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
+        # usage_page owner scoping: with an empty key hash only owner_id rows match.
+        rows = self._collect_usage_rows({
+            "p_key_hash": "", "p_organization_id": None, "p_owner_id": owner_id})
+        return {"owner_id": owner_id, "window_calls": len(rows),
+                "totals": _stats(rows), "activity": _activity(rows)}
 
     def get_admin_stats(self) -> dict[str, Any]:
         report = self.get_admin_report({})

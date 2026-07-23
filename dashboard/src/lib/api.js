@@ -66,6 +66,7 @@ export async function apiJson(path, apiKey, { body, request = fetch, headers, ..
 
 export const fetchStats = (apiKey, options) => apiJson('/v1/stats', apiKey, options)
 export const fetchBreakdown = (apiKey, options) => apiJson('/v1/stats/breakdown', apiKey, options)
+export const fetchActivity = (apiKey, options) => apiJson('/v1/stats/activity', apiKey, options)
 const managementJson = async (path, accessToken, { body, request = fetch, headers, ...options } = {}) => {
   const response = await request(path, {
     ...options,

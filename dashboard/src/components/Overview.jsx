@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStats } from '../lib/api.js'
+import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
+import { fetchStats, fetchActivity } from '../lib/api.js'
 import InstallCommand from './InstallCommand.jsx'
 import {
   AreaChart, Area,
@@ -8,6 +8,33 @@ import {
 } from 'recharts'
 
 const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+const fmtWhen = (iso) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+const fmtDay = (iso) => {
+  const date = new Date(iso)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (date.toDateString() === today.toDateString()) return 'today'
+  if (date.toDateString() === yesterday.toDateString()) return 'yesterday'
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+}
+const groupSessionsByDay = (sessions) => {
+  const days = []
+  for (const session of sessions) {
+    const key = new Date(session.started_at).toDateString()
+    const bucket = days.find((d) => d.key === key)
+    if (bucket) bucket.sessions.push(session)
+    else days.push({ key, label: fmtDay(session.started_at), sessions: [session] })
+  }
+  return days
+}
+const fmtDuration = (secs) => {
+  const s = Math.max(0, Number(secs) || 0)
+  if (s < 60) return `${s}s`
+  const m = Math.round(s / 60)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
 const fmtAxis = (n) => {
   const value = Number(n) || 0
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`
@@ -44,6 +71,7 @@ function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-d
 
 export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true }) {
   const [stats, setStats]     = useState(previewStats)
+  const [activity, setActivity] = useState(null)
   const [loading, setLoading] = useState(!previewStats)
   const [error, setError]     = useState('')
   const controllerRef = useRef(null)
@@ -59,8 +87,14 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
     controllerRef.current = controller
     setError('')
     try {
-      const data = await fetchStats(apiKey, { signal: controller.signal })
-      if (controllerRef.current === controller) setStats(data)
+      const [data, act] = await Promise.all([
+        fetchStats(apiKey, { signal: controller.signal }),
+        fetchActivity(apiKey, { signal: controller.signal }).catch(() => null),
+      ])
+      if (controllerRef.current === controller) {
+        setStats(data)
+        setActivity(act)
+      }
     } catch (e) {
       if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
     } finally {
@@ -135,6 +169,73 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
           label="// Brevitas lift vs paired control"
         />
       </div>
+
+      {/* ── Client activity ── */}
+      {activity?.clients?.length > 0 && (
+        <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-5 sm:p-8">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-5">
+            <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
+              client <em className="italic text-brand-blue">activity</em>
+            </p>
+            <p className="annotation">// a client counts as stopped after {activity.idle_minutes}m without calls</p>
+          </div>
+          <div className="space-y-2 mb-6">
+            {activity.clients.map((c) => (
+              <div key={c.client} className="flex flex-wrap items-center gap-3 rounded-xl border border-brand-border dark:border-brand-dark-border px-4 py-3">
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${c.active ? 'bg-emerald-500 animate-pulse' : 'bg-brand-border dark:bg-brand-dark-border'}`}
+                  aria-hidden="true"
+                />
+                <span className="font-mono text-sm text-brand-navy dark:text-brand-dark-navy">{c.client}</span>
+                <span className="annotation">
+                  {c.active
+                    ? `active now · last call ${fmtWhen(c.last_seen_at)}`
+                    : `stopped · last used ${fmtWhen(c.last_seen_at)}`}
+                </span>
+                <span className="annotation ml-auto">{c.sessions} session{c.sessions === 1 ? '' : 's'} · {c.total_calls} calls</span>
+              </div>
+            ))}
+          </div>
+          {activity.sessions?.length > 0 && (
+            <div>
+              <p className="annotation tracking-widest uppercase mb-3">Past history</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="annotation">
+                      <th className="font-normal pb-2 pr-4">client</th>
+                      <th className="font-normal pb-2 pr-4">started</th>
+                      <th className="font-normal pb-2 pr-4">stopped</th>
+                      <th className="font-normal pb-2 pr-4">duration</th>
+                      <th className="font-normal pb-2 text-right">calls</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">
+                    {groupSessionsByDay(activity.sessions).map((day) => (
+                      <Fragment key={day.key}>
+                        <tr>
+                          <td colSpan={5} className="annotation pt-4 pb-1">{day.label}</td>
+                        </tr>
+                        {day.sessions.map((s, i) => (
+                          <tr key={i} className="border-t border-brand-border dark:border-brand-dark-border">
+                            <td className="py-2 pr-4">{s.client}</td>
+                            <td className="py-2 pr-4 tabular-nums">{fmtTime(s.started_at)}</td>
+                            <td className="py-2 pr-4 tabular-nums">
+                              {s.active ? <span className="text-emerald-500">active now</span> : fmtTime(s.last_seen_at)}
+                            </td>
+                            <td className="py-2 pr-4 tabular-nums">{fmtDuration(s.duration_seconds)}</td>
+                            <td className="py-2 text-right tabular-nums">{s.calls}</td>
+                          </tr>
+                        ))}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {chartData.length === 0 ? (
         <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-10 sm:p-20 text-center">

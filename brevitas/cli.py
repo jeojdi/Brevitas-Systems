@@ -39,6 +39,8 @@ def start(port: int, api_key: str, base_url: str, host: str) -> None:
         os.environ["BREVITAS_API_KEY"]  = api_key
     if base_url:
         os.environ["BREVITAS_BASE_URL"] = base_url
+    # Per-request x-brevitas-source headers still win inside parse_brevitas_headers.
+    os.environ.setdefault("BREVITAS_SOURCE", "cli")
 
     from . import configure
     configure(api_key=api_key or os.getenv("BREVITAS_API_KEY", ""), base_url=base_url)

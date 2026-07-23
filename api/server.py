@@ -3844,6 +3844,13 @@ def stats_breakdown(request: Request, kh: str = Depends(_authenticated)):
     return {"rows": rows, "totals": _store.get_stats(kh)}
 
 
+@app.get("/v1/stats/activity")
+@limiter.limit("120/minute")
+def stats_activity(request: Request, kh: str = Depends(_authenticated)):
+    _require_scope(request, kh, "usage:read_own")
+    return _store.get_activity(kh)
+
+
 @app.get("/v1/admin/stats")
 @limiter.limit("60/minute")
 def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):
@@ -3887,6 +3894,15 @@ def admin_stats_breakdown(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid pagination cursor") from exc
     return {**report, "range": range}
+
+
+@app.get("/v1/admin/accounts/{owner_id}/usage")
+@limiter.limit("60/minute")
+def admin_account_usage(request: Request, owner_id: str, _: str = Depends(_admin_authenticated)):
+    if not (0 < len(owner_id) <= 64 and all(c.isalnum() or c in "-_" for c in owner_id)):
+        raise HTTPException(status_code=400, detail="Invalid account id")
+    logger.info("admin account usage accessed actor=%s account=%s", _, owner_id)
+    return _store.get_admin_account_detail(owner_id)
 
 
 @app.get("/v1/admin/billing")
