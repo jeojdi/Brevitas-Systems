@@ -524,8 +524,8 @@ function CodeBlockPy({ source, filename, copyable = true }) {
 // One-line install command — OS-tabbed, copyable mono pill for hero / CTA sections.
 // `commands`: [{ label, prompt, command }]. Falls back to a single `command` prop.
 const DEFAULT_INSTALL_COMMANDS = [
-  { label: 'macOS',   prompt: '$', command: 'brew install brevitas-ai/brevitas/bvx && bvx login' },
-  { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex' },
+  { label: 'macOS',   prompt: '$', command: 'brew install Brevitas-ai/brevitas/bvx && bvx install' },
+  { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex; if ($?) { bvx install }' },
 ];
 
 function InstallCommand({ commands, command }) {
