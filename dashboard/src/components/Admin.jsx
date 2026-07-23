@@ -187,6 +187,7 @@ export default function Admin({ accessToken, refreshTick }) {
         <StatCard label="Verified savings" value={usd(totals.total_verified_savings_usd)} accent="text-brand-teal" />
         <StatCard label="Brevitas fees" value={usd(totals.total_brevitas_fee_usd)} accent="text-brand-blue" />
       </div>
+      <p className="annotation">// usage recorded before Jul 16, 2026 carries its historical 10% fee and pre-alignment savings attribution (provider-native cache discounts were still counted); usage since bills at 25% of receipt-verified savings only</p>
 
       {billingOpen && <div className="rounded-2xl border border-brand-blue/30 bg-brand-blue/5 p-5 space-y-5 ph-no-capture" data-ph-sensitive>
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
