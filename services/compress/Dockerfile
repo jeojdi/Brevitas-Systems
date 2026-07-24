@@ -35,4 +35,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/live',timeout=5).status==200 else 1)" || exit 1
 
 # Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--timeout-graceful-shutdown", "180"]
+CMD ["uvicorn", "app:app", "--host", "::", "--port", "8080", "--workers", "1", "--timeout-graceful-shutdown", "180"]
