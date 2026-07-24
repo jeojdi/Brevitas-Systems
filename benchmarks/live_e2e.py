@@ -34,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from token_efficiency_model.lossless.dropin import BrevitasDropIn  # noqa: E402
+from brevitas.resource_bounds import safe_close_resource  # noqa: E402
 
 
 def _load_env_local() -> None:
@@ -121,17 +122,8 @@ def _answer_text(resp, provider: str) -> str:
     return resp.choices[0].message.content or ""
 
 
-def run_provider(name: str, system: str, context: str, turns) -> dict:
-    cfg = PROVIDERS[name]
-    key = os.environ.get(cfg["key_env"], "")
-    result = {"provider": name, "model": cfg["model"], "turns": [], "errors": []}
-    if not key:
-        result["errors"].append(f"missing key {cfg['key_env']}")
-        return result
-
-    client = BrevitasDropIn(base_url=cfg["base_url"] or "https://api.openai.com/v1",
-                            provider=name, api_key=key)
-
+def _run_provider_with_client(name: str, system: str, context: str, turns,
+                              cfg: dict, result: dict, client) -> dict:
     # Append-only history, like a real agent session. Context rides in the FIRST user
     # message as a block-style content list (assertion 4: block content must not crash).
     history: list[dict] = []
@@ -176,6 +168,24 @@ def run_provider(name: str, system: str, context: str, turns) -> dict:
         history = messages + [{"role": "assistant", "content": text}]
         time.sleep(1)
     return result
+
+
+def run_provider(name: str, system: str, context: str, turns) -> dict:
+    cfg = PROVIDERS[name]
+    key = os.environ.get(cfg["key_env"], "")
+    result = {"provider": name, "model": cfg["model"], "turns": [], "errors": []}
+    if not key:
+        result["errors"].append(f"missing key {cfg['key_env']}")
+        return result
+
+    client = BrevitasDropIn(base_url=cfg["base_url"] or "https://api.openai.com/v1",
+                            provider=name, api_key=key)
+    try:
+        return _run_provider_with_client(
+            name, system, context, turns, cfg, result, client
+        )
+    finally:
+        safe_close_resource(client)
 
 
 def evaluate(result: dict) -> list[str]:

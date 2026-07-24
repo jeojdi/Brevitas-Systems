@@ -1,0 +1,68 @@
+name: Approved staging smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: HTTPS staging FastAPI origin
+        required: true
+        default: https://brevitas-api-staging-975273324573.us-west1.run.app
+        type: string
+      dashboard_url:
+        description: HTTPS staging Vercel origin
+        required: true
+        default: https://brevitas-systems-staging.vercel.app
+        type: string
+      environment_confirmation:
+        description: Explicit non-production target confirmation
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-staging-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Non-mutating staging release gate
+    if: >-
+      github.event.repository.fork == false &&
+      github.repository == 'jeojdi/Brevitas-Systems' &&
+      github.ref == 'refs/heads/main'
+    environment: staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+      - name: Run guarded staging smoke
+        env:
+          STAGING_SMOKE_ALLOWED: 'true'
+          STAGING_ENVIRONMENT_CONFIRMATION: ${{ inputs.environment_confirmation }}
+          STAGING_API_URL: ${{ inputs.api_url }}
+          STAGING_DASHBOARD_URL: ${{ inputs.dashboard_url }}
+          STAGING_REPOSITORY: ${{ github.repository }}
+          STAGING_REPOSITORY_FORK: ${{ github.event.repository.fork }}
+          STAGING_GITHUB_EVENT: ${{ github.event_name }}
+          STAGING_GITHUB_REF: ${{ github.ref }}
+          STAGING_TENANT_A_API_KEY: ${{ secrets.STAGING_TENANT_A_API_KEY }}
+          STAGING_TENANT_B_API_KEY: ${{ secrets.STAGING_TENANT_B_API_KEY }}
+          STAGING_TENANT_A_JOB_ID: ${{ secrets.STAGING_TENANT_A_JOB_ID }}
+          STAGING_TENANT_B_JOB_ID: ${{ secrets.STAGING_TENANT_B_JOB_ID }}
+          STAGING_TENANT_A_CUSTOMER_ID: ${{ secrets.STAGING_TENANT_A_CUSTOMER_ID }}
+          STAGING_TENANT_B_CUSTOMER_ID: ${{ secrets.STAGING_TENANT_B_CUSTOMER_ID }}
+          STAGING_BILLING_USER_TOKEN: ${{ secrets.STAGING_BILLING_USER_TOKEN }}
+          STAGING_BILLING_RECOVERY_SECRET: ${{ secrets.STAGING_BILLING_RECOVERY_SECRET }}
+        run: node scripts/ci/staging-smoke.mjs

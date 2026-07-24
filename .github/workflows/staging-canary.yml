@@ -1,0 +1,72 @@
+name: Approved staging API journey canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN MUTATING STAGING CANARY
+        required: true
+        type: string
+      billing_mode:
+        description: Require the Stripe test-mode journey or explicitly record a skip
+        required: true
+        default: required
+        type: choice
+        options:
+          - required
+          - skip
+      recovery_mode:
+        description: Parser-only is non-mutating; ledger recovery requires a seeded review/dead entry
+        required: true
+        default: parser-only
+        type: choice
+        options:
+          - parser-only
+          - resolve-test-ledger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-staging-journey-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Mutating staging API canary (pre-provisioned user)
+    if: >-
+      github.event.repository.fork == false &&
+      github.repository == 'jeojdi/Brevitas-Systems' &&
+      github.ref == 'refs/heads/main'
+    environment: staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+      - name: Run guarded staging journey canary
+        env:
+          STAGING_CANARY_ALLOWED: mutating-staging-canary
+          STAGING_CANARY_CONFIRMATION: ${{ inputs.confirmation }}
+          STAGING_REPOSITORY: ${{ github.repository }}
+          STAGING_REPOSITORY_FORK: ${{ github.event.repository.fork }}
+          STAGING_GITHUB_EVENT: ${{ github.event_name }}
+          STAGING_GITHUB_REF: ${{ github.ref }}
+          STAGING_GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          STAGING_CANARY_BILLING_MODE: ${{ inputs.billing_mode }}
+          STAGING_CANARY_RECOVERY_MODE: ${{ inputs.recovery_mode }}
+          STAGING_CANARY_USER_TOKEN: ${{ secrets.STAGING_CANARY_USER_TOKEN }}
+          STAGING_CANARY_PROVIDER: ${{ vars.STAGING_CANARY_PROVIDER }}
+          STAGING_CANARY_MODEL: ${{ vars.STAGING_CANARY_MODEL }}
+          STAGING_CANARY_PROVIDER_API_KEY: ${{ secrets.STAGING_CANARY_PROVIDER_API_KEY }}
+          STAGING_CANARY_STRIPE_SECRET_KEY: ${{ secrets.STAGING_CANARY_STRIPE_SECRET_KEY }}
+          STAGING_CANARY_STRIPE_WEBHOOK_SECRET: ${{ secrets.STAGING_CANARY_STRIPE_WEBHOOK_SECRET }}
+          STAGING_BILLING_RECOVERY_SECRET: ${{ secrets.STAGING_BILLING_RECOVERY_SECRET }}
+          STAGING_CANARY_RECOVERY_ENTRY_ID: ${{ vars.STAGING_CANARY_RECOVERY_ENTRY_ID }}
+        run: node scripts/ci/staging-canary.mjs

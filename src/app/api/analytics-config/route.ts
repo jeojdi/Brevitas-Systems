@@ -11,7 +11,7 @@ export function GET() {
 
   return Response.json(payload, {
     headers: {
-      "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+      "Cache-Control": "private, no-store, max-age=0, must-revalidate",
       "X-Content-Type-Options": "nosniff",
     },
   });

@@ -57,6 +57,16 @@ MODELS = {
 }
 
 
+def _close_client(client):
+    """Close an SDK client without surfacing credential-bearing close errors."""
+    try:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
+
+
 def call_openai_style(client, model, messages):
     r = client.chat.completions.create(model=model, messages=messages,
                                        max_tokens=300, temperature=0)
@@ -69,19 +79,9 @@ def call_anthropic(client, model, system, messages):
     return "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
 
 
-def run_provider(prov, arm, nonce, chunks):
-    print(f"--- {prov} ({MODELS[prov]}) arm={arm}", flush=True)
+def _run_provider_with_client(prov, arm, nonce, chunks, client, history):
     if prov == "anthropic":
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"],
-                                     base_url=f"http://127.0.0.1:{PORT}", max_retries=2)
-        history = []          # anthropic: system passed separately
-    else:
-        import openai
-        key = os.environ["OPENAI_API_KEY"] if prov == "openai" else os.environ["Deepseek_api_key"]
-        client = openai.OpenAI(api_key=key, base_url=f"http://127.0.0.1:{PORT}/openai/v1",
-                               max_retries=2)
-        history = [{"role": "system", "content": SYSTEM}]
+        history = []  # anthropic: system passed separately
 
     def ask(text):
         history.append({"role": "user", "content": text})
@@ -109,6 +109,29 @@ def run_provider(prov, arm, nonce, chunks):
         ask(q1)
         ask(q2)
         print(f"  cycle {i + 1}/5 done", flush=True)
+
+
+def run_provider(prov, arm, nonce, chunks, client=None):
+    """Run one provider, closing only a client constructed by this function."""
+    print(f"--- {prov} ({MODELS[prov]}) arm={arm}", flush=True)
+    owned = client is None
+    if client is None and prov == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"],
+                                     base_url=f"http://127.0.0.1:{PORT}", max_retries=2)
+    elif client is None:
+        import openai
+        key = (os.environ["OPENAI_API_KEY"] if prov == "openai"
+               else os.environ["Deepseek_api_key"])
+        client = openai.OpenAI(
+            api_key=key, base_url=f"http://127.0.0.1:{PORT}/openai/v1", max_retries=2
+        )
+    history = [] if prov == "anthropic" else [{"role": "system", "content": SYSTEM}]
+    try:
+        return _run_provider_with_client(prov, arm, nonce, chunks, client, history)
+    finally:
+        if owned:
+            _close_client(client)
 
 
 def main():

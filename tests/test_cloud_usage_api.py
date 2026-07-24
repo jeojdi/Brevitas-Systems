@@ -7,10 +7,12 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from api.auth import hash_key
 from api.store import UsageStore
+from brevitas.security import EnvelopeCipher, LocalTestKMS
 
 BEARER = "Bearer"
 
@@ -49,7 +51,18 @@ def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):
     import api.server as server
 
     store = UsageStore(str(tmp_path / "device.db"))
+    kms = LocalTestKMS(b"d" * 32, environ={"BREVITAS_ENV": "test"})
     monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setattr(
+        server,
+        "_credential_cipher",
+        EnvelopeCipher(
+            kms,
+            key_id="device-login-test-key",
+            key_version="1",
+            wrap_algorithm=kms.algorithm,
+        ),
+    )
     client = TestClient(server.app)
 
     started = client.post("/v1/device-auth/start")
@@ -65,13 +78,41 @@ def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_dashboard_user", lambda request: "user-device")
     assert client.post("/v1/device-auth/approve", json={"device_code": device_code}).status_code == 200
     assert client.post("/v1/device-auth/approve", json={"device_code": device_code}).status_code == 200
+    exchange_expires_at = store.get_device_request(hash_key(device_code))["expires_at"]
 
-    token = client.post("/v1/device-auth/token", json={"device_code": device_code})
+    token = client.post(
+        "/v1/device-auth/token",
+        json={"device_code": device_code},
+        headers={"X-Request-ID": "device-token-first-request"},
+    )
     assert token.status_code == 200
     api_key = token.json()["api_key"]
     assert api_key.startswith("bvt_")
     assert store.key_owner(hash_key(api_key)) == "user-device"
-    assert client.post("/v1/device-auth/token", json={"device_code": device_code}).status_code == 410
+    imported = client.post("/v1/customers/import", headers={"X-Brevitas-Key": api_key}, json={
+        "customers": [{"external_id": "legacy-device-import-001"}],
+    })
+    assert imported.status_code == 200
+    assert imported.json()["count"] == 1
+    replay = client.post(
+        "/v1/device-auth/token",
+        json={"device_code": device_code},
+        headers={"X-Request-ID": "device-token-replay-request"},
+    )
+    assert replay.status_code == 200
+    assert replay.json() == {"api_key": api_key}
+    assert replay.headers["cache-control"] == "no-store"
+    with store._conn() as db:
+        receipt = db.execute(
+            "SELECT request_id,encrypted_key,expires_at "
+            "FROM bvx_device_consumption_receipts WHERE device_hash=?",
+            (hash_key(device_code),),
+        ).fetchone()
+    assert token.headers["x-request-id"] != replay.headers["x-request-id"]
+    assert receipt["request_id"] == token.headers["x-request-id"]
+    assert receipt["encrypted_key"]
+    assert receipt["expires_at"] == exchange_expires_at
+    assert datetime.fromisoformat(receipt["expires_at"]) > datetime.now(timezone.utc)
 
     expired = "expired_" + "x" * 40
     store.create_device_request(hash_key(expired),
@@ -79,7 +120,78 @@ def test_bvx_device_login_mints_one_time_account_key(tmp_path, monkeypatch):
     assert client.post("/v1/device-auth/token", json={"device_code": expired}).status_code == 410
 
 
-def test_api_keys_create_list_and_revoke_for_account_and_legacy_keys(tmp_path, monkeypatch):
+@pytest.mark.parametrize("invalidation", ["revoked_key", "disabled_member"])
+def test_bvx_device_replay_fails_closed_after_authorization_is_revoked(
+        tmp_path, monkeypatch, invalidation):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / f"device-replay-{invalidation}.db"))
+    owner_id = f"device-owner-{invalidation}"
+    organization_id = store.ensure_organization(owner_id)["id"]
+    with store._conn() as db:
+        db.execute(
+            "ALTER TABLE organization_members "
+            "ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+        )
+    device_code = ("r" if invalidation == "revoked_key" else "d") * 48
+    device_hash = hash_key(device_code)
+    raw_key = f"bvt_device_{invalidation}"
+    store.create_device_request(
+        device_hash,
+        (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    )
+    assert store.approve_device_request(
+        device_hash, owner_id, hash_key(raw_key), "encrypted-device-key",
+        organization_id=organization_id,
+    )
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setattr(server, "_decrypt", lambda *_args, **_kwargs: raw_key)
+    client = TestClient(server.app)
+
+    first = client.post(
+        "/v1/device-auth/token", json={"device_code": device_code},
+        headers={"X-Request-ID": f"device-first-{invalidation}"},
+    )
+    assert first.status_code == 200
+    assert first.json() == {"api_key": raw_key}
+
+    with store._conn() as db:
+        if invalidation == "revoked_key":
+            db.execute(
+                "UPDATE api_keys SET revoked_at=? WHERE key_hash=?",
+                (datetime.now(timezone.utc).isoformat(), hash_key(raw_key)),
+            )
+        else:
+            db.execute(
+                "UPDATE organization_members SET status='disabled' "
+                "WHERE organization_id=? AND user_id=?",
+                (organization_id, owner_id),
+            )
+
+    replay = client.post(
+        "/v1/device-auth/token", json={"device_code": device_code},
+        headers={"X-Request-ID": f"device-replay-{invalidation}"},
+    )
+    assert replay.status_code == 503
+    assert replay.headers["retry-after"] == "1"
+    assert replay.json() == {"detail": "Device authorization unavailable"}
+    assert raw_key not in replay.text
+    assert store.get_device_request(device_hash) is None
+    with store._conn() as db:
+        receipt = db.execute(
+            "SELECT encrypted_key,quarantined_at FROM bvx_device_consumption_receipts "
+            "WHERE device_hash=?", (device_hash,),
+        ).fetchone()
+        denied = db.execute(
+            "SELECT action,outcome FROM audit_events "
+            "WHERE request_id=? ORDER BY id DESC LIMIT 1",
+            (replay.headers["x-request-id"],),
+        ).fetchone()
+    assert receipt["encrypted_key"] == "" and receipt["quarantined_at"]
+    assert tuple(denied) == ("device_key.consume.denied", "denied")
+
+
+def test_api_keys_are_managed_only_by_human_sessions(tmp_path, monkeypatch):
     import api.server as server
 
     store = UsageStore(str(tmp_path / "keys.db"))
@@ -87,28 +199,22 @@ def test_api_keys_create_list_and_revoke_for_account_and_legacy_keys(tmp_path, m
     server._valid_key_cache.clear()
     client = TestClient(server.app)
 
-    monkeypatch.setattr(server, "_dashboard_user", lambda request: "user-1")
-    account_key = client.post("/v1/keys", json={"name": "dashboard"})
+    monkeypatch.setattr(server, "_dashboard_user", lambda request:
+                        "user-1" if request.headers.get("authorization") == "Bearer session" else "")
+    account_key = client.post("/v1/keys", headers={"Authorization": "Bearer session"},
+                              json={"name": "company backend"})
     assert account_key.status_code == 200
     raw_account_key = account_key.json()["api_key"]
 
-    monkeypatch.setattr(server, "_dashboard_user", lambda request: "")
-    child = client.post("/v1/keys", headers={"X-Brevitas-Key": raw_account_key},
-                        json={"name": "project"})
-    assert child.status_code == 200
-    child_id = hash_key(child.json()["api_key"])
-    listed = client.get("/v1/keys", headers={"X-Brevitas-Key": raw_account_key})
-    assert child_id in {key["id"] for key in listed.json()["keys"]}
-    assert client.delete(f"/v1/keys/{child_id}",
-                         headers={"X-Brevitas-Key": raw_account_key}).status_code == 200
-
-    legacy_key = "bvt_legacy"
-    store.create_key(hash_key(legacy_key), "legacy")
-    legacy_child = client.post("/v1/keys", headers={"X-Brevitas-Key": legacy_key},
-                               json={"name": "legacy-child"})
-    assert legacy_child.status_code == 200
-    assert client.get("/v1/stats", headers={
-        "X-Brevitas-Key": legacy_child.json()["api_key"]}).status_code == 200
+    assert client.post("/v1/keys", headers={"X-Brevitas-Key": raw_account_key},
+                       json={"name": "forbidden child"}).status_code == 401
+    listed = client.get("/v1/keys", headers={"Authorization": "Bearer session"})
+    fingerprint = hash_key(raw_account_key)[:16]
+    listed_key = next(key for key in listed.json()["keys"] if key["fingerprint"] == fingerprint)
+    key_id = listed_key["id"]
+    assert hash_key(raw_account_key) not in str(listed.json())
+    assert client.delete(f"/v1/keys/{key_id}",
+                         headers={"Authorization": "Bearer session"}).status_code == 200
     assert client.post("/v1/keys", json={"name": "anonymous"}).status_code == 401
 
 
@@ -202,10 +308,20 @@ def test_quality_stream_and_reset_are_scoped_to_end_customer(tmp_path, monkeypat
 
     store = UsageStore(str(tmp_path / "customer-quality.db"))
     raw_key = "bvt_shared_service"
-    store.create_key(hash_key(raw_key), "shared")
+    organization = store.ensure_organization("owner-1", "Shared service organization")
+    service = store.ensure_service_account(
+        organization["id"], "test", "owner-1")
+    store.create_key(
+        hash_key(raw_key), "shared", owner_id="owner-1",
+        organization_id=organization["id"], service_account_id=service["id"],
+        key_type="organization_service", environment="test",
+        scopes=["proxy:invoke", "usage:read_own", "customer:route",
+                "customer:auto_provision"],
+    )
     monkeypatch.setattr(server, "_store", store)
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
     server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
     server._seq_streams.clear()
     client = TestClient(server.app)
     headers_a = {"X-Brevitas-Key": raw_key, "X-Brevitas-Customer-Id": "customer-a"}
@@ -218,7 +334,7 @@ def test_quality_stream_and_reset_are_scoped_to_end_customer(tmp_path, monkeypat
     try:
         assert client.get("/v1/quality/stream", headers=headers_a).status_code == 200
         assert client.get("/v1/quality/stream", headers=headers_b).status_code == 200
-        assert set(server._seq_streams) == {key_a, key_b}
+        assert {key for key, _value in server._seq_streams.items()} == {key_a, key_b}
 
         assert client.post("/v1/quality/stream/reset", headers=headers_a).status_code == 200
         assert key_a not in server._seq_streams and key_b in server._seq_streams
@@ -273,10 +389,9 @@ def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeyp
         "quality_score": .72, "quality_verified": True,
     })
     assert paired.json()["quality_status"] == "verified"
-    assert paired.json()["verified_savings_usd"] > 0
-    assert paired.json()["brevitas_fee_usd"] == round(
-        paired.json()["verified_savings_usd"] * 0.25, 8
-    )
+    # Caller-reported telemetry can be analyzed but is never authoritative billing input.
+    assert paired.json()["verified_savings_usd"] == 0
+    assert paired.json()["brevitas_fee_usd"] == 0
 
     # A provider/local tokenizer mismatch with no transformation is zero
     # savings, not a fabricated win or loss.
@@ -301,6 +416,55 @@ def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeyp
     assert write.json()["measured_savings_usd"] == -0.0003
     assert write.json()["verified_savings_usd"] == 0
     assert write.json()["brevitas_fee_usd"] == 0
+
+
+def test_authoritative_billing_excludes_response_reuse_and_unknown_models(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "billing-quality-boundary.db"))
+    store.create_key(hash_key("bvt_billing_boundary"), "billing-boundary")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+
+    response_reuse = server._record_usage_report(
+        hash_key("bvt_billing_boundary"),
+        server.UsageReportRequest(
+            provider="openai", model="gpt-4o-mini",
+            baseline_tokens=100, compressed_tokens=0,
+            fresh_input_tokens=0, output_tokens=0,
+            baseline_output_tokens=20, strategy="exact_cache",
+            quality_verified=True, request_id="exact-cache",
+        ),
+        authoritative=True,
+    )
+    unknown_model = server._record_usage_report(
+        hash_key("bvt_billing_boundary"),
+        server.UsageReportRequest(
+            provider="openai", model="future-model-without-pricing",
+            baseline_tokens=100, compressed_tokens=80,
+            fresh_input_tokens=80, output_tokens=0,
+            strategy="native_cache", request_id="unknown-price",
+        ),
+        authoritative=True,
+    )
+    native_cache = server._record_usage_report(
+        hash_key("bvt_billing_boundary"),
+        server.UsageReportRequest(
+            provider="openai", model="gpt-4o-mini",
+            baseline_tokens=100, compressed_tokens=80,
+            fresh_input_tokens=80, output_tokens=0,
+            strategy="native_cache", request_id="native-cache",
+        ),
+        authoritative=True,
+    )
+
+    assert response_reuse["quality_status"] == "verified"
+    assert response_reuse["verified_savings_usd"] == 0
+    assert response_reuse["brevitas_fee_usd"] == 0
+    assert unknown_model["pricing_status"] == "unpriced"
+    assert unknown_model["verified_savings_usd"] == 0
+    assert native_cache["pricing_status"] == "priced"
+    assert native_cache["verified_savings_usd"] > 0
 
 
 def test_repo_client_model_breakdown_reconciles(tmp_path):
@@ -352,7 +516,9 @@ def test_admin_financial_report_is_filtered_paginated_and_protected(tmp_path, mo
     )
     assert response.status_code == 200
     report = response.json()
-    assert report["pagination"] == {"total": 1, "limit": 1, "offset": 0}
+    assert report["pagination"] == {
+        "total": 1, "limit": 1, "next_cursor": "", "has_more": False,
+    }
     assert report["rows"][0]["account_id"] == "user-a"
     assert report["rows"][0]["actual_cost_usd"] == .14
     assert report["totals"]["total_actual_cost_usd"] == .14

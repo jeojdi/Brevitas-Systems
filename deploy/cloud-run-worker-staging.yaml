@@ -1,0 +1,105 @@
+apiVersion: run.googleapis.com/v1
+kind: WorkerPool
+metadata:
+  name: brevitas-worker-staging
+  labels:
+    app: brevitas-worker
+    system: brevitas
+    environment: staging
+  annotations:
+    run.googleapis.com/scalingMode: "manual"
+    run.googleapis.com/manualInstanceCount: "1"
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/network-interfaces: >-
+          [{"network":"brevitas-staging-vpc","subnetwork":"brevitas-staging-run-us-west1","tags":["brevitas-staging-run"]}]
+        run.googleapis.com/vpc-access-egress: all-traffic
+        run.googleapis.com/secrets: "supabase-url:projects/975273324573/secrets/brevitas-staging-supabase-url,supabase-service-role:projects/975273324573/secrets/brevitas-staging-supabase-service-role-key,redis-url:projects/975273324573/secrets/brevitas-staging-redis-url,cursor-secret:projects/975273324573/secrets/brevitas-staging-company-admin-cursor-secret,invitee-pepper:projects/975273324573/secrets/brevitas-staging-company-admin-invitee-pepper,stripe-secret-key:projects/975273324573/secrets/brevitas-staging-stripe-secret-key,stripe-price-id:projects/975273324573/secrets/brevitas-staging-stripe-price-id"
+    spec:
+      serviceAccountName: brevitas-staging-runtime@divine-camera-465917-j7.iam.gserviceaccount.com
+      containers:
+        - name: worker
+          image: us-west1-docker.pkg.dev/divine-camera-465917-j7/brevitas-staging/api:REPLACE_WITH_COMMIT_SHA
+          command:
+            - python
+          args:
+            - -m
+            - api.worker
+          env:
+            - name: BREVITAS_ENV
+              value: staging
+            - name: BREVITAS_STORE
+              value: supabase
+            - name: BREVITAS_BUILD_SHA
+              value: REPLACE_WITH_COMMIT_SHA
+            - name: BREVITAS_KMS_REQUIRED
+              value: "true"
+            - name: BREVITAS_KMS_PROVIDER
+              value: google-cloud-kms
+            - name: BREVITAS_KMS_KEY_ID
+              value: projects/divine-camera-465917-j7/locations/global/keyRings/brevitas-staging/cryptoKeys/credential-envelope
+            - name: BREVITAS_KMS_KEY_VERSION
+              value: "1"
+            - name: BREVITAS_KMS_ALGORITHM
+              value: GOOGLE_SYMMETRIC_ENCRYPTION
+            - name: BREVITAS_KMS_ADAPTER_FACTORY
+              value: brevitas.security.google_cloud_kms:create_adapter
+            - name: BREVITAS_KMS_ADAPTER_TRUSTED_MODULES
+              value: brevitas.security.google_cloud_kms
+            - name: BREVITAS_GCP_KMS_TIMEOUT_SECONDS
+              value: "0.75"
+            - name: BREVITAS_KMS_READINESS_TIMEOUT_SECONDS
+              value: "1"
+            - name: BREVITAS_KMS_READINESS_MAX_AGE_SECONDS
+              value: "30"
+            - name: BREVITAS_WORKER_BILLING_ROLE
+              value: nonbilling
+            - name: BREVITAS_BILLING_ENABLED
+              value: "false"
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: stripe-secret-key
+            - name: STRIPE_PRICE_ID
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: stripe-price-id
+            - name: STRIPE_METER_EVENT_NAME
+              value: brevitas_fee_microusd
+            - name: BREVITAS_BILLING_WEEKLY_CAP_USD
+              value: "100"
+            - name: BREVITAS_STRIPE_METER_EXCLUSIVE_WRITER
+              value: "false"
+            - name: SUPABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: supabase-url
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: supabase-service-role
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  key: "3"
+                  name: redis-url
+            - name: COMPANY_ADMIN_CURSOR_SECRET
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: cursor-secret
+            - name: COMPANY_ADMIN_INVITEE_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  key: "1"
+                  name: invitee-pepper
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi

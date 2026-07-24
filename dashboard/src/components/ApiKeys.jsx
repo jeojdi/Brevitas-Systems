@@ -24,7 +24,7 @@ const ENDPOINTS = [
   ['GET',  '/v1/health',   'server health check'],
 ]
 
-export default function ApiKeys({ apiKey, onApiKeyChange }) {
+export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
   const [keys, setKeys]       = useState([])
   const [name, setName]       = useState('')
   const [newKey, setNewKey]   = useState('')
@@ -34,12 +34,12 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
   const [activeId, setActiveId] = useState(null)
   const requestId = useRef(0)
 
-  const loadKeys = async (key = apiKey) => {
+  const loadKeys = async () => {
     const id = ++requestId.current
     setLoading(true)
     setError('')
     try {
-      const data = await fetchKeys(key)
+      const data = await fetchKeys(accessToken)
       if (id === requestId.current) setKeys(data.keys ?? [])
     } catch (e) {
       if (id === requestId.current) setError(e.message)
@@ -48,7 +48,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
     }
   }
 
-  useEffect(() => { loadKeys() }, [apiKey])
+  useEffect(() => { loadKeys() }, [accessToken])
   useEffect(() => {
     let active = true
     setActiveId(null)
@@ -60,12 +60,11 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
     if (creating) return
     setCreating(true); setError(''); setNewKey('')
     try {
-      const data = await createKey(apiKey, name.trim() || 'unnamed')
+      const data = await createKey(accessToken, name.trim() || 'unnamed')
       setNewKey(data.api_key)
       setName('')
       capture('api_key_created')
-      await onApiKeyChange?.(data.api_key)
-      await loadKeys(data.api_key)
+      await loadKeys()
     } catch (e) {
       setError(e.message)
     } finally {
@@ -78,7 +77,7 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
     if (!window.confirm('Revoke this API key? Calls using it will stop within 30 seconds.')) return
     setError('')
     try {
-      await revokeKey(apiKey, id)
+      await revokeKey(accessToken, id)
       capture('api_key_revoked')
       await loadKeys()
     } catch (e) {
@@ -159,10 +158,10 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
                 </div>
                 <button
                   onClick={() => revoke(k.id)}
-                  disabled={!activeId || k.id === activeId}
+                  disabled={!activeId || activeId.startsWith(k.fingerprint || '')}
                   className="font-mono text-[10px] uppercase tracking-widest text-red-500 hover:underline disabled:text-brand-muted disabled:no-underline"
                 >
-                  {k.id === activeId ? 'Active' : 'Revoke'}
+                  {activeId?.startsWith(k.fingerprint || '') ? 'Active' : 'Revoke'}
                 </button>
               </div>
             ))}
@@ -170,15 +169,14 @@ export default function ApiKeys({ apiKey, onApiKeyChange }) {
         )}
       </div>
 
-      {/* ── Active session key ── */}
+      {/* ── Active session credential ── */}
       <div className="space-y-3">
         <div className="flex items-center gap-4">
-          <p className="annotation tracking-widest uppercase shrink-0">Active Key</p>
+          <p className="annotation tracking-widest uppercase shrink-0">Active Session</p>
           <div className="flex-1 h-px bg-brand-border dark:bg-brand-dark-border" />
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl px-5 py-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          <code className="flex-1 text-xs font-mono text-brand-muted dark:text-brand-dark-muted truncate">{apiKey}</code>
-          <CopyButton text={apiKey} small />
+          <code className="flex-1 text-xs font-mono text-brand-muted dark:text-brand-dark-muted truncate">credential held in memory only</code>
         </div>
       </div>
 

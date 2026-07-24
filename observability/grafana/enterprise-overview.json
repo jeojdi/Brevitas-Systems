@@ -1,0 +1,74 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "External API availability (30d)",
+      "type": "stat",
+      "targets": [{"refId": "A", "expr": "1 - (sum(increase(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\",outcome=\"server_error\"}[30d])) / clamp_min(sum(increase(brevitas_api_requests_total{surface=\"external\",sla_eligible=\"true\"}[30d])), 1))"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.999}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "External API p95 latency",
+      "type": "timeseries",
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(brevitas_api_request_duration_seconds_bucket{surface=\"external\"}[5m])))"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 9, "x": 6, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "Provider outcomes",
+      "type": "timeseries",
+      "targets": [{"refId": "A", "expr": "sum by (provider, outcome) (rate(brevitas_provider_requests_total[5m]))", "legendFormat": "{{provider}} {{outcome}}"}],
+      "gridPos": {"h": 8, "w": 9, "x": 15, "y": 0}
+    },
+    {
+      "id": 4,
+      "title": "Durable job states",
+      "type": "timeseries",
+      "targets": [{"refId": "A", "expr": "sum by (status) (rate(brevitas_jobs_total[5m]))", "legendFormat": "{{status}}"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8}
+    },
+    {
+      "id": 5,
+      "title": "Queue lag",
+      "type": "timeseries",
+      "targets": [{"refId": "A", "expr": "max by (queue) (brevitas_queue_lag_seconds)", "legendFormat": "{{queue}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8}
+    },
+    {
+      "id": 6,
+      "title": "Billing recovery risk",
+      "type": "timeseries",
+      "targets": [
+        {"refId": "A", "expr": "max(brevitas_billing_review)", "legendFormat": "review"},
+        {"refId": "B", "expr": "max(brevitas_billing_dead)", "legendFormat": "dead"},
+        {"refId": "C", "expr": "max(brevitas_billing_stale)", "legendFormat": "stale"},
+        {"refId": "D", "expr": "min(brevitas_billing_catalog_contract)", "legendFormat": "all replica catalog contracts valid"}
+      ],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8}
+    },
+    {
+      "id": 7,
+      "title": "Dependency failures",
+      "type": "timeseries",
+      "targets": [{"refId": "A", "expr": "sum by (dependency) (rate(brevitas_dependency_operations_total{outcome!=\"success\"}[5m]))", "legendFormat": "{{dependency}}"}],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["brevitas", "enterprise", "slo"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "utc",
+  "title": "Brevitas Enterprise Overview",
+  "uid": "brevitas-enterprise-overview",
+  "version": 1
+}

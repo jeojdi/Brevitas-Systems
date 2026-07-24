@@ -1,0 +1,2 @@
+# Scanner tooling is isolated from application dependencies and fully hashed.
+pip-audit==2.9.0

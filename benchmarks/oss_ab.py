@@ -40,6 +40,7 @@ sys.path.insert(0, str(REPO))
 
 from token_efficiency_model.lossless.dropin import BrevitasDropIn  # noqa: E402
 from token_efficiency_model.lossless.provider_cache import savings_from_usage  # noqa: E402
+from brevitas.resource_bounds import safe_close_resource  # noqa: E402
 
 
 def _load_env():
@@ -138,9 +139,8 @@ def _usage_cost(usage, cfg) -> tuple[float, int, int]:
     return usd, prompt, cached
 
 
-def run(prov, workload, optimized, key, trial: int) -> dict:
+def _run_with_client(prov, workload, optimized, client, trial: int = 1) -> dict:
     cfg = PROVIDERS[prov]
-    client = _mk_client(prov, optimized, key)
     if workload == "marketing":
         brief, agents, sysprefix = MARKETING_BRIEF, MARKETING_AGENTS, None
     else:
@@ -189,6 +189,14 @@ def run(prov, workload, optimized, key, trial: int) -> dict:
 
     return {"usd": total_usd, "prompt_tokens": total_prompt, "cached_tokens": total_cached,
             "transcript": transcript}
+
+
+def run(prov, workload, optimized, key: str = "", trial: int = 1) -> dict:
+    client = _mk_client(prov, optimized, key)
+    try:
+        return _run_with_client(prov, workload, optimized, client, trial)
+    finally:
+        safe_close_resource(client)
 
 
 def main() -> int:

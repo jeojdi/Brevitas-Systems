@@ -83,9 +83,9 @@ client.messages.create(..., _brevitas_meta={"agent": "editor"})  # per-call over
 - Recent runs table (run_id, pipeline, started, savings %, $) → click a run for its calls.
 
 **C2. Billing tab (`dashboard/src/components/Billing.jsx`).**
-- Monthly invoice preview: line items grouped by pipeline (then agent), each showing verified savings $ and the 25% fee, plus invoice total. Pulls `/v1/stats/pipelines` + `billing_by_month`.
+- Weekly invoice preview: line items grouped by pipeline (then agent), each showing verified savings $ and the 25% fee, plus invoice total. Pulls `/v1/stats/pipelines` + `billing_by_week`.
 
-**Acceptance C:** dashboard shows savings broken down by pipeline and agent; invoice preview line items sum to the monthly fee total.
+**Acceptance C:** dashboard shows savings broken down by pipeline and agent; invoice preview line items sum to the weekly fee total.
 
 ---
 

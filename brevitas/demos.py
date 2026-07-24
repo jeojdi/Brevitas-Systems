@@ -13,8 +13,8 @@ baseline. Numbers are always the REAL DeepSeek-reported usage — nothing is fab
 
 from __future__ import annotations
 
-import copy, json, os, tempfile
-from dataclasses import dataclass, field
+import atexit, copy, json, os, tempfile
+from dataclasses import dataclass, field, replace
 from typing import Dict, List
 
 import urllib.request
@@ -22,7 +22,19 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .chat import read_document, _load_key, _base_url
+from .resource_bounds import (
+    BoundedTTLMap,
+    ResourceBounds,
+    ResourceLimitExceeded,
+    extend_bounded_list,
+    require_size,
+    serialized_size_bytes,
+    safe_close_resource,
+    utf8_size,
+)
 from .webchat import _CODE_EXT
+
+_BOUNDS = ResourceBounds.from_env()
 
 # --------------------------------------------------------------------------- #
 # shared brand theme (mirrors public/theme.css)
@@ -112,7 +124,7 @@ def _agent_base():
 
 
 def _readfile(name, edit=False):
-    txt = open(_agent_base() + name).read()
+    txt = read_document(_agent_base() + name, max_bytes=_BOUNDS.demo_document_max_bytes)
     if edit:
         txt = txt.replace("# cache_only / passthrough",
                           "# cache_only / passthrough (fail-safe order: retrieve -> compress -> cache)")
@@ -133,15 +145,33 @@ def run_agent_session(provider, key, model):
         return d["choices"][0]["message"]["content"], d.get("usage", {})
 
     client = BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider))
+    try:
+        yield from _agent_session_records(
+            client, provider, model, call_raw, savings_from_usage
+        )
+    finally:
+        safe_close_resource(client)
+
+
+def _agent_session_records(client, provider, model, call_raw, savings_from_usage):
     context = [{"role": "system", "content": _AGENT_SYSTEM}]
     t_raw_in = t_brev_in = 0
     t_raw_cost = t_brev_cost = 0.0
     for i, (q, files) in enumerate(_AGENT_TURNS, 1):
         opened = []
         for name, edited in files:
-            context.append({"role": "user", "content": _readfile(name, edited)})
+            extend_bounded_list(
+                context,
+                [{"role": "user", "content": _readfile(name, edited)}],
+                max_items=_BOUNDS.demo_history_max_items,
+                max_bytes=_BOUNDS.demo_history_max_bytes,
+            )
             opened.append(name + (" (edited)" if edited else ""))
-        context.append({"role": "user", "content": q})
+        extend_bounded_list(
+            context, [{"role": "user", "content": q}],
+            max_items=_BOUNDS.demo_history_max_items,
+            max_bytes=_BOUNDS.demo_history_max_bytes,
+        )
 
         raw_ans, raw_usage = call_raw(context)
         raw_s = savings_from_usage(raw_usage, provider)
@@ -152,7 +182,11 @@ def run_agent_session(provider, key, model):
         brev_in = int(getattr(brev_resp.usage, "prompt_tokens", 0) or 0)
         brev_ans = brev_resp.choices[0].message.content
         strat = (sav.cache_placement or {}).get("strategy", "cache_only")
-        context.append({"role": "assistant", "content": raw_ans})
+        extend_bounded_list(
+            context, [{"role": "assistant", "content": raw_ans}],
+            max_items=_BOUNDS.demo_history_max_items,
+            max_bytes=_BOUNDS.demo_history_max_bytes,
+        )
 
         t_raw_in += raw_in; t_brev_in += brev_in
         t_raw_cost += raw_s.actual_cost; t_brev_cost += sav.actual_cost
@@ -184,7 +218,33 @@ class _Doc:
     on_cost: float = 0.0
 
 
-_DOCS: Dict[str, _Doc] = {}
+def _doc_session_size(value: _Doc) -> int:
+    return (utf8_size(value.doc) + serialized_size_bytes(value.off_hist)
+            + serialized_size_bytes(value.on_hist) + 2048)
+
+
+def _copy_doc_session(value: _Doc) -> _Doc:
+    return replace(value, off_hist=list(value.off_hist), on_hist=list(value.on_hist))
+
+
+def _close_doc_session(value: _Doc) -> None:
+    if value.client is not None:
+        safe_close_resource(value.client)
+
+
+_DOCS: BoundedTTLMap[str, _Doc] = BoundedTTLMap(
+    ttl_s=_BOUNDS.demo_session_ttl_s,
+    max_entries=_BOUNDS.demo_max_sessions,
+    max_value_bytes=_BOUNDS.demo_max_session_bytes,
+    max_total_bytes=min(256 * 1024 * 1024,
+                        _BOUNDS.demo_max_sessions * _BOUNDS.demo_max_session_bytes),
+    sizer=_doc_session_size,
+    copier=_copy_doc_session,
+    snapshotter=_copy_doc_session,
+    on_remove=_close_doc_session,
+    resource_key=lambda value: value.client if value.client is not None else value,
+)
+atexit.register(_DOCS.clear)
 _INSTRUCTION = ("You are a senior engineer. Answer using the provided document as the source of "
                 "truth. If it isn't covered, say so.")
 
@@ -204,6 +264,7 @@ def create_textbook_app(provider="deepseek", api_key=""):
     from token_efficiency_model.lossless.provider_cache import count_tokens
 
     app = FastAPI(title="Brevitas · Document demo", docs_url=None, redoc_url=None)
+    app.router.on_shutdown.append(_DOCS.clear)
     key = _load_key(provider, api_key)
     model = {"deepseek": "deepseek-chat", "openai": "gpt-4o-mini"}.get(provider, "gpt-4o-mini")
 
@@ -213,35 +274,60 @@ def create_textbook_app(provider="deepseek", api_key=""):
 
     @app.post("/api/upload")
     async def upload(files: List[UploadFile] = File(...), session: str = Form("default")):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        if len(files) > _BOUNDS.request_max_items:
+            return JSONResponse({"error": "Too many uploaded files."}, status_code=413)
         parts, names = [], []
+        document_bytes = 0
         for f in files:
-            raw = await f.read()
+            raw = await f.read(_BOUNDS.demo_document_max_bytes + 1)
+            if len(raw) > _BOUNDS.demo_document_max_bytes:
+                return JSONResponse({"error": "Uploaded document is too large."}, status_code=413)
             ext = os.path.splitext(f.filename or "")[1].lower()
             if ext == ".pdf":
                 with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
                     tmp.write(raw); p = tmp.name
                 try:
-                    txt = read_document(p)
+                    try:
+                        txt = read_document(p, max_bytes=_BOUNDS.demo_document_max_bytes)
+                    except ResourceLimitExceeded as exc:
+                        return JSONResponse({"error": str(exc)}, status_code=413)
                 finally:
                     os.unlink(p)
             elif ext in _CODE_EXT or not ext:
                 txt = raw.decode("utf-8", "ignore")
             else:
                 continue
-            parts.append(f"// FILE: {f.filename}\n{txt}"); names.append(f.filename)
+            part = f"// FILE: {f.filename}\n{txt}"
+            document_bytes += utf8_size(part) + (2 if parts else 0)
+            if document_bytes > _BOUNDS.demo_document_max_bytes:
+                return JSONResponse({"error": "Combined document is too large."}, status_code=413)
+            parts.append(part); names.append(f.filename)
         if not parts:
             return JSONResponse({"error": "No readable PDF/text/code found."}, status_code=400)
         if not key:
             return JSONResponse({"error": f"No API key for {provider}."}, status_code=400)
         doc = "\n\n".join(parts)
-        _DOCS[session] = _Doc(doc=doc, tokens=count_tokens(doc),
-                              name=names[0] if len(names) == 1 else f"{len(names)} files",
-                              model=model,
-                              client=BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider)))
-        return {"name": _DOCS[session].name, "tokens": _DOCS[session].tokens}
+        value = _Doc(doc=doc, tokens=count_tokens(doc),
+                     name=names[0] if len(names) == 1 else f"{len(names)} files",
+                     model=model,
+                     client=BrevitasClient(provider=provider, api_key=key,
+                                           base_url=_base_url(provider)))
+        try:
+            _DOCS.put(session, value)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        return {"name": value.name, "tokens": value.tokens}
 
     @app.post("/api/sample")
     def sample(session: str = Form("default")):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
         if not key:
             return JSONResponse({"error": f"No API key for {provider}."}, status_code=400)
         # Default: the bundled, license-clean Algorithms Handbook (ships with the repo so the demo
@@ -249,18 +335,33 @@ def create_textbook_app(provider="deepseek", api_key=""):
         override = os.environ.get("BREV_SAMPLE_PDF")
         try:
             if override and os.path.exists(override):
-                txt, name = read_document(override), os.path.basename(override)
+                txt, name = read_document(
+                    override, max_bytes=_BOUNDS.demo_document_max_bytes
+                ), os.path.basename(override)
             else:
                 p = os.path.join(os.path.dirname(__file__), "samples", "algorithms_handbook.md")
-                txt, name = open(p, encoding="utf-8").read(), "Algorithms Handbook (sample)"
+                txt, name = read_document(
+                    p, max_bytes=_BOUNDS.demo_document_max_bytes
+                ), "Algorithms Handbook (sample)"
         except Exception as e:
             return JSONResponse({"error": f"sample load failed: {e}"}, status_code=500)
-        _DOCS[session] = _Doc(doc=txt, tokens=count_tokens(txt), name=name, model=model,
-                              client=BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider)))
-        return {"name": _DOCS[session].name, "tokens": _DOCS[session].tokens}
+        value = _Doc(doc=txt, tokens=count_tokens(txt), name=name, model=model,
+                     client=BrevitasClient(provider=provider, api_key=key,
+                                           base_url=_base_url(provider)))
+        try:
+            _DOCS.put(session, value)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        return {"name": value.name, "tokens": value.tokens}
 
     @app.post("/api/ask")
     async def ask(question: str = Form(...), session: str = Form("default")):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+            require_size(question, _BOUNDS.session_max_item_bytes,
+                         name="question", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
         s = _DOCS.get(session)
         if not s or not s.doc:
             return JSONResponse({"error": "Load a document first."}, status_code=400)
@@ -275,9 +376,33 @@ def create_textbook_app(provider="deepseek", api_key=""):
             retr = sav.retrieval_optimized_tokens if sav.retrieval_applied else None
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
-        s.off_hist += [{"role": "user", "content": question}, {"role": "assistant", "content": off_ans}]
-        s.on_hist += [{"role": "user", "content": question}, {"role": "assistant", "content": on_ans}]
-        s.off_in += off_in; s.on_in += on_in; s.off_cost += off_act; s.on_cost += sav.actual_cost
+        def update(current: _Doc) -> None:
+            extend_bounded_list(
+                current.off_hist,
+                [{"role": "user", "content": question},
+                 {"role": "assistant", "content": off_ans}],
+                max_items=_BOUNDS.demo_history_max_items,
+                max_bytes=_BOUNDS.demo_history_max_bytes,
+            )
+            extend_bounded_list(
+                current.on_hist,
+                [{"role": "user", "content": question},
+                 {"role": "assistant", "content": on_ans}],
+                max_items=_BOUNDS.demo_history_max_items,
+                max_bytes=_BOUNDS.demo_history_max_bytes,
+            )
+            current.off_in += off_in
+            current.on_in += on_in
+            current.off_cost += off_act
+            current.on_cost += sav.actual_cost
+
+        try:
+            updated = _DOCS.mutate(session, update)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        if updated is None:
+            return JSONResponse({"error": "Session expired; upload again."}, status_code=410)
+        s = updated
         return {"off": {"answer": off_ans, "in": off_in, "cached": off_cached},
                 "on": {"answer": on_ans, "in": on_in, "strategy": strat, "retr": retr},
                 "turn_drop": round(100 * (1 - on_in / off_in), 1) if off_in else 0,
@@ -285,6 +410,14 @@ def create_textbook_app(provider="deepseek", api_key=""):
                         "tok_drop": round(100 * (1 - s.on_in / s.off_in), 1) if s.off_in else 0,
                         "cost_drop": round(100 * (1 - s.on_cost / s.off_cost), 1) if s.off_cost else 0,
                         "turns": len(s.on_hist) // 2}}
+
+    @app.delete("/api/session")
+    def delete_session(session: str = "default"):
+        try:
+            require_size(session, 256, name="session id", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+        return {"deleted": _DOCS.discard(session)}
 
     return app
 

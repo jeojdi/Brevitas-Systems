@@ -73,7 +73,7 @@ const PARTS = [
 ]
 
 const COMMANDS = [
-  ['bvx install',   'Configure AI coding tools (install ai) or a codebase (install <repo>)'],
+  ['bvx install',   'Configure AI coding tools (install ai) or choose a codebase (install repo)'],
   ['bvx uninstall', 'Restore all tool configs and remove the background service'],
   ['bvx status',    'Show proxy, service, and provider status'],
   ['bvx stats',     'Show input reduction, cache discounts, and avoided calls separately'],
@@ -84,12 +84,15 @@ const COMMANDS = [
   ['bvx logs',      'Print (or follow, with -f) the proxy logs'],
   ['bvx config',    'Print or edit Brevitas configuration'],
   ['bvx login / logout', 'Connect through the dashboard / remove the stored key'],
-  ['bvx update',    'Check for and upgrade the brevitas-systems package'],
+  ['bvx onboard',   'Scan a company backend and import existing customers safely'],
+  ['bvx serve / optimizer', 'Run the proxy or optimization adapter in the foreground'],
+  ['bvx update',    'Check for BVX and optimization-engine updates'],
   ['bvx version',   'Print version information'],
 ]
 
 const TROUBLESHOOTING = [
   ['bvx: command not found (Windows)', 'Open a new terminal; PATH updates only apply to shells started after install.'],
+  ['GitHub API rate limit (Windows)', 'Download and run the current install command again. The current installer resolves releases without GitHub’s rate-limited REST API and does not require a GitHub token.'],
   ['A tool still hits the provider directly', 'Run bvx status to confirm it was configured, then bvx repair to re-apply.'],
   ["Optimizer won't start", 'Make sure Python 3.13+ is installed and on your PATH, then run bvx update followed by bvx doctor.'],
   ['Anything else', 'bvx doctor inspects the whole installation and points at the specific problem.'],
@@ -186,7 +189,7 @@ export default function Docs() {
         </Section>
 
         <Section id="install" title="Install">
-          <p className="annotation mt-1 mb-1">// macOS / Linux (Homebrew)</p>
+          <p className="annotation mt-1 mb-1">// macOS (Homebrew)</p>
           <CodeBlock lang="bash" code={`brew tap Brevitas-ai/brevitas
 brew install bvx`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">Or as a single command:</p>
@@ -196,6 +199,12 @@ brew install bvx`} />
           </p>
           <CodeBlock lang="bash" code={`brew install --HEAD Brevitas-ai/brevitas/bvx`} />
 
+          <p className="annotation mt-4 mb-1">// Linux (Homebrew)</p>
+          <CodeBlock lang="bash" code={`brew install Brevitas-ai/brevitas/bvx`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            The released Homebrew formula includes Linux x86-64 and ARM64 binaries and installs Python 3.13 as a dependency.
+          </p>
+
           <p className="annotation mt-4 mb-1">// Windows (PowerShell)</p>
           <CodeBlock lang="powershell" code={`irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
@@ -204,7 +213,7 @@ brew install bvx`} />
             the release <code className="font-mono text-brand-blue text-xs">checksums.txt</code>, installs it to{' '}
             <code className="font-mono text-brand-blue text-xs">%LOCALAPPDATA%\Programs\bvx</code>, and adds that folder to
             your user PATH. Open a <span className="text-brand-navy dark:text-brand-dark-navy font-medium">new</span> terminal
-            afterward so the updated PATH takes effect. To pin a version, set{' '}
+            afterward so the updated PATH takes effect. It does not require a GitHub account or API token. To pin a version, set{' '}
             <code className="font-mono text-brand-blue text-xs">$env:BVX_VERSION</code> before running.
           </p>
 
@@ -249,14 +258,22 @@ Installing...
             <span className="text-brand-navy dark:text-brand-dark-navy font-medium">Wiring up a codebase instead.</span> To
             route every LLM call in a project through Brevitas (rather than configuring interactive tools):
           </p>
-          <CodeBlock lang="bash" code={`bvx install <repo>                 # scan + open the AI-call map
-bvx install <repo> --apply         # write a .env.agentmap you can source
-bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs`} />
+          <CodeBlock lang="bash" code={`bvx install repo                 # choose a codebase, scan, and open its AI-call map
+bvx install repo --apply         # also write a .env.agentmap you can source
+bvx install repo --apply --auto  # also rewrite hardcoded provider URLs`} />
         </Section>
 
         <Section id="verify" title="Verify it works">
           <CodeBlock lang="bash" code={`bvx status     # proxy, service, and provider status
 bvx doctor     # full diagnostics across the installation`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Require diagnostics to pass, then send one ordinary prompt from a tool BVX reported as configured. Prove that
+            request used the proxy by checking its local counters:
+          </p>
+          <CodeBlock lang="bash" code={`bvx stats      # “Requests proxied” must increase after the prompt`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Login success and a healthy service do not prove an AI tool is routed through BVX. The request counter does.
+          </p>
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
             If something looks off, re-apply config and restart the service:
           </p>
@@ -282,7 +299,7 @@ brew upgrade bvx
 # Windows — just re-run the installer; it fetches the latest release
 irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
           <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
-            Upgrade the optimization engine (<code className="font-mono text-brand-blue text-xs">brevitas-systems</code>):
+            Ask BVX to check both the CLI and compatible optimization engine:
           </p>
           <CodeBlock lang="bash" code={`bvx update`} />
         </Section>

@@ -10,6 +10,11 @@ function fmtK(n) {
   if (v >= 1_000) return (v / 1_000).toFixed(1) + 'k'
   return String(v)
 }
+function fmtDate(value) {
+  if (!value) return ''
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
+}
 
 function StatCard({ label, value, sub, accent = false }) {
   return (
@@ -109,11 +114,11 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
 
   const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
   const providerSpend  = Number(stats?.total_actual_cost_usd || 0)
-  const months         = stats?.billing_by_month || []
-  const thisMonth      = months[0] || null
+  const weeks          = stats?.billing_by_week || []
+  const thisWeek       = weeks[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
   const billingActive  = ['active', 'trialing'].includes(billing?.subscription_status)
-  const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'incomplete'].includes(billing?.subscription_status)
+  const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'paused', 'incomplete'].includes(billing?.subscription_status)
 
   return (
     <div className="space-y-10" data-ph-sensitive>
@@ -142,15 +147,17 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
             </div>
             <h3 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">25% of verified savings. Nothing else.</h3>
             <p className="text-sm text-brand-muted dark:text-brand-dark-muted mt-2 leading-relaxed">
-              Stripe hosts card collection and the billing portal; Brevitas never receives card details. Usage is floored to micro-dollars, deduplicated{billing?.monthly_safety_cap_usd ? `, and constrained by a $${fmt(billing.monthly_safety_cap_usd, 0)} monthly safety cap` : ''}.
+              Stripe hosts card collection and the billing portal; Brevitas never receives card details. Usage is floored to micro-dollars, deduplicated{billing?.weekly_safety_cap_usd ? `, and constrained by a $${fmt(billing.weekly_safety_cap_usd, 0)} weekly safety cap` : ''}. Stripe closes and bills each metered period every seven days.
             </p>
             {billing && (
               <div className="flex flex-wrap gap-x-8 gap-y-2 mt-4 font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">
-                <span>Current estimate <strong className="text-brand-navy dark:text-brand-dark-navy">${fmt(billing.estimated_fee_usd, 6)}</strong></span>
-                <span>Reported to Stripe <strong className="text-brand-navy dark:text-brand-dark-navy">${fmt(billing.reported_fee_usd, 6)}</strong></span>
+                <span>Current estimate <strong className="text-brand-navy dark:text-brand-dark-navy">{billing.period_tracking_valid ? `$${fmt(billing.estimated_fee_usd, 6)}` : 'Unavailable'}</strong></span>
+                <span>Reported to Stripe <strong className="text-brand-navy dark:text-brand-dark-navy">{billing.period_tracking_valid ? `$${fmt(billing.reported_fee_usd, 6)}` : 'Unavailable'}</strong></span>
+                {billing.period_tracking_valid && <span>Billing week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtDate(billing.current_period_start)} → {fmtDate(billing.current_period_end)}</strong></span>}
               </div>
             )}
             {billingError && <p className="font-mono text-xs text-red-500 mt-4">{billingError}</p>}
+            {billingActive && billing && !billing.period_tracking_valid && <p className="font-mono text-xs text-red-500 mt-4">Weekly billing totals are unavailable because Stripe period boundaries have not synchronized. Charging is fail-closed for these entries.</p>}
             {billing?.needs_review > 0 && <p className="font-mono text-xs text-amber-600 mt-4">A billing event is paused for manual review and will not be retried automatically.</p>}
           </div>
           <button
@@ -192,32 +199,32 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
         />
       </div>
 
-      {/* This month */}
-      {thisMonth && (
+      {/* This week */}
+      {thisWeek && (
         <div>
-          <p className="annotation tracking-widest uppercase mb-4">// this month — {thisMonth.month}</p>
+          <p className="annotation tracking-widest uppercase mb-4">// week of {thisWeek.week_start}</p>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Calls"         value={fmtK(thisMonth.calls)} />
-            <StatCard label="Input tokens avoided"  value={fmtK(thisMonth.provider_input_tokens_avoided)} />
-            <StatCard label="Provider spend" value={`$${fmt(thisMonth.actual_cost_usd, 4)}`} />
-            <StatCard label="Verified savings" value={`$${fmt(thisMonth.verified_savings_usd ?? thisMonth.cost_saved_usd, 4)}`} accent />
+            <StatCard label="Calls"         value={fmtK(thisWeek.calls)} />
+            <StatCard label="Input tokens avoided" value={fmtK(thisWeek.provider_input_tokens_avoided)} />
+            <StatCard label="Provider spend" value={`$${fmt(thisWeek.actual_cost_usd, 4)}`} />
+            <StatCard label="Verified savings" value={`$${fmt(thisWeek.verified_savings_usd ?? thisWeek.cost_saved_usd, 4)}`} accent />
           </div>
         </div>
       )}
 
-      {/* Monthly history table */}
-      {months.length > 1 && (
+      {/* Weekly history table */}
+      {weeks.length > 1 && (
         <div>
-          <p className="annotation tracking-widest uppercase mb-4">// monthly history</p>
+          <p className="annotation tracking-widest uppercase mb-4">// weekly usage history</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
             <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Month', 'Calls', 'Input avoided', 'Provider spend', 'Verified benefit'].map(h => (
+              {['Week of', 'Calls', 'Input avoided', 'Provider spend', 'Verified benefit'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
-            {months.map(m => (
-              <div key={m.month} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
-                <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.month}</span>
+            {weeks.map(m => (
+              <div key={m.week_start} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
+                <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.week_start}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.provider_input_tokens_avoided)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">${fmt(m.actual_cost_usd, 4)}</span>
@@ -229,7 +236,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
       )}
 
       {/* Empty state */}
-      {months.length === 0 && (
+      {weeks.length === 0 && (
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-10 sm:p-16 text-center">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-2">No usage yet.</p>
           <p className="annotation">// start compressing to see usage and savings here</p>

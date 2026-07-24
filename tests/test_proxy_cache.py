@@ -54,6 +54,8 @@ class _FakeAsyncClient:
 
 
 def test_repeated_request_hits_cache(monkeypatch):
+    monkeypatch.setenv("BREVITAS_CACHE_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_CACHE_LOCAL", "true")
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     # force a fresh cache singleton bound to the temp db
     proxy._cache_init_done = False
@@ -96,6 +98,8 @@ def test_repeated_request_hits_cache(monkeypatch):
 
 
 def test_high_temperature_not_cached(monkeypatch):
+    monkeypatch.setenv("BREVITAS_CACHE_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_CACHE_LOCAL", "true")
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     proxy._cache_init_done = False
     proxy._cache_singleton = None
@@ -127,7 +131,25 @@ def test_cache_key_includes_every_response_control(tmp_path):
                         "openai", "gpt-4o-mini") is None
 
 
+def test_cache_refuses_conversations_that_do_not_end_in_a_user_turn(tmp_path):
+    cache = SemanticCache(str(tmp_path / "assistant-tail.db"), semantic_enabled=True)
+    assistant_tail = {
+        "model": "gpt-4o-mini", "temperature": 0,
+        "messages": [
+            {"role": "user", "content": "prepare the account answer"},
+            {"role": "assistant", "content": "account A is overdue"},
+        ],
+    }
+    cache.store(assistant_tail, "openai", "gpt-4o-mini", {"answer": "A"},
+                prompt_tokens=10, completion_tokens=2)
+
+    assert cache.cacheable(assistant_tail) is False
+    assert cache.lookup(assistant_tail, "openai", "gpt-4o-mini") is None
+
+
 def test_hosted_cache_varies_by_provider_credential(monkeypatch):
+    monkeypatch.setenv("BREVITAS_CACHE_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_CACHE_LOCAL", "true")
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     proxy._cache_init_done = False
     proxy._cache_singleton = None
@@ -158,6 +180,8 @@ class _IncompleteClient(_FakeAsyncClient):
 
 
 def _fresh_client(monkeypatch, fake=_FakeAsyncClient):
+    monkeypatch.setenv("BREVITAS_CACHE_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_CACHE_LOCAL", "true")
     monkeypatch.setattr(httpx, "AsyncClient", fake)
     proxy._cache_init_done = False
     proxy._cache_singleton = None
@@ -208,6 +232,24 @@ def test_tripped_cache_lever_skips_hits(monkeypatch):
         assert _FakeAsyncClient.calls == 2, "tripped cache lever must not serve hits"
     finally:
         gate.reset_lever("cache")
+
+
+def test_cache_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("BREVITAS_CACHE_ENABLED", raising=False)
+    monkeypatch.delenv("BREVITAS_CACHE_LOCAL", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    proxy._cache_init_done = False
+    proxy._cache_singleton = None
+    _FakeAsyncClient.calls = 0
+    client = TestClient(proxy.proxy_app)
+    req = {"model": "gpt-4o-mini", "temperature": 0,
+           "messages": [{"role": "user", "content": "do not retain this"}]}
+
+    client.post("/v1/chat/completions", json=req,
+                headers={"authorization": "test-auth-default-off"})
+    client.post("/v1/chat/completions", json=req,
+                 headers={"authorization": "test-auth-default-off"})
+    assert _FakeAsyncClient.calls == 2
 
 
 if __name__ == "__main__":

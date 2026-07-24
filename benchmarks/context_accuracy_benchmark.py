@@ -49,8 +49,9 @@ from token_efficiency_model.combined_tactics.pipeline import TokenEfficientPipel
 from token_efficiency_model.common.metrics import estimate_tokens, estimate_tokens_many
 from token_efficiency_model.context_store import ContextStore
 from token_efficiency_model.optimizers.retrieval import RetrieverIndexer
+from brevitas.resource_bounds import safe_close_resource
 
-ds_client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
+ds_client = None
 brevitas = TokenEfficientPipeline(model_backend=None, quality_floor=0.80, savings_target=20.0)
 
 # Initialize context store for RLM-RETRIEVAL strategy (will be populated if retrieval module available)
@@ -386,6 +387,8 @@ def call_deepseek(system: str, user_prompt: str, max_tokens: int = 256) -> Tuple
     """Call DeepSeek API. Returns (response_text, latency_seconds)."""
     t0 = time.time()
     try:
+        if ds_client is None:
+            raise RuntimeError("DeepSeek client is not initialized")
         r = ds_client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -422,7 +425,7 @@ class BenchmarkResult:
 # Main Benchmark Runner
 # ---------------------------------------------------------------------------
 
-def run_benchmark():
+def _run_benchmark_with_client():
     """Run the context accuracy benchmark with strategies A and B (skip C until executor-p2 confirms retrieval)."""
 
     print("\n" + "=" * 80)
@@ -607,6 +610,22 @@ def run_benchmark():
         print(f"  (Incomplete data for comparison)")
 
     print(f"\nResults file: {Path(__file__).parent / f'context_accuracy_results_n{N_SAMPLES}_phase2.json'}")
+
+
+def run_benchmark(client=None):
+    """Run with one owned pool, leaving an injected client under caller ownership."""
+    global ds_client
+    owned = client is None
+    active = (client if client is not None else
+              OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com"))
+    previous = ds_client
+    ds_client = active
+    try:
+        return _run_benchmark_with_client()
+    finally:
+        ds_client = previous
+        if owned:
+            safe_close_resource(active)
 
 
 if __name__ == "__main__":

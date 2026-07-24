@@ -1,8 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm ci && npm ci --prefix dashboard",
-  "buildCommand": "npm run build",
-  "crons": [
-    { "path": "/api/billing/sync", "schedule": "17 8 * * *" }
-  ]
+  "buildCommand": "npm run build"
 }

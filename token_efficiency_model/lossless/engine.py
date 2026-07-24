@@ -132,6 +132,43 @@ def _msg_text(content: Any) -> str:
     return ""
 
 
+def _message_structure_rewrite_safe(messages: Any) -> bool:
+    """Whether messages may be reordered or removed without breaking API structure.
+
+    Provider message arrays are not just prose.  System directives, tool calls/results,
+    images, documents, and newer typed content blocks have ordering/adjacency rules.  In
+    particular, Anthropic's mid-conversation system messages must remain next to the turn
+    they govern and tool results must remain paired with their tool calls.  Treat every
+    such request as an opaque ordered sequence: native caching may still annotate it, but
+    b9 promotion and retrieval must not reorder or prune it.
+
+    This intentionally uses a narrow allow-list.  A new provider block type therefore
+    fails safe until Brevitas explicitly understands its structural contract.
+    """
+    if not isinstance(messages, list) or not messages:
+        return False
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            return False
+        role = message.get("role")
+        # A single leading plain-text system instruction is structurally stable and
+        # retrieval preserves it. Mid-conversation system directives remain opaque.
+        if role == "system" and index == 0:
+            pass
+        elif role not in {"user", "assistant"}:
+            return False
+        if any(key in message for key in (
+            "tool_calls", "tool_call_id", "function_call", "function_call_output",
+            "output_config", "recipient", "name",
+        )):
+            return False
+        # Plain strings are the only content representation the retrieval/reordering
+        # code can currently prove is free of tool/media/directive semantics.
+        if not isinstance(message.get("content"), str):
+            return False
+    return True
+
+
 def _stable_context(messages: List[dict], system: Any = None) -> List[str]:
     """The repeatable prefix: system + all but the last (volatile) message."""
     ctx: List[str] = []
@@ -149,13 +186,23 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                      tenant_key: str = "") -> dict:
     """Apply the router-chosen lossless strategy to `body` in place. Returns decision meta.
 
-    When a multi-agent `pipeline` label is present, shared context is first promoted to a
-    byte-identical leading prefix (brief b9) so it caches across agents whose system
-    prompts differ — lossless (reorder only, proven-shared content only)."""
+    When a multi-agent `pipeline` label is present, shared context may be promoted to a
+    leading prefix (brief b9) so it caches across agents whose system prompts differ.
+    Reordering preserves information but can change model behavior, so it is explicitly
+    marked quality-affecting and cannot inherit byte-preserving billing treatment."""
     messages = body.get("messages", []) or []
     if not messages:
         return {"strategy": "passthrough", "reason": "no messages",
-                "response_faithful": True}
+                "quality_status": "byte_preserving", "response_faithful": True}
+    if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+        return {
+            "strategy": "passthrough",
+            "reason": "unsupported message structure",
+            "quality_status": "byte_preserving",
+            "response_faithful": True,
+        }
+    structure_rewrite_safe = _message_structure_rewrite_safe(messages)
+    request_reordered = False
     if body.get("model"):
         router.model = str(body["model"])   # per-model rates in the router's cost model
 
@@ -174,7 +221,8 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     # Cache, arXiv 2601.06007). With <2 observations we stay conservative and don't reorder.
     state_session_id = _scoped_state_key(tenant_key, session_id)
     state_pipeline = _scoped_state_key(tenant_key, pipeline) if pipeline else ""
-    if pipeline and _reorder_enabled() and _lever_allowed("reorder", tenant_key):
+    if (pipeline and structure_rewrite_safe and _reorder_enabled()
+            and _lever_allowed("reorder", tenant_key)):
         st9 = _b9_state(state_pipeline)
         if not st9["locked"]:
             from .provider_cache import count_tokens as _ct
@@ -193,6 +241,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                 # reordering context can change a causal conversation's answer, so the
                 # response is no longer valid under the original request key.
                 response_faithful = False
+                request_reordered = True
                 if not st9["reordered"]:
                     # counterfactual baseline: natural hit rate BEFORE we touched anything
                     st9["reordered"] = True
@@ -215,7 +264,16 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     decision = router.decide(session_id, stable, query)
 
     strategy = decision.strategy
-    if strategy == "retrieve" and not _retrieval_enabled():
+    if strategy == "retrieve" and not structure_rewrite_safe:
+        strategy = "cache_only"
+        router.note_strategy(session_id, "cache_only")
+        meta = {
+            "strategy": "cache_only",
+            "reason": "message_structure_preserved",
+            "router_recommendation": "retrieve",
+            "quality_status": "byte_preserving",
+        }
+    elif strategy == "retrieve" and not _retrieval_enabled():
         strategy = "cache_only"
         router.note_strategy(session_id, "cache_only")
         meta = {
@@ -295,6 +353,11 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
         meta = None
     if meta is None:
         meta = {"strategy": strategy, "reason": decision.reason}
+    if request_reordered:
+        meta["router_strategy"] = meta.get("strategy", strategy)
+        meta["strategy"] = "shared_prefix_reorder"
+        meta["quality_status"] = "experimental_unverified"
+        meta["semantic_order_changed"] = True
 
     # Anthropic requires EXPLICIT cache_control markers (OpenAI/DeepSeek cache byte-identical
     # prefixes automatically). Apply on EVERY path — including after a retrieval rebuild and

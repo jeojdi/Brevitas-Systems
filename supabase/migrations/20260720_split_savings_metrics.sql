@@ -1,6 +1,8 @@
 -- Keep unlike optimization mechanisms out of one ambiguous "token savings" number.
 -- Historical rows default to zero/unknown rather than being reclassified without evidence.
 
+begin;
+
 alter table public.usage_log
     add column if not exists provider_input_tokens_avoided bigint not null default 0;
 alter table public.usage_log
@@ -22,3 +24,5 @@ comment on column public.usage_log.transport_bytes_avoided is
     'Client/proxy transport bytes avoided; does not imply fewer provider tokens.';
 comment on column public.usage_log.brevitas_incremental_savings_usd is
     'Actual-cost delta from an isolated paired control arm; null when no control was measured.';
+
+commit;

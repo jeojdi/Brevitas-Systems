@@ -10,16 +10,25 @@
     "build": "npm run build:dashboard && next build",
     "start": "next start",
     "lint": "eslint",
+    "release:security": "node --test tests/release_security.test.mjs tests/billing_maintenance_deployment.test.mjs",
+    "release:migrations:check": "node scripts/ci/verify-migrations.mjs",
+    "release:billing-migration:gate": "node scripts/ci/billing-migration-maintenance-gate.mjs",
+    "release:migrations:sync": "node scripts/ci/sync-database-scaling-migration.mjs --write",
+    "release:preflight": "node scripts/ci/release-preflight.mjs",
+    "release:operations": "node scripts/ci/operational-readiness.mjs",
+    "release:staging-smoke": "node scripts/ci/staging-smoke.mjs",
+    "release:staging-canary": "node scripts/ci/staging-canary.mjs",
     "prepare": "husky"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.104.1",
     "dotenv": "^17.4.2",
-    "next": "16.2.10",
+    "next": "16.2.11",
     "p-ratelimit": "^1.0.1",
     "posthog-node": "^5.44.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "sharp": "0.35.3",
     "stripe": "^22.3.2"
   },
   "devDependencies": {
@@ -36,7 +45,8 @@
   },
   "overrides": {
     "next": {
-      "postcss": "8.5.16"
+      "postcss": "8.5.16",
+      "sharp": "0.35.3"
     },
     "ws": "8.21.0"
   }

@@ -1,0 +1,127 @@
+name: Migration safety
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'api/migrations/**'
+      - 'supabase/migrations/**'
+      - 'scripts/ci/**migration**'
+      - 'scripts/ci/*billing-maintenance*'
+      - 'scripts/ci/*billing-owner-transfer*'
+      - 'scripts/ci/*shared*limit*'
+      - 'scripts/ci/run-restore-integration.sh'
+      - 'scripts/dr/**'
+      - 'tests/release_security.test.mjs'
+      - 'tests/billing_maintenance_deployment.test.mjs'
+      - 'tests/billing_customer_owner_fencing.test.mjs'
+      - 'tests/waitlist_shared_rate_limit.test.mjs'
+      - '.github/workflows/migrations.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api/migrations/**'
+      - 'supabase/migrations/**'
+      - 'scripts/ci/**migration**'
+      - 'scripts/ci/*billing-maintenance*'
+      - 'scripts/ci/*billing-owner-transfer*'
+      - 'scripts/ci/*shared*limit*'
+      - 'scripts/ci/run-restore-integration.sh'
+      - 'scripts/dr/**'
+      - 'tests/release_security.test.mjs'
+      - 'tests/billing_maintenance_deployment.test.mjs'
+      - 'tests/billing_customer_owner_fencing.test.mjs'
+      - 'tests/waitlist_shared_rate_limit.test.mjs'
+      - '.github/workflows/migrations.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-safety-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration-static:
+    name: Migration order, drift, and rollback contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.17.1'
+          cache: npm
+      - name: Install locked JavaScript dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify migration release contracts
+        run: |
+          npm run release:migrations:check
+          npm run release:security
+
+  migration-integration:
+    name: Ephemeral PostgreSQL migration integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify PostgreSQL client is available
+        run: psql --version
+      - name: Start loopback-only source and restore PostgreSQL databases
+        run: |
+          docker run --detach --rm --network host \
+            --name brevitas-migration-postgres \
+            --env POSTGRES_DB=brevitas_ci \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_USER=postgres \
+            --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d brevitas_ci" \
+            --health-interval 2s --health-timeout 5s --health-retries 30 \
+            pgvector/pgvector:pg16-bookworm@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb \
+            postgres -c listen_addresses=127.0.0.1
+          docker run --detach --rm --network host \
+            --name brevitas-restore-postgres \
+            --env POSTGRES_DB=brevitas_restore_ci \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_USER=postgres \
+            --health-cmd "pg_isready -h 127.0.0.1 -p 5433 -U postgres -d brevitas_restore_ci" \
+            --health-interval 2s --health-timeout 5s --health-retries 30 \
+            pgvector/pgvector:pg16-bookworm@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb \
+            postgres -p 5433 -c listen_addresses=127.0.0.1
+      - name: Wait for both PostgreSQL databases
+        run: |
+          for container in brevitas-migration-postgres brevitas-restore-postgres; do
+            healthy=false
+            for attempt in {1..30}; do
+              status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
+              if [ "$status" = healthy ]; then healthy=true; break; fi
+              if [ "$status" = unhealthy ]; then break; fi
+              sleep 2
+            done
+            if [ "$healthy" != true ]; then
+              docker logs "$container"
+              exit 1
+            fi
+          done
+      - name: Apply, verify, roll back, and reapply enterprise migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci
+        run: bash scripts/ci/run-migration-tests.sh
+      - name: Race shared endpoint admission across PostgreSQL sessions
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci
+        run: bash scripts/ci/run-waitlist-shared-limit-test.sh
+      - name: Restore into the independent PostgreSQL database
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/brevitas_ci
+          RESTORE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5433/brevitas_restore_ci
+        run: bash scripts/ci/run-restore-integration.sh
+      - name: Stop ephemeral PostgreSQL databases
+        if: always()
+        run: docker stop brevitas-migration-postgres brevitas-restore-postgres

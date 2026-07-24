@@ -16,6 +16,15 @@ def client(monkeypatch, fake_remote):
     _ = fake_remote  # activates the patched remote compressor + disabled gate (side effects)
     import api.server as server
     server.app.dependency_overrides[server._authenticated] = lambda: "test-key-hash"
+    # The production dependency also attaches a verified tenant context to the
+    # request. Keep this unit fixture explicit instead of weakening that invariant.
+    monkeypatch.setattr(
+        server,
+        "_request_auth_context",
+        lambda _request, kh: server.AuthContext(
+            key_hash=kh, scopes=frozenset({"proxy:invoke"})
+        ),
+    )
     monkeypatch.setattr(server._store, "record_usage", lambda **_kw: None)
     # ensure the env kill-switch is ON for these tests
     monkeypatch.setenv("BREVITAS_COMPRESS_LOSSY", "1")

@@ -1,30 +1,14 @@
 {
-  "name": "brevitas-compress",
-  "services": [
-    {
-      "name": "compress",
-      "source": {
-        "type": "docker",
-        "dockerfile": "services/compress/Dockerfile"
-      },
-      "variables": {
-        "BREVITAS_COMPRESS_TOKEN": {
-          "description": "Optional authentication token for compression service",
-          "value": ""
-        }
-      },
-      "port": 8080,
-      "healthCheck": {
-        "path": "/health",
-        "timeout": 10
-      },
-      "resources": {
-        "cpu": "1000m",
-        "memoryMB": 2048
-      },
-      "startCommand": "uvicorn app:app --host 0.0.0.0 --port 8080"
-    }
-  ],
-  "volumeNames": {},
-  "projectName": "brevitas-compress"
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "services/compress/Dockerfile"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "healthcheckPath": "/ready",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
 }

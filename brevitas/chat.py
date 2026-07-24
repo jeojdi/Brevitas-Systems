@@ -11,25 +11,55 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
+from .resource_bounds import (
+    ResourceBounds,
+    ResourceLimitExceeded,
+    extend_bounded_list,
+    require_size,
+    safe_close_resource,
+    utf8_size,
+)
 
-def read_document(path: str) -> str:
+
+def read_document(path: str, *, max_bytes: int | None = None) -> str:
     """Read a document as text. Supports PDF (textbooks/papers) and plain text/markdown."""
+    limit = max_bytes or ResourceBounds.from_env().demo_document_max_bytes
+    limit = max(1, min(int(limit), 32 * 1024 * 1024))
     if path.lower().endswith(".pdf"):
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(path)
-            return "\n".join(page.get_text() for page in doc)
+            parts: list[str] = []
+            total = 0
+            for page in doc:
+                text = page.get_text()
+                total += utf8_size(text) + (1 if parts else 0)
+                if total > limit:
+                    raise ResourceLimitExceeded(f"document exceeds {limit} bytes")
+                parts.append(text)
+            return "\n".join(parts)
         except ImportError:
             pass
         try:
             from pypdf import PdfReader
-            return "\n".join((p.extract_text() or "") for p in PdfReader(path).pages)
+            parts = []
+            total = 0
+            for page in PdfReader(path).pages:
+                text = page.extract_text() or ""
+                total += utf8_size(text) + (1 if parts else 0)
+                if total > limit:
+                    raise ResourceLimitExceeded(f"document exceeds {limit} bytes")
+                parts.append(text)
+            return "\n".join(parts)
         except ImportError:
             raise SystemExit(
                 "Reading PDFs needs a PDF library. Install one:\n"
                 "  pip install \"brevitas-systems[pdf]\"   (or: pip install pymupdf)")
-    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-        return fh.read()
+    with open(path, "rb") as fh:
+        raw = fh.read(limit + 1)
+    if len(raw) > limit:
+        raise ResourceLimitExceeded(f"document exceeds {limit} bytes")
+    return raw.decode("utf-8", errors="ignore")
 
 
 def _load_key(provider: str, explicit: str) -> str:
@@ -65,7 +95,8 @@ def run_chat(doc_path: str, provider: str = "deepseek", model: str = "",
     from brevitas import BrevitasClient
     from token_efficiency_model.lossless.provider_cache import count_tokens
 
-    document = read_document(doc_path)
+    bounds = ResourceBounds.from_env()
+    document = read_document(doc_path, max_bytes=bounds.demo_document_max_bytes)
     doc_tokens = count_tokens(document)
 
     key = _load_key(provider, api_key)
@@ -78,6 +109,17 @@ def run_chat(doc_path: str, provider: str = "deepseek", model: str = "",
     client = BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider))
     system = ("Answer questions using the following document as the source of truth.\n\n"
               "=== DOCUMENT ===\n" + document + "\n=== END DOCUMENT ===")
+    try:
+        _run_interactive_chat(
+            client, doc_path, provider, model, system, doc_tokens, bounds, printer
+        )
+    finally:
+        safe_close_resource(client)
+
+
+def _run_interactive_chat(client, doc_path: str, provider: str, model: str,
+                          system: str, doc_tokens: int, bounds: ResourceBounds,
+                          printer) -> None:
 
     printer(f"\nLoaded '{doc_path}' as context: ~{doc_tokens:,} tokens.")
     printer(f"Provider: {provider}/{model}. The document is re-sent each turn; the provider "
@@ -95,6 +137,11 @@ def run_chat(doc_path: str, provider: str = "deepseek", model: str = "",
             break
         if not q or q.lower() in ("exit", "quit", ":q"):
             break
+        try:
+            require_size(q, bounds.session_max_item_bytes, name="question", sizer=utf8_size)
+        except ResourceLimitExceeded as exc:
+            printer(f"  [error: {exc}]")
+            continue
         turn += 1
 
         messages = [{"role": "system", "content": system}] + history + [
@@ -107,8 +154,12 @@ def run_chat(doc_path: str, provider: str = "deepseek", model: str = "",
             printer(f"  [error: {e}]")
             continue
 
-        history.append({"role": "user", "content": q})
-        history.append({"role": "assistant", "content": answer})
+        extend_bounded_list(
+            history,
+            [{"role": "user", "content": q}, {"role": "assistant", "content": answer}],
+            max_items=bounds.demo_history_max_items,
+            max_bytes=bounds.demo_history_max_bytes,
+        )
         cum_uncached += sav.uncached_cost
         cum_actual += sav.actual_cost
         cum_cached += sav.cached_tokens
@@ -132,7 +183,8 @@ def run_demo(doc_path: str, questions: List[str], provider: str = "deepseek",
     from brevitas import BrevitasClient
     from token_efficiency_model.lossless.provider_cache import count_tokens
 
-    document = read_document(doc_path)
+    bounds = ResourceBounds.from_env()
+    document = read_document(doc_path, max_bytes=bounds.demo_document_max_bytes)
     doc_tokens = count_tokens(document)
     key = _load_key(provider, api_key)
     if not key:
@@ -142,6 +194,18 @@ def run_demo(doc_path: str, questions: List[str], provider: str = "deepseek",
     client = BrevitasClient(provider=provider, api_key=key, base_url=_base_url(provider))
     system = ("Answer using the document below as the source of truth.\n\n=== DOCUMENT ===\n"
               + document + "\n=== END DOCUMENT ===")
+    try:
+        return _run_fixed_demo(
+            client, doc_path, questions, provider, model, system, doc_tokens,
+            bounds, printer,
+        )
+    finally:
+        safe_close_resource(client)
+
+
+def _run_fixed_demo(client, doc_path: str, questions: List[str], provider: str,
+                    model: str, system: str, doc_tokens: int,
+                    bounds: ResourceBounds, printer) -> dict:
     printer(f"Document '{os.path.basename(doc_path)}': ~{doc_tokens:,} tokens, re-sent each turn.")
     printer(f"Provider {provider}/{model}\n")
 
@@ -149,10 +213,16 @@ def run_demo(doc_path: str, questions: List[str], provider: str = "deepseek",
     cum_uncached = cum_actual = 0.0
     cached_total = 0
     for i, q in enumerate(questions, 1):
+        require_size(q, bounds.session_max_item_bytes, name="question", sizer=utf8_size)
         messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": q}]
         resp, sav = client.chat(messages=messages, model=model, session_id="demo", max_tokens=120)
         ans = resp.choices[0].message.content
-        history += [{"role": "user", "content": q}, {"role": "assistant", "content": ans}]
+        extend_bounded_list(
+            history,
+            [{"role": "user", "content": q}, {"role": "assistant", "content": ans}],
+            max_items=bounds.demo_history_max_items,
+            max_bytes=bounds.demo_history_max_bytes,
+        )
         cum_uncached += sav.uncached_cost
         cum_actual += sav.actual_cost
         cached_total += sav.cached_tokens

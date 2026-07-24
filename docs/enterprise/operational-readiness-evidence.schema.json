@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brevitassystems.com/schemas/operational-readiness-evidence.v1.json",
+  "title": "Brevitas operational readiness evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "evidence_id", "environment", "build_sha", "generated_at",
+    "release_change_id", "evidence_owner_role", "backup", "restore", "observability",
+    "alert_delivery", "on_call", "rollback", "approvals"
+  ],
+  "properties": {
+    "schema": {"const": "brevitas.operational-readiness-evidence.v1"},
+    "evidence_id": {"$ref": "#/$defs/opaqueId"},
+    "environment": {"enum": ["staging", "production"]},
+    "build_sha": {"$ref": "#/$defs/buildSha"},
+    "generated_at": {"$ref": "#/$defs/timestamp"},
+    "release_change_id": {"$ref": "#/$defs/opaqueId"},
+    "evidence_owner_role": {"$ref": "#/$defs/role"},
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pitr", "logical"],
+      "properties": {
+        "pitr": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "window_days", "checked_at", "provider_evidence"],
+          "properties": {
+            "enabled": {"const": true},
+            "window_days": {"type": "integer", "minimum": 14},
+            "checked_at": {"$ref": "#/$defs/timestamp"},
+            "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+          }
+        },
+        "logical": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "completed_at", "encrypted", "immutable", "object_lock_enabled", "retention_days",
+            "source_failure_domain", "storage_failure_domain", "manifest_sha256", "ciphertext_sha256",
+            "provider_evidence"
+          ],
+          "properties": {
+            "completed_at": {"$ref": "#/$defs/timestamp"},
+            "encrypted": {"const": true},
+            "immutable": {"const": true},
+            "object_lock_enabled": {"const": true},
+            "retention_days": {"type": "integer", "minimum": 35},
+            "source_failure_domain": {"$ref": "#/$defs/name"},
+            "storage_failure_domain": {"$ref": "#/$defs/name"},
+            "manifest_sha256": {"$ref": "#/$defs/sha256"},
+            "ciphertext_sha256": {"$ref": "#/$defs/sha256"},
+            "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+          }
+        }
+      }
+    },
+    "restore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exercise_id", "source_environment", "source_id", "destination_environment", "destination_id",
+        "isolated_destination", "target_mode", "postgresql_major", "started_at", "failure_at",
+        "selected_recovery_point_at", "raw_verified_at", "deletion_replay", "ready_at",
+        "database_ready_at", "service_ready_at", "completed_at", "backup_manifest_sha256",
+        "deletion_artifact_sha256", "verification_results", "provider_evidence"
+      ],
+      "properties": {
+        "exercise_id": {"$ref": "#/$defs/opaqueId"},
+        "source_environment": {"enum": ["staging", "production"]},
+        "source_id": {"$ref": "#/$defs/opaqueId"},
+        "destination_environment": {"enum": ["test", "staging"]},
+        "destination_id": {"$ref": "#/$defs/opaqueId"},
+        "isolated_destination": {"const": true},
+        "target_mode": {"const": "ephemeral-postgres"},
+        "postgresql_major": {"const": 16},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "failure_at": {"$ref": "#/$defs/timestamp"},
+        "selected_recovery_point_at": {"$ref": "#/$defs/timestamp"},
+        "raw_verified_at": {"$ref": "#/$defs/timestamp"},
+        "deletion_replay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verified_at", "tombstone_count", "result", "provider_evidence"],
+          "properties": {
+            "verified_at": {"$ref": "#/$defs/timestamp"},
+            "tombstone_count": {"type": "integer", "minimum": 0},
+            "result": {"const": "verified"},
+            "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+          }
+        },
+        "ready_at": {"$ref": "#/$defs/timestamp"},
+        "database_ready_at": {"$ref": "#/$defs/timestamp"},
+        "service_ready_at": {"$ref": "#/$defs/timestamp"},
+        "completed_at": {"$ref": "#/$defs/timestamp"},
+        "backup_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "deletion_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "verification_results": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "raw_table_counts", "tenant_isolation", "billing_reconciliation", "durable_job_recovery",
+            "audit_append", "authenticated_health"
+          ],
+          "properties": {
+            "raw_table_counts": {"const": "passed"},
+            "tenant_isolation": {"const": "passed"},
+            "billing_reconciliation": {"const": "passed"},
+            "durable_job_recovery": {"const": "passed"},
+            "audit_append": {"const": "passed"},
+            "authenticated_health": {"const": "passed"}
+          }
+        },
+        "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider", "telemetry_backend", "checked_at", "expected_replica_counts", "observed_replicas",
+        "overview_dashboard", "per_replica_dashboard", "telemetry_evidence"
+      ],
+      "properties": {
+        "provider": {"$ref": "#/$defs/name"},
+        "telemetry_backend": {"$ref": "#/$defs/name"},
+        "checked_at": {"$ref": "#/$defs/timestamp"},
+        "expected_replica_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api", "worker", "compressor"],
+          "properties": {
+            "api": {"type": "integer", "minimum": 2},
+            "worker": {"type": "integer", "minimum": 2},
+            "compressor": {"type": "integer", "minimum": 1}
+          }
+        },
+        "observed_replicas": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["service", "instance_id", "last_seen_at"],
+            "properties": {
+              "service": {"enum": ["api", "worker", "compressor"]},
+              "instance_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"},
+              "last_seen_at": {"$ref": "#/$defs/timestamp"}
+            }
+          }
+        },
+        "overview_dashboard": {"$ref": "#/$defs/overviewDashboard"},
+        "per_replica_dashboard": {"$ref": "#/$defs/replicaDashboard"},
+        "telemetry_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "alert_delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider", "test_alert_id", "route_id", "destination_type", "sent_at", "delivered_at",
+        "acknowledged_at", "delivery_receipt"
+      ],
+      "properties": {
+        "provider": {"$ref": "#/$defs/name"},
+        "test_alert_id": {"$ref": "#/$defs/opaqueId"},
+        "route_id": {"$ref": "#/$defs/opaqueId"},
+        "destination_type": {"enum": ["paging", "incident-management"]},
+        "sent_at": {"$ref": "#/$defs/timestamp"},
+        "delivered_at": {"$ref": "#/$defs/timestamp"},
+        "acknowledged_at": {"$ref": "#/$defs/timestamp"},
+        "delivery_receipt": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "on_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider", "schedule_id", "escalation_policy_id", "primary_owner_role", "secondary_owner_role",
+        "escalation_owner_role", "checked_at", "provider_evidence"
+      ],
+      "properties": {
+        "provider": {"$ref": "#/$defs/name"},
+        "schedule_id": {"$ref": "#/$defs/opaqueId"},
+        "escalation_policy_id": {"$ref": "#/$defs/opaqueId"},
+        "primary_owner_role": {"$ref": "#/$defs/role"},
+        "secondary_owner_role": {"$ref": "#/$defs/role"},
+        "escalation_owner_role": {"$ref": "#/$defs/role"},
+        "checked_at": {"$ref": "#/$defs/timestamp"},
+        "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rehearsal_id", "rehearsal_environment", "release_target_environment", "candidate_build_sha",
+        "rollback_build_sha", "candidate_deployed_at", "started_at", "rollback_completed_at",
+        "service_verified_at", "result", "provider_evidence"
+      ],
+      "properties": {
+        "rehearsal_id": {"$ref": "#/$defs/opaqueId"},
+        "rehearsal_environment": {"const": "staging"},
+        "release_target_environment": {"enum": ["staging", "production"]},
+        "candidate_build_sha": {"$ref": "#/$defs/buildSha"},
+        "rollback_build_sha": {"$ref": "#/$defs/buildSha"},
+        "candidate_deployed_at": {"$ref": "#/$defs/timestamp"},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "rollback_completed_at": {"$ref": "#/$defs/timestamp"},
+        "service_verified_at": {"$ref": "#/$defs/timestamp"},
+        "result": {"const": "passed"},
+        "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "approver_id", "approved_at", "approval_evidence"],
+        "properties": {
+          "role": {"enum": ["operations_lead", "security_lead"]},
+          "approver_id": {"$ref": "#/$defs/opaqueId"},
+          "approved_at": {"$ref": "#/$defs/timestamp"},
+          "approval_evidence": {"$ref": "#/$defs/evidenceReference"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "buildSha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "opaqueId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9:._/-]{7,255}$"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+    "role": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "reference", "sha256", "captured_at", "immutable"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/name"},
+        "reference": {"type": "string", "pattern": "^evidence:[A-Za-z0-9][A-Za-z0-9:._/-]{7,246}$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "captured_at": {"$ref": "#/$defs/timestamp"},
+        "immutable": {"const": true}
+      }
+    },
+    "overviewDashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "provider_evidence"],
+      "properties": {
+        "uid": {"const": "brevitas-enterprise-overview"},
+        "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    },
+    "replicaDashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "provider_evidence"],
+      "properties": {
+        "uid": {"const": "brevitas-per-replica-health"},
+        "provider_evidence": {"$ref": "#/$defs/evidenceReference"}
+      }
+    }
+  }
+}

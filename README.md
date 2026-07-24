@@ -96,6 +96,15 @@ usage receipt and an idempotency key.
 
 ## Cloud usage tracking
 
+See [Account and company onboarding](docs/ONBOARDING.md) for the individual,
+employee-invitation, workspace-switching, and enterprise-customer flows.
+
+For a SaaS integration, the SaaS company holds one Brevitas service key per environment. Each
+request from its backend includes an exact, stable `X-Brevitas-Customer-ID` from its own database.
+End customers do not install BVX and do not receive Brevitas keys. Existing customers may be
+bulk-imported by stable ID or are created automatically on first traffic; identity assignment is
+never semantic or fuzzy.
+
 AgentMap-discovered backend services, workers, Claude Code, Codex, and custom clients all
 write the same content-free receipt:
 

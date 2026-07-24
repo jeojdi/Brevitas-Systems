@@ -13,8 +13,8 @@ from token_efficiency_model.lossless.shared_prefix import SharedPrefixLayer
 BIG = "shared reference material. " * 400        # ~1600 tokens (clears the 500 gate)
 
 
-def _msgs(system, shared, task):
-    return [{"role": "system", "content": system},
+def _msgs(agent_context, shared, task):
+    return [{"role": "user", "content": agent_context},
             {"role": "user", "content": shared},
             {"role": "user", "content": task}]
 
@@ -107,7 +107,7 @@ def test_promotion_order_frozen_prefix_stable():
     # now a SECOND block becomes shared; regardless of how its hash sorts vs BIG's,
     # BIG must remain the first message (frozen first-promotion order)
     for a in ("a", "b", "c"):
-        out = L.layout("p", a, [{"role": "system", "content": f"You are {a}."},
+        out = L.layout("p", a, [{"role": "user", "content": f"You are {a}."},
                                 {"role": "user", "content": BIG},
                                 {"role": "user", "content": BIG2},
                                 {"role": "user", "content": "q2"}],
@@ -134,3 +134,23 @@ def test_gate_uses_real_token_counter():
         L.layout("p", a, _msgs(f"role {a}", BIG, "Q"), natural_cached_tokens=0, count_tokens=ct)
     out = L.layout("p", "c", _msgs("role c", BIG, "Q"), natural_cached_tokens=0, count_tokens=ct)
     assert out[0]["content"] == BIG and out[-1]["content"] == "Q"
+
+
+def test_direct_layer_refuses_system_tool_and_typed_content():
+    L = SharedPrefixLayer(min_agents=1)
+    unsafe = [
+        [{"role": "system", "content": "policy"},
+         {"role": "user", "content": BIG},
+         {"role": "user", "content": "q"}],
+        [{"role": "assistant", "content": None,
+          "tool_calls": [{"id": "c1", "type": "function"}]},
+         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+         {"role": "user", "content": "q"}],
+        [{"role": "user", "content": [{"type": "input_text", "text": BIG}]},
+         {"role": "user", "content": "q"}],
+    ]
+    for i, messages in enumerate(unsafe):
+        out, reordered = L.layout_ex(f"unsafe-{i}", "a", messages,
+                                     natural_cached_tokens=0)
+        assert out == messages
+        assert reordered is False

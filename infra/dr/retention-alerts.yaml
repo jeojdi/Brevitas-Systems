@@ -1,0 +1,35 @@
+# Provider-neutral Prometheus-compatible rules. Importing them into a monitoring
+# provider is a separately approved staging action.
+groups:
+  - name: brevitas-retention
+    rules:
+      - alert: BrevitasRetentionMissedRun24h
+        expr: brevitas_retention_missed_run_24h == 1
+        for: 5m
+        labels: { severity: page, slo: internal-availability }
+        annotations: { summary: "Retention has no successful cycle within 24 hours" }
+      - alert: BrevitasRetentionBacklog24h
+        expr: brevitas_retention_backlog_over_24h == 1
+        for: 5m
+        labels: { severity: page, slo: privacy-retention }
+        annotations: { summary: "Bounded retention backlog has remained nonzero for 24 hours" }
+      - alert: BrevitasRetentionSchemaContractFailure
+        expr: brevitas_retention_schema_contract_ok == 0
+        for: 1m
+        labels: { severity: page, slo: privacy-retention }
+        annotations: { summary: "Retention schema contract failed closed" }
+      - alert: BrevitasRetentionLegalHoldEvaluationFailure
+        expr: brevitas_retention_legal_holds_evaluated == 0
+        for: 1m
+        labels: { severity: page, slo: privacy-retention }
+        annotations: { summary: "Retention legal-hold evaluation failed closed" }
+      - alert: BrevitasRetentionLedgerInvariantFailure
+        expr: brevitas_retention_financial_ledger_preserved == 0
+        for: 1m
+        labels: { severity: page, slo: billing-integrity }
+        annotations: { summary: "Retention financial-ledger preservation invariant failed" }
+      - alert: BrevitasRetentionRepeatedErrors
+        expr: brevitas_retention_consecutive_errors >= 3
+        for: 5m
+        labels: { severity: ticket, slo: privacy-retention }
+        annotations: { summary: "Retention worker has repeated content-free failures" }

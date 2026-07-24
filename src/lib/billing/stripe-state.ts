@@ -18,5 +18,3 @@ export function subscriptionPeriod(subscription: Stripe.Subscription) {
       : null,
   };
 }
-
-export const BILLABLE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing']);

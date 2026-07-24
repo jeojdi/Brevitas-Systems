@@ -1,0 +1,55 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Telemetry series by service replica",
+      "description": "Each expected API, worker, and compressor service.instance.id must have current telemetry.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (service_name, service_instance_id) ({__name__=~\"brevitas_.+\"})",
+          "instant": true,
+          "legendFormat": "{{service_name}} / {{service_instance_id}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Authoritative billing catalog contract by worker replica",
+      "description": "A single invalid or missing authoritative worker replica is release-blocking.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (service_instance_id) (brevitas_billing_catalog_contract)",
+          "legendFormat": "{{service_instance_id}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Dependency failures by service replica",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service_name, service_instance_id, dependency) (rate(brevitas_dependency_operations_total{outcome!=\"success\"}[5m]))",
+          "legendFormat": "{{service_name}} / {{service_instance_id}} / {{dependency}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["brevitas", "enterprise", "replicas"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timezone": "utc",
+  "title": "Brevitas Per-Replica Health",
+  "uid": "brevitas-per-replica-health",
+  "version": 1
+}

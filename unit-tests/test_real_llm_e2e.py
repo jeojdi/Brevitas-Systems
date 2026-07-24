@@ -87,9 +87,14 @@ def rng():
 
 
 def _client(name):
-    from openai import OpenAI
     key = os.getenv(_KEY_ENV[name])
-    return OpenAI(base_url=_PUBLIC[name], api_key=key, timeout=45) if key else None
+    if not key:
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    return OpenAI(base_url=_PUBLIC[name], api_key=key, timeout=45)
 
 
 def _ask(client, model, prompt, max_tokens=40):

@@ -1,0 +1,2 @@
+public/dashboard/assets/*.js -whitespace
+public/dashboard/assets/*.css -whitespace

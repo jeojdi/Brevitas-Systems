@@ -24,7 +24,8 @@ from typing import Optional
 # Env + keys
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).parent.parent
-for line in (ROOT / ".env.local").read_text().splitlines():
+env_path = ROOT / ".env.local"
+for line in env_path.read_text().splitlines() if env_path.is_file() else ():
     if "=" in line and not line.strip().startswith("#"):
         k, _, v = line.partition("=")
         os.environ.setdefault(k.strip(), v.strip())
@@ -37,6 +38,7 @@ from datasets import load_dataset
 from openai import OpenAI
 
 sys.path.insert(0, str(ROOT))
+from brevitas.resource_bounds import safe_close_resource
 from token_efficiency_model.common.metrics import estimate_tokens
 
 # ---------------------------------------------------------------------------
@@ -66,7 +68,7 @@ LETTERS = ["A", "B", "C", "D", "E"]
 SEED = 42
 random.seed(SEED)
 
-ds_client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
+ds_client = None
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -119,6 +121,8 @@ def call_deepseek(
       (response_text, cache_hit_tokens, cache_miss_tokens, completion_tokens, latency_sec)
     """
     t0 = time.time()
+    if ds_client is None:
+        raise RuntimeError("DeepSeek client is not initialized")
     resp = ds_client.chat.completions.create(
         model=model,
         messages=[
@@ -486,7 +490,7 @@ def extract_bbh(text: str, target: str) -> bool:
 # Benchmark runner
 # ─────────────────────────────────────────────────────────────────────────
 
-def run_cache_benchmark(
+def _run_cache_benchmark_with_client(
     dataset_name: str,
     n_samples: int = 2,
     model: str = "deepseek-chat",
@@ -695,6 +699,27 @@ def run_cache_benchmark(
     print(f"{'='*80}\n")
 
     return all_results, before_summary, after_summary
+
+
+def run_cache_benchmark(
+    dataset_name: str,
+    n_samples: int = 2,
+    model: str = "deepseek-chat",
+    client=None,
+) -> tuple[list[CacheRunResult], CacheSummary, CacheSummary]:
+    """Run with one owned pool, leaving an injected client under caller ownership."""
+    global ds_client
+    owned = client is None
+    active = (client if client is not None else
+              OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com"))
+    previous = ds_client
+    ds_client = active
+    try:
+        return _run_cache_benchmark_with_client(dataset_name, n_samples, model)
+    finally:
+        ds_client = previous
+        if owned:
+            safe_close_resource(active)
 
 
 # ---------------------------------------------------------------------------

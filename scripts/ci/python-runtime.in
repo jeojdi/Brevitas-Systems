@@ -1,0 +1,7 @@
+# Direct production requirements. Compile for the Linux/Python version used by CI
+# and Railway; the generated lock is installed with --require-hashes.
+-r ../../api/requirements.txt
+
+click>=8.1.0
+rich>=13.0.0
+setuptools>=83.0.0
