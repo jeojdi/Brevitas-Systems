@@ -28,6 +28,11 @@ const dashboardHeaders = [
 const noIndexHeaders = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
 const posthogHost = (process.env.POSTHOG_HOST || "https://us.i.posthog.com").replace(/\/$/, "");
 const posthogAssetsHost = (process.env.POSTHOG_ASSETS_HOST || "https://us-assets.i.posthog.com").replace(/\/$/, "");
+const backendApiHost = (
+  process.env.BREVITAS_API_URL
+  || process.env.API_URL
+  || "http://localhost:8000"
+).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   async headers() {
@@ -77,7 +82,7 @@ const nextConfig: NextConfig = {
         { source: '/ingest/:path*', destination: `${posthogHost}/:path*` },
         {
           source: '/v1/:path*',
-          destination: `${process.env.API_URL || 'http://localhost:8000'}/v1/:path*`,
+          destination: `${backendApiHost}/v1/:path*`,
         },
       ],
     };

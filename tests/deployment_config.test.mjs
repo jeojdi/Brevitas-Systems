@@ -106,6 +106,16 @@ test('dashboard aliases receive CSP and are excluded from indexing', () => {
   assert.match(config, /X-Robots-Tag.+noindex, nofollow/)
 })
 
+test('dashboard API rewrites use the same canonical backend origin as the admin BFF', () => {
+  const config = read('next.config.ts')
+  const adminProxy = read('src/lib/admin/proxy.ts')
+
+  assert.match(config, /const backendApiHost = \([\s\S]+process\.env\.BREVITAS_API_URL/)
+  assert.match(config, /source: '\/v1\/:path\*'[\s\S]+destination: `\$\{backendApiHost\}\/v1\/:path\*`/)
+  assert.doesNotMatch(config, /destination: `\$\{process\.env\.API_URL/)
+  assert.match(adminProxy, /process\.env\.BREVITAS_API_URL/)
+})
+
 test('email confirmation returns only to allowlisted login audiences', () => {
   const page = read('public/email-confirmed.html')
   assert.match(page, /personal: '\/login\/personal'/)
