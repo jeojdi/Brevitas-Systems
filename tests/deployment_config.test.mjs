@@ -32,10 +32,11 @@ test('public discovery files contain only live public routes and assets', () => 
   assert.doesNotMatch(read('public/pricing.html'), /site\.css/)
 })
 
-test('homepage install flow authenticates bvx after installing the CLI', () => {
+test('homepage install flow continues into full bvx onboarding', () => {
   const homepageSource = `${read('public/index.html')}\n${read('public/components.jsx')}`
   assert.match(homepageSource,
-    /brew install brevitas-ai\/brevitas\/bvx && bvx login/)
+    /brew install Brevitas-ai\/brevitas\/bvx && bvx install/)
+  assert.doesNotMatch(homepageSource, /bvx login/)
   assert.doesNotMatch(homepageSource, /bvx install ai/)
 })
 
@@ -160,11 +161,14 @@ test('PostHog analytics is proxied, privacy controlled, and never exposes the pe
   assert.match(analytics, /maskCapturedNetworkRequestFn/)
   assert.match(analytics, /globalPrivacyControl/)
   assert.match(analytics, /opt_out_capturing/)
+  assert.match(analytics, /cache: 'no-store'/)
   assert.match(analytics, /if \(notice\) notice\.hidden = open/)
   assert.match(analytics, /data-close/)
   assert.match(analytics, /toggle\(false\); button\.focus\(\)/)
   assert.match(read('public/analytics.css'), /\.bvt-privacy-notice\[hidden\] \{ display: none; \}/)
   assert.doesNotMatch(publicConfig, /POSTHOG_PERSONAL_API_KEY/)
+  assert.match(publicConfig, /private, no-store, max-age=0, must-revalidate/)
+  assert.doesNotMatch(publicConfig, /stale-while-revalidate/)
   assert.match(read('public/privacy.html'), /PostHog/)
 })
 

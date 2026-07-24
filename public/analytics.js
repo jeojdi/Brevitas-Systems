@@ -200,7 +200,7 @@
   function start() {
     loadStyles();
     renderPrivacyControls();
-    fetch('/api/analytics-config', { credentials: 'same-origin' })
+    fetch('/api/analytics-config', { credentials: 'same-origin', cache: 'no-store' })
       .then(function (response) { return response.ok ? response.json() : Promise.reject(new Error('analytics config unavailable')); })
       .then(loadPostHog)
       .catch(function () { /* Analytics must never affect the product. */ });

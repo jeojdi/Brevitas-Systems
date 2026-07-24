@@ -1018,6 +1018,11 @@ class SupabaseCompanyAdminService:
 
     def _require(self, principal: CompanyPrincipal, permission: str, request_id: str,
                  action: str) -> str:
+        # A newly confirmed user has no active company until onboarding creates
+        # one. Deny before calling UUID-typed RPCs with an empty company ID so
+        # the API returns the expected 403 and the dashboard can start onboarding.
+        if not principal.company_id:
+            raise CompanyAdminDenied
         role = self._role(principal)
         if permission not in ROLE_PERMISSIONS.get(role, frozenset()):
             self._rpc("append_company_audit", {

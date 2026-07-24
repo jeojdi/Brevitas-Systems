@@ -1141,6 +1141,25 @@ def test_supabase_capabilities_uses_verified_actor_active_membership_rpc():
     )
 
 
+def test_supabase_capabilities_denies_new_user_before_company_rpc():
+    calls = []
+
+    class Store:
+        def _request(self, method, path, **kwargs):
+            calls.append((method, path, kwargs.get("data")))
+            raise AssertionError("new users must not call company-scoped RPCs")
+
+    service = SupabaseCompanyAdminService(
+        Store(), cursor_secret="c" * 40, invitee_pepper="i" * 40)
+    principal = CompanyPrincipal(
+        "00000000-0000-4000-8000-000000000001", "", "")
+
+    with pytest.raises(CompanyAdminDenied):
+        service.capabilities(principal, "request-new-user-capabilities")
+
+    assert calls == []
+
+
 def test_supabase_atomic_key_rpc_argument_contract():
     calls = []
 
