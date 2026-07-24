@@ -6,7 +6,7 @@
   },
   "deploy": {
     "numReplicas": 2,
-    "startCommand": "env BREVITAS_WORKER_BILLING_ROLE=authoritative python -m api.worker",
+    "startCommand": "/usr/local/bin/start-with-adc.sh env BREVITAS_WORKER_BILLING_ROLE=authoritative python -m api.worker",
     "healthcheckPath": "/ready",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
