@@ -30,6 +30,8 @@ RUN python -m pip install --no-cache-dir --require-hashes \
 COPY api/ api/
 COPY brevitas/ brevitas/
 COPY token_efficiency_model/ token_efficiency_model/
+COPY scripts/start-with-adc.sh /usr/local/bin/start-with-adc.sh
+RUN chmod 0755 /usr/local/bin/start-with-adc.sh
 
 RUN useradd --create-home --uid 10001 brevitas \
  && chown -R brevitas:brevitas /app
@@ -38,4 +40,4 @@ USER brevitas
 # Railway injects $PORT at runtime; default to 8000 for local `docker run`.
 EXPOSE 8000
 STOPSIGNAL SIGTERM
-CMD ["sh", "-c", "exec uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-graceful-shutdown ${BREVITAS_SHUTDOWN_GRACE_SECONDS:-120}"]
+CMD ["/usr/local/bin/start-with-adc.sh", "sh", "-c", "exec uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-graceful-shutdown ${BREVITAS_SHUTDOWN_GRACE_SECONDS:-120}"]
