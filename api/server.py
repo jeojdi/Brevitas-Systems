@@ -123,10 +123,12 @@ def _optimize_message_logged(text: str) -> dict:
 
 from .auth import generate_api_key, hash_key
 from .build_info import build_identity, validate_production_build_identity
-from brevitas.receipts import TokenReceipt, calculate_costs, normalize_usage, MODEL_PRICES
+from brevitas.receipts import (TokenReceipt, calculate_costs, normalize_usage,
+                               MODEL_PRICES, PRICING_VERSION, model_price)
 from brevitas.identity import CUSTOMER_ID_HEADER, normalize_customer_id, tenant_key
 from .store import make_store, PROVIDER_COSTS_PER_1M
 from brevitas.semantic_cache import make_semantic_cache
+from brevitas.warming import WarmPrefix, set_warm_observer
 
 # ── Encryption ───────────────────────────────────────────────────────────────
 
@@ -886,10 +888,21 @@ def _validate_runtime_config() -> None:
     if not origins or "*" in origins:
         raise RuntimeError(
             "Production requires an explicit ALLOWED_ORIGINS allowlist")
-    if not os.getenv("FORWARDED_ALLOW_IPS", "").strip():
+    forwarded_allow_ips = os.getenv("FORWARDED_ALLOW_IPS", "").strip()
+    if not forwarded_allow_ips:
         raise RuntimeError(
             "Production requires FORWARDED_ALLOW_IPS so the rate-limit peer address is "
             "read from the trusted edge proxy instead of collapsing to one global bucket")
+    if "*" in {hop.strip() for hop in forwarded_allow_ips.split(",")}:
+        # "*" makes uvicorn trust the entire client-supplied X-Forwarded-For chain and
+        # resolve the peer to its left-most (client-controlled) entry, so any caller can
+        # send a random X-Forwarded-For per request and mint a fresh rate-limit bucket —
+        # re-opening the exact bypass _rate_key was hardened to close. Name the specific
+        # trusted proxy hop(s) instead (the Railway edge IP/CIDR).
+        raise RuntimeError(
+            "Production FORWARDED_ALLOW_IPS must name the specific trusted proxy hop(s), "
+            "not '*': trusting '*' lets any client spoof X-Forwarded-For to bypass rate "
+            "limiting. Set it to the Railway edge IP/CIDR (see GO_LIVE_RUNBOOK Phase 2).")
     redis_url = os.getenv("REDIS_URL", "").strip()
     if redis_url and not redis_url.startswith("rediss://"):
         raise RuntimeError("Production REDIS_URL must use TLS (rediss://)")
@@ -1392,6 +1405,34 @@ async def _lease_guarded_body_iterator(original, lease, release_admission,
         await release_admission()
 
 
+# Warming is org-level opt-in read on every proxy request; the TTL cache keeps
+# the store lookup off the hot path (one RPC per org per minute on Supabase).
+_warm_enabled_cache = BoundedTTLMap[str, bool](
+    ttl_s=min(60, _RESOURCE_BOUNDS.registry_ttl_s),
+    max_entries=_RESOURCE_BOUNDS.registry_max_entries,
+    max_value_bytes=16,
+    sizer=lambda _value: 1,
+    copier=lambda value: value,
+)
+
+
+def _warm_enabled_cached(organization_id: str, customer_id: str = "") -> bool:
+    """Warming is best-effort: a store failure means not-warm, never a 503."""
+    if not organization_id:
+        return False
+    cached = _warm_enabled_cache.get(organization_id)
+    if cached is not None:
+        return cached
+    try:
+        enabled = bool(_store.warm_enabled(organization_id, customer_id))
+    except Exception as exc:
+        logger.warning("warm policy lookup unavailable error_type=%s",
+                       type(exc).__name__)
+        return False
+    _warm_enabled_cache.put(organization_id, enabled)
+    return enabled
+
+
 @app.middleware("http")
 async def _protect_model_proxy(request: Request, call_next):
     if request.url.path not in _PROXY_PATHS:
@@ -1429,6 +1470,9 @@ async def _protect_model_proxy(request: Request, call_next):
             request.state.brevitas_customer_id = auth_context.customer_id
             request.state.brevitas_cache_enabled = await asyncio.to_thread(
                 _store.cache_enabled, auth_context.organization_id, auth_context.customer_id)
+            request.state.brevitas_warm_enabled = await asyncio.to_thread(
+                _warm_enabled_cached, auth_context.organization_id,
+                auth_context.customer_id)
             _proxy_auth_context.set(auth_context)
         except HTTPException as exc:
             return JSONResponse(
@@ -2939,6 +2983,111 @@ def ollama_models(request: Request, kh: str = Depends(_authenticated)):
         return {"models": _PROVIDER_MODELS["ollama"], "available": False}
 
 
+# ── Predictive cache warming ──────────────────────────────────────────────────
+
+_WARM_PROVIDERS = ("anthropic", "openai", "deepseek")
+# Warming is active only where the cache math works AND a worker keep-alive
+# path exists. Anthropic: 0.10x reads that refresh the TTL for free. DeepSeek:
+# 0.02x reads on an automatic cache that persists hours while in use. Enabling
+# any other provider would consent to spend that can never verifiably warm a
+# cache; the per-provider reason below is surfaced in the 400.
+_WARM_ACTIVE_PROVIDERS = ("anthropic", "deepseek")
+_WARM_INACTIVE_REASONS = {
+    # Economics work on gpt-5.6+ (0.10x cached reads, explicit breakpoints),
+    # but OpenAI does not document TTL refresh on read, so keep-alive pings
+    # are unverifiable spend — and no OpenAI ping pipeline exists yet.
+    "openai": "gpt-5.6+ reads at 0.10x, but OpenAI does not document TTL "
+              "refresh on read, so keep-alive pings cannot verifiably keep a "
+              "cache warm",
+}
+
+
+class WarmingConfigRequest(BaseModel):
+    provider: str
+    provider_api_key: str = ""
+    enabled: bool
+    # Warming spends the organization's provider budget on keep-alive pings, so
+    # enabling demands an explicit spend acknowledgement in the SAME request.
+    accept_spend_terms: bool = False
+    daily_budget_usd: float = Field(default=0.0, ge=0, le=99_999_999)
+    max_warm_customers: int = Field(default=100, ge=1, le=1_000_000)
+    max_pings_per_customer_day: int = Field(default=24, ge=1, le=10_000)
+
+
+@app.get("/v1/warming")
+@limiter.limit("60/minute")
+def get_warming(request: Request):
+    _, organization = _member_organization(request)
+    try:
+        return _store.warm_status(organization["id"])
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
+
+
+@app.put("/v1/warming")
+@limiter.limit("30/minute")
+def set_warming(request: Request, body: WarmingConfigRequest):
+    user_id, organization = _member_organization(request, write=True)
+    if body.provider not in _WARM_PROVIDERS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown warming provider '{body.provider}'")
+    if body.enabled and body.provider not in _WARM_ACTIVE_PROVIDERS:
+        reason = _WARM_INACTIVE_REASONS.get(
+            body.provider, "no keep-alive ping pipeline exists")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Warming for '{body.provider}' is not active ({reason}); "
+                   f"only {', '.join(_WARM_ACTIVE_PROVIDERS)} can be enabled")
+    if body.enabled and body.accept_spend_terms is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="Enabling warming requires accept_spend_terms=true in the same request")
+    if body.provider_api_key:
+        try:
+            encrypted_key = _encrypt(body.provider_api_key, context={
+                "purpose": "warm_provider_credential",
+                "organization_id": organization["id"],
+            })
+        except _CREDENTIAL_DEPENDENCY_ERRORS as exc:
+            raise _credential_dependency_unavailable(exc) from exc
+    else:
+        encrypted_key = ""  # keep-existing-key semantics live in the store
+    try:
+        saved = _store.warm_credentials_upsert(
+            organization["id"], body.provider, encrypted_key, body.enabled,
+            user_id, body.daily_budget_usd, body.max_warm_customers,
+            body.max_pings_per_customer_day)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
+    _warm_enabled_cache.discard(organization["id"])
+    masked = ("*" * 8 + body.provider_api_key[-4:]
+              if len(body.provider_api_key) > 4 else "")
+    return {"ok": True, "provider": saved["provider"],
+            "enabled": bool(saved["enabled"]),
+            "credential_state": saved["credential_state"], "masked_key": masked}
+
+
+@app.delete("/v1/warming/{provider}")
+@limiter.limit("30/minute")
+def delete_warming(request: Request, provider: str):
+    _, organization = _member_organization(request, write=True)
+    if provider not in _WARM_PROVIDERS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown warming provider '{provider}'")
+    try:
+        purged = _store.warm_credentials_purge(organization["id"], provider)
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
+    _warm_enabled_cache.discard(organization["id"])
+    if not purged.get("credentials_deleted"):
+        raise HTTPException(status_code=404,
+                            detail="Warming is not configured for this provider")
+    return {"purged": True, "provider": provider,
+            "prefixes_deleted": int(purged.get("prefixes_deleted") or 0)}
+
+
 # ── Compression ───────────────────────────────────────────────────────────────
 
 _MAX_STR = 50_000
@@ -3579,21 +3728,29 @@ class UsageReportRequest(BaseModel):
 
 
 _QUALITY_AFFECTING_STRATEGIES = (
-    "retrieve", "retrieval", "llmlingua", "lossy", "semantic_cache", "exact_cache",
+    "retrieve", "retrieval", "llmlingua", "lossy", "semantic_cache",
     "response_cache", "reorder", "compress",
 )
 _BYTE_PRESERVING_STRATEGIES = (
+    # exact_cache replays a provider response for a byte-identical request, so
+    # reuse changes nothing the caller can observe. Fuzzy semantic_cache stays
+    # quality-affecting: cosine similarity does not prove answer equivalence.
     "native_cache", "cache_only", "passthrough", "byte_preserving", "lossless",
+    "exact_cache",
 )
 BREVITAS_FEE_RATE = 0.25
 
 
-def _verification_mode(strategy: str) -> str:
+def _verification_mode(strategy: str, *, cache_attributable: bool = False) -> str:
     """Classify quality by what the optimizer did, never by an invented score."""
     value = (strategy or "").strip().lower()
     if any(marker in value for marker in _QUALITY_AFFECTING_STRATEGIES):
         return "quality_affecting"
     if any(marker in value for marker in _BYTE_PRESERVING_STRATEGIES):
+        return "byte_preserving"
+    # A provider-native cache read on Brevitas-owned breakpoints leaves the
+    # response provably unchanged, whatever the strategy label says.
+    if cache_attributable:
         return "byte_preserving"
     return "unknown"
 
@@ -3672,7 +3829,8 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         incremental_savings_usd = round(
             body.control_cost_usd - costs["actual_cost_usd"], 10)
 
-    mode = _verification_mode(body.strategy)
+    mode = _verification_mode(body.strategy,
+                              cache_attributable=body.cache_attributable)
     stream = _seq_stream(tenant_gate_key)
     if mode == "byte_preserving":
         quality_status = "verified"
@@ -3693,12 +3851,18 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
     # Caller-reported SDK values are analytics only. Only the in-process proxy,
     # which observed the provider response, may create verified/billable savings.
     # Live charging is intentionally narrower than analytics. Only authoritative
-    # provider receipts from input-byte-preserving methods can create billable
-    # savings. Response reuse, reordering, retrieval, and other quality-affecting
-    # methods remain non-billable until their gate state is durable and auditable.
+    # provider receipts from input-byte-preserving methods (including exact_cache
+    # replays) can create billable savings. Reordering, retrieval, and other
+    # quality-affecting methods remain non-billable until their gate state is
+    # durable and auditable. The native cache discount reaches `measured` only
+    # through the cache_attributable branch of calculate_costs, so caller-owned
+    # markers and provider-automatic caching never enter the billable number.
+    # Warming pings (strategy cache_warm) are spend Brevitas initiated — spend
+    # is recorded, savings never.
     verified = (max(0.0, float(measured or 0))
                 if authoritative and mode == "byte_preserving"
-                and quality_status == "verified" else 0.0)
+                and quality_status == "verified"
+                and strategy_name != "cache_warm" else 0.0)
     fee = round(verified * BREVITAS_FEE_RATE, 10)
 
     inserted = _store.record_usage(
@@ -3836,7 +4000,7 @@ def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
 
 @app.get("/v1/provider-costs")
 def provider_costs():
-    return {"pricing_as_of": "2026-07-10", "costs_per_1m_tokens": PROVIDER_COSTS_PER_1M}
+    return {"pricing_as_of": PRICING_VERSION, "costs_per_1m_tokens": PROVIDER_COSTS_PER_1M}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -3861,6 +4025,31 @@ def stats_breakdown(request: Request, kh: str = Depends(_authenticated)):
 def stats_activity(request: Request, kh: str = Depends(_authenticated)):
     _require_scope(request, kh, "usage:read_own")
     return _store.get_activity(kh)
+
+
+# Per-provider breakdown rows for /v1/stats/cache. Additive contract: a store
+# that does not compute per_provider yet keeps the original response shape
+# rather than advertising an empty breakdown it never measured.
+_CACHE_STATS_PROVIDER_FIELDS = (
+    "provider", "cached_input_tokens", "native_cache_discount_usd",
+    "attributable_discount_usd", "warm_pings", "warm_spend_usd", "warm_hits")
+
+
+@app.get("/v1/stats/cache")
+@limiter.limit("120/minute")
+def stats_cache(request: Request, kh: str = Depends(_authenticated)):
+    _require_scope(request, kh, "usage:read_own")
+    body = _store.cache_stats(kh)
+    if not isinstance(body, dict):
+        return body
+    rows = body.get("per_provider")
+    if isinstance(rows, list):
+        body["per_provider"] = [
+            {field: row.get(field) for field in _CACHE_STATS_PROVIDER_FIELDS}
+            for row in rows if isinstance(row, dict)]
+    else:
+        body.pop("per_provider", None)
+    return body
 
 
 @app.get("/v1/admin/stats")
@@ -4226,9 +4415,73 @@ def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
                          tenant_gate_key=tenant_gate_key)
 
 
+def _hosted_warm_observe(organization_id: str, customer_id: str,
+                         prefix: WarmPrefix, cache_read: bool) -> None:
+    """In-process bridge: encrypt an observed warm prefix and record its arrival.
+
+    Best-effort by contract — every failure is logged type-only and swallowed,
+    so observation can never affect the response path that fired it. The
+    plaintext wraps the canonical payload with the recording service key hash:
+    the worker refuses to attribute ping spend without a live organization_service
+    key, so requests made with any other key type are not observable at all
+    (recording them would only churn claim→prefix_invalid in the worker).
+    """
+    try:
+        auth_context = _proxy_auth_context.get()
+        if (auth_context is None
+                or auth_context.key_type != "organization_service"
+                or auth_context.organization_id != organization_id):
+            return
+        payload_ciphertext = _encrypt(
+            json.dumps({"recorded_by_key_hash": auth_context.key_hash,
+                        "payload": prefix.payload},
+                       sort_keys=True, separators=(",", ":"), default=str),
+            # Must byte-match the worker's decrypt context (_warm_one,
+            # api/worker.py) — the envelope cipher binds it, so any drift
+            # makes every ping fail.
+            context={
+                "purpose": "warm_prefix_payload",
+                "organization_id": organization_id,
+                "customer_id": customer_id,
+            })
+        # Observer-priced reserve for one keep-alive, held against the daily
+        # budget by warm_due_claim. The reserve must upper-bound whatever
+        # settle can book, or the daily ceiling stops being structural —
+        # warm_ping_settle adds real receipt cost with no clamp, and the
+        # claim-time BREVITAS_WARM_RESERVE_USD_PER_MTOK floor is an
+        # anthropic-calibrated tunable (0..1000), not a guarantee. Anthropic
+        # worst case is a full cache write at the model+TTL premium.
+        # Automatic-cache providers (deepseek) have no write premium, but
+        # their worst case is a ping whose entry already evicted: the whole
+        # prefix billed at the full input rate, 39-120x the cached rate — so
+        # the cached (best-case) rate is never a valid reserve. None
+        # (unpriced model) keeps any stored value.
+        price = model_price(prefix.provider, prefix.model)
+        ping_reserve_usd = None
+        if price:
+            if prefix.provider == "anthropic":
+                ping_rate = (price.get("write_1h", price["input"] * 2.0)
+                             if prefix.provider_ttl_seconds > 300
+                             else price.get("write", price["input"] * 1.25))
+            else:
+                ping_rate = max(price["input"],
+                                price.get("write", price["input"]))
+            ping_reserve_usd = round(
+                ping_rate * prefix.prefix_tokens / 1_000_000.0, 10)
+        _store.warm_prefix_observe(
+            organization_id, customer_id, prefix.provider, prefix.prefix_hash,
+            payload_ciphertext, prefix.prefix_tokens, prefix.provider_ttl_seconds,
+            int(os.getenv("BREVITAS_WARM_SAFETY_MARGIN_SECONDS", "60")),
+            cache_read, ping_reserve_usd=ping_reserve_usd)
+    except Exception as exc:
+        logger.warning("warm prefix observation failed error_type=%s",
+                       type(exc).__name__)
+
+
 # Railway serves the management API and provider-compatible proxy from one process.
 from brevitas.proxy import proxy_app, set_usage_reporter
 set_usage_reporter(_hosted_proxy_receipt)
+set_warm_observer(_hosted_warm_observe)
 app.include_router(company_admin_router)
 app.include_router(compliance_admin_router)
 app.include_router(proxy_app.router)

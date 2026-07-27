@@ -270,14 +270,16 @@ begin
         + floor(extract(epoch from (entry.occurred_at-account.current_period_start))/604800)
           * interval '7 days';
     period_end := period_start+interval '7 days';
-    -- Exclude 'review': those rows were never billed and await manual
-    -- resolution, so counting them would trip the weekly cap against fees that
-    -- will never be sent (same defect as claim_billing_ledger_entries below).
+    -- Count fees Stripe may already hold: 'sending', 'reported', and ambiguous
+    -- 'review' rows whose outbound send was started (outbound_started_at set) —
+    -- Stripe may have ingested those, so they count toward the cap. A 'review'
+    -- row with no outbound_started_at was provably never sent and is excluded.
     select coalesce(sum(fee_microusd),0) into committed
       from public.billing_ledger
      where organization_id=entry.organization_id
        and occurred_at>=period_start and occurred_at<period_end
-       and status in ('sending','reported');
+       and (status in ('sending','reported')
+            or (status='review' and outbound_started_at is not null));
     if committed+entry.fee_microusd>p_cap_microusd then
         update public.billing_ledger
            set status='capped',last_error='weekly safety cap reached'
@@ -389,18 +391,24 @@ begin
             continue;
         end;
 
-        -- Only amounts in flight ('sending') or already reported to Stripe
-        -- ('reported') count toward the period total returned as
-        -- expected_period_microusd. A 'review' row was never billed and needs
-        -- manual resolution, so counting it permanently poisons reconciliation
-        -- (expected > actual forever) and can trip the weekly cap against fees
-        -- that will never be sent.
+        -- Amounts that count toward the period total returned as
+        -- expected_period_microusd: 'sending', 'reported', and ambiguous
+        -- 'review' rows whose outbound send was started (outbound_started_at
+        -- set). Stripe may have ingested an ambiguous send, so it must count
+        -- toward both the cap and the expected total; otherwise the cap is
+        -- silently exceeded and reconcile() can falsely ACCEPT an unsent entry
+        -- whose fee happens to match an already-ingested review row. A 'review'
+        -- row with no outbound_started_at was provably never sent, so it stays
+        -- excluded (counting it would poison reconciliation: expected > actual
+        -- forever).
         select coalesce(sum(ledger.fee_microusd),0) into committed
           from public.billing_ledger ledger
          where ledger.organization_id=candidate.organization_id
            and ledger.occurred_at>=claim_period_start
            and ledger.occurred_at<claim_period_end
-           and ledger.status in ('sending','reported');
+           and (ledger.status in ('sending','reported')
+                or (ledger.status='review'
+                    and ledger.outbound_started_at is not null));
         if not was_reclaimed
            and committed+candidate.fee_microusd>p_cap_microusd then
             update public.billing_ledger

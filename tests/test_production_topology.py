@@ -267,6 +267,17 @@ def test_production_requires_forwarded_allow_ips(monkeypatch):
     with pytest.raises(RuntimeError, match="FORWARDED_ALLOW_IPS"):
         server._validate_runtime_config()
 
+    # "*" is rejected: it trusts the client-supplied X-Forwarded-For chain and lets any
+    # caller spoof their peer to mint fresh rate-limit buckets (the bypass _rate_key closed).
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    with pytest.raises(RuntimeError, match="FORWARDED_ALLOW_IPS"):
+        server._validate_runtime_config()
+
+    # A "*" mixed into an otherwise-specific list is still rejected.
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8, *")
+    with pytest.raises(RuntimeError, match="FORWARDED_ALLOW_IPS"):
+        server._validate_runtime_config()
+
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     server._validate_runtime_config()
 

@@ -26,11 +26,12 @@ const MANIFEST_PATH = join(HERE, 'migration-fresh-manifest.txt')
 const LEDGER = 'public.brevitas_schema_migrations'
 
 // Money columns and the numeric(precision, scale) the migrations declare.
-// billing_events: supabase/migrations/20260626_create_billing.sql
+// billing_events: created numeric(12,8) in 20260626_create_billing.sql, widened to
+// numeric(18,10) by 202607270002_widen_billing_events_money.sql (this is the applied head).
 // usage_log:      supabase/migrations/20260710_cloud_usage.sql
 export const EXPECTED_MONEY_COLUMNS = Object.freeze([
-  { table: 'billing_events', column: 'cost_saved_usd', precision: 12, scale: 8 },
-  { table: 'billing_events', column: 'brevitas_fee_usd', precision: 12, scale: 8 },
+  { table: 'billing_events', column: 'cost_saved_usd', precision: 18, scale: 10 },
+  { table: 'billing_events', column: 'brevitas_fee_usd', precision: 18, scale: 10 },
   { table: 'usage_log', column: 'baseline_cost_usd', precision: 18, scale: 10 },
   { table: 'usage_log', column: 'actual_cost_usd', precision: 18, scale: 10 },
   { table: 'usage_log', column: 'measured_savings_usd', precision: 18, scale: 10 },

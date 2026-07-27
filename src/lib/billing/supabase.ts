@@ -91,15 +91,29 @@ export interface PendingLedgerEntry {
   } | null;
 }
 
-function supabaseSettings() {
+// Service-role settings: the only thing billingDatabase() needs. The Stripe
+// webhook uses billingDatabase() exclusively and never verifies a user token, so
+// it must NOT require NEXT_PUBLIC_SUPABASE_ANON_KEY — requiring it here made a
+// service-role-only deployment 500 on every webhook (Stripe then retries for
+// days and billing state goes stale). The anon key is validated only on the
+// token-verification path below.
+function serviceSettings() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  // The auth key verifies user-supplied bearer tokens and MUST be the
-  // anon/publishable key. Never fall back to the service-role key here:
-  // verifying tokens with the service-role key is a privilege error that
-  // masks a missing-config as a misleading 401.
-  const authKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
   if (!url || !serviceKey) {
+    throw new Error('Supabase billing configuration is missing');
+  }
+  return { url, serviceKey };
+}
+
+// Auth settings: verifying a user-supplied bearer token requires the
+// anon/publishable key. Never fall back to the service-role key here — verifying
+// tokens with the service-role key is a privilege error that masks a
+// missing-config as a misleading 401.
+function authSettings() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const authKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  if (!url) {
     throw new Error('Supabase billing configuration is missing');
   }
   if (!authKey) {
@@ -108,11 +122,11 @@ function supabaseSettings() {
       + 'the service-role key must not be used as the auth key',
     );
   }
-  return { url, serviceKey, authKey };
+  return { url, authKey };
 }
 
 export function billingDatabase() {
-  const { url, serviceKey } = supabaseSettings();
+  const { url, serviceKey } = serviceSettings();
   return createClient(url, serviceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -124,7 +138,7 @@ export async function authenticatedBillingUser(request: Request): Promise<User |
   const token = auth.slice(7).trim();
   if (!token) return null;
 
-  const { url, authKey } = supabaseSettings();
+  const { url, authKey } = authSettings();
   const client = createClient(url, authKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });

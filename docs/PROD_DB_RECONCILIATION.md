@@ -42,6 +42,13 @@ collided), with all 8 gate tables created, `user_keys` dropped as designed, and
 `usage_log` gaining `organization_id`/`customer_id`. The clean-DB harness
 (`scripts/ci/run-migration-tests.sh`) still passes (fresh + upgrade + double-apply).
 
+**Re-rehearsed 2026-07-27 after the cache-warming additions: 51/51 clean.** The three
+new migrations (`202607280001_cache_warming`, `202607280002_usage_stats_cache_metrics`,
+`202607280003_multi_provider_warming`) apply on top of the same prod snapshot
+(bootstrap stubs from `scripts/ci/migration-bootstrap.sql`, then snapshot, then the
+full fresh-manifest chain) with zero failures, and the clean-DB harness passes with
+the cache-warming behavioral assertions included.
+
 The two divergences found and fixed:
 
 1. **`profiles` policies already exist.** Prod hand-created `profiles` plus its two RLS

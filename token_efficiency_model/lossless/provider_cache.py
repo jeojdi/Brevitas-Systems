@@ -394,9 +394,14 @@ def apply_openai_cache(body: dict, tenant_key: str = "", *,
 # Anthropic Sonnet:       in $3.00, cache-rd $0.30,  out $15.0/1M -> cache_read .10,  output 5.0
 _RATES = {
     "deepseek":  {"cache_read": 0.02,  "cache_write": 1.0, "output": 2.0},
+    # Deliberately the legacy-worst 50% ratio: with no model id we cannot know
+    # the generation, and overstating a cache discount overstates billable
+    # savings. Current gpt-5.x models get their real 10% via _MODEL_RATES.
     "openai":    {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0},
     "anthropic": {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0},
     "groq":      {"cache_read": 1.00,  "cache_write": 1.0, "output": 4.0},
+    "mistral":   {"cache_read": 0.10,  "cache_write": 1.0, "output": 4.0},
+    "xai":       {"cache_read": 0.25,  "cache_write": 1.0, "output": 4.0},
 }
 _DEFAULT_RATES = {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}
 
@@ -414,9 +419,16 @@ _MODEL_RATES = [
     ("deepseek-v4-flash", {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
     ("deepseek-reasoner", {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
     ("deepseek-chat",     {"cache_read": 0.02, "cache_write": 1.0, "output": 2.0}),
+    # gpt-5.6+: cached = 10% of input with an explicit-breakpoint 1.25x write
+    # fee; gpt-5.5/5.x: cached = 10%, automatic (no write fee).
+    ("gpt-5.6",           {"cache_read": 0.10, "cache_write": 1.25, "output": 4.0}),
+    ("gpt-5",             {"cache_read": 0.10, "cache_write": 1.0, "output": 4.0}),
     ("o4-mini",           {"cache_read": 0.25, "cache_write": 1.0, "output": 4.0}),
     ("gpt-4.1",           {"cache_read": 0.25,  "cache_write": 1.0, "output": 4.0}),
     ("gpt-4o",            {"cache_read": 0.50,  "cache_write": 1.0, "output": 4.0}),
+    # Groq caching exists only on the gpt-oss family (50% reads); every other
+    # Groq model keeps the provider row's cache_read 1.0 (no discount).
+    ("openai/gpt-oss",    {"cache_read": 0.50, "cache_write": 1.0, "output": 4.0}),
     ("claude",            {"cache_read": 0.10,  "cache_write": 1.25, "output": 5.0}),
 ]
 
@@ -424,10 +436,6 @@ _MODEL_RATES = [
 def rates_for(provider: str, model: str = "") -> Dict[str, float]:
     """Rate ratios for a specific model, falling back to the provider row."""
     m = (model or "").lower()
-    # OpenAI's current prompt-caching guide specifies a 1.25x write price for
-    # GPT-5.6 and later families. Reads retain the provider/model read ratio.
-    if m.startswith("gpt-5.6"):
-        return {**_RATES["openai"], "cache_write": 1.25}
     if m:
         for prefix, r in _MODEL_RATES:
             if m.startswith(prefix):

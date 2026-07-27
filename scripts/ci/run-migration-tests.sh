@@ -39,8 +39,17 @@ done < <(
   sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
     scripts/ci/migration-upgrade-manifest.txt
 )
-if [[ "${#fresh_migrations[@]}" -ne 46 || "${#upgrade_migrations[@]}" -ne 34 ]]; then
-  echo 'Migration manifests differ from the verified 46-file fresh / 34-file upgrade contract.' >&2
+# Sanity-guard the manifests without pinning an absolute count: the exact set,
+# order, and checksums are enforced rigorously by verify-migrations.mjs, so an
+# absolute count here only goes stale every time a migration is legitimately
+# added. Require both manifests non-empty and fresh = baseline + upgrade
+# (i.e. the upgrade chain is a suffix of the fresh chain, so fresh >= upgrade).
+if [[ "${#fresh_migrations[@]}" -eq 0 || "${#upgrade_migrations[@]}" -eq 0 ]]; then
+  echo 'Migration manifests must be non-empty (fresh and upgrade).' >&2
+  exit 1
+fi
+if [[ "${#fresh_migrations[@]}" -lt "${#upgrade_migrations[@]}" ]]; then
+  echo 'Fresh manifest must contain at least the upgrade chain (fresh = baseline + upgrade).' >&2
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))
@@ -69,6 +78,11 @@ workspace_experiences_migration="${upgrade_migrations[30]}"
 split_savings_migration="${upgrade_migrations[31]}"
 service_role_data_plane_migration="${upgrade_migrations[32]}"
 supabase_advisor_hardening_migration="${upgrade_migrations[33]}"
+device_expiry_migration="${upgrade_migrations[34]}"
+billing_events_money_migration="${upgrade_migrations[35]}"
+cache_warming_migration="${upgrade_migrations[36]}"
+usage_stats_cache_migration="${upgrade_migrations[37]}"
+multi_provider_warming_migration="${upgrade_migrations[38]}"
 if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
    || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
    || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
@@ -93,8 +107,13 @@ if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery
    || "${workspace_experiences_migration}" != 'supabase/migrations/202607200018_workspace_experiences.sql' \
    || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' \
    || "${service_role_data_plane_migration}" != 'supabase/migrations/202607220001_service_role_data_plane.sql' \
-   || "${supabase_advisor_hardening_migration}" != 'supabase/migrations/202607220002_supabase_advisor_hardening.sql' ]]; then
-  echo 'Frozen migrations 010-013 or the 20260720 forward suffix are out of order.' >&2
+   || "${supabase_advisor_hardening_migration}" != 'supabase/migrations/202607220002_supabase_advisor_hardening.sql' \
+   || "${device_expiry_migration}" != 'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql' \
+   || "${billing_events_money_migration}" != 'supabase/migrations/202607270002_widen_billing_events_money.sql' \
+   || "${cache_warming_migration}" != 'supabase/migrations/202607280001_cache_warming.sql' \
+   || "${usage_stats_cache_migration}" != 'supabase/migrations/202607280002_usage_stats_cache_metrics.sql' \
+   || "${multi_provider_warming_migration}" != 'supabase/migrations/202607280003_multi_provider_warming.sql' ]]; then
+  echo 'Frozen migrations 010-013 or the 20260720-20260728 forward suffix are out of order.' >&2
   exit 1
 fi
 
@@ -188,6 +207,8 @@ run_forward_assertions() {
     --file scripts/ci/migration-durable-onboarding-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-billing-customer-owner-fencing-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-cache-warming-assertions.sql
 }
 
 echo 'Testing the known production-baseline upgrade through migration 017.'
@@ -341,6 +362,21 @@ assert_atomic_migration_rollback "${supabase_advisor_hardening_migration}" \
   "(select proconfig is null from pg_proc where oid='public.company_role_permissions(text)'::regprocedure) and has_function_privilege('anon','public.handle_new_user()','EXECUTE')"
 apply_migration "${supabase_advisor_hardening_migration}"
 apply_migration "${supabase_advisor_hardening_migration}"
+echo 'Applying the 20260727-20260728 release tail twice to prove idempotence.'
+apply_migration "${device_expiry_migration}"
+apply_migration "${device_expiry_migration}"
+apply_migration "${billing_events_money_migration}"
+apply_migration "${billing_events_money_migration}"
+assert_atomic_migration_rollback "${cache_warming_migration}" \
+  "to_regclass('public.warm_credentials') is null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is null"
+apply_migration "${cache_warming_migration}"
+apply_migration "${cache_warming_migration}"
+apply_migration "${usage_stats_cache_migration}"
+apply_migration "${usage_stats_cache_migration}"
+assert_atomic_migration_rollback "${multi_provider_warming_migration}" \
+  "to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is not null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is null"
+apply_migration "${multi_provider_warming_migration}"
+apply_migration "${multi_provider_warming_migration}"
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions

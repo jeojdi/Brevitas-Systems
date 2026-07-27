@@ -47,15 +47,17 @@ jobs:
         run: python -m pip install --require-hashes -r scripts/ci/python-test.lock
       - name: Test, lint, and build root app
         env:
-          API_URL: http://localhost:8000
+          # next.config.ts requires an https BREVITAS_API_URL for production builds
+          # (next build forces NODE_ENV=production). API_URL is a dead legacy name.
+          BREVITAS_API_URL: https://api.ci.example.com
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
           NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder
           VITE_SUPABASE_URL: https://example.supabase.co
           VITE_SUPABASE_ANON_KEY: sb_publishable_ci_placeholder
         run: |
+          npm run build
           npm test
           npm run lint
-          npm run build
       - name: Test and build dashboard
         env:
           VITE_SUPABASE_URL: https://example.supabase.co

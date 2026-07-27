@@ -60,10 +60,12 @@ def _reorder_enabled() -> bool:
 
 
 def _anthropic_cache_enabled() -> bool:
-    """Brevitas-owned Anthropic writes are opt-in because cache creation has a
-    premium and no online router can prove that a future read will occur. Caller-owned
+    """Brevitas-owned Anthropic writes are ON by default: the ROI gate + per-model
+    min-token guard bound the write premium, and injection is metadata-only (response
+    bytes untouched). Set BREVITAS_ANTHROPIC_CACHE=0 to disable fleet-wide; the
+    per-tenant "cache_injection" lever disables per tenant. Caller-owned
     automatic/explicit caching is always preserved and merely metered."""
-    return os.environ.get("BREVITAS_ANTHROPIC_CACHE", "0").strip().lower() in {
+    return os.environ.get("BREVITAS_ANTHROPIC_CACHE", "1").strip().lower() in {
         "1", "true", "yes", "on",
     }
 
@@ -395,7 +397,11 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             meta["cache_breakpoints"] = existing
             meta["cache_control_owner"] = "caller"
         elif not _anthropic_cache_enabled():
-            meta["cache_roi"] = "explicit_opt_in_required"
+            meta["cache_roi"] = "disabled_by_env"
+            meta["cache_breakpoints"] = 0
+            meta["cached_prefix_tokens"] = 0
+        elif not _lever_allowed("cache_injection", tenant_key):
+            meta["cache_roi"] = "lever_denied"
             meta["cache_breakpoints"] = 0
             meta["cached_prefix_tokens"] = 0
         else:

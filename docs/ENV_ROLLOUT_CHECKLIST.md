@@ -204,12 +204,24 @@ railway variables --service Brevitas-Systems \
 # BREVITAS_ENV — known — production fails closed if not production. Status: VERIFY.
 # ALLOWED_ORIGINS — known — the Vercel prod origin for CORS. Status: VERIFY.
 # FORWARDED_ALLOW_IPS — known — Railway terminates TLS at its edge and forwards; uvicorn must trust
-#   the forwarded-for header or every client sees the proxy IP (api/server.py:843, Dockerfile CMD).
-#   '*' trusts Railway's edge only because the container is not publicly reachable except via it.
+#   the forwarded-for header or every client sees the proxy IP (api/server.py, Dockerfile CMD).
+#   DO NOT use '*'. '*' trusts the entire client-supplied X-Forwarded-For chain and resolves the
+#   peer to its left-most (client-controlled) entry, so any caller can spoof X-Forwarded-For per
+#   request and mint a fresh rate-limit bucket — reopening the bypass _rate_key closed. Production
+#   startup now fails closed on '*'.
+#   RECOMMENDED VALUE (below): trust only private/internal ranges. The container is not publicly
+#   reachable except via Railway's proxy, which connects from a private address, so uvicorn walks
+#   X-Forwarded-For right-to-left and returns the first NON-private hop = the real client IP that
+#   Railway's edge appended, ignoring any public address a caller spoofs into the header. This is
+#   robust to Railway rotating its edge IPs (no brittle exact pin needed). uvicorn 0.51 supports
+#   CIDR ranges (verified in middleware/proxy_headers.py::_TrustedHosts).
+#   VERIFY after deploy: curl the API from a machine whose public IP you know; the access log /
+#   429 buckets must key on THAT ip, not a single shared proxy address. If everything collapses to
+#   one private IP, Railway is not appending the client to X-Forwarded-For — widen/adjust the list.
 railway variables --service Brevitas-Systems \
   --set 'BREVITAS_ENV=production' \
   --set 'ALLOWED_ORIGINS=https://brevitassystems.com' \
-  --set 'FORWARDED_ALLOW_IPS=*' --skip-deploys
+  --set 'FORWARDED_ALLOW_IPS=127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fd00::/8' --skip-deploys
 ```
 
 - **platform-injected (do NOT set):** `RAILWAY_GIT_COMMIT_SHA` (native Railway builds supply it;

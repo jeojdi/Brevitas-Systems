@@ -418,7 +418,8 @@ def test_usage_receipt_alignment_and_method_based_verification(tmp_path, monkeyp
     assert write.json()["brevitas_fee_usd"] == 0
 
 
-def test_authoritative_billing_excludes_response_reuse_and_unknown_models(tmp_path, monkeypatch):
+def test_authoritative_billing_bills_exact_replays_not_fuzzy_reuse_or_unknown_models(
+        tmp_path, monkeypatch):
     import api.server as server
 
     store = UsageStore(str(tmp_path / "billing-quality-boundary.db"))
@@ -426,7 +427,7 @@ def test_authoritative_billing_excludes_response_reuse_and_unknown_models(tmp_pa
     monkeypatch.setattr(server, "_store", store)
     server._seq_streams.clear()
 
-    response_reuse = server._record_usage_report(
+    exact_replay = server._record_usage_report(
         hash_key("bvt_billing_boundary"),
         server.UsageReportRequest(
             provider="openai", model="gpt-4o-mini",
@@ -434,6 +435,17 @@ def test_authoritative_billing_excludes_response_reuse_and_unknown_models(tmp_pa
             fresh_input_tokens=0, output_tokens=0,
             baseline_output_tokens=20, strategy="exact_cache",
             quality_verified=True, request_id="exact-cache",
+        ),
+        authoritative=True,
+    )
+    semantic_reuse = server._record_usage_report(
+        hash_key("bvt_billing_boundary"),
+        server.UsageReportRequest(
+            provider="openai", model="gpt-4o-mini",
+            baseline_tokens=100, compressed_tokens=0,
+            fresh_input_tokens=0, output_tokens=0,
+            baseline_output_tokens=20, strategy="semantic_cache",
+            quality_verified=True, request_id="semantic-cache",
         ),
         authoritative=True,
     )
@@ -458,13 +470,66 @@ def test_authoritative_billing_excludes_response_reuse_and_unknown_models(tmp_pa
         authoritative=True,
     )
 
-    assert response_reuse["quality_status"] == "verified"
-    assert response_reuse["verified_savings_usd"] == 0
-    assert response_reuse["brevitas_fee_usd"] == 0
+    # An exact-hash replay serves provably identical bytes: (100 input +
+    # 20 output tokens avoided) is billable savings under Phase 4.
+    assert exact_replay["quality_status"] == "verified"
+    assert exact_replay["verified_savings_usd"] == 0.000027
+    assert exact_replay["brevitas_fee_usd"] == 0.00000675
+    # Fuzzy reuse never proves answer equivalence, so it stays non-billable.
+    assert semantic_reuse["verified_savings_usd"] == 0
+    assert semantic_reuse["brevitas_fee_usd"] == 0
     assert unknown_model["pricing_status"] == "unpriced"
     assert unknown_model["verified_savings_usd"] == 0
     assert native_cache["pricing_status"] == "priced"
     assert native_cache["verified_savings_usd"] > 0
+
+
+def test_cache_attribution_and_warming_billing_boundaries(tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "cache-attribution-boundary.db"))
+    store.create_key(hash_key("bvt_cache_attribution"), "cache-attribution")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+
+    base = dict(
+        provider="openai", model="gpt-4o-mini",
+        baseline_tokens=100, compressed_tokens=100,
+        fresh_input_tokens=0, cached_input_tokens=100, output_tokens=0,
+    )
+    attributable = server._record_usage_report(
+        hash_key("bvt_cache_attribution"),
+        server.UsageReportRequest(**base, cache_attributable=True,
+                                  request_id="brevitas-owned-read"),
+        authoritative=True,
+    )
+    caller_owned = server._record_usage_report(
+        hash_key("bvt_cache_attribution"),
+        server.UsageReportRequest(**base, cache_attributable=False,
+                                  request_id="caller-owned-read"),
+        authoritative=True,
+    )
+    warm_ping = server._record_usage_report(
+        hash_key("bvt_cache_attribution"),
+        server.UsageReportRequest(**base, cache_attributable=True,
+                                  strategy="cache_warm",
+                                  request_id="warm-ping"),
+        authoritative=True,
+    )
+
+    # A native read on Brevitas-owned breakpoints is byte-preserving even with
+    # no strategy label; the discount (100 * (0.15 - 0.075) / 1M) is billable.
+    assert attributable["quality_status"] == "verified"
+    assert attributable["native_cache_discount_usd"] == 0.0000075
+    assert attributable["verified_savings_usd"] == 0.0000075
+    # Caller-owned markers: the discount stays measured for analytics but never
+    # enters the billable number.
+    assert caller_owned["native_cache_discount_usd"] == 0.0000075
+    assert caller_owned["verified_savings_usd"] == 0
+    assert caller_owned["brevitas_fee_usd"] == 0
+    # Warming pings are Brevitas-initiated spend — never savings.
+    assert warm_ping["verified_savings_usd"] == 0
+    assert warm_ping["brevitas_fee_usd"] == 0
 
 
 def test_repo_client_model_breakdown_reconciles(tmp_path):

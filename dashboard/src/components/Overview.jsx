@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStats, fetchActivity } from '../lib/api.js'
+import { fetchStats, fetchActivity, fetchCacheStats } from '../lib/api.js'
 import InstallCommand from './InstallCommand.jsx'
 import {
   AreaChart, Area,
@@ -72,6 +72,7 @@ function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-d
 export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true }) {
   const [stats, setStats]     = useState(previewStats)
   const [activity, setActivity] = useState(null)
+  const [cacheStats, setCacheStats] = useState(null)
   const [loading, setLoading] = useState(!previewStats)
   const [error, setError]     = useState('')
   const controllerRef = useRef(null)
@@ -87,13 +88,15 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
     controllerRef.current = controller
     setError('')
     try {
-      const [data, act] = await Promise.all([
+      const [data, act, cache] = await Promise.all([
         fetchStats(apiKey, { signal: controller.signal }),
         fetchActivity(apiKey, { signal: controller.signal }).catch(() => null),
+        fetchCacheStats(apiKey, { signal: controller.signal }).catch(() => null),
       ])
       if (controllerRef.current === controller) {
         setStats(data)
         setActivity(act)
+        setCacheStats(cache)
       }
     } catch (e) {
       if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
@@ -125,6 +128,14 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 
   const recentAvoided = recentCalls.reduce((total, row) => total + row.inputAvoided, 0)
   const chartData = recentCalls
+
+  // /v1/stats/cache history arrives newest-first; the chart wants chronological order.
+  const cacheHistory = [...(cacheStats?.history ?? [])]
+    .reverse()
+    .map((w) => ({
+      week: w.week_start,
+      discount: Number(w.native_cache_discount_usd) || 0,
+    }))
 
   const gridColor    = darkMode ? '#1c2440' : '#e2e4f0'
   const tickColor    = darkMode ? '#576090' : '#8b93b8'
@@ -169,6 +180,87 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
           label="// Brevitas lift vs paired control"
         />
       </div>
+
+      {/* ── Provider cache ── */}
+      {cacheStats && (
+        <>
+          <div>
+            <p className="annotation tracking-widest uppercase mb-2">Provider cache</p>
+            <div className="h-px bg-brand-border dark:bg-brand-dark-border" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
+            <BigStat value={fmt(cacheStats.cached_input_tokens || 0)} label="// cached input tokens" valueClass="text-brand-blue" />
+            <BigStat value={fmt(cacheStats.fresh_input_tokens || 0)} label="// fresh input tokens" />
+            <BigStat value={`${Number(cacheStats.cache_hit_rate_pct || 0).toFixed(2)}%`} label="// cache hit rate" valueClass="text-brand-blue" />
+            <BigStat value={`$${Number(cacheStats.native_cache_discount_usd || 0).toFixed(2)}`} label="// native cache discount" />
+            <BigStat value={`$${Number(cacheStats.attributable_discount_usd || 0).toFixed(2)}`} label="// Brevitas-attributable discount" valueClass="text-brand-blue" />
+            <BigStat
+              value={cacheStats.warm_spend_usd == null ? 'Not measured' : `$${Number(cacheStats.warm_spend_usd).toFixed(2)}`}
+              label="// cache warming spend"
+            />
+            <BigStat
+              value={cacheStats.warm_pings == null ? 'Not measured' : fmt(cacheStats.warm_pings)}
+              label="// warm pings sent"
+            />
+            <BigStat
+              value={cacheStats.warm_hits == null ? 'Not measured' : fmt(cacheStats.warm_hits)}
+              label="// warm cache hits"
+            />
+          </div>
+          {cacheHistory.length > 0 && (
+            <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8 overflow-hidden">
+              <div className="mb-6">
+                <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
+                  weekly native-cache <em className="italic text-brand-blue">discount</em>
+                </p>
+                <p className="annotation mt-2">// cache-read discounts minus cache-write premiums, by week</p>
+              </div>
+              <div role="img" aria-label="Area chart showing weekly native cache discount in dollars">
+                <ResponsiveContainer width="100%" height={260}>
+                  <AreaChart data={cacheHistory} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
+                    <defs>
+                      <linearGradient id="cacheDiscountArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
+                        <stop offset="100%" stopColor={savedColor} stopOpacity={0.03} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                    <XAxis
+                      dataKey="week"
+                      tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      tickFormatter={(n) => `$${Number(n).toFixed(2)}`}
+                      tickLine={false}
+                      axisLine={false}
+                      width={58}
+                      domain={[0, 'auto']}
+                    />
+                    <Tooltip
+                      {...tooltipStyle}
+                      labelFormatter={(week) => `Week of ${week}`}
+                      formatter={(value, name) => [`$${Number(value).toFixed(2)}`, name]}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="discount"
+                      name="Native cache discount"
+                      stroke={savedColor}
+                      fill="url(#cacheDiscountArea)"
+                      strokeWidth={3}
+                      dot={{ r: 5.5, fill: savedColor, stroke: pointRingColor, strokeWidth: 2 }}
+                      activeDot={{ r: 7.5, stroke: pointRingColor, strokeWidth: 2.5 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* ── Client activity ── */}
       {activity?.clients?.length > 0 && (

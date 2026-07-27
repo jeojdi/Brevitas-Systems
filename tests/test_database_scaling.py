@@ -917,6 +917,83 @@ def test_supabase_aggregates_and_pages_use_tenant_scoped_rpcs(monkeypatch):
     assert not any("offset" in call[2].get("data", {}) for call in usage_calls)
 
 
+def test_supabase_cache_stats_aggregates_all_time_via_usage_stats_rpc(monkeypatch):
+    # Billing.jsx renders these numbers as all-time, so cache_stats must read
+    # the unbounded usage_stats aggregates (202607280002), never the
+    # ACTIVITY_SCAN_MAX-bounded usage_page walk get_activity uses.
+    store = SupabaseUsageStore("https://example.supabase.co", "service-role")
+    organization_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(store, "key_context", lambda key: {
+        "key_hash": key, "organization_id": organization_id, "owner_id": "owner-a",
+    })
+    warm_providers = [{"provider": "anthropic", "warm_pings": 7, "warm_hits": 3}]
+    monkeypatch.setattr(store, "warm_status",
+                        lambda org: {"providers": warm_providers})
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "rpc/usage_page":
+            # per_provider is documented as a bounded-window approximation;
+            # every topline number must still come from usage_stats.
+            return [{
+                "id": 9, "ts": "2026-07-20T12:00:00+00:00",
+                "provider": "anthropic", "model": "claude-opus-5",
+                "authoritative": True, "cache_attributable": True,
+                "cached_input_tokens": 500, "native_cache_discount_usd": 0.25,
+                "verified_savings_usd": 0.25,
+            }]
+        assert path == "rpc/usage_stats"
+        return {
+            "total_cached_input_tokens": 750,
+            "total_fresh_input_tokens": 250,
+            "total_native_cache_discount_usd": 0.5,
+            "total_attributable_cache_savings_usd": 0.4,
+            "total_calls_avoided": 2,
+            "total_warm_spend_usd": 0.31,
+            "billing_by_week": [{
+                "week_start": "2026-07-20", "calls": 1,
+                "cached_input_tokens": 750,
+                "native_cache_discount_usd": 0.5, "warm_spend_usd": 0.31,
+            }],
+        }
+
+    monkeypatch.setattr(store, "_request", request)
+    stats = store.cache_stats("key-a")
+    assert calls[0][1] == "rpc/usage_stats"
+    assert {call[1] for call in calls} == {"rpc/usage_stats", "rpc/usage_page"}
+    assert calls[0][2]["data"]["p_organization_id"] == organization_id
+    assert stats["cached_input_tokens"] == 750
+    assert stats["fresh_input_tokens"] == 250
+    assert stats["cache_hit_rate_pct"] == 75.0
+    assert stats["native_cache_discount_usd"] == 0.5
+    assert stats["attributable_discount_usd"] == 0.4
+    assert stats["calls_avoided"] == 2
+    assert stats["warm_pings"] == 7
+    assert stats["warm_hits"] == 3
+    assert stats["warm_spend_usd"] == 0.31
+    assert stats["history"] == [{
+        "week_start": "2026-07-20", "cached_input_tokens": 750,
+        "native_cache_discount_usd": 0.5, "warm_spend_usd": 0.31,
+    }]
+    assert stats["per_provider"] == [{
+        "provider": "anthropic", "cached_input_tokens": 500,
+        "native_cache_discount_usd": 0.25, "attributable_discount_usd": 0.25,
+        "warm_pings": 7, "warm_spend_usd": 0.0, "warm_hits": 3,
+    }]
+
+    # Without warming enrollment every warm_* field is null per the contract.
+    warm_providers.clear()
+    stats = store.cache_stats("key-a")
+    assert stats["warm_pings"] is None
+    assert stats["warm_spend_usd"] is None
+    assert stats["warm_hits"] is None
+    assert stats["history"][0]["warm_spend_usd"] is None
+    assert all(entry["warm_pings"] is None and entry["warm_spend_usd"] is None
+               and entry["warm_hits"] is None
+               for entry in stats["per_provider"])
+
+
 def test_admin_reports_aggregate_in_sql_and_bound_inventory(monkeypatch):
     store = SupabaseUsageStore("https://example.supabase.co", "service-role")
     calls = []

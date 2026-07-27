@@ -521,6 +521,49 @@ def test_api_key_and_internal_secret_comparisons_use_safe_contracts():
     assert constant_time_equal("internal-token", b"internal-token") is False
 
 
+def test_warm_provider_credential_is_encrypted_and_never_unmasked(
+        tmp_path, monkeypatch, caplog):
+    import logging
+    from pathlib import Path
+
+    import api.server as server
+    from api.store import UsageStore
+    from fastapi.testclient import TestClient
+
+    store = UsageStore(str(tmp_path / "warm-credential.db"))
+    organization = store.ensure_organization("warm-admin", "Warm company")
+    kms = LocalTestKMS(b"w" * 32, environ={"BREVITAS_ENV": "test"})
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setattr(server, "_credential_cipher", EnvelopeCipher(
+        kms, key_id="warm-credential-test-key", key_version="1",
+        wrap_algorithm=kms.algorithm))
+    monkeypatch.setattr(server, "_dashboard_user", lambda request:
+                        "warm-admin" if request.headers.get("authorization")
+                        == "Bearer session" else "")
+    server._warm_enabled_cache.clear()
+    client = TestClient(server.app)
+    secret = "sk-ant-warm-provider-secret-value"
+
+    with caplog.at_level(logging.DEBUG):
+        saved = client.put("/v1/warming", headers={"Authorization": "Bearer session"},
+                           json={"provider": "anthropic", "provider_api_key": secret,
+                                 "enabled": True, "accept_spend_terms": True,
+                                 "daily_budget_usd": 5.0})
+        status = client.get("/v1/warming", headers={"Authorization": "Bearer session"})
+
+    assert saved.status_code == 200
+    assert saved.json()["masked_key"] == "*" * 8 + secret[-4:]
+    assert secret not in saved.text
+    assert status.status_code == 200
+    assert secret not in status.text
+    assert secret not in caplog.text
+    # At rest the credential is envelope ciphertext, never plaintext.
+    assert secret.encode() not in Path(store.db_path).read_bytes()
+    stored = store.warm_credentials_get(organization["id"], "anthropic")
+    assert stored["enabled"] is True
+    assert "credential_ciphertext" not in stored
+
+
 def test_browser_sources_do_not_reference_server_supabase_or_provider_env_secrets():
     sources = [
         open("dashboard/src/lib/supabase.js", encoding="utf-8").read(),

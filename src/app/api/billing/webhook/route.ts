@@ -16,6 +16,7 @@ import {
 import {
   stripeId,
   subscriptionPeriod,
+  StripeSubscriptionPeriodError,
 } from '@/lib/billing/stripe-state.mjs';
 import {
   StripeDuplicateSubscriptionReviewError,
@@ -108,12 +109,19 @@ async function failEvent(
   leaseOwner: string,
   processingError: unknown,
 ): Promise<boolean> {
+  let recordedError = 'webhook application failed';
+  if (processingError instanceof StripeDuplicateSubscriptionReviewError) {
+    recordedError = 'duplicate Stripe subscription requires manual review';
+  } else if (processingError instanceof StripeSubscriptionPeriodError) {
+    // Record the concrete reason + subscription id instead of the generic
+    // string, so an operator can resolve it rather than see an opaque failure.
+    recordedError = `Stripe subscription period unresolved (${processingError.reason}) `
+      + `requires manual review${processingError.subscriptionId ? `: ${processingError.subscriptionId}` : ''}`;
+  }
   const { data, error } = await billingDatabase().rpc('fail_stripe_webhook_event', {
     p_event_id: eventId,
     p_lease_owner: leaseOwner,
-    p_error: processingError instanceof StripeDuplicateSubscriptionReviewError
-      ? 'duplicate Stripe subscription requires manual review'
-      : 'webhook application failed',
+    p_error: recordedError.slice(0, 480),
   });
   if (error) throw error;
   return data === true;
@@ -469,8 +477,18 @@ export async function POST(request: Request) {
       { headers: { 'Cache-Control': 'no-store' } },
     );
   } catch (error) {
-    console.error('Stripe webhook processing failed', event.type, error instanceof Error ? error.name : 'unknown error');
-    const requiresManualReview = error instanceof StripeDuplicateSubscriptionReviewError;
+    console.error(
+      'Stripe webhook processing failed',
+      event.type,
+      error instanceof Error ? error.name : 'unknown error',
+      // Include the malformed-period reason/subscription so the failure is
+      // diagnosable in logs, not just recorded in the event row.
+      error instanceof StripeSubscriptionPeriodError
+        ? { reason: error.reason, subscriptionId: error.subscriptionId }
+        : undefined,
+    );
+    const requiresManualReview = error instanceof StripeDuplicateSubscriptionReviewError
+      || error instanceof StripeSubscriptionPeriodError;
     return Response.json(
       {
         error: requiresManualReview
