@@ -7,10 +7,14 @@ create table if not exists public.profiles (
 
 alter table public.profiles enable row level security;
 
+-- drop-then-create so this migration is idempotent against an environment that
+-- already has profiles + these policies (e.g. a hand-assembled prod project).
+drop policy if exists "Users can view own profile" on public.profiles;
 create policy "Users can view own profile"
   on public.profiles for select
   using (auth.uid() = id);
 
+drop policy if exists "Users can update own profile" on public.profiles;
 create policy "Users can update own profile"
   on public.profiles for update
   using (auth.uid() = id);

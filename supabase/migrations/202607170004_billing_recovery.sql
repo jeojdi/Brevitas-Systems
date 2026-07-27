@@ -258,12 +258,17 @@ begin
             continue;
         end;
 
+        -- Only amounts actually in flight ('sending') or already reported to
+        -- Stripe ('reported') count toward the period total. A 'review' row was
+        -- never billed and requires manual resolution, so counting it would
+        -- permanently poison reconciliation (expected > actual forever) and can
+        -- trip the weekly cap against fees that will never be sent.
         select coalesce(sum(ledger.fee_microusd), 0) into committed
           from public.billing_ledger ledger
          where ledger.user_id = candidate.user_id
            and ledger.occurred_at >= claim_period_start
            and ledger.occurred_at < claim_period_end
-           and ledger.status in ('sending', 'reported', 'review');
+           and ledger.status in ('sending', 'reported');
 
         if not was_reclaimed and committed + candidate.fee_microusd > p_cap_microusd then
             update public.billing_ledger

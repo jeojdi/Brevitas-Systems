@@ -232,7 +232,6 @@ async def readiness():
         and database_ready
         and redis_ready
         and kms_ready
-        and billing_ready
     )
     payload = {
         "status": "ok" if ready else "unavailable",
@@ -252,7 +251,10 @@ async def readiness():
             "billing_recovery": {
                 "status": ("disabled" if _BILLING_ROLE == "nonbilling" else
                            "ready" if billing_ready else "unavailable"),
-                "authoritative": _BILLING_REQUIRED,
+                # Non-authoritative for job acceptance: billing degradation is
+                # surfaced here but never gates durable job consumption.
+                "authoritative": False,
+                "billing_required": _BILLING_REQUIRED,
                 "configured": _BILLING_CONFIGURED,
                 "running": _BILLING_LOOP_RUNNING,
                 "role": _BILLING_ROLE,
@@ -379,7 +381,6 @@ async def run() -> None:
     if _BILLING_REQUIRED and not _BILLING_CONFIGURED:
         raise RuntimeError("authoritative billing recovery configuration is incomplete")
     billing_task = None
-    billing_failed = False
     if _BILLING_ROLE != "nonbilling" and _BILLING_CONFIGURED:
         billing_processor = build_billing_recovery_processor_from_env(
             telemetry=BillingTelemetryAdapter(),
@@ -401,23 +402,23 @@ async def run() -> None:
 
         def billing_finished(_task: asyncio.Task) -> None:
             global _BILLING_LOOP_RUNNING
-            nonlocal billing_failed
             _BILLING_LOOP_RUNNING = False
             with _BILLING_HEALTH_LOCK:
                 stopped_health = dict(_BILLING_HEALTH)
             stopped_health["running"] = False
             _report_billing_health(stopped_health)
             if not stop.is_set():
-                billing_failed = True
+                # Billing recovery is decoupled from durable job execution. Its
+                # unexpected exit is surfaced on /ready and logged as degraded,
+                # but it must not stop the worker or halt job consumption.
                 try:
                     failure = _task.exception()
                 except asyncio.CancelledError:
                     failure = None
-                logger.error("billing_loop_stopped", outcome="failed")
+                logger.error("billing_loop_stopped", outcome="degraded")
                 if failure is not None:
-                    logger.error("billing_loop_failed", outcome="failed",
+                    logger.error("billing_loop_failed", outcome="degraded",
                                  error_type=type(failure).__name__)
-                stop.set()
 
         billing_task.add_done_callback(billing_finished)
     loop = asyncio.get_running_loop()
@@ -429,7 +430,9 @@ async def run() -> None:
 
     health_config = uvicorn.Config(
         health_app,
-        host="0.0.0.0",
+        # Railway private networking resolves service hostnames to IPv6; bind
+        # dual-stack "::" so health probes over the private network reach us.
+        host="::",
         port=int(os.getenv("PORT", "8001")),
         access_log=False,
         log_level=os.getenv("BREVITAS_LOG_LEVEL", "info").lower(),
@@ -473,8 +476,9 @@ async def run() -> None:
         while not stop.is_set():
             database_ready, redis_ready = await _dependencies_ready()
             kms_ready = _kms_dependency_ready(await _kms_readiness_status())
-            _WORKER_ACCEPTING = (
-                database_ready and redis_ready and kms_ready and _billing_loop_ready())
+            # Job acceptance depends only on the deps jobs actually need.
+            # Billing recovery health is reported separately and never gates.
+            _WORKER_ACCEPTING = database_ready and redis_ready and kms_ready
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
@@ -500,8 +504,7 @@ async def run() -> None:
 
     database_ready, redis_ready = await _dependencies_ready()
     kms_ready = _kms_dependency_ready(await _kms_readiness_status())
-    _WORKER_ACCEPTING = (
-        database_ready and redis_ready and kms_ready and _billing_loop_ready())
+    _WORKER_ACCEPTING = database_ready and redis_ready and kms_ready
     tasks = [
         asyncio.create_task(dependency_monitor(), name="worker-dependency-monitor"),
         asyncio.create_task(maintenance(), name="worker-maintenance"),
@@ -552,8 +555,6 @@ async def run() -> None:
         if cipher is not None:
             cipher.cache.clear()
         graceful_observability_shutdown()
-    if billing_failed:
-        raise RuntimeError("authoritative billing recovery loop stopped unexpectedly")
 
 
 if __name__ == "__main__":

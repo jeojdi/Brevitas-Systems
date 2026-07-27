@@ -129,7 +129,13 @@ test('every third-party action is immutable and workflows use least privilege', 
     const workflow = readFileSync(path, 'utf8')
     const uses = [...workflow.matchAll(/^\s*uses:\s*(.+)$/gm)].map((match) => match[1].trim())
     assert.ok(uses.length > 0, `${path} has no pinned actions`)
-    for (const action of uses) assert.match(action, shaRef, `${path}: ${action}`)
+    for (const action of uses) {
+      // Same-repo reusable workflows (uses: ./…) are referenced by path and are
+      // immutable by construction (pinned to the caller's commit); they cannot be
+      // SHA-pinned. Only third-party actions must carry an immutable @<sha> ref.
+      if (action.startsWith('./') || action.startsWith('../')) continue
+      assert.match(action, shaRef, `${path}: ${action}`)
+    }
     assert.match(workflow, /^permissions:\n\s+contents:\s+read\s*$/m, path)
     assert.doesNotMatch(workflow, /continue-on-error|\|\|\s*true/i, path)
     for (const checkout of workflow.matchAll(/uses:\s*actions\/checkout@[\s\S]+?(?=\n\s*- name:|\n\s*uses:|\n\S|$)/g)) {
@@ -245,21 +251,29 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
       'workspace_experiences',
     ][index]}.sql`,
   )
-  assert.equal(expectedFreshMigrationOrder.length, 46)
-  assert.equal(expectedUpgradeMigrationOrder.length, 34)
-  assert.deepEqual(expectedFreshMigrationOrder.slice(-21, -3), securitySuffix)
-  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-21, -3), securitySuffix)
+  assert.equal(expectedFreshMigrationOrder.length, 48)
+  assert.equal(expectedUpgradeMigrationOrder.length, 36)
+  assert.deepEqual(expectedFreshMigrationOrder.slice(-23, -5), securitySuffix)
+  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-23, -5), securitySuffix)
   assert.equal(
-    expectedFreshMigrationOrder.at(-3),
+    expectedFreshMigrationOrder.at(-5),
     'supabase/migrations/20260720_split_savings_metrics.sql',
   )
   assert.equal(
-    expectedFreshMigrationOrder.at(-2),
+    expectedFreshMigrationOrder.at(-4),
     'supabase/migrations/202607220001_service_role_data_plane.sql',
   )
   assert.equal(
-    expectedFreshMigrationOrder.at(-1),
+    expectedFreshMigrationOrder.at(-3),
     'supabase/migrations/202607220002_supabase_advisor_hardening.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-2),
+    'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-1),
+    'supabase/migrations/202607270002_widen_billing_events_money.sql',
   )
   const workflow = read('.github/workflows/migrations.yml')
   assert.match(workflow, /pgvector\/pgvector:pg16-bookworm@sha256:[0-9a-f]{64}/)

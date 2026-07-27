@@ -7,6 +7,10 @@ create table if not exists user_keys (
 
 alter table user_keys enable row level security;
 
+-- drop-then-create so this migration is idempotent against an environment that
+-- already has this policy (e.g. a hand-assembled prod project); an unguarded
+-- create policy aborts the whole chain on a duplicate.
+drop policy if exists "users can access only their own key" on user_keys;
 create policy "users can access only their own key"
   on user_keys for all
   using (auth.uid() = user_id)

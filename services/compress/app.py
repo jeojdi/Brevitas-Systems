@@ -15,6 +15,7 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import MutableHeaders
@@ -144,6 +145,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LLMLingua Compression Service", lifespan=lifespan)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return 422s without echoing the offending prompt.
+
+    FastAPI's default handler includes the rejected value under ``input`` (and
+    sometimes ``ctx``), which for this service would leak customer prompt text in
+    the error response. Strip both so validation failures stay content-free.
+    """
+    scrubbed = [
+        {key: value for key, value in error.items() if key not in ("input", "ctx")}
+        for error in exc.errors()
+    ]
+    return JSONResponse({"detail": scrubbed}, status_code=422)
+
+
 class CompressorObservabilityMiddleware:
     """Content-free request correlation and telemetry for the private service."""
 
@@ -234,6 +250,14 @@ async def reject_oversized_requests(request: Request, call_next):
         delivered = True
         return {"type": "http.request", "body": bytes(buffered), "more_body": False}
 
+    # Under the pinned Starlette 1.3.1, BaseHTTPMiddleware wraps the request in a
+    # _CachedRequest whose wrapped_receive() replays the body from ._body first and
+    # only falls back to ._receive when ._body is unset. Because we consumed the
+    # stream above, ._stream_consumed is True, so without ._body wrapped_receive
+    # would hand the downstream route an EMPTY body and every POST would 422. Set
+    # ._body so the replay uses the buffered bytes; keep ._receive as a fallback.
+    body_bytes = bytes(buffered)
+    request._body = body_bytes
     request._receive = receive
     return await call_next(request)
 
@@ -277,7 +301,10 @@ def verify_token(authorization: Optional[str] = Header(None)) -> bool:
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=401, detail="Invalid Authorization header")
 
-    if not secrets.compare_digest(parts[1], required_token):
+    # Compare on bytes: secrets.compare_digest raises TypeError on non-ASCII str
+    # operands, which would surface as a 500 for a malformed credential instead
+    # of a clean 403.
+    if not secrets.compare_digest(parts[1].encode(), required_token.encode()):
         raise HTTPException(status_code=403, detail="Invalid token")
 
     return True

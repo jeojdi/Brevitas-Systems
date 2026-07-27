@@ -380,12 +380,20 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
+class _IPv6ThreadingHTTPServer(ThreadingHTTPServer):
+    # Railway private networking resolves service hostnames to IPv6 only, so the
+    # health server must bind an AF_INET6 socket (the base class defaults to
+    # AF_INET, which cannot bind "::"). On Linux this is dual-stack and still
+    # answers IPv4 loopback probes.
+    address_family = socket.AF_INET6
+
+
 def main() -> int:
     settings = Settings.from_env()
     health = Health()
     worker = RetentionWorker(settings, RestRPC(settings), health=health)
     handler = type("RetentionHealthHandler", (_Handler,), {"health": health})
-    server = ThreadingHTTPServer(("0.0.0.0", settings.health_port), handler)
+    server = _IPv6ThreadingHTTPServer(("::", settings.health_port), handler)
     thread = threading.Thread(target=server.serve_forever, name="retention-health", daemon=True)
     thread.start()
 

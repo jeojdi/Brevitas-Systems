@@ -110,7 +110,8 @@ test('dashboard API rewrites use the same canonical backend origin as the admin 
   const config = read('next.config.ts')
   const adminProxy = read('src/lib/admin/proxy.ts')
 
-  assert.match(config, /const backendApiHost = \([\s\S]+process\.env\.BREVITAS_API_URL/)
+  assert.match(config, /const backendApiHost = resolveBackendApiHost\(\)/)
+  assert.match(config, /process\.env\.BREVITAS_API_URL/)
   assert.match(config, /source: '\/v1\/:path\*'[\s\S]+destination: `\$\{backendApiHost\}\/v1\/:path\*`/)
   assert.doesNotMatch(config, /destination: `\$\{process\.env\.API_URL/)
   assert.match(adminProxy, /process\.env\.BREVITAS_API_URL/)
@@ -215,6 +216,16 @@ test('production build compiles the dashboard with Supabase public configuration
   assert.match(builder, /VITE_SUPABASE_ANON_KEY/)
   assert.match(builder, /NEXT_PUBLIC_SUPABASE_URL/)
   assert.match(builder, /NEXT_PUBLIC_SUPABASE_ANON_KEY/)
+
+  // The emitted bundle must embed a live Supabase project URL, or dashboard
+  // auth silently breaks in production. Resolve the JS the dashboard shell
+  // actually loads and require an https://<ref>.supabase.co literal inside it.
+  const dashboardHtml = read('public/dashboard/index.html')
+  const jsRef = dashboardHtml.match(/(?:src)=["']([^"']*assets\/index-[^"']+\.js)["']/)?.[1]
+  assert.ok(jsRef, 'dashboard index.html must reference a built JS bundle')
+  const bundle = read(`public/dashboard/${jsRef.replace(/^[./]*(?:dashboard\/)?/, '')}`)
+  assert.match(bundle, /https:\/\/[a-z0-9]+\.supabase\.co/,
+    'dashboard bundle is missing its Supabase project URL literal')
 })
 
 test('new signup records the versioned analytics privacy notice', () => {

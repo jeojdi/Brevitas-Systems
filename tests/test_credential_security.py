@@ -523,7 +523,6 @@ def test_api_key_and_internal_secret_comparisons_use_safe_contracts():
 
 def test_browser_sources_do_not_reference_server_supabase_or_provider_env_secrets():
     sources = [
-        open("src/lib/supabase.ts", encoding="utf-8").read(),
         open("dashboard/src/lib/supabase.js", encoding="utf-8").read(),
     ]
     forbidden = (

@@ -94,9 +94,19 @@ export interface PendingLedgerEntry {
 function supabaseSettings() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-  const authKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || serviceKey;
-  if (!url || !serviceKey || !authKey) {
+  // The auth key verifies user-supplied bearer tokens and MUST be the
+  // anon/publishable key. Never fall back to the service-role key here:
+  // verifying tokens with the service-role key is a privilege error that
+  // masks a missing-config as a misleading 401.
+  const authKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  if (!url || !serviceKey) {
     throw new Error('Supabase billing configuration is missing');
+  }
+  if (!authKey) {
+    throw new Error(
+      'NEXT_PUBLIC_SUPABASE_ANON_KEY is required to verify user tokens; '
+      + 'the service-role key must not be used as the auth key',
+    );
   }
   return { url, serviceKey, authKey };
 }

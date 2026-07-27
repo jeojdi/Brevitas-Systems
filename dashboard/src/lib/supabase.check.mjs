@@ -2,11 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  AUTH_SERVER_ERROR_TTL_MS,
+  AUTH_UNKNOWN_ERROR_MESSAGE,
   SESSION_KEY_CACHE_MAX_ENTRIES,
   SESSION_KEY_MINT_MAX_IN_FLIGHT,
   SESSION_KEY_CACHE_TTL_MS,
   LOGIN_AUDIENCE,
+  authErrorMessage,
   authModeForPath,
+  clearCapturedAuthServerError,
+  createAuthErrorCapturingFetch,
   cacheApiKey,
   cachedKeyIsValid,
   clearSessionKeyCache,
@@ -51,6 +56,56 @@ test('personal and enterprise login routes are exact presentation hints', () => 
     '/email-confirmed?audience=enterprise',
   )
   assert.equal(confirmationPathForLoginAudience('https://example.com'), '/email-confirmed')
+})
+
+test('a 5xx auth failure reports the server reason instead of auth-js "{}"', async () => {
+  clearCapturedAuthServerError()
+  const capturing = createAuthErrorCapturingFetch(
+    async () => new Response(
+      JSON.stringify({ code: 500, error_code: 'unexpected_failure', msg: 'Error sending confirmation email' }),
+      { status: 500, headers: { 'content-type': 'application/json' } },
+    ),
+    () => 1_000,
+  )
+
+  const response = await capturing('https://project.supabase.co/auth/v1/signup')
+  // The body must stay readable for auth-js after we peek at it.
+  assert.equal((await response.json()).error_code, 'unexpected_failure')
+
+  // auth-js stringifies the Response for 500-504/520-530, yielding '{}'.
+  assert.equal(
+    authErrorMessage(new Error('{}'), 1_000 + AUTH_SERVER_ERROR_TTL_MS),
+    'Error sending confirmation email',
+  )
+  // A stale capture must never be pinned onto a later, unrelated failure.
+  assert.equal(
+    authErrorMessage(new Error('{}'), 1_001 + AUTH_SERVER_ERROR_TTL_MS),
+    AUTH_UNKNOWN_ERROR_MESSAGE,
+  )
+})
+
+test('auth error messages prefer a real message and survive malformed failures', async () => {
+  clearCapturedAuthServerError()
+  assert.equal(authErrorMessage(new Error('Invalid login credentials')), 'Invalid login credentials')
+  assert.equal(authErrorMessage(new Error('')), AUTH_UNKNOWN_ERROR_MESSAGE)
+  assert.equal(authErrorMessage(undefined), AUTH_UNKNOWN_ERROR_MESSAGE)
+  assert.equal(authErrorMessage({ message: 42 }), AUTH_UNKNOWN_ERROR_MESSAGE)
+
+  // A 5xx with an unreadable body must not resurrect an older capture.
+  const htmlGateway = createAuthErrorCapturingFetch(
+    async () => new Response('<html>502 Bad Gateway</html>', { status: 502 }),
+    () => 2_000,
+  )
+  await htmlGateway('https://project.supabase.co/auth/v1/token')
+  assert.equal(authErrorMessage(new Error('{}'), 2_000), AUTH_UNKNOWN_ERROR_MESSAGE)
+
+  // 4xx bodies are already surfaced by auth-js, so nothing is captured.
+  const rateLimited = createAuthErrorCapturingFetch(
+    async () => new Response(JSON.stringify({ msg: 'Email rate limit exceeded' }), { status: 429 }),
+    () => 3_000,
+  )
+  await rateLimited('https://project.supabase.co/auth/v1/signup')
+  assert.equal(authErrorMessage(new Error('{}'), 3_000), AUTH_UNKNOWN_ERROR_MESSAGE)
 })
 
 test('browser Supabase config distinguishes public keys from service credentials', () => {

@@ -35,9 +35,61 @@ if (keyKind === 'service-secret') {
 export const supabaseMisconfigured = !url || !key || !['anon', 'publishable'].includes(keyKind)
 export const supabaseCredentialKind = supabaseMisconfigured ? 'missing' : keyKind
 
+export const AUTH_SERVER_ERROR_TTL_MS = 30 * 1000
+export const AUTH_UNKNOWN_ERROR_MESSAGE =
+  'Something went wrong on our end. Please try again in a moment.'
+
+let lastAuthServerError = null
+
+export const clearCapturedAuthServerError = () => { lastAuthServerError = null }
+
+const serverErrorMessage = body => {
+  if (typeof body !== 'object' || body === null) return ''
+  for (const field of ['msg', 'message', 'error_description', 'error']) {
+    if (typeof body[field] === 'string' && body[field]) return body[field]
+  }
+  return ''
+}
+
+/**
+ * Wrap fetch so 5xx bodies from GoTrue survive.
+ *
+ * `@supabase/auth-js` treats every status in its NETWORK_ERROR_CODES list
+ * (500-504, 520-530) as retryable and builds the thrown error from the raw
+ * `Response` rather than the parsed body. `Response` has no enumerable own
+ * properties, so the message degrades to `JSON.stringify(response)` — the
+ * literal string `{}` — and the server's explanation is lost. Stash it here so
+ * `authErrorMessage` can put it back.
+ */
+export function createAuthErrorCapturingFetch(baseFetch = fetch, now = Date.now) {
+  return async (input, init) => {
+    const response = await baseFetch(input, init)
+    if (response.status >= 500) {
+      const body = await response.clone().json().catch(() => null)
+      const message = redactBrowserError(serverErrorMessage(body))
+      lastAuthServerError = message ? { message, at: now() } : null
+    }
+    return response
+  }
+}
+
+/**
+ * Resolve the message to show a user for a failed Supabase auth call.
+ *
+ * Auth requests are serialized behind a disabled submit button, so the single
+ * captured slot is read back by the call that produced it.
+ */
+export function authErrorMessage(error, now = Date.now()) {
+  const raw = typeof error?.message === 'string' ? error.message.trim() : ''
+  if (raw && raw !== '{}') return raw
+  const captured = lastAuthServerError
+  if (captured && now - captured.at <= AUTH_SERVER_ERROR_TTL_MS) return captured.message
+  return AUTH_UNKNOWN_ERROR_MESSAGE
+}
+
 export const supabase = supabaseMisconfigured
   ? null
-  : createClient(url, key)
+  : createClient(url, key, { global: { fetch: createAuthErrorCapturingFetch() } })
 
 export const authModeForPath = pathname => /^\/(signup|waitlist)\/?$/.test(pathname) ? 'signup' : 'login'
 

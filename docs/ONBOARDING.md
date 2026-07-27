@@ -78,14 +78,20 @@ Brevitas service key.
    selection migration `202607170013_active_company_selection.sql` and durable onboarding
    migration `202607200016_durable_onboarding.sql`, followed by workspace-experience
    migration `202607200018_workspace_experiences.sql`.
-2. Configure Supabase email confirmation and allow the production `/invite` and
-   `/email-confirmed` redirect URLs.
+2. Configure Supabase email confirmation and allow the production `/invite`,
+   `/email-confirmed`, and `/dashboard` redirect URLs, including the `?audience=personal` and
+   `?audience=enterprise` variants the sign-in routes generate. Confirmation mail requires
+   custom SMTP with a verified sender domain — see
+   [the email template and delivery notes](../supabase/templates/README.md). Signup returns
+   `500 unexpected_failure` until that is in place. Apply all of it to the project the deployed
+   bundle actually names: `VITE_SUPABASE_URL` is inlined at build time, so a stale value routes
+   production to a different project than the dashboard you are editing.
 3. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPANY_ADMIN_CURSOR_SECRET`, and
    `COMPANY_ADMIN_INVITEE_PEPPER` on every API replica. The two company secrets must be
    different random values of at least 32 characters and consistent within an environment.
-4. Set `API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY` on the
-   Next.js deployment. Never expose the service-role key or company secrets through a
-   public environment variable.
+4. Set `BREVITAS_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   on the Next.js deployment. (`API_URL` is a deprecated legacy fallback only.) Never expose
+   the service-role key or company secrets through a public environment variable.
 5. Build the dashboard, deploy the API, and verify personal creation, receipt-bound BVX
    registration, same-key proxy evidence, reload persistence, exact-email invite
    acceptance, wrong-account denial, multi-company switching, member disable/removal,

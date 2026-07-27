@@ -18,6 +18,7 @@ dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.0.0",
+    "supabase>=2.0.0",
     "click>=8.1.0",
     "rich>=13.0.0",
     "google-cloud-kms==3.15.0",

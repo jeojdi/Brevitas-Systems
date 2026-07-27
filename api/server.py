@@ -833,8 +833,17 @@ def _run_configured_model(
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 
 def _rate_key(request: Request) -> str:
-    raw = request.headers.get("X-Brevitas-Key") or request.headers.get("X-API-Key")
-    return hash_key(raw) if raw else (request.client.host if request.client else "unknown")
+    """Bucket rate limits on the verified network peer only.
+
+    The X-Brevitas-Key / X-API-Key headers are attacker-controlled and unverified at
+    limiter time, so keying on them let any caller mint a fresh empty bucket per request
+    by rotating a random header value — bypassing every @limiter.limit. Identity is never
+    trusted before authentication here; per-key quotas are enforced separately downstream.
+    Behind an edge proxy the peer is only meaningful when uvicorn is launched with
+    --forwarded-allow-ips (see Dockerfile / FORWARDED_ALLOW_IPS), otherwise every request
+    collapses onto the edge IP.
+    """
+    return request.client.host if request.client else "unknown"
 
 limiter = Limiter(key_func=_rate_key)
 
@@ -844,12 +853,11 @@ limiter = Limiter(key_func=_rate_key)
 def _configured_allowed_origins() -> list[str]:
     """Return the normalized CORS allowlist used by middleware and startup checks."""
 
-    origins = [
+    return [
         origin.strip()
-        for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
         if origin.strip()
     ]
-    return origins or ["*"]
 
 
 _ALLOWED_ORIGINS = _configured_allowed_origins()
@@ -875,9 +883,13 @@ def _validate_runtime_config() -> None:
         raise RuntimeError(
             "Production compressor configuration requires BREVITAS_COMPRESS_TOKEN")
     origins = _configured_allowed_origins()
-    if "*" in origins:
+    if not origins or "*" in origins:
         raise RuntimeError(
             "Production requires an explicit ALLOWED_ORIGINS allowlist")
+    if not os.getenv("FORWARDED_ALLOW_IPS", "").strip():
+        raise RuntimeError(
+            "Production requires FORWARDED_ALLOW_IPS so the rate-limit peer address is "
+            "read from the trusted edge proxy instead of collapsing to one global bucket")
     redis_url = os.getenv("REDIS_URL", "").strip()
     if redis_url and not redis_url.startswith("rediss://"):
         raise RuntimeError("Production REDIS_URL must use TLS (rediss://)")

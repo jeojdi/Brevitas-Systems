@@ -17,6 +17,10 @@ create table if not exists public.billing_events (
 
 alter table public.billing_events enable row level security;
 
+-- drop-then-create so this migration is idempotent against an environment that
+-- already has this policy (e.g. a hand-assembled prod project); an unguarded
+-- create policy aborts the whole chain on a duplicate.
+drop policy if exists "Users can view own billing events" on public.billing_events;
 create policy "Users can view own billing events"
   on public.billing_events for select
   using (auth.uid() = user_id);

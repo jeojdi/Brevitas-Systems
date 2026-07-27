@@ -186,6 +186,7 @@ def test_absent_optional_compressor_is_valid_in_production(monkeypatch):
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
     monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
     server._validate_runtime_config()
@@ -197,6 +198,7 @@ def test_production_requires_shared_cursor_secret(monkeypatch):
     monkeypatch.setenv("BREVITAS_ENV", "production")
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
     monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "too-short")
@@ -213,6 +215,7 @@ def test_production_requires_explicit_cors_allowlist_and_tls_redis(monkeypatch):
     monkeypatch.setenv("BREVITAS_ENV", "production")
     monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
     monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
     monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
@@ -240,6 +243,31 @@ def test_production_requires_explicit_cors_allowlist_and_tls_redis(monkeypatch):
         server._validate_runtime_config()
 
     monkeypatch.setenv("REDIS_URL", "rediss://limits.internal:6380/0")
+    server._validate_runtime_config()
+
+
+def test_production_requires_forwarded_allow_ips(monkeypatch):
+    """The rate-limit peer must come from the trusted edge proxy, not collapse to one bucket.
+
+    Guards the security fix in api/server.py::_validate_runtime_config that fails startup
+    when FORWARDED_ALLOW_IPS is unset in production, so request.client.host reflects the
+    real caller rather than the edge IP shared by every request.
+    """
+    import api.server as server
+
+    monkeypatch.setenv("BREVITAS_ENV", "production")
+    monkeypatch.setenv("BREVITAS_PROXY_AUTH", "true")
+    monkeypatch.setenv("COMPANY_ADMIN_CURSOR_SECRET", "c" * 40)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://brevitassystems.com")
+    monkeypatch.delenv("BREVITAS_COMPRESS_URL", raising=False)
+    monkeypatch.delenv("BREVITAS_COMPRESS_TOKEN", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+    with pytest.raises(RuntimeError, match="FORWARDED_ALLOW_IPS"):
+        server._validate_runtime_config()
+
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     server._validate_runtime_config()
 
 
@@ -753,7 +781,11 @@ def test_worker_readiness_exposes_required_billing_loop_state(monkeypatch):
     async def available():
         return True, True
 
+    async def kms_disabled():
+        return {"configured": False, "active_probe": False, "fresh": False}
+
     monkeypatch.setattr(worker, "_dependencies_ready", available)
+    monkeypatch.setattr(worker, "_kms_readiness_status", kms_disabled)
     monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
     monkeypatch.setattr(worker, "_BILLING_ROLE", "authoritative")
     monkeypatch.setattr(worker, "_BILLING_REQUIRED", True)
@@ -767,12 +799,16 @@ def test_worker_readiness_exposes_required_billing_loop_state(monkeypatch):
         "consecutive_errors": 0,
         "last_error_monotonic": 0.0,
     })
+    # Billing recovery is unhealthy here, but it is non-authoritative for job
+    # acceptance: durable job readiness depends only on postgres, redis, and KMS.
+    # The worker must still surface the full billing loop state for operators
+    # (role, required/configured/running flags, and detailed health) without
+    # gating readiness on it -- that decoupling is the invariant under test.
     response = asyncio.run(worker.readiness())
-    assert isinstance(response, JSONResponse)
-    assert response.status_code == 503
-    payload = json.loads(response.body)
-    assert payload["dependencies"]["billing_recovery"] == {
-        "status": "unavailable", "authoritative": True,
+    assert response["status"] == "ok"
+    assert response["dependencies"]["billing_recovery"] == {
+        "status": "unavailable", "authoritative": False,
+        "billing_required": True,
         "configured": True, "running": False, "role": "authoritative",
         "health": {
             "running": False,
@@ -786,13 +822,24 @@ def test_worker_readiness_exposes_required_billing_loop_state(monkeypatch):
     }
 
 
-def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkeypatch):
+def test_authoritative_billing_health_is_surfaced_without_gating_readiness(monkeypatch):
+    # Billing recovery health is still fully computed and surfaced -- initial
+    # validation, catalog validity, success freshness, and the consecutive-error
+    # threshold each flip billing_recovery.status between "ready" and "unavailable".
+    # But under the decoupling fix billing is NON-authoritative: durable job
+    # readiness stays "ok" (never 503) as long as postgres, redis, and KMS are
+    # ready, so ~15s of Stripe trouble can no longer stop job consumption. Operators
+    # still see the degradation via billing_recovery.status/health.
     import api.worker as worker
 
     async def available():
         return True, True
 
+    async def kms_ready():
+        return {"configured": True, "active_probe": True, "fresh": True}
+
     monkeypatch.setattr(worker, "_dependencies_ready", available)
+    monkeypatch.setattr(worker, "_kms_readiness_status", kms_ready)
     monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
     monkeypatch.setattr(worker, "_BILLING_ROLE", "authoritative")
     monkeypatch.setattr(worker, "_BILLING_REQUIRED", True)
@@ -811,6 +858,14 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "last_error_monotonic": 0.0,
     })
 
+    def billing_recovery():
+        # Readiness must stay "ok" (a plain dict, not a 503 JSONResponse) regardless
+        # of billing health; return the surfaced billing_recovery block for assertions.
+        response = asyncio.run(worker.readiness())
+        assert not isinstance(response, JSONResponse)
+        assert response["status"] == "ok"
+        return response["dependencies"]["billing_recovery"]
+
     worker._report_billing_health({
         "running": True,
         "initial_validation_succeeded": False,
@@ -819,9 +874,9 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 0,
         "last_error_monotonic": 0.0,
     })
-    not_validated = asyncio.run(worker.readiness())
-    assert isinstance(not_validated, JSONResponse)
-    assert not_validated.status_code == 503
+    not_validated = billing_recovery()
+    assert not_validated["status"] == "unavailable"
+    assert not_validated["health"]["initial_validation_succeeded"] is False
 
     worker._report_billing_health({
         "running": True,
@@ -831,9 +886,9 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 0,
         "last_error_monotonic": 0.0,
     })
-    invalid_catalog = asyncio.run(worker.readiness())
-    assert isinstance(invalid_catalog, JSONResponse)
-    assert invalid_catalog.status_code == 503
+    invalid_catalog = billing_recovery()
+    assert invalid_catalog["status"] == "unavailable"
+    assert invalid_catalog["health"]["catalog_valid"] is False
 
     worker._report_billing_health({
         "running": True,
@@ -843,21 +898,16 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 0,
         "last_error_monotonic": 0.0,
     })
-    healthy = asyncio.run(worker.readiness())
-    assert healthy["status"] == "ok"
-    assert healthy["dependencies"]["billing_recovery"]["health"][
-        "last_success_fresh"] is True
+    healthy = billing_recovery()
+    assert healthy["status"] == "ready"
+    assert healthy["health"]["last_success_fresh"] is True
 
     now[0] = 125.0
-    still_fresh = asyncio.run(worker.readiness())
-    assert still_fresh["status"] == "ok"
+    assert billing_recovery()["status"] == "ready"
     now[0] = 125.001
-    stale = asyncio.run(worker.readiness())
-    assert isinstance(stale, JSONResponse)
-    assert stale.status_code == 503
-    stale_payload = json.loads(stale.body)
-    assert stale_payload["dependencies"]["billing_recovery"]["health"][
-        "last_success_fresh"] is False
+    stale = billing_recovery()
+    assert stale["status"] == "unavailable"
+    assert stale["health"]["last_success_fresh"] is False
 
     worker._report_billing_health({
         "running": True,
@@ -867,8 +917,7 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 0,
         "last_error_monotonic": 0.0,
     })
-    recovered_from_staleness = asyncio.run(worker.readiness())
-    assert recovered_from_staleness["status"] == "ok"
+    assert billing_recovery()["status"] == "ready"
 
     worker._report_billing_health({
         "running": True,
@@ -878,12 +927,9 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 3,
         "last_error_monotonic": 99.0,
     })
-    failed = asyncio.run(worker.readiness())
-    assert isinstance(failed, JSONResponse)
-    assert failed.status_code == 503
-    payload = json.loads(failed.body)
-    assert payload["dependencies"]["billing_recovery"]["health"][
-        "error_threshold_exceeded"] is True
+    failed = billing_recovery()
+    assert failed["status"] == "unavailable"
+    assert failed["health"]["error_threshold_exceeded"] is True
 
     worker._report_billing_health({
         "running": True,
@@ -893,8 +939,7 @@ def test_authoritative_billing_readiness_requires_fresh_valid_loop_health(monkey
         "consecutive_errors": 2,
         "last_error_monotonic": 125.001,
     })
-    recovered_from_errors = asyncio.run(worker.readiness())
-    assert recovered_from_errors["status"] == "ok"
+    assert billing_recovery()["status"] == "ready"
 
 
 def test_kms_deployment_factory_registry_is_composed_before_readiness(monkeypatch):

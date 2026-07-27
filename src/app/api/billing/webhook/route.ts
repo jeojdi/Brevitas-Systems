@@ -16,7 +16,7 @@ import {
 import {
   stripeId,
   subscriptionPeriod,
-} from '@/lib/billing/stripe-state';
+} from '@/lib/billing/stripe-state.mjs';
 import {
   StripeDuplicateSubscriptionReviewError,
   subscriptionCandidateIsSupersededByCanonicalIncumbent,

@@ -270,11 +270,14 @@ begin
         + floor(extract(epoch from (entry.occurred_at-account.current_period_start))/604800)
           * interval '7 days';
     period_end := period_start+interval '7 days';
+    -- Exclude 'review': those rows were never billed and await manual
+    -- resolution, so counting them would trip the weekly cap against fees that
+    -- will never be sent (same defect as claim_billing_ledger_entries below).
     select coalesce(sum(fee_microusd),0) into committed
       from public.billing_ledger
      where organization_id=entry.organization_id
        and occurred_at>=period_start and occurred_at<period_end
-       and status in ('sending','reported','review');
+       and status in ('sending','reported');
     if committed+entry.fee_microusd>p_cap_microusd then
         update public.billing_ledger
            set status='capped',last_error='weekly safety cap reached'
@@ -386,12 +389,18 @@ begin
             continue;
         end;
 
+        -- Only amounts in flight ('sending') or already reported to Stripe
+        -- ('reported') count toward the period total returned as
+        -- expected_period_microusd. A 'review' row was never billed and needs
+        -- manual resolution, so counting it permanently poisons reconciliation
+        -- (expected > actual forever) and can trip the weekly cap against fees
+        -- that will never be sent.
         select coalesce(sum(ledger.fee_microusd),0) into committed
           from public.billing_ledger ledger
          where ledger.organization_id=candidate.organization_id
            and ledger.occurred_at>=claim_period_start
            and ledger.occurred_at<claim_period_end
-           and ledger.status in ('sending','reported','review');
+           and ledger.status in ('sending','reported');
         if not was_reclaimed
            and committed+candidate.fee_microusd>p_cap_microusd then
             update public.billing_ledger

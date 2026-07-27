@@ -40,4 +40,9 @@ USER brevitas
 # Railway injects $PORT at runtime; default to 8000 for local `docker run`.
 EXPOSE 8000
 STOPSIGNAL SIGTERM
-CMD ["/usr/local/bin/start-with-adc.sh", "sh", "-c", "exec uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-graceful-shutdown ${BREVITAS_SHUTDOWN_GRACE_SECONDS:-120}"]
+# --host :: binds dual-stack (IPv4+IPv6), consistent with the compressor's IPv6 fix for
+# Railway private networking. --forwarded-allow-ips names the trusted edge proxy hop(s) so
+# request.client.host reflects the real client peer (which the rate limiter buckets on)
+# instead of collapsing every request onto the edge IP. It is validated as required in
+# production by _validate_runtime_config; default to loopback for local `docker run`.
+CMD ["/usr/local/bin/start-with-adc.sh", "sh", "-c", "exec uvicorn api.server:app --host :: --port ${PORT:-8000} --workers 1 --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --timeout-graceful-shutdown ${BREVITAS_SHUTDOWN_GRACE_SECONDS:-120}"]
