@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -250,8 +251,16 @@ def test_hosted_warm_observe_encrypts_payload_and_swallows_failures(
                 raise RuntimeError("PRIVATE-STORE-DETAIL")
 
         monkeypatch.setattr(server, "_store", Broken())
-        server._hosted_warm_observe(
-            organization["id"], str(customer["id"]), prefix, cache_read=True)
+        # brevitas.api runs with propagate=False under JSON logging
+        # (configure_json_logging), so pytest's caplog — a handler on the root
+        # logger — only sees this WARNING when propagation is enabled. Without
+        # this the positive assertion below is order-dependent: it passes only if
+        # an earlier test happened to leave propagation on, and fails in isolation
+        # or when the suite is sharded (e.g. CI's backend subset).
+        monkeypatch.setattr(logging.getLogger("brevitas.api"), "propagate", True)
+        with caplog.at_level(logging.WARNING, logger="brevitas.api"):
+            server._hosted_warm_observe(
+                organization["id"], str(customer["id"]), prefix, cache_read=True)
         assert "warm prefix observation failed error_type=RuntimeError" in caplog.text
         assert "PRIVATE-STORE-DETAIL" not in caplog.text
         assert "PRIVATE-WARM-PREFIX" not in caplog.text

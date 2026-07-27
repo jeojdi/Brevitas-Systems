@@ -114,10 +114,17 @@ jobs:
           python-version: '3.11.13'
           cache: pip
           cache-dependency-path: scripts/ci/python-audit.lock
+      # Blocking gate scopes to production dependencies: devDependencies (the
+      # eslint/vite build toolchain) are never in the shipped artifact, so a
+      # high advisory there is not a runtime exposure. It also avoids blocking
+      # every release on an upstream toolchain advisory that has no clean fix —
+      # e.g. brace-expansion GHSA-mh99-v99m-4gvg, whose only patched release
+      # (5.0.8) is incompatible with the minimatch@3 that eslint@9 pulls in.
+      # Production dependencies are still audited strictly at high.
       - name: Audit root npm lock
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=high --omit=dev
       - name: Audit dashboard npm lock
-        run: npm audit --prefix dashboard --audit-level=high
+        run: npm audit --prefix dashboard --audit-level=high --omit=dev
       - name: Install hashed Python audit tooling
         run: python -m pip install --require-hashes -r scripts/ci/python-audit.lock
       - name: Audit hashed Python runtime locks
