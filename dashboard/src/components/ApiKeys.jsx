@@ -1,21 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { apiKeyId, createKey, fetchKeys, revokeKey } from '../lib/api.js'
+import { apiKeyId, fetchKeys, revokeKey } from '../lib/api.js'
 import { capture } from '../lib/analytics.js'
-
-function CopyButton({ text, small = false }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }
-  return (
-    <button
-      onClick={copy}
-      className={`border border-brand-border dark:border-brand-dark-border hover:border-brand-blue text-brand-muted dark:text-brand-dark-muted hover:text-brand-blue rounded-xl transition-colors font-mono ${
-        small ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'
-      }`}
-    >
-      {copied ? 'copied!' : 'copy'}
-    </button>
-  )
-}
 
 const ENDPOINTS = [
   ['POST', '/v1/compress', 'compress messages + prune context'],
@@ -24,12 +9,9 @@ const ENDPOINTS = [
   ['GET',  '/v1/health',   'server health check'],
 ]
 
-export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
+export default function ApiKeys({ apiKey, accessToken, onApiKeyChange, onNavigate = () => {} }) {
   const [keys, setKeys]       = useState([])
-  const [name, setName]       = useState('')
-  const [newKey, setNewKey]   = useState('')
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
   const [error, setError]     = useState('')
   const [activeId, setActiveId] = useState(null)
   const requestId = useRef(0)
@@ -55,22 +37,6 @@ export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
     apiKeyId(apiKey).then(id => { if (active) setActiveId(id) }).catch(() => { if (active) setActiveId('') })
     return () => { active = false }
   }, [apiKey])
-
-  const create = async () => {
-    if (creating) return
-    setCreating(true); setError(''); setNewKey('')
-    try {
-      const data = await createKey(accessToken, name.trim() || 'unnamed')
-      setNewKey(data.api_key)
-      setName('')
-      capture('api_key_created')
-      await loadKeys()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setCreating(false)
-    }
-  }
 
   const revoke = async (id) => {
     if (!activeId || id === activeId) return
@@ -98,36 +64,20 @@ export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
         </p>
       </div>
 
-      {/* ── Create ── */}
+      {/* ── Create (issued as scoped service accounts in Team & keys) ── */}
       <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-7 space-y-4">
         <p className="annotation">// create a new key</p>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && create()}
-            maxLength={100}
-            placeholder="Project name"
-            className="flex-1 bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-4 py-3 text-sm text-brand-navy dark:text-brand-dark-navy placeholder-brand-muted dark:placeholder-brand-dark-muted focus:outline-none focus:border-brand-blue transition-colors"
-          />
-          <button
-            onClick={create}
-            disabled={creating}
-            className="bg-brand-blue hover:bg-brand-navy disabled:opacity-50 text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors whitespace-nowrap"
-          >
-            {creating ? 'Creating…' : 'Create →'}
-          </button>
-        </div>
-
-        {newKey && (
-          <div aria-live="polite" className="bg-brand-teal-dim dark:bg-brand-dark-teal-dim border border-brand-teal/30 rounded-xl p-4">
-            <p className="annotation text-brand-teal mb-2">// shown once — copy now</p>
-            <div className="flex items-center gap-3">
-              <code className="flex-1 text-xs font-mono text-brand-teal break-all">{newKey}</code>
-              <CopyButton text={newKey} small />
-            </div>
-          </div>
-        )}
+        <p className="text-brand-muted dark:text-brand-dark-muted text-sm leading-relaxed">
+          Long-lived API keys are issued as scoped <strong>service accounts</strong> — each with its own
+          environment, rotation, and revocation. Create and manage them in <strong>Team &amp; keys</strong>.
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigate('Team & keys')}
+          className="bg-brand-blue hover:bg-brand-navy text-white rounded-xl px-5 py-3 text-sm font-medium transition-colors whitespace-nowrap"
+        >
+          Go to Team &amp; keys →
+        </button>
 
         {error && <p role="alert" className="font-mono text-xs text-red-500">{error}</p>}
       </div>

@@ -804,7 +804,7 @@ export default function App() {
         {(activeTab === 'Repositories' || activeTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}
-        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
+        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} onNavigate={setActiveTab} />}
         {activeTab === 'Team & keys' && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {activeTab === 'Workspace' && <CompanyAdministration personal key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
