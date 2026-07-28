@@ -68,6 +68,7 @@ export const fetchStats = (apiKey, options) => apiJson('/v1/stats', apiKey, opti
 export const fetchBreakdown = (apiKey, options) => apiJson('/v1/stats/breakdown', apiKey, options)
 export const fetchActivity = (apiKey, options) => apiJson('/v1/stats/activity', apiKey, options)
 export const fetchCacheStats = (apiKey, options) => apiJson('/v1/stats/cache', apiKey, options)
+export const fetchAudit = (apiKey, options) => apiJson('/v1/audit', apiKey, options)
 const managementJson = async (path, accessToken, { body, request = fetch, headers, ...options } = {}) => {
   const response = await request(path, {
     ...options,

@@ -860,6 +860,174 @@ def _cache_per_provider(rows: list[dict[str, Any]],
     return [grouped[provider] for provider in sorted(grouped)]
 
 
+# Providers whose native prompt caches make cache-side audit evidence
+# meaningful; other providers get request counts only.
+_AUDIT_CACHE_PROVIDERS = frozenset({"anthropic", "openai", "deepseek", "xai"})
+# Providers whose streamed usage receipts require opt-in
+# (stream_options.include_usage); missing receipts there are caller-fixable.
+_AUDIT_STREAM_RECEIPT_PROVIDERS = frozenset({"openai", "xai"})
+
+
+def _audit_base_strategy(row: dict[str, Any]) -> str:
+    """Strategy with the `:missing_receipt` suffix stripped (proxy.py appends
+    it when the provider returned no usage receipt)."""
+    return str(row.get("strategy") or "").strip().lower().split(":", 1)[0]
+
+
+def _audit_row_provider(row: dict[str, Any]) -> str:
+    return (str(row.get("provider") or "")
+            or infer_provider(str(row.get("model") or "")) or "unknown")
+
+
+def _audit_metrics(rows: list[dict[str, Any]],
+                   warm_providers: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Traffic-side evidence for the optimization audit (GET /v1/audit).
+
+    Everything here is derived from existing usage_log rows plus warm_status —
+    no new columns, no raw provider payloads (usage_raw is intentionally
+    empty). Two approximations are inherent and surfaced in `approximations`:
+    the row set is a bounded recent-rows scan window, not all-time, and
+    caller-vs-Brevitas cache ownership is inferred from the persisted
+    cache_attributable boolean (the cache_control_owner string is not stored).
+    """
+    per_provider: dict[str, dict[str, Any]] = {}
+
+    def bucket(provider: str) -> dict[str, Any]:
+        return per_provider.setdefault(provider, {
+            "rows": 0, "cached_input_tokens": 0, "fresh_input_tokens": 0,
+            "hit_rate_pct": None, "caller_owned_cache_rows": 0,
+            "brevitas_owned_cache_rows": 0, "streamed_rows": 0,
+            "streamed_missing_receipt_rows": 0, "cache_write_tokens": 0,
+            "cache_write_rows": 0, "caller_owned_write_rows": 0,
+            "brevitas_owned_write_rows": 0,
+        })
+
+    caller_owned = brevitas_owned = uncached = 0
+    exact_cache_rows = calls_avoided = 0
+    streamed = streamed_missing = 0
+    write_5m = write_1h = write_rows = 0
+    caller_1h_rows = brevitas_1h_rows = 0
+    warm_rows = 0
+    discount = attributable = 0.0
+    sessions: dict[str, int] = {}
+    for row in rows:
+        provider = _audit_row_provider(row)
+        strategy = _audit_base_strategy(row)
+        cached = _i(row.get("cached_input_tokens"))
+        entry = bucket(provider)
+        entry["rows"] += 1
+        entry["cached_input_tokens"] += cached
+        entry["fresh_input_tokens"] += _i(row.get("fresh_input_tokens"))
+        if strategy == "cache_warm":
+            warm_rows += 1
+        if strategy.startswith("exact_cache"):
+            exact_cache_rows += 1
+        calls_avoided += _i(row.get("calls_avoided"))
+        if cached <= 0:
+            uncached += 1
+        elif row.get("cache_attributable"):
+            brevitas_owned += 1
+            entry["brevitas_owned_cache_rows"] += 1
+        elif strategy not in ("exact_cache", "semantic_cache", "cache_warm"):
+            # Native provider cache read with no Brevitas-owned breakpoint:
+            # the caller placed (or inherited) the cache markers themselves.
+            caller_owned += 1
+            entry["caller_owned_cache_rows"] += 1
+        if row.get("is_stream") and provider in _AUDIT_STREAM_RECEIPT_PROVIDERS:
+            streamed += 1
+            entry["streamed_rows"] += 1
+            missing = str(row.get("strategy") or "").endswith(":missing_receipt")
+            streamed_missing += int(missing)
+            entry["streamed_missing_receipt_rows"] += int(missing)
+        five_m = _i(row.get("cache_write_5m_tokens"))
+        write_5m += five_m
+        one_hour = _i(row.get("cache_write_1h_tokens"))
+        write_1h += one_hour
+        # Cache writes prove cache markers even when no read has landed yet
+        # (cold cache, recent adoption), so the audit needs them per provider
+        # with the same cache_attributable ownership inference used for reads.
+        row_write_tokens = _i(row.get("cache_write_tokens")) or (five_m + one_hour)
+        if row_write_tokens:
+            write_rows += 1
+            entry["cache_write_rows"] += 1
+            entry["cache_write_tokens"] += row_write_tokens
+            if row.get("cache_attributable"):
+                entry["brevitas_owned_write_rows"] += 1
+            else:
+                entry["caller_owned_write_rows"] += 1
+        if one_hour:
+            if row.get("cache_attributable"):
+                brevitas_1h_rows += 1
+            else:
+                caller_1h_rows += 1
+        discount += _f(row.get("native_cache_discount_usd"))
+        attributable += _billable_cache_savings(row)
+        session = str(row.get("session_id") or "")
+        if session:
+            sessions[session] = sessions.get(session, 0) + 1
+    for entry in per_provider.values():
+        total = entry["cached_input_tokens"] + entry["fresh_input_tokens"]
+        if total:
+            entry["hit_rate_pct"] = round(
+                100 * entry["cached_input_tokens"] / total, 2)
+    cached_total = sum(e["cached_input_tokens"] for e in per_provider.values())
+    fresh_total = sum(e["fresh_input_tokens"] for e in per_provider.values())
+    input_total = cached_total + fresh_total
+    repeat_session_rows = sum(n for n in sessions.values() if n >= 2)
+    warm = _warm_totals(warm_providers)
+    return {
+        "schema": "brevitas.audit-metrics.v1",
+        "window_rows": len(rows),
+        "providers": sorted(per_provider),
+        "per_provider": per_provider,
+        "cache": {
+            "cached_input_tokens": cached_total,
+            "fresh_input_tokens": fresh_total,
+            "hit_rate_pct": (round(100 * cached_total / input_total, 2)
+                             if input_total else None),
+            "caller_owned_cache_rows": caller_owned,
+            "brevitas_owned_cache_rows": brevitas_owned,
+            "uncached_rows": uncached,
+        },
+        "repeat": {
+            "exact_cache_rows": exact_cache_rows,
+            "calls_avoided": calls_avoided,
+            "repeat_sessions": sum(1 for n in sessions.values() if n >= 2),
+            "repeat_session_rows": repeat_session_rows,
+        },
+        "streaming": {
+            "streamed_rows": streamed,
+            "streamed_missing_receipt_rows": streamed_missing,
+            "usage_visibility_pct": (round(
+                100 * (streamed - streamed_missing) / streamed, 2)
+                if streamed else None),
+        },
+        "ttl": {
+            "cache_write_5m_tokens": write_5m,
+            "cache_write_1h_tokens": write_1h,
+            "cache_write_rows": write_rows,
+            "caller_owned_1h_rows": caller_1h_rows,
+            "brevitas_owned_1h_rows": brevitas_1h_rows,
+        },
+        "warming": {
+            "configured": warm_providers is not None,
+            "warm_pings": _i(warm.get("warm_pings")) if warm else None,
+            "warm_hits": _i(warm.get("warm_hits")) if warm else None,
+            "warm_rows": warm_rows,
+        },
+        "dollars": {
+            "native_cache_discount_usd": round(discount, 8),
+            "attributable_discount_usd": round(attributable, 8),
+        },
+        "approximations": [
+            "metrics cover a bounded window of the most recent usage rows, "
+            "not all-time history",
+            "cache ownership is inferred from the stored cache_attributable "
+            "flag; the original cache_control owner string is not persisted",
+        ],
+    }
+
+
 ACTIVITY_IDLE_MINUTES = 30
 ACTIVITY_SESSION_MAX = 100
 ACTIVITY_SCAN_MAX = 1000
@@ -2455,6 +2623,15 @@ class UsageStore:
         stats["per_provider"] = _cache_per_provider(rows, warm_providers)
         return stats
 
+    def audit_metrics(self, key_hash: str) -> dict[str, Any]:
+        """Traffic evidence for GET /v1/audit. APPROXIMATION: computed over
+        the most recent LOCAL_USAGE_SCAN_MAX tenant rows, not all-time — the
+        window note ships inside the result's `approximations`."""
+        context = self.key_context(key_hash) or {}
+        warm_providers = self._warm_providers(
+            str(context.get("organization_id") or ""))
+        return _audit_metrics(self._rows(key_hash), warm_providers)
+
     def get_activity(self, key_hash: str) -> dict[str, Any]:
         return _activity(self._rows(key_hash))
 
@@ -3837,6 +4014,19 @@ class SupabaseUsageStore:
         result["per_provider"] = _cache_per_provider(
             self._collect_usage_rows(self._usage_scope(key_hash)), warm_providers)
         return result
+
+    def audit_metrics(self, key_hash: str) -> dict[str, Any]:
+        # APPROXIMATION, same shape as per_provider above: usage_stats has no
+        # strategy/stream/session dimensions, so audit evidence is computed
+        # from the most recent ACTIVITY_SCAN_MAX usage_page rows — a bounded
+        # recent window, not all-time. The window note ships inside the
+        # result's `approximations`; a dedicated aggregate RPC would need a
+        # NEW migration (existing ones are checksum-frozen).
+        context = self.key_context(key_hash) or {}
+        warm_providers = self._warm_providers(
+            str(context.get("organization_id") or ""))
+        return _audit_metrics(
+            self._collect_usage_rows(self._usage_scope(key_hash)), warm_providers)
 
     def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
         # usage_page owner scoping: with an empty key hash only owner_id rows match.

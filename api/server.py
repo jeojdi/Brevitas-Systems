@@ -4052,6 +4052,417 @@ def stats_cache(request: Request, kh: str = Depends(_authenticated)):
     return body
 
 
+# ── Optimization audit (traffic side) ─────────────────────────────────────────
+# Honesty contract: every claim below is backed by stored usage rows, and any
+# capability the rows cannot prove stays "unknown" with a pointer at the static
+# scanner — a false "opportunity" a prospect can refute kills the deal.
+
+# Minimum recent rows before the audit will assert anything negative about a
+# provider's traffic; below this, absence of evidence stays "unknown".
+_AUDIT_MIN_EVIDENCE_ROWS = 20
+# cached/(cached+fresh) thresholds for the byte-stability approximation.
+_AUDIT_HIT_RATE_IMPLEMENTED_PCT = 20.0
+_AUDIT_HIT_RATE_OPPORTUNITY_PCT = 5.0
+# Provider caches ignore prompts under a minimum size (~1024 tokens for both
+# OpenAI automatic caching and Anthropic cache_control), so a workload whose
+# average prompt sits below this floor can never show cached tokens no matter
+# how byte-stable it is — it must not be accused of prompt churn.
+_AUDIT_MIN_CACHEABLE_PROMPT_TOKENS = 1024
+_AUDIT_STATIC_SCAN_DETAIL = ("not observable in proxied usage rows; run the "
+                             "static code scan (brevitas audit <repo>)")
+
+# Served when brevitas.audit_capabilities has not shipped (or fails to import):
+# same contract shape, so the endpoint stands alone. The registry module is the
+# source of truth once present.
+_AUDIT_CAPABILITY_FALLBACK = (
+    {"id": "anthropic_cache_control", "name": "Anthropic cache_control injection",
+     "providers": ["anthropic"], "detect": "both", "weight": 9,
+     "traffic_metric": "caller_cache_markers"},
+    {"id": "openai_prompt_cache_key", "name": "OpenAI prompt_cache_key routing",
+     "providers": ["openai"], "detect": "static", "weight": 6,
+     "traffic_metric": None},
+    {"id": "prompt_byte_stability", "name": "Prompt byte-stability",
+     "providers": ["anthropic", "openai", "deepseek", "xai"], "detect": "both",
+     "weight": 8, "traffic_metric": "cache_hit_ratio"},
+    {"id": "xai_conv_id_affinity", "name": "xAI x-grok-conv-id cache affinity",
+     "providers": ["xai"], "detect": "both", "weight": 7,
+     "traffic_metric": "xai_cache_hits"},
+    {"id": "stream_options_include_usage",
+     "name": "Streamed usage receipts (stream_options.include_usage)",
+     "providers": ["openai", "xai"], "detect": "both", "weight": 3,
+     "traffic_metric": "stream_receipt_visibility"},
+    {"id": "exact_repeat_response_caching", "name": "Exact-repeat response caching",
+     "providers": "all", "detect": "both", "weight": 6,
+     "traffic_metric": "exact_repeat_rate"},
+    {"id": "predictive_cache_warming", "name": "Predictive cache warming",
+     "providers": ["anthropic"], "detect": "both", "weight": 7,
+     "traffic_metric": "warming_status"},
+    {"id": "cache_ttl_tiering", "name": "Cache TTL tiering",
+     "providers": ["anthropic"], "detect": "both", "weight": 4,
+     "traffic_metric": "ttl_tier_writes"},
+    {"id": "usage_cost_metering", "name": "Usage and cost metering",
+     "providers": "all", "detect": "static", "weight": 3,
+     "traffic_metric": None},
+    {"id": "concurrent_prefix_batching", "name": "Concurrent same-prefix batching",
+     "providers": "all", "detect": "static", "weight": 5,
+     "traffic_metric": None},
+)
+
+
+_audit_registry_warned = False
+
+
+def _audit_capability_registry() -> list[dict]:
+    """brevitas.audit_capabilities.CAPABILITIES when importable, else the
+    in-module fallback. Defensive: rows without an id are dropped and missing
+    fields default at evaluation time, so a partial registry never 500s."""
+    global _audit_registry_warned
+    try:
+        from brevitas.audit_capabilities import CAPABILITIES
+        caps = [dict(cap) for cap in CAPABILITIES
+                if isinstance(cap, dict) and cap.get("id")]
+        if caps:
+            return caps
+    except Exception:
+        pass
+    if not _audit_registry_warned:
+        _audit_registry_warned = True
+        logger.warning("brevitas.audit_capabilities unavailable; "
+                       "serving fallback registry")
+    return [dict(cap) for cap in _AUDIT_CAPABILITY_FALLBACK]
+
+
+def _audit_verdict_anthropic_cache_control(m: dict) -> tuple[str, list[str], str]:
+    p = (m.get("per_provider") or {}).get("anthropic") or {}
+    rows, caller = _i_safe(p.get("rows")), _i_safe(p.get("caller_owned_cache_rows"))
+    brevitas_rows = _i_safe(p.get("brevitas_owned_cache_rows"))
+    if caller:
+        return ("already_implemented",
+                [f"{caller} of {rows} recent anthropic requests carry "
+                 "caller-owned prompt-cache reads"],
+                "your code already places cache_control markers")
+    if brevitas_rows:
+        return ("already_implemented",
+                [f"{brevitas_rows} of {rows} recent anthropic requests hit "
+                 "Brevitas-managed cache breakpoints"],
+                "active via Brevitas-managed cache_control injection")
+    write_rows = _i_safe(p.get("cache_write_rows"))
+    if write_rows:
+        # Anthropic only emits cache-write tokens for requests carrying
+        # cache_control markers, so writes prove the markers are in place even
+        # before any read lands (cold cache, recent adoption, or per-deploy
+        # prefix rotation). Calling this an opportunity would be refuted by
+        # the write tokens in this same report.
+        evidence = [f"{write_rows} of {rows} recent anthropic requests wrote "
+                    f"{_i_safe(p.get('cache_write_tokens'))} prompt-cache "
+                    "tokens; no reads landed in this window (approximation: "
+                    "bounded recent window)"]
+        if (_i_safe(p.get("brevitas_owned_write_rows"))
+                and not _i_safe(p.get("caller_owned_write_rows"))):
+            return ("already_implemented", evidence,
+                    "active via Brevitas-managed cache_control injection; "
+                    "cache written but not yet read back in this window")
+        return ("already_implemented", evidence,
+                "your code already places cache_control markers; cache writes "
+                "observed without reads yet (cold or recently adopted cache)")
+    if rows >= _AUDIT_MIN_EVIDENCE_ROWS and not _i_safe(p.get("cached_input_tokens")):
+        return ("opportunity",
+                [f"0 cached input tokens across {rows} recent anthropic "
+                 "requests (approximation: bounded recent window)"],
+                "no prompt-cache reads observed on anthropic traffic")
+    return ("unknown", [], "not enough anthropic traffic to measure")
+
+
+def _audit_verdict_byte_stability(m: dict) -> tuple[str, list[str], str]:
+    per = m.get("per_provider") or {}
+    cached = fresh = rows = small_rows = anthropic_write_rows = 0
+    small_providers: list[str] = []
+    for provider in ("anthropic", "openai", "deepseek", "xai"):
+        entry = per.get(provider) or {}
+        p_rows = _i_safe(entry.get("rows"))
+        if not p_rows:
+            continue
+        p_cached = _i_safe(entry.get("cached_input_tokens"))
+        p_fresh = _i_safe(entry.get("fresh_input_tokens"))
+        if (not p_cached and
+                (p_cached + p_fresh) / p_rows < _AUDIT_MIN_CACHEABLE_PROMPT_TOKENS):
+            # Under the provider cache floor a hit rate of zero is structural,
+            # not evidence of unstable bytes — keep these rows out of the
+            # ratio. Observed cache reads trump the average-size heuristic:
+            # a provider with hits demonstrably caches this workload.
+            small_rows += p_rows
+            small_providers.append(provider)
+            continue
+        cached += p_cached
+        fresh += p_fresh
+        rows += p_rows
+        if provider == "anthropic":
+            anthropic_write_rows = _i_safe(entry.get("cache_write_rows"))
+    total = cached + fresh
+    if not total or rows < _AUDIT_MIN_EVIDENCE_ROWS:
+        if small_rows >= _AUDIT_MIN_EVIDENCE_ROWS:
+            return ("not_applicable",
+                    [f"average prompt on {', '.join(small_providers)} is under "
+                     f"the ~{_AUDIT_MIN_CACHEABLE_PROMPT_TOKENS}-token provider "
+                     f"cache floor across {small_rows} recent requests "
+                     "(approximation: window average, not per-request sizes)"],
+                    "prompts are below the minimum size provider caches will "
+                    "store, so byte stability cannot change the bill")
+        return ("unknown", [], "not enough cache-capable traffic to measure")
+    hit = round(100 * cached / total, 2)
+    evidence = [f"{hit}% of input tokens on cache-capable providers were "
+                f"served from provider caches across {rows} recent requests"]
+    if small_providers:
+        evidence.append(f"excluded {small_rows} requests on "
+                        f"{', '.join(small_providers)}: average prompt under "
+                        f"the ~{_AUDIT_MIN_CACHEABLE_PROMPT_TOKENS}-token "
+                        "provider cache floor")
+    if hit >= _AUDIT_HIT_RATE_IMPLEMENTED_PCT:
+        return ("already_implemented", evidence,
+                "prompts are byte-stable enough for provider caches to hit")
+    repeat_rows = _i_safe((m.get("repeat") or {}).get("repeat_session_rows"))
+    if hit < _AUDIT_HIT_RATE_OPPORTUNITY_PCT and repeat_rows:
+        if anthropic_write_rows:
+            # Writes without reads fits both prompt-byte churn and a cold,
+            # recently adopted cache; a bounded window cannot tell them apart,
+            # so naming "unstable prompt bytes" here would be refutable.
+            evidence.append(f"{anthropic_write_rows} recent anthropic requests "
+                            "wrote cache entries that were not read back")
+            return ("unknown", evidence,
+                    "cache writes without reads can mean prompt-byte churn or "
+                    "a cold, recently adopted cache; this window cannot "
+                    "distinguish them")
+        evidence.append(f"{repeat_rows} recent requests belong to repeat "
+                        "sessions yet rarely hit cache (approximation: "
+                        "hit-ratio inference, not a byte diff)")
+        return ("opportunity", evidence,
+                "repeat traffic with near-zero cache hits suggests unstable "
+                "prompt bytes (timestamps, uuids, unsorted json)")
+    if hit < _AUDIT_HIT_RATE_OPPORTUNITY_PCT:
+        return ("unknown", evidence,
+                "low cache hits but no repeat-session evidence; the workload "
+                "may simply not repeat")
+    return ("partial", evidence,
+            "some cache reuse; hit ratio suggests headroom (approximation)")
+
+
+def _audit_verdict_xai_affinity(m: dict) -> tuple[str, list[str], str]:
+    p = (m.get("per_provider") or {}).get("xai") or {}
+    cached, rows = _i_safe(p.get("cached_input_tokens")), _i_safe(p.get("rows"))
+    if cached:
+        return ("already_implemented",
+                [f"{cached} cached input tokens across {rows} recent xai "
+                 "requests — xAI's cache does not hit without conversation "
+                 "affinity, so x-grok-conv-id is effectively in place"],
+                "xAI cache reads observed, which require x-grok-conv-id")
+    return ("unknown", [],
+            "request headers are not stored; " + _AUDIT_STATIC_SCAN_DETAIL)
+
+
+def _audit_verdict_stream_usage(m: dict) -> tuple[str, list[str], str]:
+    s = m.get("streaming") or {}
+    streamed = _i_safe(s.get("streamed_rows"))
+    missing = _i_safe(s.get("streamed_missing_receipt_rows"))
+    if not streamed:
+        return ("unknown", [], "no streamed openai/xai requests observed")
+    evidence = [f"{streamed - missing} of {streamed} recent streamed "
+                "openai/xai requests returned a usage receipt"]
+    if not missing:
+        return ("already_implemented", evidence,
+                "streamed responses already report usage")
+    if missing == streamed:
+        return ("opportunity", evidence,
+                "no streamed request reported usage; "
+                "stream_options.include_usage is not set")
+    return ("partial", evidence,
+            "some streamed call sites lack stream_options.include_usage")
+
+
+def _audit_verdict_exact_repeat(m: dict) -> tuple[str, list[str], str]:
+    r = m.get("repeat") or {}
+    replays = _i_safe(r.get("exact_cache_rows"))
+    avoided = _i_safe(r.get("calls_avoided"))
+    if replays or avoided:
+        return ("already_implemented",
+                [f"{replays} exact-replay responses served, "
+                 f"{avoided} provider calls avoided in the recent window"],
+                "active via Brevitas exact-replay caching")
+    return ("unknown", [],
+            "upstream memoization never reaches the proxy, so absence of "
+            "replays proves nothing; " + _AUDIT_STATIC_SCAN_DETAIL)
+
+
+def _audit_verdict_warming(m: dict) -> tuple[str, list[str], str]:
+    w = m.get("warming") or {}
+    pings = _i_safe(w.get("warm_pings"))
+    if w.get("configured") and pings:
+        return ("already_implemented",
+                [f"{pings} warming pings, {_i_safe(w.get('warm_hits'))} "
+                 "confirmed warm hits"],
+                "active via Brevitas predictive warming")
+    if w.get("configured"):
+        return ("partial", ["warming enrolled but no pings recorded yet"],
+                "enrollment active, ping pipeline not yet exercised")
+    if _i_safe(m.get("window_rows")) < _AUDIT_MIN_EVIDENCE_ROWS:
+        # A handful of requests cannot establish the return-cadence patterns
+        # warming monetizes; claiming an opportunity here would be guesswork.
+        return ("unknown", [],
+                "too few proxied requests to judge whether warming would pay")
+    return ("opportunity",
+            ["no warming enrollment for this organization (approximation: "
+             "self-managed keep-alive outside the proxy is not visible)"],
+            "provider caches expire between bursts; predictive warming keeps "
+            "them hot")
+
+
+def _audit_verdict_ttl_tiering(m: dict) -> tuple[str, list[str], str]:
+    t = m.get("ttl") or {}
+    one_hour = _i_safe(t.get("cache_write_1h_tokens"))
+    write_rows = _i_safe(t.get("cache_write_rows"))
+    if one_hour:
+        owner = ("caller-owned" if _i_safe(t.get("caller_owned_1h_rows"))
+                 else "Brevitas-managed")
+        return ("already_implemented",
+                [f"{one_hour} one-hour cache-write tokens observed "
+                 f"({owner}; ownership inferred from cache_attributable)"],
+                "1h TTL tier in use")
+    if write_rows:
+        return ("partial",
+                [f"{write_rows} recent requests wrote cache entries, all at "
+                 "the default 5m TTL"],
+                "caching active but no 1h tier; whether the 2x write premium "
+                "pays off depends on inter-arrival times (approximation)")
+    return ("unknown", [], "no cache writes observed to judge TTL usage")
+
+
+def _i_safe(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+_AUDIT_TRAFFIC_EVALUATORS: dict[str, Callable[[dict], tuple[str, list[str], str]]] = {
+    "caller_cache_markers": _audit_verdict_anthropic_cache_control,
+    "anthropic_cache_control": _audit_verdict_anthropic_cache_control,
+    "cache_hit_ratio": _audit_verdict_byte_stability,
+    "prompt_byte_stability": _audit_verdict_byte_stability,
+    "xai_cache_hits": _audit_verdict_xai_affinity,
+    "xai_conv_id_affinity": _audit_verdict_xai_affinity,
+    "stream_receipt_visibility": _audit_verdict_stream_usage,
+    "stream_options_include_usage": _audit_verdict_stream_usage,
+    "exact_repeat_rate": _audit_verdict_exact_repeat,
+    "exact_repeat_response_caching": _audit_verdict_exact_repeat,
+    "warming_status": _audit_verdict_warming,
+    "predictive_cache_warming": _audit_verdict_warming,
+    "ttl_tier_writes": _audit_verdict_ttl_tiering,
+    "cache_ttl_tiering": _audit_verdict_ttl_tiering,
+}
+
+
+def _audit_estimated_impact(verdict: str, weight: int) -> Optional[str]:
+    if verdict not in ("opportunity", "partial"):
+        return None
+    return "high" if weight >= 7 else "medium" if weight >= 4 else "low"
+
+
+def _build_audit_report(metrics: dict) -> dict:
+    metrics = metrics if isinstance(metrics, dict) else {}
+    providers = [str(p) for p in (metrics.get("providers") or [])]
+    detected = set(providers)
+    no_traffic = not _i_safe(metrics.get("window_rows"))
+    capabilities, numerator, denominator = [], 0.0, 0
+    measured = measured_impl = False
+    for cap in _audit_capability_registry():
+        cap_id = str(cap.get("id"))
+        weight = max(1, _i_safe(cap.get("weight")) or 1)
+        applicable_to = cap.get("providers", "all")
+        applicable = (applicable_to == "all"
+                      or bool(detected & set(applicable_to or [])))
+        evaluator = (_AUDIT_TRAFFIC_EVALUATORS.get(str(cap.get("traffic_metric")))
+                     or _AUDIT_TRAFFIC_EVALUATORS.get(cap_id))
+        if no_traffic:
+            # With zero rows nothing is measurable — including applicability,
+            # so nothing may be called not_applicable either.
+            verdict, evidence, detail = "unknown", [], (
+                "no proxied traffic recorded for this key; nothing measured")
+        elif not applicable:
+            verdict, evidence, detail = "not_applicable", [], (
+                "no traffic observed for the providers this applies to")
+        elif evaluator is None:
+            verdict, evidence, detail = "unknown", [], _AUDIT_STATIC_SCAN_DETAIL
+        else:
+            verdict, evidence, detail = evaluator(metrics)
+        if verdict != "not_applicable":
+            denominator += weight
+            if verdict == "opportunity":
+                numerator += weight
+            elif verdict == "partial":
+                numerator += weight * 0.5
+            if verdict in ("already_implemented", "partial", "opportunity"):
+                measured = True
+            if verdict in ("already_implemented", "partial"):
+                measured_impl = True
+        capabilities.append({
+            "id": cap_id, "name": str(cap.get("name") or cap_id),
+            "verdict": verdict, "evidence": evidence,
+            "estimated_impact": _audit_estimated_impact(verdict, weight),
+            "detail": detail,
+        })
+    score = int(round(100 * numerator / denominator)) if denominator else 0
+    if not measured:
+        verdict = "not_measured"
+    elif score < 25 and not measured_impl:
+        # A low score earned purely from sparse/unknown data plus a stray
+        # opportunity is absence of evidence, not evidence of optimization —
+        # never congratulate an org nothing was actually measured for.
+        verdict = "not_measured"
+    elif score < 25:
+        verdict = "well_optimized"
+    elif score < 60:
+        verdict = "moderate_opportunity"
+    else:
+        verdict = "high_opportunity"
+    dollars = metrics.get("dollars") or {}
+    caveats = ["the traffic audit only sees requests proxied through "
+               "Brevitas; capabilities marked unknown need the static code "
+               "scan (brevitas audit <repo>)"]
+    if no_traffic:
+        caveats.append("no proxied traffic recorded for this key; run the "
+                       "static scanner or route traffic first")
+    caveats.extend(str(a) for a in (metrics.get("approximations") or []))
+    return {
+        "schema": "brevitas.audit.v1",
+        "source": "traffic",
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "providers_detected": providers,
+        "score": score,
+        "verdict": verdict,
+        "capabilities": capabilities,
+        "caveats": caveats,
+        # Additive dollar context — real numbers from priced usage rows, the
+        # one place the audit may print dollars (static reports never do).
+        "traffic": {
+            "window_rows": _i_safe(metrics.get("window_rows")),
+            "cache_hit_rate_pct": (metrics.get("cache") or {}).get("hit_rate_pct"),
+            "native_cache_discount_usd": float(
+                dollars.get("native_cache_discount_usd") or 0.0),
+            "attributable_discount_usd": float(
+                dollars.get("attributable_discount_usd") or 0.0),
+            "calls_avoided": _i_safe(
+                (metrics.get("repeat") or {}).get("calls_avoided")),
+        },
+    }
+
+
+@app.get("/v1/audit")
+@limiter.limit("120/minute")
+def audit_report(request: Request, kh: str = Depends(_authenticated)):
+    _require_scope(request, kh, "usage:read_own")
+    metrics = _store.audit_metrics(kh)
+    return _build_audit_report(metrics)
+
+
 @app.get("/v1/admin/stats")
 @limiter.limit("60/minute")
 def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):

@@ -264,6 +264,20 @@ def analyze(path: str, as_json: bool) -> None:
            f"(compress) · [green]{len(rep.lossless)} LOSSLESS[/green] (keep + cache)")
 
 
+@main.command()
+@click.argument("path", default=".", required=False)
+@click.option("--format", "fmt", type=click.Choice(["json", "markdown"]), default="markdown",
+              show_default=True, help="Output format.")
+def audit(path: str, fmt: str) -> None:
+    """Audit a codebase: which Brevitas optimizations are already done, and what is left.
+
+    This is the static scan that audit reports point at ("brevitas audit <repo>");
+    it must stay reachable under exactly that name.
+    """
+    from .audit import main as _audit_main
+    _audit_main.callback(path, fmt)
+
+
 _PROVIDER_KEY_ENVS = {
     "openai": ["OPENAI_API_KEY"],
     "anthropic": ["ANTHROPIC_API_KEY"],

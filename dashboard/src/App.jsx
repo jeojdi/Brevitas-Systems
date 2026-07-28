@@ -9,6 +9,7 @@ import Playground from './components/Playground.jsx'
 import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
 import Projects from './components/Projects.jsx'
+import Audit from './components/Audit.jsx'
 import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
@@ -19,8 +20,8 @@ import InvitationAcceptance, { hasPendingCompanyInvitation } from './components/
 import { capture, identify, resetAnalytics } from './lib/analytics.js'
 import { WORKSPACE_TYPE } from './lib/onboarding-workspace.js'
 
-const PERSONAL_TABS = ['Overview', 'Projects', 'Connect', 'Workspace', 'Playground', 'Docs', 'Savings']
-const ENTERPRISE_TABS = ['Overview', 'Repositories', 'Connect', 'Team & keys', 'API Keys', 'Playground', 'Docs', 'Savings']
+const PERSONAL_TABS = ['Overview', 'Projects', 'Audit', 'Connect', 'Workspace', 'Playground', 'Docs', 'Savings']
+const ENTERPRISE_TABS = ['Overview', 'Repositories', 'Audit', 'Connect', 'Team & keys', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
 const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -801,6 +802,7 @@ export default function App() {
         </div>}
         {activeTab === 'Overview'   && <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>}
         {(activeTab === 'Repositories' || activeTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
+        {activeTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}
         {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
         {activeTab === 'Team & keys' && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
