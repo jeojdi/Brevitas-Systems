@@ -42,6 +42,18 @@ schema in `api/migrations/001_persistent_stores.sql`. Railway must use this
 project's `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; the browser uses only
 the public URL and anon key.
 
+## Authentication email
+
+Signup, invitation, and password-reset mail all leave through Supabase Auth; the repository
+contains no mailer of its own. A hosted project without custom SMTP falls back to Supabase's
+built-in service, which refuses delivery to any address outside the project team and caps at
+2 messages/hour — real users receive nothing and `supabase.auth.signUp()` fails with
+`500 unexpected_failure`. Configure **Authentication → Emails → SMTP Settings** with a verified
+sender domain before opening signup, then raise **Authentication → Rate Limits** above the
+30/hour default. `supabase/config.toml` governs local development only and has no effect on the
+hosted project. Template bodies and the full redirect allowlist live in
+[`supabase/templates/README.md`](supabase/templates/README.md).
+
 ## Enterprise production and recovery
 
 Production requires Supabase Team or Enterprise in the same primary US region as Railway and Redis

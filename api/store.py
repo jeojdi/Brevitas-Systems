@@ -58,6 +58,18 @@ _ONBOARDING_STATUS_FIELDS = frozenset({
 })
 _AUDIT_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+# Parity with migration 202607280003's provider CHECKs: the storage layer
+# admits exactly the providers where warming is honest. Runtime activation
+# stays separately gated (server._WARM_ACTIVE_PROVIDERS and the worker's
+# per-provider endpoint allowlist), so admitting a provider here never
+# enables spend on its own.
+_WARM_PROVIDERS = frozenset({"anthropic", "openai", "deepseek"})
+_WARM_SETTLE_OUTCOMES = frozenset({"warmed", "release", "prefix_invalid", "auth_failed"})
+# In-process stand-in for warm_due_claim's pg_try_advisory_xact_lock. Fidelity
+# gap: it fences worker threads inside one process only; concurrent dev
+# processes sharing a SQLite file are serialized by BEGIN IMMEDIATE instead,
+# which blocks rather than yielding lease_unavailable.
+_WARM_CLAIM_LOCK = threading.Lock()
 
 
 class AmbiguousUsageBatchError(RuntimeError):
@@ -690,6 +702,164 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _utc_hour_bucket(now: datetime) -> str:
+    """168-bucket hour-of-week key matching the Postgres isodow arithmetic."""
+    return str((now.isoweekday() - 1) * 24 + now.hour)
+
+
+def _billable_cache_savings(row: dict[str, Any]) -> float:
+    """Per-row cache slice of the billed amount, mirroring _record_usage_report:
+    only authoritative rows bill; exact_cache replays bill their whole
+    avoided-call cost; Brevitas-attributable reads bill the clamped native
+    discount, never above the row's verified savings. SDK-reported claims and
+    cache-write premiums stay analytics-only."""
+    if not row.get("authoritative"):
+        return 0.0
+    verified = max(0.0, _f(row.get("verified_savings_usd", row.get("cost_saved_usd"))))
+    if str(row.get("strategy") or "").strip().lower().startswith("exact_cache"):
+        return verified
+    if not row.get("cache_attributable"):
+        return 0.0
+    return min(max(0.0, _f(row.get("native_cache_discount_usd"))), verified)
+
+
+def _cache_stats(rows: list[dict[str, Any]],
+                 warm: dict[str, int] | None) -> dict[str, Any]:
+    """GET /v1/stats/cache contract. warm is None until warming is configured
+    for the tenant, which keeps every warm_* field null per the contract."""
+    cached = sum(_i(r.get("cached_input_tokens")) for r in rows)
+    fresh = sum(_i(r.get("fresh_input_tokens")) for r in rows)
+    discount = sum(_f(r.get("native_cache_discount_usd")) for r in rows)
+    attributable = sum(_billable_cache_savings(r) for r in rows)
+    calls_avoided = sum(_i(r.get("calls_avoided")) for r in rows)
+    warm_spend = sum(_f(r.get("actual_cost_usd")) for r in rows
+                     if (r.get("strategy") or "") == "cache_warm")
+    weeks: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        week_start = _utc_week_start(row.get("ts"))
+        bucket = weeks.setdefault(week_start, {
+            "week_start": week_start, "cached_input_tokens": 0,
+            "native_cache_discount_usd": 0.0, "warm_spend_usd": 0.0})
+        bucket["cached_input_tokens"] += _i(row.get("cached_input_tokens"))
+        bucket["native_cache_discount_usd"] += _f(
+            row.get("native_cache_discount_usd"))
+        if (row.get("strategy") or "") == "cache_warm":
+            bucket["warm_spend_usd"] += _f(row.get("actual_cost_usd"))
+    total_input = cached + fresh
+    return {
+        "cached_input_tokens": cached,
+        "fresh_input_tokens": fresh,
+        "cache_hit_rate_pct": (round(100 * cached / total_input, 2)
+                               if total_input else 0.0),
+        "native_cache_discount_usd": round(discount, 8),
+        "attributable_discount_usd": round(attributable, 8),
+        "calls_avoided": calls_avoided,
+        "warm_pings": _i(warm.get("warm_pings")) if warm is not None else None,
+        "warm_spend_usd": round(warm_spend, 8) if warm is not None else None,
+        "warm_hits": _i(warm.get("warm_hits")) if warm is not None else None,
+        "history": [{
+            "week_start": weeks[k]["week_start"],
+            "cached_input_tokens": weeks[k]["cached_input_tokens"],
+            "native_cache_discount_usd": round(
+                weeks[k]["native_cache_discount_usd"], 8),
+            "warm_spend_usd": (round(weeks[k]["warm_spend_usd"], 8)
+                               if warm is not None else None),
+        } for k in sorted(weeks, reverse=True)[:12]],
+    }
+
+
+def _cache_stats_from_totals(stats: dict[str, Any],
+                             warm: dict[str, int] | None) -> dict[str, Any]:
+    """Map the unbounded usage_stats aggregates (202607280002) onto the
+    GET /v1/stats/cache contract, so the Supabase backend reports all-time
+    numbers instead of a bounded scan window."""
+    cached = _i(stats.get("total_cached_input_tokens"))
+    fresh = _i(stats.get("total_fresh_input_tokens"))
+    total_input = cached + fresh
+    return {
+        "cached_input_tokens": cached,
+        "fresh_input_tokens": fresh,
+        "cache_hit_rate_pct": (round(100 * cached / total_input, 2)
+                               if total_input else 0.0),
+        "native_cache_discount_usd": round(
+            _f(stats.get("total_native_cache_discount_usd")), 8),
+        "attributable_discount_usd": round(
+            _f(stats.get("total_attributable_cache_savings_usd")), 8),
+        "calls_avoided": _i(stats.get("total_calls_avoided")),
+        "warm_pings": _i(warm.get("warm_pings")) if warm is not None else None,
+        "warm_spend_usd": (round(_f(stats.get("total_warm_spend_usd")), 8)
+                           if warm is not None else None),
+        "warm_hits": _i(warm.get("warm_hits")) if warm is not None else None,
+        "history": [{
+            "week_start": week.get("week_start"),
+            "cached_input_tokens": _i(week.get("cached_input_tokens")),
+            "native_cache_discount_usd": round(
+                _f(week.get("native_cache_discount_usd")), 8),
+            "warm_spend_usd": (round(_f(week.get("warm_spend_usd")), 8)
+                               if warm is not None else None),
+        } for week in (stats.get("billing_by_week") or [])[:12]],
+    }
+
+
+def _warm_totals(warm_providers: list[dict[str, Any]] | None) -> dict[str, int] | None:
+    """Collapse warm_status providers to the org totals the topline contract
+    reports. None (warming never configured) keeps every warm_* field null."""
+    if not warm_providers:
+        return None
+    return {"warm_pings": sum(_i(p.get("warm_pings")) for p in warm_providers),
+            "warm_hits": sum(_i(p.get("warm_hits")) for p in warm_providers)}
+
+
+def _cache_per_provider(rows: list[dict[str, Any]],
+                        warm_providers: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Per-provider slice of the GET /v1/stats/cache contract.
+
+    Usage metrics come from usage_log rows — provider is recorded per row;
+    blank legacy rows fall back to the model-name prefix, an approximation.
+    warm_pings/warm_hits come from warm_status, which is per-provider already.
+    All warm_* fields stay null until the org holds a warm credential, and
+    pings/hits stay null for providers without one: warming there is either
+    not built yet or deliberately absent because the provider has no cache or
+    a discount too shallow for a keep-alive ping to ever pay for itself —
+    those providers get measurement only."""
+    warm_by_provider = {str(p.get("provider") or ""): p
+                        for p in (warm_providers or [])}
+    grouped: dict[str, dict[str, Any]] = {}
+
+    def bucket(provider: str) -> dict[str, Any]:
+        return grouped.setdefault(provider, {
+            "provider": provider,
+            "cached_input_tokens": 0,
+            "native_cache_discount_usd": 0.0,
+            "attributable_discount_usd": 0.0,
+            "warm_pings": None,
+            "warm_spend_usd": None if warm_providers is None else 0.0,
+            "warm_hits": None,
+        })
+
+    for row in rows:
+        provider = (str(row.get("provider") or "")
+                    or infer_provider(str(row.get("model") or "")) or "unknown")
+        entry = bucket(provider)
+        entry["cached_input_tokens"] += _i(row.get("cached_input_tokens"))
+        entry["native_cache_discount_usd"] += _f(row.get("native_cache_discount_usd"))
+        entry["attributable_discount_usd"] += _billable_cache_savings(row)
+        if warm_providers is not None and (row.get("strategy") or "") == "cache_warm":
+            entry["warm_spend_usd"] += _f(row.get("actual_cost_usd"))
+    for provider, warm in warm_by_provider.items():
+        entry = bucket(provider)
+        entry["warm_pings"] = _i(warm.get("warm_pings"))
+        entry["warm_hits"] = _i(warm.get("warm_hits"))
+    for entry in grouped.values():
+        entry["native_cache_discount_usd"] = round(
+            entry["native_cache_discount_usd"], 8)
+        entry["attributable_discount_usd"] = round(
+            entry["attributable_discount_usd"], 8)
+        if entry["warm_spend_usd"] is not None:
+            entry["warm_spend_usd"] = round(entry["warm_spend_usd"], 8)
+    return [grouped[provider] for provider in sorted(grouped)]
+
+
 ACTIVITY_IDLE_MINUTES = 30
 ACTIVITY_SESSION_MAX = 100
 ACTIVITY_SCAN_MAX = 1000
@@ -988,6 +1158,16 @@ class UsageStore:
                 BEGIN
                     DELETE FROM provider_config WHERE key_hash=OLD.key_hash;
                 END""")
+            # Dev/test mirror of migration 202607280001_cache_warming.sql. Postgres
+            # exposes these tables through security-definer RPCs only; the SQLite
+            # methods below implement the same contracts in Python. claimed_at is
+            # SQLite-only observability for the emulated claim lease.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_credentials (organization_id TEXT NOT NULL, provider TEXT NOT NULL, credential_ciphertext TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, consent_actor_id TEXT NOT NULL DEFAULT '', consent_at TEXT NOT NULL DEFAULT '', daily_budget_usd REAL NOT NULL DEFAULT 0, max_warm_customers INTEGER NOT NULL DEFAULT 100, max_pings_per_customer_day INTEGER NOT NULL DEFAULT 288, credential_state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_prefixes (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, payload_ciphertext TEXT NOT NULL, prefix_tokens INTEGER NOT NULL DEFAULT 0, provider_ttl_seconds INTEGER NOT NULL DEFAULT 300, arrival_count INTEGER NOT NULL DEFAULT 0, ewma_interarrival_s REAL, hour_histogram TEXT NOT NULL DEFAULT '{}', warm_pings INTEGER NOT NULL DEFAULT 0, warm_hits INTEGER NOT NULL DEFAULT 0, warm_misses INTEGER NOT NULL DEFAULT 0, consecutive_misses INTEGER NOT NULL DEFAULT 0, pings_today INTEGER NOT NULL DEFAULT 0, pings_today_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, next_due_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT NOT NULL DEFAULT '', ping_reserve_usd REAL NOT NULL DEFAULT 0, claim_token TEXT NOT NULL DEFAULT '', PRIMARY KEY(organization_id,customer_id,provider,prefix_hash))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_budget_ledger (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, reserved_usd REAL NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day))")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_due_idx ON warm_prefixes(next_due_at) WHERE state='active'")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_expiry_idx ON warm_prefixes(expires_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_org_idx ON warm_prefixes(organization_id, provider, last_seen_at DESC)")
             db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
             db.execute("CREATE TABLE IF NOT EXISTS key_repositories (key_hash TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'bvx', installed_at TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (key_hash, repo))")
             device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
@@ -1202,7 +1382,10 @@ class UsageStore:
             "AND activation.action='device_key.activated' "
             "AND activation.target_type='api_key' AND activation.target_id=credential.id "
             "AND activation.outcome='committed' "
-            "WHERE usage.organization_id=? AND usage.authoritative=1 "
+            # Local BVX proxies report receipts over /v1/usage (authoritative=0),
+            # so onboarding evidence keys on receipt_source + the device-key
+            # binding, never on the billing-only authoritative flag (202607280004).
+            "WHERE usage.organization_id=? "
             "AND usage.receipt_source='proxy' AND credential.key_type='device' "
             "ORDER BY usage.ts,usage.id LIMIT 1",
             (started_at, checked_at, organization_id),
@@ -2255,6 +2438,23 @@ class UsageStore:
     def get_breakdown(self, key_hash: str) -> list[dict[str, Any]]:
         return _breakdown(self._rows(key_hash))
 
+    def _warm_providers(self, organization_id: str) -> list[dict[str, Any]] | None:
+        """warm_status providers list, or None until warming is configured —
+        the sentinel _warm_totals/_cache_per_provider key their null fields on."""
+        if not organization_id:
+            return None
+        providers = (self.warm_status(organization_id) or {}).get("providers") or []
+        return providers or None
+
+    def cache_stats(self, key_hash: str) -> dict[str, Any]:
+        context = self.key_context(key_hash) or {}
+        warm_providers = self._warm_providers(
+            str(context.get("organization_id") or ""))
+        rows = self._rows(key_hash)
+        stats = _cache_stats(rows, _warm_totals(warm_providers))
+        stats["per_provider"] = _cache_per_provider(rows, warm_providers)
+        return stats
+
     def get_activity(self, key_hash: str) -> dict[str, Any]:
         return _activity(self._rows(key_hash))
 
@@ -2405,6 +2605,441 @@ class UsageStore:
                 (now, now, batch_limit),
             )
         return max(0, int(cursor.rowcount or 0))
+
+    def warm_enabled(self, organization_id: str, customer_id: str = "") -> bool:
+        # Org-level opt-in only in v1; customer_id kept for signature stability.
+        if not organization_id:
+            return False
+        with self._conn() as db:
+            return db.execute(
+                "SELECT 1 FROM warm_credentials WHERE organization_id=? AND enabled=1 "
+                "AND credential_state='active' LIMIT 1",
+                (organization_id,)).fetchone() is not None
+
+    def warm_prefix_observe(self, organization_id: str, customer_id: str,
+                            provider: str, prefix_hash: str, payload_ciphertext: str,
+                            prefix_tokens: int, provider_ttl_seconds: int,
+                            safety_margin_seconds: int,
+                            cache_read: bool, *,
+                            ping_reserve_usd: float | None = None) -> dict[str, Any]:
+        if not organization_id or not customer_id:
+            raise ValueError("warm observation requires an organization and customer")
+        if provider not in _WARM_PROVIDERS:
+            raise ValueError("warm observation provider is invalid")
+        if not _SHA256_DIGEST.fullmatch(str(prefix_hash or "")):
+            raise ValueError("warm observation prefix hash is invalid")
+        if not 1 <= len(payload_ciphertext or "") <= 16_777_216:
+            raise ValueError("warm observation payload exceeds its absolute bound")
+        if (not 0 <= int(prefix_tokens) <= 2_000_000_000
+                or not 60 <= int(provider_ttl_seconds) <= 86_400
+                or not 0 <= int(safety_margin_seconds) <= 3_600
+                or not 0 <= float(ping_reserve_usd or 0) <= 99_999_999):
+            raise ValueError("warm observation bounds are invalid")
+        now = datetime.now(timezone.utc)
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            enabled = db.execute(
+                "SELECT max_warm_customers FROM warm_credentials WHERE organization_id=? "
+                "AND provider=? AND enabled=1 AND credential_state='active'",
+                (organization_id, provider)).fetchone()
+            if not enabled:
+                return {"schema": "brevitas.warm-observe.v1", "status": "not_enabled"}
+            db.execute("DELETE FROM warm_prefixes WHERE organization_id=? AND expires_at<=?",
+                       (organization_id, now.isoformat()))
+            existing = db.execute(
+                "SELECT ewma_interarrival_s,hour_histogram,warm_pings,last_seen_at "
+                "FROM warm_prefixes WHERE organization_id=? AND customer_id=? "
+                "AND provider=? AND prefix_hash=?",
+                (organization_id, customer_id, provider, prefix_hash)).fetchone()
+            if not existing and not db.execute(
+                    "SELECT 1 FROM warm_prefixes WHERE organization_id=? AND customer_id=? "
+                    "AND provider=? LIMIT 1",
+                    (organization_id, customer_id, provider)).fetchone():
+                customers = db.execute(
+                    "SELECT COUNT(DISTINCT customer_id) FROM warm_prefixes "
+                    "WHERE organization_id=? AND provider=?",
+                    (organization_id, provider)).fetchone()[0]
+                if int(customers) >= int(enabled[0]):
+                    return {"schema": "brevitas.warm-observe.v1", "status": "customer_cap"}
+            bucket = _utc_hour_bucket(now)
+            next_due = (now + timedelta(seconds=max(
+                1, int(provider_ttl_seconds) - int(safety_margin_seconds)))).isoformat()
+            expires = (now + timedelta(days=7)).isoformat()
+            if existing:
+                gap = round((now - datetime.fromisoformat(
+                    existing["last_seen_at"])).total_seconds(), 3)
+                old_ewma = existing["ewma_interarrival_s"]
+                ewma = round(0.3 * gap + 0.7 * float(old_ewma), 3) if old_ewma is not None else gap
+                histogram = json.loads(existing["hour_histogram"] or "{}")
+                histogram[bucket] = int(histogram.get(bucket, 0)) + 1
+                pinged = int(existing["warm_pings"]) > 0
+                db.execute(
+                    "UPDATE warm_prefixes SET payload_ciphertext=?,prefix_tokens=?,"
+                    "provider_ttl_seconds=?,"
+                    # NULL means the caller predates observer pricing: keep the
+                    # stored reserve rather than zeroing a good one.
+                    "ping_reserve_usd=COALESCE(?,ping_reserve_usd),"
+                    "arrival_count=arrival_count+1,"
+                    "ewma_interarrival_s=?,hour_histogram=?,warm_hits=warm_hits+?,"
+                    "warm_misses=warm_misses+?,"
+                    "consecutive_misses=CASE WHEN ? THEN 0 ELSE consecutive_misses END,"
+                    "state='active',last_seen_at=?,next_due_at=?,expires_at=? "
+                    "WHERE organization_id=? AND customer_id=? AND provider=? AND prefix_hash=?",
+                    (payload_ciphertext, int(prefix_tokens), int(provider_ttl_seconds),
+                     None if ping_reserve_usd is None else float(ping_reserve_usd),
+                     ewma, json.dumps(histogram),
+                     1 if cache_read and pinged else 0,
+                     1 if not cache_read and pinged else 0,
+                     int(bool(cache_read)), now.isoformat(), next_due, expires,
+                     organization_id, customer_id, provider, prefix_hash))
+            else:
+                db.execute(
+                    "INSERT INTO warm_prefixes(organization_id,customer_id,provider,"
+                    "prefix_hash,payload_ciphertext,prefix_tokens,provider_ttl_seconds,"
+                    "ping_reserve_usd,arrival_count,ewma_interarrival_s,hour_histogram,"
+                    "created_at,last_seen_at,next_due_at,expires_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,1,NULL,?,?,?,?,?)",
+                    (organization_id, customer_id, provider, prefix_hash,
+                     payload_ciphertext, int(prefix_tokens), int(provider_ttl_seconds),
+                     float(ping_reserve_usd or 0.0),
+                     json.dumps({bucket: 1}), now.isoformat(), now.isoformat(),
+                     next_due, expires))
+        return {"schema": "brevitas.warm-observe.v1", "status": "observed",
+                "cache_read": bool(cache_read)}
+
+    def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
+                       roi_min_arrivals: int, roi_min_p: float,
+                       roi_break_even_p: float, stop_loss: int,
+                       max_gap_seconds: int,
+                       safety_margin_seconds: int,
+                       claim_lease_seconds: int = 900,
+                       roi_break_even_by_provider: dict[str, float] | None = None,
+                       ) -> dict[str, Any]:
+        if (not 1 <= int(claim_limit) <= 500
+                or not 0 <= float(reserve_usd_per_mtok) <= 1000
+                or not 1 <= int(roi_min_arrivals) <= 1000
+                or not 0 <= float(roi_min_p) <= 1
+                or not 0 <= float(roi_break_even_p) <= 1
+                or not 1 <= int(stop_loss) <= 100
+                or not 1 <= int(max_gap_seconds) <= 604_800
+                or not 0 <= int(safety_margin_seconds) <= 3_600
+                or not 60 <= int(claim_lease_seconds) <= 7_200):
+            raise ValueError("warm claim bounds are invalid")
+        # Mirrors the warm_due_claim RPC's jsonb validation (migration
+        # 202607280003): provider -> break-even probability, providers not in
+        # the map fall back to the flat anthropic-calibrated scalar.
+        by_provider = dict(roi_break_even_by_provider or {})
+        for break_even_provider, break_even in by_provider.items():
+            if (break_even_provider not in _WARM_PROVIDERS
+                    or isinstance(break_even, bool)
+                    or not isinstance(break_even, (int, float))
+                    or not 0 <= float(break_even) <= 1):
+                raise ValueError("warm claim bounds are invalid")
+        if not _WARM_CLAIM_LOCK.acquire(blocking=False):
+            return {"status": "lease_unavailable", "rows": []}
+        try:
+            now = datetime.now(timezone.utc)
+            day = now.date().isoformat()
+            bucket = _utc_hour_bucket(now)
+            claimed: list[dict[str, Any]] = []
+            claimed_counts: dict[str, int] = defaultdict(int)
+            with self._conn() as db:
+                db.execute("BEGIN IMMEDIATE")
+                candidates = db.execute(
+                    "SELECT prefix.*, cred.credential_ciphertext, cred.daily_budget_usd,"
+                    " cred.max_pings_per_customer_day FROM warm_prefixes prefix "
+                    "JOIN warm_credentials cred ON cred.organization_id=prefix.organization_id "
+                    "AND cred.provider=prefix.provider "
+                    "WHERE prefix.state='active' AND prefix.next_due_at<=? "
+                    "AND prefix.expires_at>? AND prefix.consecutive_misses<? "
+                    "AND (prefix.ewma_interarrival_s IS NULL OR prefix.ewma_interarrival_s<=?) "
+                    "AND cred.enabled=1 AND cred.credential_state='active' "
+                    "ORDER BY prefix.next_due_at LIMIT ?",
+                    (now.isoformat(), now.isoformat(), int(stop_loss),
+                     int(max_gap_seconds), int(claim_limit) * 4)).fetchall()
+                for row in candidates:
+                    if len(claimed) >= int(claim_limit):
+                        break
+                    histogram = json.loads(row["hour_histogram"] or "{}")
+                    p_return = min(1.0, float(histogram.get(bucket, 0))
+                                   / max(int(row["arrival_count"]), 1))
+                    floor = (float(roi_min_p)
+                             if int(row["arrival_count"]) < int(roi_min_arrivals)
+                             else float(by_provider.get(row["provider"],
+                                                        roi_break_even_p)))
+                    if p_return < floor:
+                        continue
+                    customer_key = f"{row['organization_id']}:{row['customer_id']}"
+                    pings_today = db.execute(
+                        "SELECT COALESCE(SUM(pings_today),0) FROM warm_prefixes "
+                        "WHERE organization_id=? AND customer_id=? AND provider=? "
+                        "AND pings_today_date=?",
+                        (row["organization_id"], row["customer_id"], row["provider"],
+                         day)).fetchone()[0]
+                    if int(pings_today) + claimed_counts[customer_key] >= int(
+                            row["max_pings_per_customer_day"]):
+                        continue
+                    # The reservation must upper-bound actual spend for the
+                    # daily ceiling to hold: settle books real receipt cost,
+                    # so reserve the larger of the observer-priced worst case
+                    # and the flat caller floor.
+                    reserve = max(
+                        float(row["ping_reserve_usd"] or 0.0),
+                        round(float(reserve_usd_per_mtok)
+                              * int(row["prefix_tokens"]) / 1_000_000.0, 10))
+                    db.execute(
+                        "INSERT INTO warm_budget_ledger(organization_id,provider,day,updated_at) "
+                        "VALUES(?,?,?,?) ON CONFLICT(organization_id,provider,day) DO NOTHING",
+                        (row["organization_id"], row["provider"], day, now.isoformat()))
+                    ledger = db.execute(
+                        "SELECT reserved_usd,spent_usd FROM warm_budget_ledger "
+                        "WHERE organization_id=? AND provider=? AND day=?",
+                        (row["organization_id"], row["provider"], day)).fetchone()
+                    if float(ledger[0]) + float(ledger[1]) + reserve > float(
+                            row["daily_budget_usd"]):
+                        continue
+                    db.execute(
+                        "UPDATE warm_budget_ledger SET reserved_usd=reserved_usd+?,"
+                        "updated_at=? WHERE organization_id=? AND provider=? AND day=?",
+                        (reserve, now.isoformat(), row["organization_id"],
+                         row["provider"], day))
+                    # Claim lease mirrors the RPC: it must outlive a full
+                    # sequential worker batch or another replica re-claims the
+                    # tail mid-flight; the rotated token fences settle so a
+                    # lapsed claimant cannot double-apply. warm_ping_settle
+                    # assigns the real next_due_at.
+                    claim_token = str(uuid.uuid4())
+                    db.execute(
+                        "UPDATE warm_prefixes SET next_due_at=?,claimed_at=?,"
+                        "claim_token=? "
+                        "WHERE organization_id=? AND customer_id=? AND provider=? "
+                        "AND prefix_hash=?",
+                        ((now + timedelta(seconds=max(
+                            int(claim_lease_seconds), int(safety_margin_seconds),
+                            60))).isoformat(),
+                         now.isoformat(), claim_token, row["organization_id"],
+                         row["customer_id"], row["provider"], row["prefix_hash"]))
+                    claimed_counts[customer_key] += 1
+                    claimed.append({
+                        "schema": "brevitas.warm-claim.v1", "status": "claimed",
+                        "organization_id": row["organization_id"],
+                        "customer_id": row["customer_id"],
+                        "provider": row["provider"],
+                        "prefix_hash": row["prefix_hash"],
+                        "prefix_tokens": int(row["prefix_tokens"]),
+                        "provider_ttl_seconds": int(row["provider_ttl_seconds"]),
+                        "payload_ciphertext": row["payload_ciphertext"],
+                        "credential_ciphertext": row["credential_ciphertext"],
+                        "reserved_usd": reserve,
+                        "budget_day": day,
+                        "claim_token": claim_token,
+                    })
+            return {"status": "ok", "rows": claimed}
+        finally:
+            _WARM_CLAIM_LOCK.release()
+
+    def warm_ping_settle(self, organization_id: str, customer_id: str, provider: str,
+                         prefix_hash: str, budget_day: str, reserved_usd: float,
+                         spent_usd: float, outcome: str, provider_ttl_seconds: int,
+                         safety_margin_seconds: int, *,
+                         claim_token: str | None = None) -> dict[str, Any]:
+        if (provider not in _WARM_PROVIDERS
+                or not _SHA256_DIGEST.fullmatch(str(prefix_hash or ""))
+                or not budget_day
+                or not 0 <= float(reserved_usd) <= 99_999_999
+                or not 0 <= float(spent_usd) <= 99_999_999
+                or outcome not in _WARM_SETTLE_OUTCOMES
+                or not 60 <= int(provider_ttl_seconds) <= 86_400
+                or not 0 <= int(safety_margin_seconds) <= 3_600):
+            raise ValueError("warm settle arguments are invalid")
+        now = datetime.now(timezone.utc)
+        day = now.date().isoformat()
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE warm_budget_ledger SET reserved_usd=MAX(0, reserved_usd-?),"
+                "spent_usd=spent_usd+?,updated_at=? WHERE organization_id=? "
+                "AND provider=? AND day=?",
+                (float(reserved_usd),
+                 float(spent_usd) if outcome == "warmed" else 0.0,
+                 now.isoformat(), organization_id, provider, str(budget_day)))
+            # Ledger money always books (the reservation and the ping were
+            # both real), but the prefix row only mutates while the caller's
+            # claim token is current: a claimant whose lease lapsed cannot
+            # double-count pings/misses or clobber the schedule the row's new
+            # owner set. NULL token keeps legacy unfenced behavior.
+            token = str(claim_token) if claim_token else None
+            if outcome == "warmed":
+                next_due = (now + timedelta(seconds=max(
+                    1, int(provider_ttl_seconds) - int(safety_margin_seconds)))).isoformat()
+                db.execute(
+                    "UPDATE warm_prefixes SET warm_pings=warm_pings+1,"
+                    "consecutive_misses=consecutive_misses+1,"
+                    "pings_today=CASE WHEN pings_today_date=? THEN pings_today+1 ELSE 1 END,"
+                    "pings_today_date=?,next_due_at=?,claim_token='' "
+                    "WHERE organization_id=? "
+                    "AND customer_id=? AND provider=? AND prefix_hash=? "
+                    "AND (? IS NULL OR claim_token=?)",
+                    (day, day, next_due, organization_id, customer_id, provider,
+                     prefix_hash, token, token))
+            elif outcome == "prefix_invalid":
+                db.execute(
+                    "UPDATE warm_prefixes SET state='stopped',claim_token='' "
+                    "WHERE organization_id=? "
+                    "AND customer_id=? AND provider=? AND prefix_hash=? "
+                    "AND (? IS NULL OR claim_token=?)",
+                    (organization_id, customer_id, provider, prefix_hash,
+                     token, token))
+            elif outcome == "auth_failed":
+                db.execute(
+                    "UPDATE warm_credentials SET credential_state='auth_failed',"
+                    "updated_at=? WHERE organization_id=? AND provider=?",
+                    (now.isoformat(), organization_id, provider))
+        return {"schema": "brevitas.warm-settle.v1", "status": "settled",
+                "outcome": outcome}
+
+    def warm_credentials_get(self, organization_id: str,
+                             provider: str) -> dict[str, Any] | None:
+        # Ciphertext intentionally excluded: parity with Supabase, where no
+        # read path returns it.
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT provider,enabled,credential_state,consent_at,daily_budget_usd,"
+                "max_warm_customers,max_pings_per_customer_day FROM warm_credentials "
+                "WHERE organization_id=? AND provider=?",
+                (organization_id, provider)).fetchone()
+        if not row:
+            return None
+        return {"provider": row[0], "enabled": bool(row[1]),
+                "credential_state": row[2], "consent_at": row[3] or None,
+                "daily_budget_usd": float(row[4]),
+                "max_warm_customers": int(row[5]),
+                "max_pings_per_customer_day": int(row[6])}
+
+    def warm_credentials_upsert(self, organization_id: str, provider: str,
+                                credential_ciphertext: str, enabled: bool,
+                                consent_actor_id: str, daily_budget_usd: float,
+                                max_warm_customers: int,
+                                max_pings_per_customer_day: int) -> dict[str, Any]:
+        ciphertext = str(credential_ciphertext or "")
+        if not organization_id or provider not in _WARM_PROVIDERS:
+            raise ValueError("warm credential target is invalid")
+        if len(ciphertext) > 65_536:
+            raise ValueError("warm credential ciphertext exceeds its absolute bound")
+        if (not 0 <= float(daily_budget_usd) <= 99_999_999
+                or not 1 <= int(max_warm_customers) <= 1_000_000
+                or not 1 <= int(max_pings_per_customer_day) <= 10_000):
+            raise ValueError("warm credential bounds are invalid")
+        if enabled and not consent_actor_id:
+            raise ValueError("enabling warming requires a consenting actor")
+        if enabled and float(daily_budget_usd) <= 0:
+            raise ValueError("enabling warming requires a nonzero daily budget")
+        now = _now()
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not ciphertext and not db.execute(
+                    "SELECT 1 FROM warm_credentials WHERE organization_id=? AND provider=?",
+                    (organization_id, provider)).fetchone():
+                raise ValueError("warming requires a stored provider credential")
+            db.execute(
+                "INSERT INTO warm_credentials(organization_id,provider,"
+                "credential_ciphertext,enabled,consent_actor_id,consent_at,"
+                "daily_budget_usd,max_warm_customers,max_pings_per_customer_day,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(organization_id,provider) DO UPDATE SET "
+                "credential_ciphertext=CASE WHEN excluded.credential_ciphertext<>'' "
+                "THEN excluded.credential_ciphertext ELSE warm_credentials.credential_ciphertext END,"
+                "credential_state=CASE WHEN excluded.credential_ciphertext<>'' "
+                "THEN 'active' ELSE warm_credentials.credential_state END,"
+                "enabled=excluded.enabled,"
+                "consent_actor_id=CASE WHEN excluded.consent_actor_id<>'' "
+                "THEN excluded.consent_actor_id ELSE warm_credentials.consent_actor_id END,"
+                "consent_at=CASE WHEN excluded.enabled=1 THEN excluded.updated_at "
+                "ELSE warm_credentials.consent_at END,"
+                "daily_budget_usd=excluded.daily_budget_usd,"
+                "max_warm_customers=excluded.max_warm_customers,"
+                "max_pings_per_customer_day=excluded.max_pings_per_customer_day,"
+                "updated_at=excluded.updated_at",
+                (organization_id, provider, ciphertext, int(bool(enabled)),
+                 str(consent_actor_id or ""), now if enabled else "",
+                 float(daily_budget_usd), int(max_warm_customers),
+                 int(max_pings_per_customer_day), now, now))
+            saved = db.execute(
+                "SELECT provider,enabled,credential_state FROM warm_credentials "
+                "WHERE organization_id=? AND provider=?",
+                (organization_id, provider)).fetchone()
+        return {"schema": "brevitas.warm-credentials.v1", "status": "saved",
+                "provider": saved[0], "enabled": bool(saved[1]),
+                "credential_state": saved[2]}
+
+    def warm_credentials_purge(self, organization_id: str,
+                               provider: str) -> dict[str, Any]:
+        if not organization_id or provider not in _WARM_PROVIDERS:
+            raise ValueError("warm credential target is invalid")
+        with self._conn() as db:
+            prefixes = db.execute(
+                "DELETE FROM warm_prefixes WHERE organization_id=? AND provider=?",
+                (organization_id, provider)).rowcount
+            credentials = db.execute(
+                "DELETE FROM warm_credentials WHERE organization_id=? AND provider=?",
+                (organization_id, provider)).rowcount
+        return {"schema": "brevitas.warm-credentials.v1", "status": "purged",
+                "provider": provider, "prefixes_deleted": max(0, int(prefixes or 0)),
+                "credentials_deleted": max(0, int(credentials or 0))}
+
+    def warm_status(self, organization_id: str) -> dict[str, Any]:
+        today = datetime.now(timezone.utc).date().isoformat()
+        providers: list[dict[str, Any]] = []
+        with self._conn() as db:
+            for cred in db.execute(
+                    "SELECT provider,enabled,credential_state,consent_at,"
+                    "daily_budget_usd,max_warm_customers,max_pings_per_customer_day "
+                    "FROM warm_credentials WHERE organization_id=? ORDER BY provider",
+                    (organization_id,)).fetchall():
+                ledger = db.execute(
+                    "SELECT reserved_usd,spent_usd FROM warm_budget_ledger "
+                    "WHERE organization_id=? AND provider=? AND day=?",
+                    (organization_id, cred["provider"], today)).fetchone()
+                stats = db.execute(
+                    "SELECT COUNT(CASE WHEN state='active' THEN 1 END),"
+                    "COUNT(DISTINCT customer_id),COALESCE(SUM(warm_pings),0),"
+                    "COALESCE(SUM(warm_hits),0),COALESCE(SUM(warm_misses),0),"
+                    "MIN(CASE WHEN state='active' THEN next_due_at END) "
+                    "FROM warm_prefixes WHERE organization_id=? AND provider=?",
+                    (organization_id, cred["provider"])).fetchone()
+                providers.append({
+                    "provider": cred["provider"],
+                    "enabled": bool(cred["enabled"]),
+                    "credential_state": cred["credential_state"],
+                    "consent_at": cred["consent_at"] or None,
+                    "daily_budget_usd": float(cred["daily_budget_usd"]),
+                    "max_warm_customers": int(cred["max_warm_customers"]),
+                    "max_pings_per_customer_day": int(cred["max_pings_per_customer_day"]),
+                    "reserved_today_usd": float(ledger[0]) if ledger else 0.0,
+                    "spent_today_usd": float(ledger[1]) if ledger else 0.0,
+                    "active_prefixes": int(stats[0]),
+                    "warm_customers": int(stats[1]),
+                    "warm_pings": int(stats[2]),
+                    "warm_hits": int(stats[3]),
+                    "warm_misses": int(stats[4]),
+                    "next_due_at": stats[5],
+                })
+        return {"schema": "brevitas.warm-status.v1",
+                "organization_id": organization_id, "providers": providers}
+
+    def purge_warm_state(self, retention_days: int = 7) -> dict[str, Any]:
+        if not 1 <= int(retention_days) <= 365:
+            raise ValueError("warm retention bounds are invalid")
+        now = datetime.now(timezone.utc)
+        cutoff = (now.date() - timedelta(days=int(retention_days))).isoformat()
+        with self._conn() as db:
+            prefixes = db.execute("DELETE FROM warm_prefixes WHERE expires_at<=?",
+                                  (now.isoformat(),)).rowcount
+            ledger = db.execute("DELETE FROM warm_budget_ledger WHERE day<?",
+                                (cutoff,)).rowcount
+        return {"schema": "brevitas.warm-purge.v1", "status": "purged",
+                "prefixes_deleted": max(0, int(prefixes or 0)),
+                "ledger_deleted": max(0, int(ledger or 0))}
 
 
 class SupabaseUsageStore:
@@ -3176,6 +3811,33 @@ class SupabaseUsageStore:
     def get_activity(self, key_hash: str) -> dict[str, Any]:
         return _activity(self._collect_usage_rows(self._usage_scope(key_hash)))
 
+    def _warm_providers(self, organization_id: str) -> list[dict[str, Any]] | None:
+        """warm_read_status providers list, or None until warming is configured —
+        the sentinel _warm_totals/_cache_per_provider key their null fields on."""
+        if not organization_id:
+            return None
+        providers = (self.warm_status(organization_id) or {}).get("providers") or []
+        return providers or None
+
+    def cache_stats(self, key_hash: str) -> dict[str, Any]:
+        # usage_stats (202607280002) aggregates the cached/fresh split, the
+        # billable cache slice, and warming spend over the full history in SQL.
+        # Never fall back to the bounded usage_page walk get_activity uses: the
+        # dashboard renders these numbers as all-time.
+        stats = self._request("POST", "rpc/usage_stats",
+                              data=self._usage_scope(key_hash)) or {}
+        context = self.key_context(key_hash) or {}
+        warm_providers = self._warm_providers(
+            str(context.get("organization_id") or ""))
+        result = _cache_stats_from_totals(stats, _warm_totals(warm_providers))
+        # APPROXIMATION, unlike the all-time topline above: usage_stats carries
+        # no provider dimension, so until a per-provider aggregate RPC ships in
+        # a NEW migration (202607280002 is checksum-frozen) this slice is
+        # computed from the most recent ACTIVITY_SCAN_MAX usage_page rows.
+        result["per_provider"] = _cache_per_provider(
+            self._collect_usage_rows(self._usage_scope(key_hash)), warm_providers)
+        return result
+
     def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
         # usage_page owner scoping: with an empty key hash only owner_id rows match.
         rows = self._collect_usage_rows({
@@ -3295,6 +3957,126 @@ class SupabaseUsageStore:
         if isinstance(result, dict):
             result = next(iter(result.values()), 0)
         return int(result or 0)
+
+    def warm_enabled(self, organization_id: str, customer_id: str = "") -> bool:
+        # No PostgREST role may SELECT warm_credentials; warm_read_status is
+        # the only read path. Callers cache this per-org answer.
+        if not organization_id:
+            return False
+        providers = (self.warm_status(organization_id) or {}).get("providers") or []
+        return any(p.get("enabled") is True and p.get("credential_state") == "active"
+                   for p in providers)
+
+    def warm_prefix_observe(self, organization_id: str, customer_id: str,
+                            provider: str, prefix_hash: str, payload_ciphertext: str,
+                            prefix_tokens: int, provider_ttl_seconds: int,
+                            safety_margin_seconds: int,
+                            cache_read: bool, *,
+                            ping_reserve_usd: float | None = None) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_prefix_observe", data={
+            "p_organization_id": organization_id, "p_customer_id": customer_id,
+            "p_provider": provider, "p_prefix_hash": prefix_hash,
+            "p_payload_ciphertext": payload_ciphertext,
+            "p_prefix_tokens": int(prefix_tokens),
+            "p_provider_ttl_seconds": int(provider_ttl_seconds),
+            "p_safety_margin_seconds": int(safety_margin_seconds),
+            "p_cache_read": bool(cache_read),
+            # null keeps the stored reserve; the RPC treats it the same way.
+            "p_ping_reserve_usd": (None if ping_reserve_usd is None
+                                   else float(ping_reserve_usd)),
+        }))
+
+    def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
+                       roi_min_arrivals: int, roi_min_p: float,
+                       roi_break_even_p: float, stop_loss: int,
+                       max_gap_seconds: int,
+                       safety_margin_seconds: int,
+                       claim_lease_seconds: int = 900,
+                       roi_break_even_by_provider: dict[str, float] | None = None,
+                       ) -> dict[str, Any]:
+        rows = self._request("POST", "rpc/warm_due_claim", data={
+            "p_claim_limit": int(claim_limit),
+            "p_reserve_usd_per_mtok": float(reserve_usd_per_mtok),
+            "p_roi_min_arrivals": int(roi_min_arrivals),
+            "p_roi_min_p": float(roi_min_p),
+            "p_roi_break_even_p": float(roi_break_even_p),
+            "p_stop_loss": int(stop_loss),
+            "p_max_gap_seconds": int(max_gap_seconds),
+            "p_safety_margin_seconds": int(safety_margin_seconds),
+            "p_claim_lease_seconds": int(claim_lease_seconds),
+            # null keeps the flat-scalar 202607280001 behavior in the RPC;
+            # providers missing from the map fall back to p_roi_break_even_p.
+            "p_roi_break_even_by_provider": (
+                {provider: float(break_even) for provider, break_even
+                 in roi_break_even_by_provider.items()}
+                if roi_break_even_by_provider else None),
+        }) or []
+        if rows and rows[0].get("status") == "lease_unavailable":
+            return {"status": "lease_unavailable", "rows": []}
+        return {"status": "ok",
+                "rows": [row for row in rows if row.get("status") == "claimed"]}
+
+    def warm_ping_settle(self, organization_id: str, customer_id: str, provider: str,
+                         prefix_hash: str, budget_day: str, reserved_usd: float,
+                         spent_usd: float, outcome: str, provider_ttl_seconds: int,
+                         safety_margin_seconds: int, *,
+                         claim_token: str | None = None) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_ping_settle", data={
+            "p_organization_id": organization_id, "p_customer_id": customer_id,
+            "p_provider": provider, "p_prefix_hash": prefix_hash,
+            "p_budget_day": str(budget_day),
+            "p_reserved_usd": float(reserved_usd),
+            "p_spent_usd": float(spent_usd),
+            "p_outcome": outcome,
+            "p_provider_ttl_seconds": int(provider_ttl_seconds),
+            "p_safety_margin_seconds": int(safety_margin_seconds),
+            # null keeps legacy unfenced behavior in the RPC.
+            "p_claim_token": str(claim_token) if claim_token else None,
+        }))
+
+    def warm_credentials_get(self, organization_id: str,
+                             provider: str) -> dict[str, Any] | None:
+        for entry in (self.warm_status(organization_id) or {}).get("providers") or []:
+            if entry.get("provider") == provider:
+                return {"provider": provider, "enabled": bool(entry.get("enabled")),
+                        "credential_state": str(entry.get("credential_state") or ""),
+                        "consent_at": entry.get("consent_at"),
+                        "daily_budget_usd": _f(entry.get("daily_budget_usd")),
+                        "max_warm_customers": _i(entry.get("max_warm_customers")),
+                        "max_pings_per_customer_day": _i(
+                            entry.get("max_pings_per_customer_day"))}
+        return None
+
+    def warm_credentials_upsert(self, organization_id: str, provider: str,
+                                credential_ciphertext: str, enabled: bool,
+                                consent_actor_id: str, daily_budget_usd: float,
+                                max_warm_customers: int,
+                                max_pings_per_customer_day: int) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_credentials_upsert", data={
+            "p_organization_id": organization_id, "p_provider": provider,
+            "p_credential_ciphertext": str(credential_ciphertext or ""),
+            "p_enabled": bool(enabled),
+            "p_consent_actor_id": consent_actor_id or None,
+            "p_daily_budget_usd": float(daily_budget_usd),
+            "p_max_warm_customers": int(max_warm_customers),
+            "p_max_pings_per_customer_day": int(max_pings_per_customer_day),
+        }))
+
+    def warm_credentials_purge(self, organization_id: str,
+                               provider: str) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_credentials_purge", data={
+            "p_organization_id": organization_id, "p_provider": provider,
+        }))
+
+    def warm_status(self, organization_id: str) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_read_status", data={
+            "p_organization_id": organization_id,
+        }))
+
+    def purge_warm_state(self, retention_days: int = 7) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/purge_warm_state", data={
+            "p_retention_days": int(retention_days),
+        }))
 
 
 class BoundedUsageWriter:

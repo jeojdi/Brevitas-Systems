@@ -64,7 +64,9 @@ export default function OnboardingWorkspaceChoice({
     cliConnected: false,
     proxiedRequestObserved: false,
   })
+  const [checkNotice, setCheckNotice] = useState('')
   const verificationInFlight = useRef(false)
+  const manualCheckRequested = useRef(false)
   const completionStarted = useRef(false)
   const busy = isSubmitting || localSubmitting
   const displayedError = errorMessage || validationError
@@ -117,11 +119,17 @@ export default function OnboardingWorkspaceChoice({
     }
   }
 
-  const checkVerification = useCallback(async () => {
-    if (!onCheck || verificationInFlight.current || completionStarted.current) return
+  const checkVerification = useCallback(async ({ manual = false } = {}) => {
+    if (!onCheck || completionStarted.current) return
+    if (verificationInFlight.current) {
+      // A click that lands while the 3s poll is in flight must not vanish:
+      // promote that in-flight check to a manual one instead of re-requesting.
+      if (manual) manualCheckRequested.current = true
+      return
+    }
     verificationInFlight.current = true
     setVerification(current => ({ ...current, checking: true }))
-    setFinishError('')
+    if (manual) setFinishError('')
     try {
       const status = await onCheck()
       setVerification({
@@ -129,14 +137,26 @@ export default function OnboardingWorkspaceChoice({
         cliConnected: status.cliConnected,
         proxiedRequestObserved: status.proxiedRequestObserved,
       })
-      if (status.cliConnected && status.proxiedRequestObserved) {
+      setFinishError('')
+      const verified = status.cliConnected && status.proxiedRequestObserved
+      if ((manual || manualCheckRequested.current) && !verified) {
+        const checkedAt = new Date().toLocaleTimeString()
+        setCheckNotice(status.cliConnected
+          ? `Checked at ${checkedAt} — CLI connected, but the server has not observed a proxied request yet. Send one prompt from a tool BVX configured, then check again.`
+          : `Checked at ${checkedAt} — no BVX device key is registered to this workspace yet. Run bvx install from step 2 and approve the device, then bvx doctor.`)
+      }
+      manualCheckRequested.current = false
+      if (verified) {
+        setCheckNotice('')
         completionStarted.current = true
         setFinishing(true)
         await onFinish?.()
       }
     } catch (reason) {
       completionStarted.current = false
+      manualCheckRequested.current = false
       setVerification(current => ({ ...current, checking: false }))
+      setCheckNotice('')
       setFinishError(reason instanceof Error ? reason.message : 'Onboarding status is temporarily unavailable.')
     } finally {
       verificationInFlight.current = false
@@ -146,6 +166,7 @@ export default function OnboardingWorkspaceChoice({
 
   useEffect(() => {
     if (step !== ONBOARDING_STEP.VERIFY || !onCheck) return undefined
+    setCheckNotice('')
     checkVerification()
     const timer = window.setInterval(checkVerification, 3000)
     return () => window.clearInterval(timer)
@@ -222,7 +243,7 @@ export default function OnboardingWorkspaceChoice({
           </button>
           <button
             type="button"
-            onClick={onCheck ? checkVerification : finish}
+            onClick={onCheck ? () => checkVerification({ manual: true }) : finish}
             disabled={finishing}
             className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
@@ -234,6 +255,9 @@ export default function OnboardingWorkspaceChoice({
           </button>
         </div>
         {finishError && <p role="alert" className="mt-4 text-sm text-red-500">{finishError}</p>}
+        {!finishError && checkNotice && (
+          <p role="status" className="mt-4 text-sm text-brand-muted dark:text-brand-dark-muted">{checkNotice}</p>
+        )}
       </section>
     )
   }

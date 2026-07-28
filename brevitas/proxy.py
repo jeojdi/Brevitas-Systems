@@ -29,6 +29,7 @@ import math
 import threading
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -41,7 +42,7 @@ from ._compress import count_messages_tokens, report_usage
 from .identity import CUSTOMER_ID_HEADER, normalize_customer_id, short_tenant_key, tenant_key
 from .labels import _git_root_name
 from .provider_reliability import ProviderCircuitOpen, provider_http
-from .receipts import SSEUsageParser, TokenReceipt, count_request_tokens, normalize_usage
+from .receipts import SSEUsageParser, TokenReceipt, _int as _usage_int, count_request_tokens, normalize_usage
 from .resource_bounds import (
     BoundedTTLMap,
     ResourceBounds,
@@ -51,6 +52,7 @@ from .resource_bounds import (
     utf8_size,
 )
 from .session import BrevitasSession
+from .warming import extract_warm_prefix, get_warm_observer, provider_warmable
 from token_efficiency_model.lossless import state_store
 from token_efficiency_model.lossless.batch_group import BatchGroupGate
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
@@ -532,12 +534,17 @@ proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
 
 async def close_provider_clients() -> None:
     """Close pools, persist content-free learning, and release bounded registries."""
+    global _warm_executor
     try:
         if _STATE_FILE:
             with _router_registry_lock:
                 state_store.save(_STATE_FILE, dict(_routers.items()))
         await provider_http.aclose()
     finally:
+        with _warm_executor_lock:
+            if _warm_executor is not None:
+                _warm_executor.shutdown(wait=False, cancel_futures=True)
+                _warm_executor = None
         with _router_registry_lock:
             _routers.clear()
         with _session_registry_lock:
@@ -622,6 +629,116 @@ async def _emit_usage(request: Request, payload: dict) -> None:
         )
     except Exception:
         pass
+
+
+# ── Predictive warming observation ────────────────────────────────────────────
+# The hosted API installs a sink via brevitas.warming.set_warm_observer; the proxy
+# reports each markered, faithful, attributed request so a worker can keep the
+# provider cache warm ahead of the customer's predicted return.
+# Observation must never contend with the request path: sync observers run on a
+# small dedicated executor — NOT the loop's default executor, which the hosted
+# auth middleware's to_thread lookups share — and in-flight observations are
+# capped. Beyond the cap new ones are shed (dropping a best-effort observation is
+# always safe), so a slow store/KMS can neither delay live-traffic auth nor grow
+# _warm_tasks without bound.
+_WARM_OBSERVE_MAX_INFLIGHT = max(1, int(os.getenv("BREVITAS_WARM_OBSERVE_MAX_INFLIGHT", "32")))
+_WARM_OBSERVE_THREADS = max(1, int(os.getenv("BREVITAS_WARM_OBSERVE_THREADS", "4")))
+_warm_tasks: set[asyncio.Task] = set()
+_warm_executor: ThreadPoolExecutor | None = None
+_warm_executor_lock = threading.Lock()
+
+
+def _get_warm_executor() -> ThreadPoolExecutor:
+    global _warm_executor
+    if _warm_executor is None:
+        with _warm_executor_lock:
+            if _warm_executor is None:
+                _warm_executor = ThreadPoolExecutor(
+                    max_workers=_WARM_OBSERVE_THREADS,
+                    thread_name_prefix="brevitas-warm-observe")
+    return _warm_executor
+
+
+def _observe_warm_prefix(request: Request, body: dict, model: str, meta: dict,
+                         headers: dict[str, str], cache_read: bool,
+                         response_faithful: bool, provider: str = "anthropic",
+                         upstream: str = "") -> None:
+    """Fire-and-forget: gate cheaply on request state + meta, then extract and
+    deliver off the response path. Never alters the provider response."""
+    try:
+        if get_warm_observer() is None:
+            return
+        if not getattr(request.state, "brevitas_warm_enabled", False):
+            return
+        organization_id = str(getattr(request.state, "brevitas_organization_id", "") or "")
+        customer_id = str(getattr(request.state, "brevitas_customer_id", "") or "")
+        if not organization_id or not customer_id:
+            return
+        if not response_faithful:
+            return
+        if provider == "anthropic":
+            # Explicit-marker provider: no breakpoints means nothing was cached.
+            if int(meta.get("cache_breakpoints", 0) or 0) <= 0:
+                return
+        elif not provider_warmable(provider):
+            # No cache, or a discount pings can never beat: measurement only.
+            # Automatic-cache providers have no breakpoint signal — extraction
+            # itself (stable prefix + provider minimum) is the gate downstream.
+            return
+        if len(_warm_tasks) >= _WARM_OBSERVE_MAX_INFLIGHT:
+            return                     # shed rather than queue behind a slow store
+        task = asyncio.get_running_loop().create_task(_deliver_warm_prefix(
+            organization_id, customer_id, body, model, headers, meta, cache_read,
+            provider, upstream))
+        _warm_tasks.add(task)
+        task.add_done_callback(_warm_tasks.discard)
+    except Exception:
+        pass
+
+
+async def _deliver_warm_prefix(organization_id: str, customer_id: str, body: dict,
+                               model: str, headers: dict[str, str], meta: dict,
+                               cache_read: bool, provider: str = "anthropic",
+                               upstream: str = "") -> None:
+    """Best effort only: observation errors never surface to the caller."""
+    try:
+        observer = get_warm_observer()
+        if observer is None:
+            return
+        prefix = extract_warm_prefix(body, provider, model, headers, meta,
+                                     upstream=upstream)
+        if prefix is None:
+            return
+        if inspect.iscoroutinefunction(observer):
+            await observer(organization_id, customer_id, prefix, cache_read)
+        else:
+            await asyncio.get_running_loop().run_in_executor(
+                _get_warm_executor(), observer,
+                organization_id, customer_id, prefix, cache_read)
+    except Exception:
+        pass
+
+
+def _anthropic_cached_tokens(usage: Any) -> int:
+    """Cached-read tokens from an Anthropic usage object. Upstream usage is
+    untrusted JSON evaluated on the response path — never raise."""
+    usage = usage if isinstance(usage, dict) else {}
+    return _usage_int(usage.get("cache_read_input_tokens"))
+
+
+def _openai_cached_tokens(usage: Any) -> int:
+    """Cached-read tokens from an OpenAI-compatible usage object: the shared
+    prompt_tokens_details.cached_tokens shape (OpenAI/xAI/OpenRouter), falling
+    back to DeepSeek's prompt_cache_hit_tokens. Upstream usage is untrusted
+    JSON evaluated on the response path — never raise; a malformed field
+    counts as zero, same as receipts._int."""
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = _usage_int(details.get("cached_tokens"))
+        if cached:
+            return cached
+    return _usage_int(usage.get("prompt_cache_hit_tokens"))
 
 
 def _router_usage(receipt: TokenReceipt, provider: str) -> dict:
@@ -867,6 +984,7 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, provider_auth, body)
     strategy = "passthrough"
     cache_attributable = False
+    meta: dict[str, Any] = {}
     # Faithful means the request we forward is byte-faithful to the original, so its
     # response is valid to cache under the original key. Retrieval/reorder set it False.
     response_faithful = True
@@ -926,8 +1044,12 @@ async def proxy_anthropic_messages(request: Request) -> Any:
                 if bg_role == "pathfinder" and not released:
                     _bg.release(bg_sig, _BG_WARM["anthropic"])
                 if completed:
+                    receipt = parser.finish()
+                    _observe_warm_prefix(request, body, model, meta, headers,
+                                         cache_read=receipt.cached_input_tokens > 0,
+                                         response_faithful=response_faithful)
                     await _record_receipt(
-                        request, "anthropic", model, "messages", baseline, parser.finish(),
+                        request, "anthropic", model, "messages", baseline, receipt,
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
@@ -958,6 +1080,10 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         # never store an answer produced from retrieval-pruned or reordered context.
         if cache is not None and data and response_faithful:
             _cache_store(cache, cache_body, "anthropic", model, data)
+        _observe_warm_prefix(
+            request, body, model, meta, headers,
+            cache_read=_anthropic_cached_tokens(data.get("usage")) > 0,
+            response_faithful=response_faithful)
         await _record_receipt(
             request, "anthropic", model, "messages", baseline,
             normalize_usage(data.get("usage"), "anthropic"), session, router, labels,
@@ -1010,6 +1136,7 @@ async def proxy_openai_chat(request: Request) -> Any:
     strategy = "passthrough"
     response_faithful = True
     cache_attributable = False
+    meta: dict[str, Any] = {}
     if optimized:
         meta = _optimize_fail_open(body, provider, router, session.session_id,
                                    pipeline=fleet_pipe, agent=fleet_agent, tenant_key=gate_key)
@@ -1073,8 +1200,13 @@ async def proxy_openai_chat(request: Request) -> Any:
                 if bg_role == "pathfinder" and not released:
                     _bg.release(bg_sig, bg_warm)
                 if completed:
+                    receipt = parser.finish()
+                    _observe_warm_prefix(request, body, model, meta, headers,
+                                         cache_read=receipt.cached_input_tokens > 0,
+                                         response_faithful=response_faithful,
+                                         provider=provider, upstream=endpoint)
                     await _record_receipt(
-                        request, provider, model, "chat.completions", baseline, parser.finish(),
+                        request, provider, model, "chat.completions", baseline, receipt,
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
@@ -1106,6 +1238,10 @@ async def proxy_openai_chat(request: Request) -> Any:
         # never store an answer produced from retrieval-pruned or reordered context.
         if cache is not None and data and response_faithful:
             _cache_store(cache, cache_body, provider, model, data)
+        _observe_warm_prefix(
+            request, body, model, meta, headers,
+            cache_read=_openai_cached_tokens(data.get("usage")) > 0,
+            response_faithful=response_faithful, provider=provider, upstream=endpoint)
         await _record_receipt(
             request, provider, model, "chat.completions", baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,

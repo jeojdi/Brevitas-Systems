@@ -129,7 +129,13 @@ test('every third-party action is immutable and workflows use least privilege', 
     const workflow = readFileSync(path, 'utf8')
     const uses = [...workflow.matchAll(/^\s*uses:\s*(.+)$/gm)].map((match) => match[1].trim())
     assert.ok(uses.length > 0, `${path} has no pinned actions`)
-    for (const action of uses) assert.match(action, shaRef, `${path}: ${action}`)
+    for (const action of uses) {
+      // Same-repo reusable workflows (uses: ./…) are referenced by path and are
+      // immutable by construction (pinned to the caller's commit); they cannot be
+      // SHA-pinned. Only third-party actions must carry an immutable @<sha> ref.
+      if (action.startsWith('./') || action.startsWith('../')) continue
+      assert.match(action, shaRef, `${path}: ${action}`)
+    }
     assert.match(workflow, /^permissions:\n\s+contents:\s+read\s*$/m, path)
     assert.doesNotMatch(workflow, /continue-on-error|\|\|\s*true/i, path)
     for (const checkout of workflow.matchAll(/uses:\s*actions\/checkout@[\s\S]+?(?=\n\s*- name:|\n\s*uses:|\n\S|$)/g)) {
@@ -245,21 +251,45 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
       'workspace_experiences',
     ][index]}.sql`,
   )
-  assert.equal(expectedFreshMigrationOrder.length, 46)
-  assert.equal(expectedUpgradeMigrationOrder.length, 34)
-  assert.deepEqual(expectedFreshMigrationOrder.slice(-21, -3), securitySuffix)
-  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-21, -3), securitySuffix)
+  assert.equal(expectedFreshMigrationOrder.length, 52)
+  assert.equal(expectedUpgradeMigrationOrder.length, 40)
+  assert.deepEqual(expectedFreshMigrationOrder.slice(-27, -9), securitySuffix)
+  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-27, -9), securitySuffix)
   assert.equal(
-    expectedFreshMigrationOrder.at(-3),
+    expectedFreshMigrationOrder.at(-9),
     'supabase/migrations/20260720_split_savings_metrics.sql',
   )
   assert.equal(
-    expectedFreshMigrationOrder.at(-2),
+    expectedFreshMigrationOrder.at(-8),
     'supabase/migrations/202607220001_service_role_data_plane.sql',
   )
   assert.equal(
-    expectedFreshMigrationOrder.at(-1),
+    expectedFreshMigrationOrder.at(-7),
     'supabase/migrations/202607220002_supabase_advisor_hardening.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-6),
+    'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-5),
+    'supabase/migrations/202607270002_widen_billing_events_money.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-4),
+    'supabase/migrations/202607280001_cache_warming.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-3),
+    'supabase/migrations/202607280002_usage_stats_cache_metrics.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-2),
+    'supabase/migrations/202607280003_multi_provider_warming.sql',
+  )
+  assert.equal(
+    expectedFreshMigrationOrder.at(-1),
+    'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
   )
   const workflow = read('.github/workflows/migrations.yml')
   assert.match(workflow, /pgvector\/pgvector:pg16-bookworm@sha256:[0-9a-f]{64}/)
@@ -324,9 +354,13 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
   assert.match(runner, /scripts\/dr\/compliance-workflow-assertions\.sql/)
   assert.match(runner, /cache_pids/)
   assert.match(runner, /127\.0\.0\.1/)
-  assert.match(runner, /#fresh_migrations\[@\]\}" -ne 46/)
-  assert.match(runner, /#upgrade_migrations\[@\]\}" -ne 34/)
+  // The harness guards the manifests by relationship (non-empty; fresh >= upgrade),
+  // not an absolute count that goes stale on every legitimate migration addition.
+  // The exact set/order/checksums are enforced by verify-migrations.mjs.
+  assert.match(runner, /Migration manifests must be non-empty/)
+  assert.match(runner, /fresh = baseline \+ upgrade/)
   assert.match(runner, /migration-supabase-advisor-hardening-assertions\.sql/)
+  assert.match(runner, /migration-onboarding-local-proxy-assertions\.sql/)
   assert.equal((runner.match(/apply_migration "\$\{device_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{membership_migration\}"/g) || []).length, 3)
   assert.equal((runner.match(/apply_migration "\$\{receipt_migration\}"/g) || []).length, 4)
@@ -350,6 +384,7 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
     'split_savings_migration',
     'service_role_data_plane_migration',
     'supabase_advisor_hardening_migration',
+    'onboarding_evidence_migration',
   ]) {
     assert.equal(
       (runner.match(new RegExp(`apply_migration "\\$\\{${variable}\\}"`, 'g')) || []).length,
@@ -560,7 +595,7 @@ test('billing identity rollout is disabled, quiesced, target-bound, and per-file
   const runner = read('scripts/ci/run-migration-tests.sh')
   assert.equal(
     (runner.match(/assert_atomic_migration_rollback "\$\{/g) || []).length,
-    21,
+    24,
   )
   assert.match(runner, /print "select 1\/0;"/)
   assert.match(runner, /Failure-injected migration left partial state/)

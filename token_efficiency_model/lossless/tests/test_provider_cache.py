@@ -165,12 +165,22 @@ def test_output_tokens_dilute_savings():
 # --------------------------------------------------------------------------- #
 def test_rates_for_model_overrides_provider_row():
     from token_efficiency_model.lossless.provider_cache import rates_for
+    assert rates_for("openai", "gpt-5.6")["cache_read"] == 0.10        # 5.6: 10% + write fee
+    assert rates_for("openai", "gpt-5.6")["cache_write"] == 1.25
+    assert rates_for("openai", "gpt-5.5-mini")["cache_read"] == 0.10   # 5.x: 10%, no write fee
+    assert rates_for("openai", "gpt-5.5-mini")["cache_write"] == 1.0
     assert rates_for("openai", "gpt-4.1-mini")["cache_read"] == 0.25   # 4.1 family: 25%
     assert rates_for("openai", "gpt-4o-mini")["cache_read"] == 0.50    # 4o family: 50%
-    assert rates_for("openai", "")["cache_read"] == 0.50               # provider fallback
+    # No model id -> deliberately the legacy-worst ratio so unknown traffic
+    # can never overstate billable savings.
+    assert rates_for("openai", "")["cache_read"] == 0.50
     assert rates_for("deepseek", "deepseek-chat")["cache_read"] == 0.02
     assert rates_for("deepseek", "deepseek-v4-pro")["cache_read"] == 1 / 120
     assert rates_for("anthropic", "claude-sonnet-4-5")["cache_write"] == 1.25
+    assert rates_for("mistral", "mistral-large-latest")["cache_read"] == 0.10
+    assert rates_for("xai", "grok-4.5")["cache_read"] == 0.25
+    assert rates_for("groq", "openai/gpt-oss-120b")["cache_read"] == 0.50  # only gpt-oss caches
+    assert rates_for("groq", "llama-3.3-70b")["cache_read"] == 1.00       # no discount
     assert rates_for("unknown", "mystery-model")["cache_read"] == 0.50  # safe default
 
 

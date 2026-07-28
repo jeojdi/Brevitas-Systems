@@ -83,6 +83,8 @@ BREVITAS_IMAGE_DIGEST=sha256:FULL_64_CHARACTER_REGISTRY_DIGEST
 ALLOWED_ORIGINS=https://YOUR_VERCEL_DOMAIN
 BREVITAS_PROXY_AUTH=true
 REDIS_URL=rediss://...
+# Railway only: materializes Google ADC for KMS via scripts/start-with-adc.sh. Cloud Run leaves it unset.
+GCP_SA_KEY_JSON=...
 BREVITAS_KMS_PROVIDER=google-cloud-kms
 BREVITAS_KMS_KEY_ID=projects/YOUR_GCP_PROJECT/locations/YOUR_LOCATION/keyRings/YOUR_KEY_RING/cryptoKeys/YOUR_KEY
 BREVITAS_KMS_KEY_VERSION=1
@@ -184,13 +186,27 @@ same contract at `/version` for operator verification.
 Keep the repository root as the Next.js project and set:
 
 ```text
-API_URL=https://YOUR_RAILWAY_HOST
+BREVITAS_API_URL=https://YOUR_RAILWAY_HOST
+# Deprecated: API_URL is read only as a legacy fallback; set BREVITAS_API_URL instead.
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=phc_...
 NEXT_PUBLIC_POSTHOG_UI_HOST=https://us.posthog.com
 POSTHOG_HOST=https://us.i.posthog.com
 POSTHOG_ASSETS_HOST=https://us-assets.i.posthog.com
+# Server-only (never NEXT_PUBLIC_*/VITE_*): the App Router auth, billing, Checkout, and
+# webhook routes read these directly. Keep them out of the browser bundle.
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+BREVITAS_PUBLIC_URL=https://YOUR_VERCEL_DOMAIN
+BREVITAS_BILLING_ENABLED=false
+BREVITAS_BILLING_WEEKLY_CAP_USD=100
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID=price_...
+STRIPE_METER_EVENT_NAME=brevitas_fee_microusd
+STRIPE_AUTOMATIC_TAX=false
+BILLING_RECOVERY_SECRET=...
 ```
 
 The Next.js rewrite forwards `/v1/*` to Railway. Never put the Supabase service-role key, managed

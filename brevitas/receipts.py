@@ -116,8 +116,11 @@ def normalize_usage(usage: Any, provider: str = "") -> TokenReceipt:
             output_tokens=output,
         )
 
-    # OpenAI-compatible Chat Completions.
-    if "prompt_tokens" in usage or "completion_tokens" in usage:
+    # OpenAI-compatible Chat Completions. DeepSeek receipts may carry only the
+    # hit/miss pair, so the cache fields alone are enough to enter this branch.
+    if ("prompt_tokens" in usage or "completion_tokens" in usage
+            or "prompt_cache_hit_tokens" in usage
+            or "prompt_cache_miss_tokens" in usage):
         details = _as_dict(usage.get("prompt_tokens_details"))
         cached = _int(details.get("cached_tokens"))
         write = _int(details.get("cache_write_tokens"))
@@ -238,7 +241,10 @@ class SSEUsageParser:
         self.response_id = str(
             response.get("id") or message.get("id") or event.get("id") or self.response_id
         )
-        candidates = [event.get("usage"), response.get("usage"), message.get("usage")]
+        # Groq streams report the final usage under x_groq on the last chunk.
+        x_groq = event.get("x_groq") if isinstance(event.get("x_groq"), dict) else {}
+        candidates = [event.get("usage"), response.get("usage"),
+                      message.get("usage"), x_groq.get("usage")]
         for usage in candidates:
             if isinstance(usage, dict):
                 self.receipt = merge_receipts(
@@ -246,16 +252,49 @@ class SSEUsageParser:
                 )
 
 
-# Standard/global on-demand USD per million tokens, verified 2026-07-16. Costs are
+# Standard/global on-demand USD per million tokens, verified 2026-07-27. Costs are
 # snapshotted into each event at ingestion; unknown model families intentionally
 # remain unpriced rather than inheriting a possibly-wrong generic fallback.
-PRICING_VERSION = "2026-07-16"
+# "write" is the explicit cache-write rate; providers with automatic (write-free)
+# caching set write == input so calculate_costs books a zero write premium.
+# Sources:
+#   anthropic: https://platform.claude.com/docs/en/pricing.md (reads 0.1x input,
+#     5m writes 1.25x; 1h writes 2x via the write_1h default in calculate_costs)
+#   openai: https://developers.openai.com/api/docs/pricing (gpt-5.6 family reads
+#     0.10x with a 1.25x explicit-breakpoint write fee; gpt-5.6 is the alias for
+#     gpt-5.6-sol; gpt-5.5 caches automatically, write-free; long-context 272K+
+#     surcharges are not modeled)
+#   deepseek: https://api-docs.deepseek.com/quick_start/pricing (automatic,
+#     write-free; hit rates 0.02x flash / ~0.0083x pro)
+#   xai: https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing
+#     (automatic, write-free, reads 0.25x; the 200K+ long-context doubling of
+#     every rate is not modeled)
+#   mistral: https://mistral.ai/pricing/api/ (automatic, write-free, reads 0.10x
+#     in 64-token blocks; TTL undocumented)
+#   perplexity: https://docs.perplexity.ai/docs/getting-started/pricing — Sonar
+#     has NO cached-input discount, so there is no cache dollar to measure and
+#     nothing to warm. Deliberately unpriced here: Sonar bills per-request
+#     search fees that are not token-priced, so token-only rows would
+#     understate every Perplexity bill.
+PRICING_VERSION = "2026-07-27"
 MODEL_PRICES: dict[tuple[str, str], dict[str, float]] = {
+    ("anthropic", "claude-fable-5"): {"input": 10.0, "cached": 1.0, "write": 12.5, "output": 50.0},
+    ("anthropic", "claude-opus-5"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
     ("anthropic", "claude-opus-4-8"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
     ("anthropic", "claude-opus-4-7"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
     ("anthropic", "claude-opus-4-6"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 25.0},
+    # Sonnet 5 standard rates; the introductory $2/$10 window (through
+    # 2026-08-31) is intentionally not modeled — snapshots must not undercount
+    # the discount a cache read earns at standard pricing.
+    ("anthropic", "claude-sonnet-5"): {"input": 3.0, "cached": .3, "write": 3.75, "output": 15.0},
     ("anthropic", "claude-sonnet-4-6"): {"input": 3.0, "cached": .3, "write": 3.75, "output": 15.0},
+    ("anthropic", "claude-haiku-4-5"): {"input": 1.0, "cached": .1, "write": 1.25, "output": 5.0},
     ("anthropic", "claude-haiku-4-5-20251001"): {"input": 1.0, "cached": .1, "write": 1.25, "output": 5.0},
+    ("openai", "gpt-5.6"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 30.0},
+    ("openai", "gpt-5.6-sol"): {"input": 5.0, "cached": .5, "write": 6.25, "output": 30.0},
+    ("openai", "gpt-5.6-terra"): {"input": 2.5, "cached": .25, "write": 3.125, "output": 15.0},
+    ("openai", "gpt-5.6-luna"): {"input": 1.0, "cached": .1, "write": 1.25, "output": 6.0},
+    ("openai", "gpt-5.5"): {"input": 5.0, "cached": .5, "write": 5.0, "output": 30.0},
     ("openai", "gpt-4o"): {"input": 2.5, "cached": 1.25, "write": 2.5, "output": 10.0},
     ("openai", "gpt-4o-mini"): {"input": .15, "cached": .075, "write": .15, "output": .6},
     ("openai", "gpt-4.1"): {"input": 2.0, "cached": .5, "write": 2.0, "output": 8.0},
@@ -267,17 +306,40 @@ MODEL_PRICES: dict[tuple[str, str], dict[str, float]] = {
     ("deepseek", "deepseek-reasoner"): {"input": .14, "cached": .0028, "write": .14, "output": .28},
     ("deepseek", "deepseek-v4-flash"): {"input": .14, "cached": .0028, "write": .14, "output": .28},
     ("deepseek", "deepseek-v4-pro"): {"input": .435, "cached": .003625, "write": .435, "output": .87},
+    ("xai", "grok-4.5"): {"input": 2.0, "cached": .5, "write": 2.0, "output": 6.0},
+    ("xai", "grok-4.1-fast"): {"input": .2, "cached": .05, "write": .2, "output": .5},
+    ("mistral", "mistral-large-latest"): {"input": .5, "cached": .05, "write": .5, "output": 1.5},
+    ("mistral", "mistral-large-2512"): {"input": .5, "cached": .05, "write": .5, "output": 1.5},
 }
+
+# Aggregators resell many upstream models at their own (often different) rates,
+# and OpenRouter's documented DeepSeek read ratio disagrees with DeepSeek's
+# first-party pricing by 5-12x. Remapping their traffic onto direct-provider
+# price rows would bill confidently-wrong dollars, so their rows stay under the
+# reseller's own name and remain honestly unpriced until reseller-specific
+# rows (or upstream-reported cost fields such as OpenRouter's cache_discount)
+# exist.
+_RESELLER_PROVIDERS = frozenset({
+    "openrouter", "together", "fireworks", "groq", "perplexity",
+})
 
 
 def canonical_provider(provider: str, model: str) -> str:
     p, m = (provider or "").lower(), (model or "").lower()
+    if p in _RESELLER_PROVIDERS:
+        return p
     if m.startswith("deepseek"):
         return "deepseek"
     if m.startswith("claude"):
         return "anthropic"
     if m.startswith(("gpt-", "o1", "o3", "o4")):
         return "openai"
+    if m.startswith("grok"):
+        return "xai"
+    if m.startswith(("mistral", "codestral")):
+        return "mistral"
+    if m.startswith("sonar"):
+        return "perplexity"
     return {"azure_openai": "openai"}.get(p, p)
 
 

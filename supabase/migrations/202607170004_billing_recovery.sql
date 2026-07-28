@@ -258,12 +258,22 @@ begin
             continue;
         end;
 
+        -- Count amounts that Stripe may already hold: in flight ('sending'),
+        -- already reported ('reported'), and ambiguous 'review' rows whose
+        -- outbound send was started (outbound_started_at is set) — Stripe may
+        -- have ingested those, so they must count toward the cap and toward the
+        -- expected period total or the cap is silently exceeded and
+        -- reconciliation can falsely ACCEPT an unsent entry. A 'review' row with
+        -- no outbound_started_at was provably never sent; excluding it keeps
+        -- reconciliation from being poisoned by a fee that will never be sent.
         select coalesce(sum(ledger.fee_microusd), 0) into committed
           from public.billing_ledger ledger
          where ledger.user_id = candidate.user_id
            and ledger.occurred_at >= claim_period_start
            and ledger.occurred_at < claim_period_end
-           and ledger.status in ('sending', 'reported', 'review');
+           and (ledger.status in ('sending', 'reported')
+                or (ledger.status = 'review'
+                    and ledger.outbound_started_at is not null));
 
         if not was_reclaimed and committed + candidate.fee_microusd > p_cap_microusd then
             update public.billing_ledger

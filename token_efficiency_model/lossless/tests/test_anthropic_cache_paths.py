@@ -77,8 +77,24 @@ def _any_marker(body: dict) -> bool:
     return False
 
 
-def test_engine_does_not_buy_anthropic_cache_write_without_opt_in(monkeypatch):
+def test_engine_buys_anthropic_cache_write_by_default(monkeypatch):
+    # Phase-1 flip: with the env var unset, Brevitas-owned injection is ON.
     monkeypatch.delenv("BREVITAS_ANTHROPIC_CACHE", raising=False)
+    router = BrevitasRouter(provider="anthropic")
+    body = {"model": "claude-sonnet-4-6", "system": _huge_text(2000),
+            "messages": [{"role": "user", "content": "question"}]}
+    eng.optimize_request(body, "anthropic", router, "default-on")
+    repeat = {"model": body["model"], "system": _huge_text(2000),
+              "messages": [{"role": "user", "content": "question"}]}
+    meta = eng.optimize_request(repeat, "anthropic", router, "default-on")
+    assert meta.get("cache_breakpoints", 0) >= 1
+    assert meta["cache_control_owner"] == "brevitas"
+    assert _any_marker(repeat)
+
+
+@pytest.mark.parametrize("off", ["0", "false"])
+def test_engine_does_not_buy_anthropic_cache_write_when_env_disabled(monkeypatch, off):
+    monkeypatch.setenv("BREVITAS_ANTHROPIC_CACHE", off)
     router = BrevitasRouter(provider="anthropic")
     body = {"model": "claude-sonnet-4-6", "system": _huge_text(2000),
             "messages": [{"role": "user", "content": "question"}]}
@@ -86,8 +102,57 @@ def test_engine_does_not_buy_anthropic_cache_write_without_opt_in(monkeypatch):
     repeat = {"model": body["model"], "system": _huge_text(2000),
               "messages": [{"role": "user", "content": "question"}]}
     meta = eng.optimize_request(repeat, "anthropic", router, "no-write")
-    assert meta["cache_roi"] == "explicit_opt_in_required"
+    assert meta["cache_roi"] == "disabled_by_env"
     assert not _any_marker(repeat)
+
+
+def test_engine_honors_tripped_cache_injection_lever_per_tenant(monkeypatch):
+    monkeypatch.setenv("BREVITAS_ANTHROPIC_CACHE", "1")
+    from token_efficiency_model.quality import gate
+    gate.trip_lever("cache_injection", key="tenantA")
+    try:
+        router = BrevitasRouter(provider="anthropic")
+        def request_body():
+            return {"model": "claude-sonnet-4-6", "system": _huge_text(2000),
+                    "messages": [{"role": "user", "content": "question"}]}
+        eng.optimize_request(request_body(), "anthropic", router, "lever",
+                             tenant_key="tenantA")
+        denied = request_body()
+        meta = eng.optimize_request(denied, "anthropic", router, "lever",
+                                    tenant_key="tenantA")
+        assert meta["cache_roi"] == "lever_denied"
+        assert not _any_marker(denied)
+        # a different tenant is unaffected by tenantA's trip
+        other = request_body()
+        eng.optimize_request(request_body(), "anthropic", router, "lever",
+                             tenant_key="tenantB")
+        meta_b = eng.optimize_request(other, "anthropic", router, "lever",
+                                      tenant_key="tenantB")
+        assert meta_b.get("cache_breakpoints", 0) >= 1
+        assert _any_marker(other)
+    finally:
+        gate.reset_all_levers(key="tenantA")
+
+
+def test_caller_owned_markers_survive_tripped_cache_injection_lever(monkeypatch):
+    # The lever gates only Brevitas-OWNED writes; caller cache policy always wins.
+    monkeypatch.setenv("BREVITAS_ANTHROPIC_CACHE", "1")
+    from token_efficiency_model.quality import gate
+    gate.trip_lever("cache_injection", key="tenantA")
+    try:
+        body = {"model": "claude-sonnet-4-6",
+                "messages": [{"role": "user",
+                              "content": [{"type": "text", "text": _big_text(),
+                                           "cache_control": {"type": "ephemeral"}},
+                                          {"type": "text", "text": "Q?"}]}]}
+        meta = eng.optimize_request(body, "anthropic",
+                                    BrevitasRouter(provider="anthropic"),
+                                    "caller-lever", tenant_key="tenantA")
+        assert meta["cache_control_owner"] == "caller"
+        assert meta["cache_breakpoints"] == 1
+        assert "cache_control" in body["messages"][0]["content"][0]
+    finally:
+        gate.reset_all_levers(key="tenantA")
 
 
 def test_engine_respects_top_level_anthropic_automatic_cache_control(monkeypatch):

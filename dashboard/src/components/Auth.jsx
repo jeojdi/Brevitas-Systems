@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
+  authErrorMessage,
   confirmationPathForLoginAudience,
   LOGIN_AUDIENCE,
-  resendSignupConfirmation,
   supabase,
 } from '../lib/supabase.js'
 import { capture } from '../lib/analytics.js'
@@ -42,7 +42,6 @@ export default function Auth({
   const [notice, setNotice]   = useState('')
   const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [confirmationEmail, setConfirmationEmail] = useState('')
-  const [resending, setResending] = useState(false)
   const audienceContent = AUDIENCE_CONTENT[loginAudience]
   const confirmationRedirect = `${window.location.origin}${confirmationPathForLoginAudience(loginAudience)}`
 
@@ -75,8 +74,7 @@ export default function Auth({
         })
         if (error) throw error
         capture('signup_submitted')
-        setConfirmationEmail(email)
-        setNotice('Request accepted. If this address needs confirmation, check your inbox or resend below. Already confirmed? Sign in or reset your password.')
+        setNotice('Your request was received. Access is currently invite/waitlist-based — the team will reach out when your account is ready to activate. If you already have access, sign in or reset your password.')
         setMode('login')
       } else if (mode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
@@ -96,28 +94,13 @@ export default function Auth({
         onPasswordUpdated?.()
       }
     } catch (err) {
-      if (mode === 'login' && err.message.toLowerCase().includes('email not confirmed')) {
+      const message = authErrorMessage(err)
+      if (mode === 'login' && message.toLowerCase().includes('email not confirmed')) {
         setConfirmationEmail(email)
       }
-      setError(err.message)
+      setError(message)
     } finally {
       setLoading(false)
-    }
-  }
-
-  async function resendConfirmation() {
-    setResending(true)
-    setError('')
-    try {
-      await resendSignupConfirmation(
-        confirmationEmail,
-        confirmationRedirect,
-      )
-      setNotice('Confirmation request accepted. Check your inbox and its existing Brevitas email thread.')
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setResending(false)
     }
   }
 
@@ -182,17 +165,6 @@ export default function Auth({
               {error}
             </div>
           )}
-          {mode === 'login' && confirmationEmail && (
-            <button
-              type="button"
-              onClick={resendConfirmation}
-              disabled={resending}
-              className="mb-4 text-[11px] text-brand-blue hover:underline disabled:opacity-50"
-            >
-              {resending ? 'Resending…' : 'Resend confirmation email'}
-            </button>
-          )}
-
           <form onSubmit={handleSubmit} className="space-y-3 ph-no-capture" data-ph-sensitive>
             {!isRecovery && <div>
               <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">

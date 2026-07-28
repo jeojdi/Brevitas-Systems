@@ -45,7 +45,10 @@ test('overview uses an input-avoidance per-call area chart', async () => {
   assert.match(overview, /dataKey="inputAvoided"/)
   assert.match(overview, /fill="url\(#savedArea\)"/)
   assert.doesNotMatch(overview, /notSavedArea|totalNotSaved/)
-  assert.equal((overview.match(/type="monotone"/g) || []).length, 1)
+  // Two single-series monotone areas: input avoidance + weekly native-cache discount.
+  assert.equal((overview.match(/type="monotone"/g) || []).length, 2)
+  assert.match(overview, /dataKey="discount"/)
+  assert.match(overview, /fill="url\(#cacheDiscountArea\)"/)
   assert.match(overview, /dot=\{\{ r: 5\.5,/)
   assert.match(overview, /fmtAxis/)
   assert.match(overview, /width=\{58\}/)

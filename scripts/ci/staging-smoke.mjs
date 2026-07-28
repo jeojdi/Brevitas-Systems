@@ -100,6 +100,13 @@ async function assertReady(response) {
   } catch {
     throw new Error('Staging readiness response is not valid JSON')
   }
+  // Staging runs the documented degraded-compressor topology: the compressor is
+  // optional there, so an explicitly optional unavailable compressor is ready
+  // enough. Mirrors release-preflight's optionalCompressorUnavailable.
+  const compressorReady = payload?.dependencies?.compressor?.status === 'ready'
+  const optionalCompressorUnavailable =
+    payload?.dependencies?.compressor?.required === false &&
+    payload?.dependencies?.compressor?.status === 'unavailable'
   if (
     payload?.accepting_traffic !== true ||
     payload?.database_ready !== true ||
@@ -109,10 +116,10 @@ async function assertReady(response) {
     payload?.dependencies?.kms?.configured !== true ||
     payload?.dependencies?.kms?.active_probe !== true ||
     payload?.dependencies?.kms?.fresh !== true ||
-    payload?.dependencies?.compressor?.status !== 'ready'
+    !(compressorReady || optionalCompressorUnavailable)
   ) {
     throw new Error(
-      'Staging readiness did not confirm API, Postgres, Redis, fresh active KMS, and compressor',
+      'Staging readiness did not confirm API, Postgres, Redis, fresh active KMS, and a ready or optional-unavailable compressor',
     )
   }
 }

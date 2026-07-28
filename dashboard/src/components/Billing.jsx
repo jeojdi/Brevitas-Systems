@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStats, fetchBillingStatus, openBillingPortal, startBillingCheckout } from '../lib/api.js'
+import { fetchStats, fetchCacheStats, fetchBillingStatus, openBillingPortal, startBillingCheckout } from '../lib/api.js'
 
 function fmt(n, decimals = 2) {
   return Number(n || 0).toFixed(decimals)
@@ -28,6 +28,7 @@ function StatCard({ label, value, sub, accent = false }) {
 
 export default function Billing({ apiKey, accessToken, refreshTick, previewStats, previewBilling }) {
   const [stats, setStats]   = useState(previewStats || null)
+  const [cacheStats, setCacheStats] = useState(null)
   const [billing, setBilling] = useState(previewBilling || null)
   const [loading, setLoading] = useState(!previewStats)
   const [error, setError]   = useState('')
@@ -43,8 +44,15 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
     controllerRef.current = controller
     setError('')
     try {
-      const data = await fetchStats(apiKey, { signal: controller.signal })
-      if (controllerRef.current === controller) setStats(data)
+      const [data, cache] = await Promise.all([
+        fetchStats(apiKey, { signal: controller.signal }),
+        // The cache section renders only when this succeeds; a failure never blocks the page.
+        fetchCacheStats(apiKey, { signal: controller.signal }).catch(() => null),
+      ])
+      if (controllerRef.current === controller) {
+        setStats(data)
+        setCacheStats(cache)
+      }
     } catch (e) {
       if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
     } finally {
@@ -199,6 +207,36 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
         />
       </div>
 
+      {/* Cache savings */}
+      {cacheStats && (
+        <div>
+          <p className="annotation tracking-widest uppercase mb-4">// cache savings</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              label="Cache hit rate"
+              value={`${fmt(cacheStats.cache_hit_rate_pct)}%`}
+              sub={`${fmtK(cacheStats.cached_input_tokens)} cached / ${fmtK(cacheStats.fresh_input_tokens)} fresh input tokens`}
+            />
+            <StatCard
+              label="Native cache discount"
+              value={`$${fmt(cacheStats.native_cache_discount_usd, 4)}`}
+              sub="measured across all cache reads"
+            />
+            <StatCard
+              label="Billable cache savings"
+              value={`$${fmt(cacheStats.attributable_discount_usd, 4)}`}
+              sub="Brevitas-attributable, byte-identical"
+              accent
+            />
+            <StatCard
+              label="Warming spend"
+              value={cacheStats.warm_spend_usd == null ? 'Not measured' : `$${fmt(cacheStats.warm_spend_usd, 4)}`}
+              sub={cacheStats.warm_hits == null ? 'no warming data yet' : `${fmtK(cacheStats.warm_hits)} warm hits · ${fmtK(cacheStats.warm_pings)} pings`}
+            />
+          </div>
+        </div>
+      )}
+
       {/* This week */}
       {thisWeek && (
         <div>
@@ -251,6 +289,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
             ['Input avoided', 'Provider input tokens not sent after an input-reducing transform'],
             ['Native discount', 'Provider cache-read discount minus cache-write premiums; not automatically Brevitas-attributable'],
             ['Calls avoided', 'Model calls skipped by exact or explicitly enabled fuzzy response reuse'],
+            ['Billable cache savings', 'Only reductions Brevitas provably caused with byte-identical responses — Brevitas-owned cache markers and exact replays; everything else is measured but not billed'],
             ['Transport avoided', 'Network bytes removed by CID/delta transport; provider tokens are unchanged'],
             ['Provider spend', 'What provider receipts say the optimized calls actually cost'],
             ['Brevitas vs control', 'Shown only when an isolated paired control arm was measured'],

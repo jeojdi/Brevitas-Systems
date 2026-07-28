@@ -89,6 +89,17 @@ alter table public.usage_log add column if not exists measured_savings_usd numer
 alter table public.usage_log add column if not exists verified_savings_usd numeric(18,10) not null default 0;
 alter table public.usage_log add column if not exists cost_saved_usd numeric(18,10) not null default 0;
 alter table public.usage_log add column if not exists brevitas_fee_usd numeric(18,10) not null default 0;
+-- `add column if not exists` will NOT change the type of a pre-existing column.
+-- A hand-assembled prod project created these money columns as `double precision`;
+-- later analytics (202607170006) call round(<col>, 8) on ALL SIX, and round() has
+-- no double-precision overload, so the chain aborts. Coerce every column that
+-- 202607170006 rounds to the intended numeric type. No-op where already numeric.
+alter table public.usage_log alter column baseline_cost_usd    type numeric(18,10) using baseline_cost_usd::numeric(18,10);
+alter table public.usage_log alter column actual_cost_usd      type numeric(18,10) using actual_cost_usd::numeric(18,10);
+alter table public.usage_log alter column measured_savings_usd type numeric(18,10) using measured_savings_usd::numeric(18,10);
+alter table public.usage_log alter column verified_savings_usd type numeric(18,10) using verified_savings_usd::numeric(18,10);
+alter table public.usage_log alter column cost_saved_usd       type numeric(18,10) using cost_saved_usd::numeric(18,10);
+alter table public.usage_log alter column brevitas_fee_usd     type numeric(18,10) using brevitas_fee_usd::numeric(18,10);
 alter table public.usage_log add column if not exists quality_proxy double precision;
 alter table public.usage_log add column if not exists quality_status text not null default '';
 alter table public.usage_log add column if not exists pricing_status text not null default 'unpriced';

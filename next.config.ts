@@ -28,11 +28,37 @@ const dashboardHeaders = [
 const noIndexHeaders = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
 const posthogHost = (process.env.POSTHOG_HOST || "https://us.i.posthog.com").replace(/\/$/, "");
 const posthogAssetsHost = (process.env.POSTHOG_ASSETS_HOST || "https://us-assets.i.posthog.com").replace(/\/$/, "");
-const backendApiHost = (
-  process.env.BREVITAS_API_URL
-  || process.env.API_URL
-  || "http://localhost:8000"
-).replace(/\/$/, "");
+function resolveBackendApiHost(): string {
+  // Production surfaces on Vercel (VERCEL_ENV set) or any production build must
+  // have BREVITAS_API_URL explicitly set to an https: origin. Otherwise the value
+  // gets frozen into routes-manifest.json at build time and a missing env var
+  // silently bakes localhost into the deployed rewrite.
+  const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL_ENV);
+  const configured = process.env.BREVITAS_API_URL?.trim();
+
+  if (isProduction) {
+    if (!configured) {
+      throw new Error(
+        "BREVITAS_API_URL must be set for production builds (VERCEL_ENV set or NODE_ENV=production).",
+      );
+    }
+    let protocol: string;
+    try {
+      protocol = new URL(configured).protocol;
+    } catch {
+      throw new Error(`BREVITAS_API_URL is not a valid URL: ${configured}`);
+    }
+    if (protocol !== "https:") {
+      throw new Error(`BREVITAS_API_URL must use https: in production, got ${protocol}`);
+    }
+    return configured.replace(/\/$/, "");
+  }
+
+  // Local dev only (NODE_ENV !== 'production' and no VERCEL_ENV).
+  return (configured || "http://localhost:8000").replace(/\/$/, "");
+}
+
+const backendApiHost = resolveBackendApiHost();
 
 const nextConfig: NextConfig = {
   async headers() {

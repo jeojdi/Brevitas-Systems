@@ -170,6 +170,15 @@ class StripeAmbiguous(RuntimeError):
     """Stripe may have accepted a request whose response was not observed."""
 
 
+class StripeUnavailable(RuntimeError):
+    """Stripe declined the request without ingesting it (e.g. rate limiting).
+
+    Unlike :class:`StripeAmbiguous`, the outcome is definite: the meter event
+    was not processed. The claim can be released and retried later without any
+    reconciliation query, because there is no chance Stripe silently accepted.
+    """
+
+
 class CatalogContractError(RuntimeError):
     """Global Price/Meter configuration is invalid; no customer row is at fault."""
 
@@ -360,7 +369,14 @@ class StripeRestBillingGateway:
             )
         except (requests.Timeout, requests.ConnectionError) as exc:
             raise StripeAmbiguous("Stripe request outcome is unknown") from exc
-        if response.status_code >= 500 or response.status_code in (408, 409, 429):
+        if response.status_code == 429:
+            # A 429 is a definitive rejection: Stripe did not ingest the event.
+            # It is retryable but UNAMBIGUOUS, so it must not enter the
+            # reconcile/review ambiguity path used for possibly-accepted sends.
+            raise StripeUnavailable(
+                "Stripe rate limited the request; the meter event was not processed"
+            )
+        if response.status_code >= 500 or response.status_code in (408, 409):
             raise StripeAmbiguous(f"Stripe returned retryable status {response.status_code}")
         if response.status_code >= 400:
             try:
@@ -594,7 +610,7 @@ class BillingRecoveryProcessor:
             self._catalog_failure()
             result.errors += 1
             reconciled = Reconciliation.UNKNOWN
-        except (StripeAmbiguous, StripeRejected, requests.RequestException):
+        except (StripeUnavailable, StripeAmbiguous, StripeRejected, requests.RequestException):
             result.errors += 1
             reconciled = Reconciliation.UNKNOWN
         if reconciled is not Reconciliation.ACCEPTED:
@@ -659,6 +675,14 @@ class BillingRecoveryProcessor:
         except StripeRejected as exc:
             self._complete(result, entry, owner, "dead", str(exc))
             return
+        except StripeUnavailable:
+            # Definitive non-ingestion (e.g. rate limited) before any outbound
+            # request was made: release the never-submitted claim (which also
+            # decrements attempts in the store) and retry it in a later cycle.
+            result.errors += 1
+            self.store.release_owner(owner)
+            self.telemetry.metric("billing.stripe_unavailable", 1)
+            return
         except (StripeAmbiguous, requests.RequestException):
             result.errors += 1
             self.store.release_owner(owner)
@@ -683,18 +707,39 @@ class BillingRecoveryProcessor:
         except StripeRejected as exc:
             result.errors += 1
             self._complete(result, entry, owner, "dead", str(exc))
-        except (StripeAmbiguous, requests.Timeout, requests.ConnectionError, TimeoutError) as exc:
+        except StripeUnavailable:
+            # Stripe definitively did not ingest the event (e.g. rate limited).
+            # The outcome is unambiguous, so do not reconcile or review it.
+            # release_owner is a safe no-op once outbound has begun (the store
+            # releases only never-submitted claims); the row stays 'sending' and
+            # a later claim after lease expiry replays the same stable
+            # identifier under the same idempotency key.
             result.errors += 1
-            if not self._reconcile(result, entry, owner, heartbeat):
-                self._complete(result, entry, owner, "review", str(exc) or "ambiguous Stripe outcome")
+            self.store.release_owner(owner)
+            self.telemetry.metric("billing.stripe_unavailable", 1)
+        except (StripeAmbiguous, requests.Timeout, requests.ConnectionError, TimeoutError):
+            # Ambiguous outcome: Stripe may or may not have ingested the event.
+            # Try a single reconcile in case its aggregate already matches (for
+            # example, a response timeout after acceptance). If that is not
+            # ACCEPTED, do NOT burn the row into terminal 'review' this cycle:
+            # an immediate reconcile almost always returns UNKNOWN because the
+            # meter-summary window truncates the current partial minute, which
+            # would create continuous manual-review debt. Leave the row in
+            # 'sending' with its outbound marker so lease expiry drives a later
+            # reconcile-then-replay against the same identifier, and let only the
+            # DB sweeps (outbound_started_at age, attempts>=max) escalate a
+            # genuinely stuck row to review.
+            result.errors += 1
+            self._reconcile(result, entry, owner, heartbeat)
         except Exception as exc:
-            # Unknown failures after begin_send are ambiguous by definition.
+            # Unknown failures after begin_send are ambiguous by definition and
+            # follow the same leave-in-'sending' policy as above.
             result.errors += 1
-            if not self._reconcile(result, entry, owner, heartbeat):
-                self._complete(
-                    result, entry, owner, "review",
-                    f"unexpected ambiguous error: {type(exc).__name__}",
-                )
+            logger.error(
+                "billing ambiguous send left in sending error_type=%s",
+                type(exc).__name__,
+            )
+            self._reconcile(result, entry, owner, heartbeat)
         else:
             self._complete(result, entry, owner, "reported")
 
@@ -897,6 +942,7 @@ async def run_billing_recovery_loop(
         report()
 
     report()
+    last_health_sample = 0.0
     try:
         while not stop.is_set():
             if not snapshot.initial_validation_succeeded:
@@ -978,17 +1024,27 @@ async def run_billing_recovery_loop(
                 )
                 cycle_failed = True
 
-            try:
-                await _run_thread_call_safely(
-                    processor.check_health,
-                    on_cancel=stop.set,
-                )
-            except Exception as exc:
-                logger.error(
-                    "billing store health validation failed error_type=%s",
-                    type(exc).__name__,
-                )
-                cycle_failed = True
+            # billing_recovery_health() is a full-table aggregate. Sample it at
+            # most once per poll interval so a hot claim loop (which drains at
+            # ~0.05s cadence, up to ~40x/sec) cannot run the aggregate on every
+            # cycle. The interval is wall-clock, so the rate is bounded
+            # regardless of claim rate. Fail-closed behavior is unchanged: when
+            # the sample runs and fails, the cycle is failed exactly as before,
+            # and the DB cap enforcement in claim_one is untouched.
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_health_sample >= processor.settings.poll_seconds:
+                last_health_sample = now_monotonic
+                try:
+                    await _run_thread_call_safely(
+                        processor.check_health,
+                        on_cancel=stop.set,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "billing store health validation failed error_type=%s",
+                        type(exc).__name__,
+                    )
+                    cycle_failed = True
 
             if result.errors:
                 cycle_failed = True

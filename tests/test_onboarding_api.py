@@ -58,6 +58,23 @@ def test_workspace_experience_migration_is_bounded_and_service_only():
     assert "grant execute on function public.ensure_workspace_organization(uuid,text,text)\n    to service_role" in migration
 
 
+def test_onboarding_evidence_migration_relaxes_only_authoritative():
+    raw = (Path(__file__).parent.parent / "supabase/migrations/"
+           "202607280004_onboarding_local_proxy_evidence.sql").read_text()
+    migration = "\n".join(
+        line for line in raw.splitlines() if not line.lstrip().startswith("--"))
+
+    assert "usage.authoritative is true" not in migration
+    assert migration.count("usage.receipt_source = 'proxy'") == 2
+    assert migration.count("credential.key_type = 'device'") == 4
+    assert migration.count("activation.action = 'device_key.activated'") == 4
+    assert migration.count("installation.device_auth_receipt_id is not null") == 4
+    assert migration.count("usage.ts >= installation.installed_at") == 2
+    assert "grant execute on function public.organization_onboarding_status(uuid,uuid)\n    to service_role" in migration
+    assert "grant execute on function public.complete_organization_onboarding(uuid,uuid,text)\n    to service_role" in migration
+    assert "from public, anon, authenticated, service_role" in migration
+
+
 def test_company_bootstrap_requires_name_and_is_idempotent(tmp_path, monkeypatch):
     client, store = _client(tmp_path, monkeypatch, "company-founder")
 
@@ -159,7 +176,7 @@ def test_onboarding_survives_reload_and_rejects_self_attestation(tmp_path, monke
     assert store.onboarding_status("durable-owner", organization_id)["status"] == "pending"
 
 
-def test_onboarding_requires_configured_device_and_authoritative_proxy_receipt(
+def test_onboarding_accepts_local_proxy_receipt_from_bound_device(
         tmp_path, monkeypatch):
     client, store = _client(tmp_path, monkeypatch, "evidence-owner")
     created = client.post(
@@ -174,10 +191,13 @@ def test_onboarding_requires_configured_device_and_authoritative_proxy_receipt(
     assert caller_reported.status_code == 409
     assert "successful request" in caller_reported.json()["detail"]
 
+    # The released BVX CLI runs a local proxy that reports its provider receipt
+    # over POST /v1/usage, which records authoritative=False. That receipt from
+    # the bound device key is onboarding evidence.
     store.record_usage(
         hash_key(raw_key), 10, 10, owner_id="evidence-owner",
-        organization_id=organization_id, authoritative=True,
-        receipt_source="proxy", request_id="onboarding-proxy-authoritative",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="onboarding-local-proxy-receipt",
     )
     completed = client.post("/v1/organization/onboarding/complete")
     repeated = client.post("/v1/organization/onboarding/complete")

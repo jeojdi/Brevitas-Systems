@@ -56,6 +56,12 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/20260720_split_savings_metrics.sql',
   'supabase/migrations/202607220001_service_role_data_plane.sql',
   'supabase/migrations/202607220002_supabase_advisor_hardening.sql',
+  'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql',
+  'supabase/migrations/202607270002_widen_billing_events_money.sql',
+  'supabase/migrations/202607280001_cache_warming.sql',
+  'supabase/migrations/202607280002_usage_stats_cache_metrics.sql',
+  'supabase/migrations/202607280003_multi_provider_warming.sql',
+  'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -66,33 +72,17 @@ const atomicForwardMigrationPaths = expectedFreshMigrationOrder.slice(
   ),
 )
 
-const expectedFrozenChecksumPaths = [
-  'supabase/migrations/202607170007_compliance_workflows.sql',
-  'scripts/dr/compliance-workflow-assertions.sql',
-  'supabase/migrations/202607170009_key_listing_security.sql',
-  'supabase/migrations/202607170010_device_delivery_idempotency.sql',
-  'supabase/migrations/202607170011_active_memberships.sql',
-  'supabase/migrations/202607170012_receipt_accounting_alignment.sql',
-  'supabase/migrations/202607170013_active_company_selection.sql',
-  'supabase/migrations/202607200001_stripe_webhook_durability.sql',
-  'supabase/migrations/202607200002_waitlist_security.sql',
-  'supabase/migrations/202607200003_billing_owner_attribution.sql',
-  'supabase/migrations/202607200004_stripe_event_ordering.sql',
-  'supabase/migrations/202607200005_initial_service_key.sql',
-  'supabase/migrations/202607200006_company_billing_authorization.sql',
-  'supabase/migrations/202607200007_billing_recovery_scope.sql',
-  'supabase/migrations/202607200008_provider_credential_cleanup.sql',
-  'supabase/migrations/202607200009_multitab_dashboard_sessions.sql',
-  'supabase/migrations/202607200010_shared_endpoint_rate_limits.sql',
-  'supabase/migrations/202607200011_compliance_billing_isolation.sql',
-  'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql',
-  'supabase/migrations/202607200013_billing_control_rate_limits.sql',
-  'supabase/migrations/202607200014_billing_checkout_session_reservations.sql',
-  'supabase/migrations/202607200015_provider_outbound_ambiguity.sql',
-  'supabase/migrations/202607200016_durable_onboarding.sql',
-  'supabase/migrations/202607200017_billing_customer_owner_fencing.sql',
-  'supabase/migrations/20260720_split_savings_metrics.sql',
-]
+// Freeze the whole enterprise upgrade chain, not just a tail slice: every
+// forward migration from the production baseline onward is pinned, with the DR
+// compliance-workflow assertions pinned immediately after the migration they
+// guard. Deriving this from expectedUpgradeMigrationOrder keeps the frozen
+// inventory in lock-step with the manifest as new migrations are appended.
+const frozenDrAssertionPath = 'scripts/dr/compliance-workflow-assertions.sql'
+const expectedFrozenChecksumPaths = expectedUpgradeMigrationOrder.flatMap((path) =>
+  path === 'supabase/migrations/202607170007_compliance_workflows.sql'
+    ? [path, frozenDrAssertionPath]
+    : [path],
+)
 
 function manifestEntries(path) {
   return read(path)

@@ -10,11 +10,8 @@ docker build -t brevitas-compress:latest .
 ```
 
 ### Run the container:
+`BREVITAS_COMPRESS_TOKEN` is mandatory — startup fails closed without it.
 ```bash
-# Without authentication
-docker run -p 8080:8080 brevitas-compress:latest
-
-# With Bearer token authentication
 docker run -p 8080:8080 -e BREVITAS_COMPRESS_TOKEN=your-secret-token brevitas-compress:latest
 ```
 
@@ -75,7 +72,9 @@ Compress a prompt using LLMLingua-2 or lossless normalization.
 
 ## Authentication
 
-If the environment variable `BREVITAS_COMPRESS_TOKEN` is set, all requests to `/v1/optimize` must include a Bearer token:
+Authentication is **mandatory**. `BREVITAS_COMPRESS_TOKEN` must be set or the
+service **fails closed at startup** (it refuses to boot without a token). Every
+request to `/v1/optimize` must carry a matching Bearer token:
 
 ```bash
 curl -X POST http://localhost:8080/v1/optimize \
@@ -87,9 +86,16 @@ curl -X POST http://localhost:8080/v1/optimize \
   }'
 ```
 
+Auth failures are distinct:
+- **401 Unauthorized** — the `Authorization` header is missing or malformed
+  (not a single `Bearer <token>` pair).
+- **403 Forbidden** — the header is well-formed but the token does not match.
+
 ## Environment Variables
 
-- `BREVITAS_COMPRESS_TOKEN` (optional): Bearer token for API authentication. If not set, the API is unauthenticated.
+- `BREVITAS_COMPRESS_TOKEN` (**required**): Bearer token for API authentication.
+  The service will not start without it, and requests are rejected unless they
+  present this exact token.
 
 ## Notes
 

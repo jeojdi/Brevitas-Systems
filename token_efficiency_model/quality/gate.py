@@ -48,7 +48,9 @@ _RISKY_LEVERS = {
     "reorder": "BREVITAS_MESSAGE_REORDER",
     "semantic_cache": "BREVITAS_SEMANTIC_CACHE",
 }
-_SAFE_LEVERS = {"cache"}                 # exact-hash byte-identical response cache
+# cache = exact-hash byte-identical response cache; cache_injection = Brevitas-owned
+# provider cache_control breakpoint writes (metadata-only, response bytes untouched)
+_SAFE_LEVERS = {"cache", "cache_injection"}
 _LEVERS = set(_RISKY_LEVERS) | _SAFE_LEVERS
 
 _tripped_levers: set[tuple[str, str]] = set()   # (tenant_key, lever); "" key == global
