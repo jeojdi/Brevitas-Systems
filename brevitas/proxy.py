@@ -20,6 +20,7 @@ The proxy:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -65,6 +66,52 @@ from token_efficiency_model.quality.gate import lever_allowed
 # is ALREADY in flight (bounded by max_wait), so interactive traffic is never touched.
 # On by default; BREVITAS_BATCH_GROUP=0 is the kill-switch.
 _BG_ON = os.environ.get("BREVITAS_BATCH_GROUP", "1") not in ("0", "false", "no")
+
+# Providers whose streamed responses omit usage unless the request opts in.
+# DeepSeek is deliberately absent: it reports usage on the final chunk by
+# default and its request bodies stay byte-identical end to end.
+_STREAM_USAGE_PROVIDERS = {"openai", "xai"}
+
+
+def _stream_usage_inject_enabled() -> bool:
+    return os.environ.get("BREVITAS_STREAM_USAGE_INJECT", "1") not in ("0", "false", "no")
+
+
+def _xai_affinity_enabled() -> bool:
+    return os.environ.get("BREVITAS_XAI_CONV_AFFINITY", "1") not in ("0", "false", "no")
+
+
+def _inject_stream_usage(body: dict, provider: str) -> None:
+    """Ask the provider to append its standard usage chunk to the stream.
+
+    Without it, streamed OpenAI/xAI responses carry no usage object, so cache
+    discounts on streams are invisible to metering. Only fires when the caller
+    did not set stream_options themselves; deltas/content are unaffected and
+    the provider bytes are forwarded verbatim.
+    """
+    if (body.get("stream") and provider in _STREAM_USAGE_PROVIDERS
+            and "stream_options" not in body and _stream_usage_inject_enabled()):
+        body["stream_options"] = {"include_usage": True}
+
+
+def _apply_xai_affinity(headers: dict[str, str], request: Request,
+                        provider: str, state_key: str) -> bool:
+    """Pin xAI replica affinity so their prompt cache can actually hit.
+
+    Verified live 2026-07-28: xAI's cached_tokens never exceeds the ~128-token
+    template floor without x-grok-conv-id — prompt_cache_key alone routes to
+    arbitrary replicas and misses. The id is an opaque tenant-scoped digest
+    (no PII); a caller-supplied header always wins. Returns True only when
+    Brevitas added the header, which is what makes any resulting cache
+    discount Brevitas-attributable.
+    """
+    if provider != "xai" or not _xai_affinity_enabled() or not state_key:
+        return False
+    if request.headers.get("x-grok-conv-id"):
+        return False
+    digest = hashlib.sha256(f"brevitas-xai-affinity:{state_key}".encode()).hexdigest()
+    headers["x-grok-conv-id"] = digest[:32]
+    return True
 _bg = BatchGroupGate(max_wait=float(os.environ.get("BREVITAS_BATCH_GROUP_MAX_WAIT", "15")))
 _BG_WARM = {"deepseek": 2880.0, "anthropic": 240.0, "openai": 240.0}  # ~0.8x cache TTL
 
@@ -944,7 +991,10 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
     else:
         forward = {"authorization", "openai-organization", "openai-project",
                    "openai-beta", "idempotency-key", "http-referer", "x-title",
-                   "x-client-request-id"}
+                   "x-client-request-id",
+                   # xAI replica-affinity hint; a caller-supplied value always
+                   # beats Brevitas's injected one (_apply_xai_affinity).
+                   "x-grok-conv-id"}
         for name, value in request.headers.items():
             lower = name.lower()
             if lower in forward or lower.startswith("x-stainless-"):
@@ -1155,6 +1205,11 @@ async def proxy_openai_chat(request: Request) -> Any:
 
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
+    _inject_stream_usage(body, provider)
+    if _apply_xai_affinity(headers, request, provider, state_key):
+        # Without the injected affinity xAI's cache never hits, so any
+        # discount on this request exists because Brevitas caused it.
+        cache_attributable = True
 
     override_upstream = request.headers.get("x-brevitas-upstream")
     upstream_base = get_openai_compatible_upstream(model, override_upstream, provider)
@@ -1302,6 +1357,11 @@ async def proxy_openai_responses(request: Request) -> Any:
     )
     endpoint = f"{base.rstrip('/')}/v1/responses"
     headers = _passthrough_headers(request, "openai")
+    # Header-only injection here: the body may be forwarded byte-verbatim
+    # below, and the Responses API reports usage on response.completed
+    # natively, so no stream_options mutation is needed or wanted.
+    if _apply_xai_affinity(headers, request, provider, state_key):
+        cache_attributable = True
     is_stream = bool(body.get("stream"))
     request_content = None if body_changed else raw_body
     request_json = body if body_changed else None
