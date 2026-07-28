@@ -1382,7 +1382,10 @@ class UsageStore:
             "AND activation.action='device_key.activated' "
             "AND activation.target_type='api_key' AND activation.target_id=credential.id "
             "AND activation.outcome='committed' "
-            "WHERE usage.organization_id=? AND usage.authoritative=1 "
+            # Local BVX proxies report receipts over /v1/usage (authoritative=0),
+            # so onboarding evidence keys on receipt_source + the device-key
+            # binding, never on the billing-only authoritative flag (202607280004).
+            "WHERE usage.organization_id=? "
             "AND usage.receipt_source='proxy' AND credential.key_type='device' "
             "ORDER BY usage.ts,usage.id LIMIT 1",
             (started_at, checked_at, organization_id),

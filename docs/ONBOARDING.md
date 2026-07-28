@@ -29,10 +29,13 @@ visibly separate. Authorization remains membership-derived in both views.
 
 The dashboard does not accept a browser checkbox as proof of setup. The API keeps the
 workspace pending until it has both a receipt-bound BVX device registration and a later
-server-authoritative proxy request from that exact device key. Reloading the page cannot
-skip this gate. This proves the credential and request path were connected; it does not
-cryptographically attest that the executable was an official BVX release. Validate the
-separately released CLI and its checksums as part of release onboarding.
+proxy receipt reported from that exact device key (the released CLI's local proxy reports
+these over `/v1/usage`; the hosted proxy records them in-process). Reloading the page
+cannot skip this gate. This proves the approved device credential was provisioned and used
+to report proxy traffic; because the local proxy self-reports its receipts, it does not
+prove a provider call occurred, nor cryptographically attest that the executable was an
+official BVX release. Completion gates only the tenant's own dashboard experience. Validate
+the separately released CLI and its checksums as part of release onboarding.
 
 ## New company
 

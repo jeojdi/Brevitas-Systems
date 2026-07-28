@@ -83,6 +83,7 @@ billing_events_money_migration="${upgrade_migrations[35]}"
 cache_warming_migration="${upgrade_migrations[36]}"
 usage_stats_cache_migration="${upgrade_migrations[37]}"
 multi_provider_warming_migration="${upgrade_migrations[38]}"
+onboarding_evidence_migration="${upgrade_migrations[39]}"
 if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
    || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
    || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
@@ -112,7 +113,8 @@ if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery
    || "${billing_events_money_migration}" != 'supabase/migrations/202607270002_widen_billing_events_money.sql' \
    || "${cache_warming_migration}" != 'supabase/migrations/202607280001_cache_warming.sql' \
    || "${usage_stats_cache_migration}" != 'supabase/migrations/202607280002_usage_stats_cache_metrics.sql' \
-   || "${multi_provider_warming_migration}" != 'supabase/migrations/202607280003_multi_provider_warming.sql' ]]; then
+   || "${multi_provider_warming_migration}" != 'supabase/migrations/202607280003_multi_provider_warming.sql' \
+   || "${onboarding_evidence_migration}" != 'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql' ]]; then
   echo 'Frozen migrations 010-013 or the 20260720-20260728 forward suffix are out of order.' >&2
   exit 1
 fi
@@ -205,6 +207,8 @@ run_forward_assertions() {
     --file scripts/ci/migration-provider-outbound-ambiguity-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-durable-onboarding-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-onboarding-local-proxy-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-billing-customer-owner-fencing-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
@@ -377,6 +381,10 @@ assert_atomic_migration_rollback "${multi_provider_warming_migration}" \
   "to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is not null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is null"
 apply_migration "${multi_provider_warming_migration}"
 apply_migration "${multi_provider_warming_migration}"
+assert_atomic_migration_rollback "${onboarding_evidence_migration}" \
+  "position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.organization_onboarding_status(uuid,uuid)'))) > 0 and position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.complete_organization_onboarding(uuid,uuid,text)'))) > 0"
+apply_migration "${onboarding_evidence_migration}"
+apply_migration "${onboarding_evidence_migration}"
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions
@@ -495,6 +503,8 @@ apply_migration "${workspace_experiences_migration}"
 apply_migration "${split_savings_migration}"
 apply_migration "${service_role_data_plane_migration}"
 apply_migration "${supabase_advisor_hardening_migration}"
+echo 'Restoring the 202607280004 onboarding functions clobbered by the frozen 016 reapply.'
+apply_migration "${onboarding_evidence_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-fresh-assertions.sql
 run_forward_assertions
