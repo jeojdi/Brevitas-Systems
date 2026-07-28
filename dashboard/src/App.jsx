@@ -25,6 +25,7 @@ const LIVE_REFRESH_MS = 10_000
 const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
   && ['dashboard', 'billing', 'onboarding', 'onboarding-personal', 'onboarding-enterprise', 'personal', 'enterprise', 'invitation'].includes(PREVIEW_SECTION)
+const previewOnboardingCheck = async () => ({ cliConnected: false, proxiedRequestObserved: false })
 const PREVIEW_STATS = {
   total_calls: 128,
   total_provider_input_tokens_avoided: 18400,
@@ -200,7 +201,11 @@ function DashboardPreview({ darkMode, onToggleDark }) {
       : ''
   if (PREVIEW_SECTION === 'onboarding' || onboardingType) {
     return <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg px-4 py-10 sm:px-6 sm:py-16">
-      <OnboardingWorkspaceChoice initialWorkspaceType={onboardingType} onContinue={async () => {}} />
+      <OnboardingWorkspaceChoice
+        initialWorkspaceType={onboardingType}
+        onContinue={async () => {}}
+        onCheck={previewOnboardingCheck}
+      />
     </div>
   }
   if (PREVIEW_SECTION === 'invitation') {
