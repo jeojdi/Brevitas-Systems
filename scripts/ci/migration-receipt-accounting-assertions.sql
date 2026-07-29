@@ -43,12 +43,15 @@ begin
         )) privilege
          where privilege.grantee=0
     ) then raise exception 'PUBLIC has a direct usage receipt privilege'; end if;
-    if not exists (
+    -- Inverted by 202607280006: per-row fee queueing is retired in favour of a
+    -- period settlement ledger. Its ABSENCE is now the invariant, so that no
+    -- code path can queue an invoice before period netting is reconciled.
+    if exists (
         select 1 from pg_trigger trigger_state
          where trigger_state.tgrelid='public.usage_log'::regclass
            and trigger_state.tgname='queue_brevitas_fee_after_usage'
-           and trigger_state.tgenabled<>'D' and not trigger_state.tgisinternal
-    ) then raise exception 'usage billing trigger is absent or disabled'; end if;
+           and not trigger_state.tgisinternal
+    ) then raise exception 'retired per-row billing trigger has been reattached'; end if;
 end;
 $$;
 
@@ -79,10 +82,14 @@ begin
            and usage.cache_attributable
            and usage.receipt_source='proxy'
            and usage.authoritative
+    -- Receipt fields must still persist exactly as before; what changed is that
+    -- an authoritative, priced row must now settle NOTHING on insert. A single
+    -- ledger row appearing here means the trigger is back and a customer could
+    -- be invoiced without period netting.
     ) or (select count(*) from public.billing_ledger ledger
            join public.usage_log usage on usage.id=ledger.usage_log_id
-          where usage.request_id='release-receipt-accounting')<>1 then
-        raise exception 'receipt fields were not persisted with one billing trigger result';
+          where usage.request_id='release-receipt-accounting')<>0 then
+        raise exception 'receipt fields absent, or a fee settled without period netting';
     end if;
     begin
         insert into public.usage_log(
