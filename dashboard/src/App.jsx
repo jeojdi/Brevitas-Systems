@@ -524,8 +524,12 @@ export default function App() {
 
   useEffect(() => {
     if (!session?.user?.id) return
-    identify(session.user.id, { email: session.user.email, account_type: isAdmin ? 'admin' : 'customer' })
-  }, [session?.user?.id, session?.user?.email, isAdmin])
+    // No email: the Supabase user id is already a stable pseudonymous identifier, and
+    // src/lib/posthog-server.ts deliberately hashes its distinct ids rather than send
+    // account identifiers. Sending the address here contradicted that and put real user
+    // emails in PostHog person properties.
+    identify(session.user.id, { account_type: isAdmin ? 'admin' : 'customer' })
+  }, [session?.user?.id, isAdmin])
 
   useEffect(() => {
     if (!session) return

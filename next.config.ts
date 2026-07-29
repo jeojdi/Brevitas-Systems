@@ -61,6 +61,19 @@ function resolveBackendApiHost(): string {
 const backendApiHost = resolveBackendApiHost();
 
 const nextConfig: NextConfig = {
+  // Next injects an internal, unconditional `/:path+/` -> `/:path+` 308 redirect at the
+  // very front of the redirect table (load-custom-routes.ts unshifts it with
+  // `priority: true`). Redirects are evaluated before every rewrite, so that internal
+  // rule strips the trailing slash from PostHog's ingest endpoints — `/ingest/i/v0/e/`,
+  // `/ingest/flags/?v=2`, `/ingest/s/` — before the `/ingest/:path*` proxy rewrite can
+  // ever run. No rewrite or redirect entry can pre-empt it; the only lever is this flag.
+  //
+  // Disabling it is global, so the equivalent redirect is re-added explicitly below for
+  // every path except `/ingest/*`, preserving the site's existing trailing-slash SEO
+  // behaviour exactly. This site has no App Router pages (only /api route handlers), so
+  // the flag's other effect — `process.env.__NEXT_MANUAL_TRAILING_SLASH`, which relaxes
+  // client-side `next/link` URL normalization — is inert here.
+  skipTrailingSlashRedirect: true,
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
@@ -84,11 +97,19 @@ const nextConfig: NextConfig = {
         { source: '/privacy', destination: '/privacy.html' },
         { source: '/terms', destination: '/terms.html' },
         { source: '/waitlist', destination: '/dashboard/index.html' },
+        // The three /login* aliases are also the landing sites for a confirmed signup:
+        // public/email-confirmed.html forwards GoTrue's `#access_token=…` fragment onto
+        // one of them so the SPA's auth-js client consumes it (implicit flow,
+        // detectSessionInUrl) and persists the session. Repointing any of these away
+        // from the SPA silently drops confirmed users back to a logged-out state.
         { source: '/login', destination: '/dashboard/index.html' },
         { source: '/login/personal', destination: '/dashboard/index.html' },
         { source: '/login/enterprise', destination: '/dashboard/index.html' },
         { source: '/signup', destination: '/dashboard/index.html' },
         { source: '/invite', destination: '/dashboard/index.html' },
+        // Stays on the static page rather than the SPA: it is the only surface that
+        // renders GoTrue's `error_description` and the `?audience=` split, neither of
+        // which the SPA models. It hands the session fragment to the SPA instead.
         { source: '/email-confirmed', destination: '/email-confirmed.html' },
         { source: '/welcome', destination: '/welcome.html' },
         { source: '/blog/fable-5', destination: '/fable-5.html' },
@@ -115,6 +136,17 @@ const nextConfig: NextConfig = {
   },
   async redirects() {
     return [
+      // Replacement for the internal trailing-slash redirect disabled by
+      // `skipTrailingSlashRedirect` above. Mirrors Next's own `/:path+/` -> `/:path+`
+      // rule (relative destination, so the host is preserved and the www redirect below
+      // still applies afterwards) but carves out `/ingest/*` so the PostHog proxy
+      // receives the trailing slash posthog-js actually sends. Listed first to match the
+      // internal rule's position at the head of the table.
+      {
+        source: '/:path((?!ingest/).+)/',
+        destination: '/:path',
+        permanent: true,
+      },
       {
         source: '/:path*',
         has: [{ type: 'host', value: 'www.brevitassystems.com' }],

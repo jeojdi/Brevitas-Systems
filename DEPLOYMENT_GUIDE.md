@@ -306,7 +306,8 @@ Rows without project/source metadata appear as `Unattributed`.
    a normal user receives `403` from `/v1/admin/*`.
 6. Repeat the same `X-Brevitas-Request-Id` and confirm totals do not increase.
 7. Confirm pageviews arrive in PostHog, the Privacy choices control stops future events, and
-   GPC/DNT browsers start opted out.
+   GPC browsers start opted out. Do Not Track is intentionally not honoured — see the
+   comment in `public/analytics.js`.
 8. Inspect a marketing and authenticated replay. Inputs, account email/UUID, API/provider keys,
    Playground content, financial details, URL query strings, and network bodies must be masked
    or absent.
