@@ -522,6 +522,36 @@ def _batch_record_row(record: dict[str, Any]) -> dict[str, Any]:
                       float(savings_pct or 0), quality_proxy, **values)
 
 
+def _fill_organization_id(row: dict[str, Any], resolve: Any) -> dict[str, Any]:
+    """Attribute a receipt to the tenant that owns its API key.
+
+    `_usage_row` defaults `organization_id` to `""` when a caller omits it, so a
+    caller-side omission used to become an untenanted receipt with no error and
+    no log line. `key_hash` is required on every write path and
+    `api_keys.organization_id` is the authoritative key->tenant binding, so the
+    org is derivable here. A caller-supplied org is never overwritten, and no org
+    is invented: personal/legacy keys with no organization stay untenanted.
+    """
+    if row.get("organization_id"):
+        return row
+    key_hash = str(row.get("key_hash") or "")
+    if key_hash:
+        row["organization_id"] = str(resolve(key_hash) or "")
+    return row
+
+
+def _organization_cache(records: list[Any], lookup: Any) -> dict[str, str]:
+    """Resolve each distinct org-less key_hash once, before any write begins."""
+    cache: dict[str, str] = {}
+    for record in records:
+        if not isinstance(record, dict) or record.get("organization_id"):
+            continue
+        key_hash = str(record.get("key_hash") or "")
+        if key_hash and key_hash not in cache:
+            cache[key_hash] = str(lookup(key_hash) or "")
+    return cache
+
+
 def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
                savings_pct: float = 0, quality_proxy: Optional[float] = None,
                **values: Any) -> dict[str, Any]:
@@ -879,6 +909,54 @@ def _audit_row_provider(row: dict[str, Any]) -> str:
             or infer_provider(str(row.get("model") or "")) or "unknown")
 
 
+# Longest provider prompt-cache TTL (Anthropic extended cache_control is 1h;
+# OpenAI/DeepSeek automatic caching evicts sooner). Two usage rows sharing a
+# session_id only count as "repeat" traffic when they land within this window.
+_AUDIT_REPEAT_WINDOW_S = 3600.0
+
+
+def _repeat_session_counts(
+        sessions: dict[str, list[datetime | None]]) -> tuple[int, int]:
+    """(repeat_sessions, repeat_session_rows) from time-clustered sessions.
+
+    usage_log.session_id is a BUCKET key, not a conversation id: the proxy
+    derives it as a stable hash of {operation, tenant, provider, model, agent}
+    (brevitas/proxy.py `_stable_session_id`), so rows weeks apart can share
+    one. The audit window is the most recent ACTIVITY_SCAN_MAX rows with no
+    time bound, so counting bare session_id collisions would read "this tenant
+    called this model twice, ever" as repeat traffic.
+
+    That matters because the only consumer (_audit_verdict_byte_stability)
+    reads "repeat traffic yet near-zero cache hits" as evidence of unstable
+    prompt bytes. It is only evidence when the calls were close enough
+    together that a provider cache entry could still have been live; across
+    weeks a 0% hit rate is structural, not churn. So rows in a session are
+    split into clusters whenever consecutive rows are more than
+    `_AUDIT_REPEAT_WINDOW_S` apart, and only clusters of >= 2 rows count.
+
+    Rows with no parseable ts cannot be ordered or separated, so they stay in
+    a single cluster (the untimed legacy behaviour) rather than being dropped.
+    """
+    repeat_sessions = repeat_rows = 0
+    for stamps in sessions.values():
+        timed = sorted(s for s in stamps if s is not None)
+        untimed = len(stamps) - len(timed)
+        clusters: list[int] = [untimed] if untimed else []
+        previous: datetime | None = None
+        for stamp in timed:
+            if (previous is not None
+                    and (stamp - previous).total_seconds() <= _AUDIT_REPEAT_WINDOW_S):
+                clusters[-1] += 1
+            else:
+                clusters.append(1)
+            previous = stamp
+        repeating = [n for n in clusters if n >= 2]
+        if repeating:
+            repeat_sessions += 1
+        repeat_rows += sum(repeating)
+    return repeat_sessions, repeat_rows
+
+
 def _audit_metrics(rows: list[dict[str, Any]],
                    warm_providers: list[dict[str, Any]] | None) -> dict[str, Any]:
     """Traffic-side evidence for the optimization audit (GET /v1/audit).
@@ -909,7 +987,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
     caller_1h_rows = brevitas_1h_rows = 0
     warm_rows = 0
     discount = attributable = 0.0
-    sessions: dict[str, int] = {}
+    sessions: dict[str, list[datetime | None]] = {}
     for row in rows:
         provider = _audit_row_provider(row)
         strategy = _audit_base_strategy(row)
@@ -964,7 +1042,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
         attributable += _billable_cache_savings(row)
         session = str(row.get("session_id") or "")
         if session:
-            sessions[session] = sessions.get(session, 0) + 1
+            sessions.setdefault(session, []).append(_parse_ts(row.get("ts")))
     for entry in per_provider.values():
         total = entry["cached_input_tokens"] + entry["fresh_input_tokens"]
         if total:
@@ -973,7 +1051,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
     cached_total = sum(e["cached_input_tokens"] for e in per_provider.values())
     fresh_total = sum(e["fresh_input_tokens"] for e in per_provider.values())
     input_total = cached_total + fresh_total
-    repeat_session_rows = sum(n for n in sessions.values() if n >= 2)
+    repeat_sessions, repeat_session_rows = _repeat_session_counts(sessions)
     warm = _warm_totals(warm_providers)
     return {
         "schema": "brevitas.audit-metrics.v1",
@@ -992,7 +1070,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
         "repeat": {
             "exact_cache_rows": exact_cache_rows,
             "calls_avoided": calls_avoided,
-            "repeat_sessions": sum(1 for n in sessions.values() if n >= 2),
+            "repeat_sessions": repeat_sessions,
             "repeat_session_rows": repeat_session_rows,
         },
         "streaming": {
@@ -1022,6 +1100,9 @@ def _audit_metrics(rows: list[dict[str, Any]],
         "approximations": [
             "metrics cover a bounded window of the most recent usage rows, "
             "not all-time history",
+            "repeat-session evidence counts only rows sharing a session_id "
+            "within one hour of each other (the longest provider cache TTL); "
+            "session_id is a per-model bucket key, not a conversation id",
             "cache ownership is inferred from the stored cache_attributable "
             "flag; the original cache_control owner string is not persisted",
         ],
@@ -2284,6 +2365,18 @@ class UsageStore:
         result["scopes"] = [scope for scope in str(result.get("scopes") or "").split(",") if scope]
         return result
 
+    def key_organization(self, key_hash: str) -> str:
+        """Read-only tenant lookup for usage attribution.
+
+        Unlike `key_context` this does not touch `last_used_at` and does not
+        filter on revoked/expired: attribution of a receipt must not change when
+        the key that produced it is later revoked.
+        """
+        with self._conn() as db:
+            row = db.execute("SELECT organization_id FROM api_keys WHERE key_hash=?",
+                             (key_hash,)).fetchone()
+        return str(row[0] or "") if row else ""
+
     def key_owner(self, key_hash: str) -> str:
         with self._conn() as db:
             row = db.execute(
@@ -2517,6 +2610,7 @@ class UsageStore:
                      savings_pct: float = 0, quality_proxy: Optional[float] = None,
                      **values: Any) -> bool:
         row = _usage_row(key_hash, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, **values)
+        _fill_organization_id(row, self.key_organization)
         columns = list(row)
         try:
             with self._conn() as db:
@@ -2532,10 +2626,14 @@ class UsageStore:
             raise ValueError(f"usage batch exceeds maximum of {USAGE_BATCH_MAX}")
         result = {"read": len(records), "inserted": 0, "duplicates": 0, "failed": 0}
         failed_records: list[dict[str, Any]] = []
+        # Resolve tenants before opening the write connection: no nested
+        # connection inside the batch transaction, and one lookup per key.
+        organizations = _organization_cache(records, self.key_organization)
         with self._conn() as db:
             for record in records:
                 try:
                     row = _batch_record_row(record)
+                    _fill_organization_id(row, organizations.get)
                     columns = list(row)
                     db.execute(
                         f"INSERT INTO usage_log ({','.join(columns)}) VALUES "
@@ -3621,6 +3719,13 @@ class SupabaseUsageStore:
                       data={"last_used_at": _now()}, prefer="return=minimal")
         return row
 
+    def key_organization(self, key_hash: str) -> str:
+        """Read-only tenant lookup for usage attribution (see UsageStore)."""
+        rows = self._request("GET", "api_keys", params={
+            "select": "organization_id", "key_hash": f"eq.{key_hash}", "limit": "1",
+        }) or []
+        return str(rows[0].get("organization_id") or "") if rows else ""
+
     def key_owner(self, key_hash: str) -> str:
         rows = self._request("GET", "api_keys", params={
             "select": "owner_id,organization_id,key_type",
@@ -3876,6 +3981,7 @@ class SupabaseUsageStore:
                      savings_pct: float = 0, quality_proxy: Optional[float] = None,
                      **values: Any) -> bool:
         row = _usage_row(key_hash, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, **values)
+        _fill_organization_id(row, self.key_organization)
         # Postgres tenant identifiers are nullable UUIDs. Historical/unattributed
         # traffic uses NULL, never the invalid UUID literal ''.
         row["organization_id"] = row.get("organization_id") or None
@@ -3891,9 +3997,11 @@ class SupabaseUsageStore:
         result = {"read": len(records), "inserted": 0, "duplicates": 0, "failed": 0}
         prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
         failed_records: list[dict[str, Any]] = []
+        organizations = _organization_cache(records, self.key_organization)
         for record in records:
             try:
                 row = _batch_record_row(record)
+                _fill_organization_id(row, organizations.get)
                 row["organization_id"] = row.get("organization_id") or None
                 row["customer_id"] = row.get("customer_id") or None
                 prepared.append((dict(record), row))

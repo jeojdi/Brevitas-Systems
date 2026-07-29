@@ -82,6 +82,17 @@ test('admin UI combines protected PostHog and financial operations without secre
   assert.doesNotMatch(admin, /POSTHOG_PERSONAL_API_KEY|X-Brevitas-Admin/)
 })
 
+test('the admin tab survives the unknown-tab reset guard', async () => {
+  const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
+  // `Admin` is not in PERSONAL_TABS/ENTERPRISE_TABS, so the guard that snaps unknown
+  // sections back to Overview has to test the rendered list, not dashboardTabs — the
+  // tab rendered but was unreachable when those two lists diverged.
+  assert.match(app, /visibleTabs = useMemo\(\s*\(\) => \(isAdmin \? \[\.\.\.dashboardTabs, 'Admin'\] : dashboardTabs\)/)
+  assert.match(app, /if \(!visibleTabs\.includes\(activeTab\)\) setActiveTab\('Overview'\)/)
+  assert.match(app, /\{visibleTabs\.map\(tab =>/)
+  assert.doesNotMatch(app, /!dashboardTabs\.includes\(activeTab\)/)
+})
+
 test('device connection consumes only authenticated company choices and handles denials safely', async () => {
   const [device, app, company] = await Promise.all([
     source('DeviceConnect'),

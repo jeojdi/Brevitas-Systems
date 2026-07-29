@@ -286,9 +286,37 @@ def _new_session(session_id: str = "") -> BrevitasSession:
     )
 
 
-def _session_for(key: str) -> _SessionHandle:
+def _stable_session_id(key: str) -> str:
+    """Derive a receipt-stable session id from the bounded session key.
+
+    `BrevitasSession` falls back to `"sess_" + secrets.token_urlsafe(12)` when it
+    is given no id. `_session_for` used to pass `_new_session` to
+    `get_or_create` as a zero-arg factory, so the session key never reached the
+    session and every bucket got a fresh random id. That id is what lands in
+    `usage_log.session_id`, so receipts for one tenant+provider+model+operation
+    +agent bucket were unjoinable across a proxy restart or an LRU/TTL eviction
+    of that bucket -- the same logical session emitted several unrelated ids.
+
+    Hashing rather than using `key` directly is deliberate on two counts: the
+    key embeds the tenant credential digest (`_tenant_context`), which must not
+    be republished in a receipt column; and `UsageReportRequest.session_id`
+    caps at 128 characters, which an unbounded model name in the key could
+    otherwise breach and turn a receipt into a 422.
+    """
+    digest = hashlib.sha256(f"brevitas-session:{key}".encode()).hexdigest()
+    return "sess_" + digest[:24]
+
+
+def _session_for(key: str, session_id: str = "") -> _SessionHandle:
+    """Look up (or open) the session bucket for `key`.
+
+    `session_id` pins the identity a caller already computed for this session,
+    for the paths that re-enter with a receipt in hand. Left empty, the identity
+    is derived from the key.
+    """
+    identity = session_id or _stable_session_id(key)
     with _session_registry_lock:
-        snapshot = _sessions.get_or_create(key, _new_session)
+        snapshot = _sessions.get_or_create(key, lambda: _new_session(identity))
     return _SessionHandle(key, snapshot.session_id)
 
 
@@ -666,7 +694,13 @@ async def _emit_usage(request: Request, payload: dict) -> None:
             else:
                 await asyncio.to_thread(_usage_reporter, key, payload)
             return
-        session = _session_for(payload.get("session_id") or "usage")
+        # `report_usage` rebuilds the receipt from the session object and sets
+        # "session_id": session.session_id, so the id this handle carries is the
+        # one that reaches usage_log -- the payload's own value is discarded.
+        # Pin the handle to the id the request already computed, otherwise this
+        # transport silently substitutes a different session for the receipt.
+        reported_session = payload.get("session_id") or ""
+        session = _session_for(reported_session or "usage", reported_session)
         session.last_quality = payload.get("quality_score")
         await asyncio.to_thread(
             report_usage, payload.get("provider", ""), payload.get("model", ""),
@@ -832,9 +866,14 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
     await _emit_usage(request, {
         "provider": provider, "model": model, "operation": operation,
         "baseline_tokens": baseline,
-        # Both values use the same local counter and therefore provide only a
-        # transformation delta. The API anchors the optimized side to the
-        # authoritative provider receipt (including tools/system/tokenizer).
+        # Both values use the same local counter and therefore carry only a
+        # transformation DELTA. The API anchors the LEVEL of both legs to the
+        # authoritative provider receipt (tools/system/tokenizer included) but
+        # cannot change their difference, so this delta is the only savings
+        # signal on the wire. `optimized_tokens is None` therefore reports
+        # exactly zero savings, and every optimizing call site must pass a real
+        # post-optimization count; only the passthrough call sites may omit it,
+        # where zero is the correct answer.
         "compressed_tokens": baseline if optimized_tokens is None else optimized_tokens,
         **receipt_fields, "quality_score": session.last_quality,
         "cache_attributable": cache_attributable,

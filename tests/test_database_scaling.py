@@ -1108,6 +1108,8 @@ def test_supabase_batch_isolates_failed_rows_after_atomic_failure(monkeypatch):
     individual = iter(([{"id": 1}], [], requests.RequestException("invalid row")))
 
     def request(method, path, **kwargs):
+        if path == "api_keys":
+            return []  # tenant lookup: these receipts belong to no organization
         if isinstance(kwargs.get("data"), list):
             raise requests.RequestException("atomic batch rejected")
         answer = next(individual)
@@ -1130,6 +1132,8 @@ def test_ambiguous_bulk_timeout_never_retries_append_only_rows(monkeypatch):
     committed = []
 
     def timeout_after_commit(method, path, **kwargs):
+        if path == "api_keys":
+            return []  # tenant lookup: these receipts belong to no organization
         calls.append(kwargs["data"])
         committed.extend(kwargs["data"])
         raise requests.Timeout("response lost after commit")

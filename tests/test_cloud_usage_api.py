@@ -532,6 +532,77 @@ def test_cache_attribution_and_warming_billing_boundaries(tmp_path, monkeypatch)
     assert warm_ping["brevitas_fee_usd"] == 0
 
 
+def test_billable_savings_are_signed_per_row_so_a_period_can_net_negative(
+    tmp_path, monkeypatch
+):
+    """A cold cache write costs MORE than the baseline; that loss must survive.
+
+    verified_savings_usd is the quantity the period settlement evidence sums
+    (supabase/migrations/202607280008_billing_halting_conditions.sql, and
+    202607280007's signed numeric(24,10) column). If it were floored at zero
+    per row, the period sum could never go negative, the period-level
+    greatest(..., 0) could never bind, and a write-heavy week whose true net is
+    negative would still bill every positive row in it. The floor belongs at
+    the period level and nowhere else.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "signed-netting.db"))
+    store.create_key(hash_key("bvt_signed_net"), "signed-net")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+
+    base = dict(
+        provider="anthropic", model="claude-sonnet-5",
+        baseline_tokens=10000, compressed_tokens=10000,
+        fresh_input_tokens=0, output_tokens=0, baseline_output_tokens=0,
+        strategy="native_cache", cache_attributable=True,
+    )
+    # Cold write: 10k cache_write tokens priced at 3.75/Mtok against a 10k
+    # input-token baseline priced at 3.00/Mtok -> -0.0075.
+    cold_write = server._record_usage_report(
+        hash_key("bvt_signed_net"),
+        server.UsageReportRequest(**base, cached_input_tokens=0,
+                                  cache_write_tokens=10000,
+                                  request_id="cold-write"),
+        authoritative=True,
+    )
+    # Warm read on the same prefix: 10k cached tokens at 0.30/Mtok -> +0.027.
+    warm_read = server._record_usage_report(
+        hash_key("bvt_signed_net"),
+        server.UsageReportRequest(**base, cached_input_tokens=10000,
+                                  cache_write_tokens=0,
+                                  request_id="warm-read"),
+        authoritative=True,
+    )
+
+    # The write is fully billing-eligible — authoritative, byte-preserving,
+    # verified, priced, not a warming ping — and its savings are negative.
+    assert cold_write["quality_status"] == "verified"
+    assert cold_write["pricing_status"] == "priced"
+    assert cold_write["measured_savings_usd"] == -0.0075
+    assert cold_write["verified_savings_usd"] == -0.0075
+    # A negative fee is unrepresentable; netting happens over the period, not
+    # as a per-row credit.
+    assert cold_write["brevitas_fee_usd"] == 0
+    assert warm_read["verified_savings_usd"] == 0.027
+
+    import sqlite3
+
+    with sqlite3.connect(str(tmp_path / "signed-netting.db")) as db:
+        rows = db.execute(
+            "SELECT measured_savings_usd, verified_savings_usd FROM usage_log "
+            "WHERE authoritative = 1 AND pricing_status = 'priced'"
+        ).fetchall()
+    assert len(rows) == 2
+    # What the period evidence function aggregates must equal the customer's
+    # true signed net, not the sum of the winning rows only.
+    signed_net = round(sum(float(row[1] or 0) for row in rows), 10)
+    assert signed_net == round(sum(float(row[0] or 0) for row in rows), 10)
+    assert signed_net == 0.0195
+    assert round(signed_net * server.BREVITAS_FEE_RATE, 10) == 0.004875
+
+
 def test_repo_client_model_breakdown_reconciles(tmp_path):
     store = UsageStore(str(tmp_path / "reconcile.db"))
     rows = [
@@ -845,3 +916,257 @@ def test_combined_hosted_proxy_writes_customer_dashboard_row(tmp_path, monkeypat
                 ("backend-service", "api-worker", "openai", "gpt-4o-mini")]
     assert "private input" not in repr(store._rows(hash_key(raw_key)))
     proxy.set_usage_reporter(None)
+
+
+def test_usage_rows_are_attributed_to_the_key_owning_organization(tmp_path, monkeypatch):
+    """A receipt written through the normal authenticated path lands tenanted.
+
+    `_usage_row` defaults organization_id to '' when a caller omits it, which
+    used to turn a caller-side omission into an untenanted receipt. The key hash
+    is required on every write path, so the store derives the tenant from
+    api_keys.organization_id instead of silently writing ''.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "attribution.db"))
+    organization = store.ensure_organization("owner-attr", "Attribution organization")
+    raw_key = "bvt_attribution"
+    store.create_key(hash_key(raw_key), "attribution", owner_id="owner-attr",
+                     organization_id=organization["id"])
+    # A key that belongs to no organization must stay untenanted: attribution is
+    # derived, never invented.
+    store.create_key(hash_key("bvt_orgless"), "orgless", owner_id="owner-orgless")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+
+    reported = client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key}, json={
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 100, "compressed_tokens": 80,
+        "request_id": "attributed-http", "strategy": "native_cache",
+    })
+    assert reported.status_code == 200
+
+    # Direct store writes that omit the tenant are derived, not defaulted to ''.
+    assert store.record_usage(hash_key(raw_key), 100, 80, request_id="attributed-direct")
+    batch = store.record_usage_batch([
+        {"key_hash": hash_key(raw_key), "baseline_tokens": 100,
+         "optimized_tokens": 80, "request_id": "attributed-batch"},
+        {"key_hash": hash_key("bvt_orgless"), "baseline_tokens": 100,
+         "optimized_tokens": 80, "request_id": "orgless-batch"},
+    ])
+    assert batch["inserted"] == 2
+
+    with store._conn() as db:
+        rows = dict(db.execute(
+            "SELECT request_id,organization_id FROM usage_log ORDER BY request_id").fetchall())
+    assert rows == {
+        "attributed-batch": organization["id"],
+        "attributed-direct": organization["id"],
+        "attributed-http": organization["id"],
+        "orgless-batch": "",
+    }
+
+
+def test_session_id_survives_the_whole_proxy_receipt_path(tmp_path, monkeypatch):
+    """Pin session_id end to end: proxy payload -> request model -> stored row.
+
+    Investigating blank `usage_log.session_id` in production turned up no
+    code-level drop, so this pins every hop that was suspected of one. If a
+    future edit removes the field from `UsageReportRequest`, pydantic would
+    silently discard it and only this assertion would notice.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "session.db"))
+    raw_key = "bvt_session_path"
+    store.create_key(hash_key(raw_key), "session-path", owner_id="owner-session")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+
+    # The request model must declare the field; an undeclared field is dropped.
+    parsed = server.UsageReportRequest.model_validate({
+        "provider": "anthropic", "model": "claude-3", "baseline_tokens": 100,
+        "compressed_tokens": 80, "session_id": "sess_ABC123",
+    })
+    assert parsed.session_id == "sess_ABC123"
+
+    reported = client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key}, json={
+        "provider": "anthropic", "model": "claude-3",
+        "baseline_tokens": 100, "compressed_tokens": 80,
+        "request_id": "session-http", "session_id": "sess_ABC123",
+        "receipt_source": "proxy",
+    })
+    assert reported.status_code == 200
+
+    # Callers that report no session (the direct SDK/compress endpoints) still
+    # store '' -- blank is a legitimate value there, not evidence of a drop.
+    assert store.record_usage(hash_key(raw_key), 100, 80, request_id="session-absent")
+
+    with store._conn() as db:
+        rows = dict(db.execute(
+            "SELECT request_id,session_id FROM usage_log ORDER BY request_id").fetchall())
+    assert rows == {"session-http": "sess_ABC123", "session-absent": ""}
+
+
+def test_proxy_session_id_is_stable_for_a_session_key():
+    """A proxy session key must map to one receipt id, not a fresh random one.
+
+    `_session_for` passed `_new_session` to `get_or_create` as a zero-arg
+    factory, so the key never reached the session and `BrevitasSession` fell
+    back to `secrets.token_urlsafe`. Receipts for one logical session then
+    carried unrelated ids across a restart or an LRU/TTL eviction, which is
+    indistinguishable from a dropped session_id when joining usage_log.
+    """
+    from brevitas import proxy
+
+    key = "ant:tenantX:anthropic:claude-3:messages:auto:default"
+    first = proxy._session_for(key).session_id
+    assert first and first.startswith("sess_")
+    # Bounded: UsageReportRequest.session_id rejects anything over 128 chars,
+    # and an unbounded model name in the key would otherwise breach it.
+    assert len(first) <= 128
+    assert first == proxy._session_for(key).session_id
+
+    # Eviction of the bucket must not mint a new identity for the same session.
+    proxy._sessions.discard(key)
+    assert proxy._session_for(key).session_id == first
+
+    # Distinct buckets stay distinct, and the tenant credential digest embedded
+    # in the key is not republished in the receipt column.
+    other = proxy._session_for(
+        "ant:tenantY:anthropic:claude-3:messages:auto:default").session_id
+    assert other != first
+    assert "tenantX" not in first
+    proxy._sessions.clear()
+
+
+def test_fallback_usage_transport_reports_the_requests_own_session_id():
+    """The httpx reporting path must not substitute a different session.
+
+    `report_usage` rebuilds the receipt from the session object and overwrites
+    session_id with `session.session_id`, so whatever handle `_emit_usage`
+    resolves is the id that reaches usage_log. Keying the lookup by the
+    payload's session_id is not enough -- the resolved session carries its own
+    identity, so the id the request computed was replaced by an unrelated one.
+    """
+    from brevitas import proxy
+
+    proxy._sessions.clear()
+    computed = "sess_PROXY_COMPUTED_ID"
+    assert proxy._session_for(computed, computed).session_id == computed
+    # Without the pin, the same lookup yields a different identity entirely.
+    proxy._sessions.clear()
+    assert proxy._session_for(computed).session_id != computed
+    proxy._sessions.clear()
+
+
+def test_receipt_anchoring_moves_level_not_delta(tmp_path, monkeypatch):
+    """Pin the anchoring invariant: the LEVEL of both cost legs comes from the
+    provider receipt, the DELTA between them comes from the caller and is
+    mathematically untouched by anchoring."""
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "anchor.db"))
+    store.create_key(hash_key("bvt_anchor"), "anchor")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+    headers = {"X-Brevitas-Key": "bvt_anchor"}
+    base = {"provider": "openai", "model": "gpt-4o-mini", "strategy": "native_cache",
+            "receipt_available": True, "output_tokens": 10, "cache_attributable": False}
+
+    # One local report (100 -> 80), three different provider receipts. The
+    # optimized level follows the receipt; the 20-token delta never moves.
+    for index, (fresh, cached) in enumerate(((90, 0), (600, 400), (5000, 0))):
+        out = client.post("/v1/usage", headers=headers, json={
+            **base, "baseline_tokens": 100, "compressed_tokens": 80,
+            "fresh_input_tokens": fresh, "cached_input_tokens": cached,
+            "request_id": f"anchor-delta-{index}"}).json()
+        assert out["token_basis"] == "provider_receipt"
+        assert out["compressed_tokens"] == fresh + cached
+        assert out["baseline_tokens"] == fresh + cached + 20
+        assert out["tokens_saved"] == out["reported_token_delta"] == 20
+
+    # Every receipt component reaching storage is receipt-sourced, and the two
+    # stored legs are the anchored ones — not the caller's local 100/80.
+    with store._conn() as db:
+        row = db.execute(
+            "SELECT baseline_tokens,optimized_tokens,tokens_saved,fresh_input_tokens,"
+            "cached_input_tokens,cache_write_tokens,output_tokens FROM usage_log "
+            "WHERE request_id=?", ("anchor-delta-1",)).fetchone()
+    assert (row["fresh_input_tokens"], row["cached_input_tokens"]) == (600, 400)
+    assert (row["cache_write_tokens"], row["output_tokens"]) == (0, 10)
+    assert (row["baseline_tokens"], row["optimized_tokens"]) == (1020, 1000)
+    assert row["tokens_saved"] == 20
+
+    # A caller-reported ZERO delta stays zero however large the receipt is.
+    # Anchoring shifts both endpoints by the same constant, so it cannot create
+    # a difference that the wire format never carried. Recovering savings from
+    # such a report needs a NEW independent pre-optimization field, not more
+    # anchoring — do not "fix" this by inventing a saving here.
+    zero = client.post("/v1/usage", headers=headers, json={
+        **base, "baseline_tokens": 100, "compressed_tokens": 100,
+        "fresh_input_tokens": 600, "cached_input_tokens": 400,
+        "request_id": "anchor-zero-delta"}).json()
+    assert zero["reported_token_delta"] == 0
+    assert zero["tokens_saved"] == 0
+    assert zero["measured_savings_usd"] == 0
+    assert zero["verified_savings_usd"] == 0
+
+    # Without a receipt the caller's own basis is used and labelled as such.
+    local = client.post("/v1/usage", headers=headers, json={
+        **base, "baseline_tokens": 100, "compressed_tokens": 80,
+        "receipt_available": False, "request_id": "anchor-no-receipt"}).json()
+    assert local["token_basis"] == "caller_local"
+    assert (local["baseline_tokens"], local["compressed_tokens"]) == (100, 80)
+    assert local["tokens_saved"] == 20
+
+
+def test_receipt_plausibility_quarantine_is_observe_only_by_default(tmp_path, monkeypatch):
+    """The quarantine threshold/action are named parameters whose default is
+    observe-only. The policy is UNVALIDATED pending Q1, so the default must
+    never change a billable number."""
+    import api.server as server
+
+    assert server.RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION == "observe"
+    assert server.RECEIPT_ANCHOR_IMPLAUSIBLE_RATIO == 3.0
+
+    store = UsageStore(str(tmp_path / "quarantine.db"))
+    store.create_key(hash_key("bvt_quarantine"), "quarantine")
+    monkeypatch.setattr(server, "_store", store)
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+    headers = {"X-Brevitas-Key": "bvt_quarantine"}
+    # Receipt input is 10x the local baseline: system prompt and tool schemas
+    # the local counter never saw. Legitimate today, so only labelled.
+    report = {"provider": "openai", "model": "gpt-4o-mini", "strategy": "native_cache",
+              "receipt_available": True, "cache_attributable": False,
+              "baseline_tokens": 100, "compressed_tokens": 80,
+              "fresh_input_tokens": 1000, "output_tokens": 10}
+
+    observed = client.post("/v1/usage", headers=headers, json={
+        **report, "request_id": "quarantine-observe"}).json()
+    assert observed["receipt_plausibility"] == "implausible"
+    assert observed["tokens_saved"] == 20          # observe-only: nothing dropped
+    assert observed["baseline_tokens"] == 1020
+    assert observed["measured_savings_usd"] > 0
+
+    # A ratio inside the threshold is not flagged at all.
+    ok = client.post("/v1/usage", headers=headers, json={
+        **report, "fresh_input_tokens": 200, "request_id": "quarantine-ok"}).json()
+    assert ok["receipt_plausibility"] == "ok"
+
+    # The mutating action exists but is opt-in and drops savings, which is why
+    # it stays off until Q1 validates the threshold.
+    monkeypatch.setattr(server, "RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION", "drop_savings")
+    dropped = client.post("/v1/usage", headers=headers, json={
+        **report, "request_id": "quarantine-drop"}).json()
+    assert dropped["receipt_plausibility"] == "implausible"
+    assert dropped["tokens_saved"] == 0
+    assert dropped["reported_token_delta"] == 20   # the caller's claim is kept for audit

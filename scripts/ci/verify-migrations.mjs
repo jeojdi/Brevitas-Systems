@@ -64,6 +64,9 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
   'supabase/migrations/202607280005_installation_on_device_activation.sql',
   'supabase/migrations/202607280006_retire_per_row_fee_trigger.sql',
+  'supabase/migrations/202607280007_period_settlement_ledger.sql',
+  'supabase/migrations/202607280008_billing_halting_conditions.sql',
+  'supabase/migrations/202607280009_billing_arrangement_attestation.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)

@@ -1,1 +1,3 @@
 - [Brevitas Scanner Module](project_brevitas_scanner.md) — architecture facts and known issues from reviewing the scanner/codemod feature (col_offset is byte-based, write_changes is non-atomic, false-APPLY bug for variable-based wrap)
+- [Review safety & merge verification](feedback_review_safety_and_merge_verification.md) — never touch the shared working tree; prove "unmerged" by content diff, not commit list (repo squash-merges)
+- [Public signup blocker](project_public_signup_blocker.md) — signup is blocked by missing SMTP, not auth code; GoTrue silently drops the password on repeat signup

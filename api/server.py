@@ -3755,6 +3755,129 @@ def _verification_mode(strategy: str, *, cache_attributable: bool = False) -> st
     return "unknown"
 
 
+# ── Provider-receipt anchoring ────────────────────────────────────────────────
+# Plausibility quarantine parameters.
+#
+# UNVALIDATED POLICY. The ratio below is a placeholder: validating it requires
+# Q1 (an empirical comparison of provider receipts against local baselines over
+# real traffic), which cannot run without provider credentials and a populated
+# usage_log. Until Q1 produces evidence, the default ACTION is "observe":
+# an implausible receipt is labelled and no number changes. Do not switch the
+# action to a mutating value on intuition — a wrong quarantine silently deletes
+# real customer savings.
+#
+# Actions:
+#   "observe"      — annotate only (default, conservative, never changes money).
+#   "drop_savings" — treat the report as zero savings. Opt-in only, post-Q1.
+_ANCHOR_ACTIONS = ("observe", "drop_savings")
+
+
+def _anchor_env_ratio() -> float:
+    try:
+        value = float(os.getenv("BREVITAS_RECEIPT_ANCHOR_IMPLAUSIBLE_RATIO", "3.0"))
+    except ValueError:
+        return 3.0
+    return value if value > 1.0 else 3.0
+
+
+def _anchor_env_action() -> str:
+    """Unknown or unset values fall back to the non-mutating action."""
+    value = os.getenv("BREVITAS_RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION", "").strip().lower()
+    return value if value in _ANCHOR_ACTIONS else "observe"
+
+
+RECEIPT_ANCHOR_IMPLAUSIBLE_RATIO = _anchor_env_ratio()
+RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION = _anchor_env_action()
+
+
+@dataclass(frozen=True)
+class AnchoredTokens:
+    """Both cost legs expressed on one tokenizer basis."""
+    baseline_tokens: int
+    optimized_tokens: int
+    tokens_saved: int
+    reported_delta: int
+    basis: str          # "provider_receipt" | "caller_local"
+    plausibility: str   # "ok" | "implausible" | "not_checked"
+
+
+def _anchor_token_legs(body: UsageReportRequest, receipt: TokenReceipt) -> AnchoredTokens:
+    """Anchor the LEVEL of both cost legs to the provider receipt.
+
+    The provider receipt is authoritative for the optimized request: it counts
+    the system prompt, tool schemas, cache categories and provider-tokenizer
+    overhead that a local counter cannot see. So the optimized leg becomes
+    ``receipt.input_tokens`` and the baseline leg is lifted by the same amount,
+    which puts baseline and actual cost on a single basis. Every receipt
+    component that reaches pricing and storage (fresh / cached / cache_write /
+    5m / 1h / output) is likewise receipt-sourced, never caller-sourced.
+
+    INVARIANT — anchoring moves the LEVEL, never the DELTA.
+        optimized_tokens == receipt.input_tokens
+        baseline_tokens  == optimized_tokens + reported_delta
+        tokens_saved     == reported_delta
+
+    Both endpoints shift by the same constant, so their difference is invariant
+    under anchoring. This is deliberate: the local tokenizer's bias cancels in a
+    before/after difference but not in an absolute count, so the delta is the
+    only quantity a caller-side counter can contribute honestly.
+
+    CONSEQUENCE — a zero delta cannot be repaired here. The wire format carries
+    only ``baseline_tokens`` and ``compressed_tokens`` from the same local
+    counter; if a caller reports them equal, no arithmetic over the receipt can
+    reconstruct a saving, because no independent pre-optimization signal was
+    transmitted. Anchoring is not, and cannot be, a savings-recovery mechanism.
+    Recovering savings from such a report would require a NEW wire field
+    carrying an independent pre-optimization measurement.
+
+    There are exactly two exceptions to ``tokens_saved == reported_delta``:
+
+    1. The non-negative clamp on the baseline leg, which binds only for a
+       negative delta larger in magnitude than the receipt input (an expansion
+       bigger than the whole request). The clamp then reports a smaller loss
+       rather than a negative baseline.
+    2. The plausibility quarantine, when
+       ``BREVITAS_RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION`` is set to
+       ``"drop_savings"`` (opt-in; the default ``"observe"`` changes nothing).
+       On a receipt judged implausible this collapses the baseline leg onto the
+       optimized leg and forces ``tokens_saved = 0``, discarding a real,
+       positive reported delta. This is the mode in which the invariant is
+       load-bearing: under it a stored ``tokens_saved`` of 0 does NOT mean the
+       caller reported no savings. Reconcile such rows against the
+       ``reported_token_delta`` and ``receipt_plausibility`` fields on the
+       response, not against ``tokens_saved``.
+    """
+    reported_delta = body.baseline_tokens - body.compressed_tokens
+    if not body.receipt_available:
+        # No provider receipt: caller-local numbers on the caller's own basis.
+        baseline_tokens = body.baseline_tokens
+        optimized_tokens = body.compressed_tokens
+        return AnchoredTokens(baseline_tokens, optimized_tokens,
+                              baseline_tokens - optimized_tokens, reported_delta,
+                              "caller_local", "not_checked")
+
+    optimized_tokens = receipt.input_tokens
+    baseline_tokens = max(0, optimized_tokens + reported_delta)
+    tokens_saved = baseline_tokens - optimized_tokens
+
+    # Plausibility check (see the UNVALIDATED note above). A receipt vastly
+    # larger than the local baseline MAY mean the caller measured a different
+    # request than the provider billed — but it is also the normal shape of a
+    # request whose system prompt and tool schemas dominate the message text,
+    # which the local counter never sees. That ambiguity is precisely why the
+    # default action is observe-only: the label is evidence for Q1, not a
+    # billing decision.
+    plausibility = "not_checked"
+    if body.baseline_tokens > 0 and optimized_tokens > 0:
+        ratio = optimized_tokens / body.baseline_tokens
+        plausibility = "implausible" if ratio > RECEIPT_ANCHOR_IMPLAUSIBLE_RATIO else "ok"
+    if plausibility == "implausible" and RECEIPT_ANCHOR_IMPLAUSIBLE_ACTION == "drop_savings":
+        baseline_tokens = optimized_tokens
+        tokens_saved = 0
+    return AnchoredTokens(baseline_tokens, optimized_tokens, tokens_saved,
+                          reported_delta, "provider_receipt", plausibility)
+
+
 def _record_usage_report(kh: str, body: UsageReportRequest, *,
                          auth_context: AuthContext | None = None,
                          authoritative: bool = False,
@@ -3782,18 +3905,15 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
     else:
         receipt = TokenReceipt(fresh_input_tokens=body.compressed_tokens)
 
-    # The provider receipt is authoritative for the optimized request, including
-    # system prompts, tool schemas, cache categories, and provider-tokenizer
-    # overhead. The local tokenizer is used only for the before/after DELTA, where
-    # its bias cancels. This keeps baseline and actual costs on the same basis.
-    reported_delta = body.baseline_tokens - body.compressed_tokens
-    if body.receipt_available:
-        optimized_tokens = receipt.input_tokens
-        baseline_tokens = max(0, optimized_tokens + reported_delta)
-    else:
-        baseline_tokens = body.baseline_tokens
-        optimized_tokens = body.compressed_tokens
-    tokens_saved = baseline_tokens - optimized_tokens
+    # Both cost legs are anchored to the provider receipt: see _anchor_token_legs
+    # for the invariant (anchoring moves the LEVEL of both legs, never the DELTA
+    # between them) and for why a caller-reported zero delta cannot be repaired
+    # here. Receipt components below (fresh/cached/write/5m/1h/output) are taken
+    # from the same receipt, so pricing and storage share one basis.
+    anchored = _anchor_token_legs(body, receipt)
+    baseline_tokens = anchored.baseline_tokens
+    optimized_tokens = anchored.optimized_tokens
+    tokens_saved = anchored.tokens_saved
     savings_pct = round((tokens_saved / max(1, baseline_tokens)) * 100, 2)
     costs = (calculate_costs(body.provider, body.model, baseline_tokens, receipt,
                              body.baseline_output_tokens, body.cache_attributable)
@@ -3859,11 +3979,32 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
     # markers and provider-automatic caching never enter the billable number.
     # Warming pings (strategy cache_warm) are spend Brevitas initiated — spend
     # is recorded, savings never.
-    verified = (max(0.0, float(measured or 0))
+    #
+    # SIGNED ON PURPOSE — do not re-add a per-row floor here. An eligible
+    # byte-preserving row can legitimately have NEGATIVE measured savings: a
+    # cold cache WRITE is priced above plain input (claude-sonnet-5: 3.75 vs
+    # 3.00 per Mtok) and TokenReceipt.input_tokens already counts the write, so
+    # the write leg costs more than the baseline while the warm reads that
+    # follow more than repay it. Flooring each row at zero would make a period
+    # sum that can never go negative, so a week whose true net is negative would
+    # still bill every positive row in it — exactly the failure
+    # supabase/migrations/202607280007_period_settlement_ledger.sql exists to
+    # eliminate, and it would silently overcharge every write-heavy period.
+    # The ONE floor lives at the period level: 202607280007's generated
+    # net_savings_usd = greatest(verified_savings_usd - warm_spend_usd, 0) and
+    # 202607280008's greatest(net_verified_savings_usd, 0). Those read
+    # sum(usage_log.verified_savings_usd) and require this column to be signed.
+    verified = (float(measured or 0)
                 if authoritative and mode == "byte_preserving"
                 and quality_status == "verified"
                 and strategy_name != "cache_warm" else 0.0)
-    fee = round(verified * BREVITAS_FEE_RATE, 10)
+    # The per-row fee stays non-negative. A negative fee is unrepresentable by
+    # design (202607280007 item 4: Stripe rejects negative meter values), and
+    # per-row fees are no longer a billing input at all — 202607280006 dropped
+    # queue_brevitas_fee_after_usage, the only writer into billing_ledger.
+    # Netting is a period-level operation over `verified`; it is deliberately
+    # NOT expressed as a per-row fee credit.
+    fee = round(max(0.0, verified) * BREVITAS_FEE_RATE, 10)
 
     inserted = _store.record_usage(
         key_hash=kh,
@@ -3939,6 +4080,10 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         "pricing_status": costs["pricing_status"],
         "quality_score": body.quality_score,
         "quality_status": quality_status,
+        # Anchoring provenance. Analytics/audit only — no billing depends on it.
+        "token_basis": anchored.basis,
+        "reported_token_delta": anchored.reported_delta,
+        "receipt_plausibility": anchored.plausibility,
         "stream": stream.to_dict(),
     }
 
@@ -4232,9 +4377,11 @@ def _audit_verdict_byte_stability(m: dict) -> tuple[str, list[str], str]:
                     "cache writes without reads can mean prompt-byte churn or "
                     "a cold, recently adopted cache; this window cannot "
                     "distinguish them")
-        evidence.append(f"{repeat_rows} recent requests belong to repeat "
-                        "sessions yet rarely hit cache (approximation: "
-                        "hit-ratio inference, not a byte diff)")
+        evidence.append(f"{repeat_rows} recent requests repeated within the "
+                        "same session inside an hour — while a provider cache "
+                        "entry could still have been live — yet rarely hit "
+                        "cache (approximation: hit-ratio inference, not a "
+                        "byte diff)")
         return ("opportunity", evidence,
                 "repeat traffic with near-zero cache hits suggests unstable "
                 "prompt bytes (timestamps, uuids, unsorted json)")
