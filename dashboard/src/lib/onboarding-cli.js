@@ -1,14 +1,6 @@
-export const ONBOARDING_STEP = Object.freeze({
-  WORKSPACE: 1,
-  CONNECT: 2,
-  VERIFY: 3,
-})
-
-export const nextOnboardingStep = currentStep => {
-  if (currentStep === ONBOARDING_STEP.WORKSPACE) return ONBOARDING_STEP.CONNECT
-  if (currentStep === ONBOARDING_STEP.CONNECT) return ONBOARDING_STEP.VERIFY
-  return ONBOARDING_STEP.VERIFY
-}
+// ONBOARDING_STEP/nextOnboardingStep are gone with the three-step wizard: creating
+// a workspace is the only thing that precedes the dashboard, and the BVX install
+// and first-request checks moved into the dashboard's Connect tab and setup bar.
 
 export const BVX_PLATFORMS = Object.freeze([
   {

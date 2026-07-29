@@ -2,37 +2,51 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import {
-  BVX_COMMANDS,
-  BVX_PLATFORMS,
-  nextOnboardingStep,
-  ONBOARDING_STEP,
-} from './onboarding-cli.js'
+import { BVX_COMMANDS, BVX_PLATFORMS } from './onboarding-cli.js'
 
 const component = name => readFile(new URL(`../components/${name}.jsx`, import.meta.url), 'utf8')
 
-test('onboarding has a real three-step workspace, connection, and verification flow', async () => {
-  assert.equal(nextOnboardingStep(ONBOARDING_STEP.WORKSPACE), ONBOARDING_STEP.CONNECT)
-  assert.equal(nextOnboardingStep(ONBOARDING_STEP.CONNECT), ONBOARDING_STEP.VERIFY)
-  assert.equal(nextOnboardingStep(ONBOARDING_STEP.VERIFY), ONBOARDING_STEP.VERIFY)
-
+test('only a missing workspace holds the dashboard back', async () => {
   const [onboarding, app] = await Promise.all([
     component('OnboardingWorkspaceChoice'),
     readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
   ])
-  assert.match(onboarding, /Step 1 of 3 ·/)
-  assert.match(onboarding, /Step 2 of 3 ·/)
-  assert.match(onboarding, /Step 3 of 3 · live verification/)
-  assert.match(onboarding, /<InstallCommand phase="setup"/)
-  assert.match(onboarding, /<InstallCommand phase="verify"/)
-  assert.match(app, /onFinish=\{finishWorkspaceSetup\}/)
-  assert.match(app, /onCheck=\{checkWorkspaceSetup\}/)
-  assert.match(app, /needsOnboarding: context\.onboarding\.status !== 'complete'/)
-  assert.match(app, /initialWorkspaceCreated=\{companyContext\.workspaceCreated\}/)
+
+  // Entry is gated on membership alone. Gating on onboarding status is what kept a
+  // new account out of the dashboard until a CLI install and a proxied request
+  // both landed.
+  assert.match(app, /needsOnboarding: context\.companies\.length === 0/)
+  assert.doesNotMatch(app, /needsOnboarding: context\.onboarding\.status !== 'complete'/)
+  assert.match(app, /setupComplete: context\.onboarding\.status === 'complete'/)
   assert.match(app, /deviceCode && companyContext\.activeCompanyId/)
-  assert.match(onboarding, /window\.setInterval\(checkVerification, 3000\)/)
-  assert.match(onboarding, /First request observed/)
-  assert.doesNotMatch(onboarding, /Finish this later|I verified a proxied request/)
+
+  // The blocking wizard steps are gone, along with their live-verification poll.
+  assert.doesNotMatch(onboarding, /Step \d of 3/)
+  assert.doesNotMatch(onboarding, /InstallCommand/)
+  assert.doesNotMatch(onboarding, /checkVerification|setInterval/)
+  assert.doesNotMatch(onboarding, /onCheck|onFinish/)
+  assert.doesNotMatch(app, /onFinish=\{finishWorkspaceSetup\}/)
+})
+
+test('the dashboard asks for the remaining setup instead of gating on it', async () => {
+  const [banner, app] = await Promise.all([
+    component('SetupBanner'),
+    readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
+  ])
+
+  // Same two facts the wizard demanded, checked the same way, now non-blocking.
+  assert.match(banner, /cliConnected/)
+  assert.match(banner, /proxiedRequestObserved/)
+  assert.match(banner, /First request observed/)
+  // Completion is recorded when both land, which is what removes the bar.
+  assert.match(banner, /onComplete\?\.\(\)/)
+
+  assert.match(app, /!companyContext\.setupComplete && \(/)
+  assert.match(app, /onCheck=\{checkWorkspaceSetup\}/)
+  assert.match(app, /onComplete=\{finishWorkspaceSetup\}/)
+  // The button has to reach the tab that actually carries the install commands.
+  assert.match(app, /onOpenSetup=\{\(\) => setActiveTab\('Connect'\)\}/)
+  assert.match(app, /activeTab === 'Connect' && <ConnectionPage/)
 })
 
 test('platform install commands match the distributed BVX installation paths', () => {

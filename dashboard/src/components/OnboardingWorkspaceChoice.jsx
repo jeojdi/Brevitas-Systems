@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import InstallCommand from './InstallCommand.jsx'
-import { nextOnboardingStep, ONBOARDING_STEP } from '../lib/onboarding-cli.js'
+import { useId, useState } from 'react'
 import {
   normalizeWorkspaceSelection,
   WORKSPACE_NAME_MAX_LENGTH,
@@ -32,16 +30,22 @@ const choices = [
   },
 ]
 
+/**
+ * The one thing that must happen before the dashboard can open: a workspace.
+ *
+ * Installing BVX and proving a proxied request used to be steps 2 and 3 of a
+ * blocking wizard, which meant a new account could not see the product until a
+ * CLI install and a real request had both landed. Those now live in the
+ * dashboard's own Connect tab, surfaced by a setup bar, so this screen ends the
+ * moment the workspace exists.
+ */
 export default function OnboardingWorkspaceChoice({
-  initialWorkspaceCreated = false,
   initialWorkspaceType = '',
   initialWorkspaceName = '',
   isSubmitting = false,
   errorMessage = '',
   onContinue,
   onBack,
-  onCheck,
-  onFinish,
   onWorkspaceTypeChange,
   onWorkspaceNameChange,
 }) {
@@ -52,22 +56,8 @@ export default function OnboardingWorkspaceChoice({
   const [workspaceType, setWorkspaceType] = useState(initialWorkspaceType)
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName)
   const [showAllChoices, setShowAllChoices] = useState(!initialWorkspaceType)
-  const [step, setStep] = useState(
-    initialWorkspaceCreated ? ONBOARDING_STEP.CONNECT : ONBOARDING_STEP.WORKSPACE,
-  )
   const [validationError, setValidationError] = useState('')
   const [localSubmitting, setLocalSubmitting] = useState(false)
-  const [finishing, setFinishing] = useState(false)
-  const [finishError, setFinishError] = useState('')
-  const [verification, setVerification] = useState({
-    checking: false,
-    cliConnected: false,
-    proxiedRequestObserved: false,
-  })
-  const [checkNotice, setCheckNotice] = useState('')
-  const verificationInFlight = useRef(false)
-  const manualCheckRequested = useRef(false)
-  const completionStarted = useRef(false)
   const busy = isSubmitting || localSubmitting
   const displayedError = errorMessage || validationError
 
@@ -98,8 +88,9 @@ export default function OnboardingWorkspaceChoice({
 
     setLocalSubmitting(true)
     try {
+      // The caller opens the dashboard once the workspace exists. There is no
+      // next step to advance to here.
       await onContinue?.(selection)
-      setStep(current => nextOnboardingStep(current))
     } catch (reason) {
       setValidationError(reason instanceof Error ? reason.message : 'Workspace setup could not continue.')
     } finally {
@@ -107,165 +98,15 @@ export default function OnboardingWorkspaceChoice({
     }
   }
 
-  const finish = async () => {
-    setFinishError('')
-    setFinishing(true)
-    try {
-      await onFinish?.()
-    } catch (reason) {
-      setFinishError(reason instanceof Error ? reason.message : 'The dashboard could not finish onboarding.')
-    } finally {
-      setFinishing(false)
-    }
-  }
-
-  const checkVerification = useCallback(async ({ manual = false } = {}) => {
-    if (!onCheck || completionStarted.current) return
-    if (verificationInFlight.current) {
-      // A click that lands while the 3s poll is in flight must not vanish:
-      // promote that in-flight check to a manual one instead of re-requesting.
-      if (manual) manualCheckRequested.current = true
-      return
-    }
-    verificationInFlight.current = true
-    setVerification(current => ({ ...current, checking: true }))
-    if (manual) setFinishError('')
-    try {
-      const status = await onCheck()
-      setVerification({
-        checking: false,
-        cliConnected: status.cliConnected,
-        proxiedRequestObserved: status.proxiedRequestObserved,
-      })
-      setFinishError('')
-      const verified = status.cliConnected && status.proxiedRequestObserved
-      if ((manual || manualCheckRequested.current) && !verified) {
-        const checkedAt = new Date().toLocaleTimeString()
-        setCheckNotice(status.cliConnected
-          ? `Checked at ${checkedAt} — CLI connected, but the server has not observed a proxied request yet. Send one prompt from a tool BVX configured, then check again.`
-          : `Checked at ${checkedAt} — no BVX device key is registered to this workspace yet. Run bvx install from step 2 and approve the device, then bvx doctor.`)
-      }
-      manualCheckRequested.current = false
-      if (verified) {
-        setCheckNotice('')
-        completionStarted.current = true
-        setFinishing(true)
-        await onFinish?.()
-      }
-    } catch (reason) {
-      completionStarted.current = false
-      manualCheckRequested.current = false
-      setVerification(current => ({ ...current, checking: false }))
-      setCheckNotice('')
-      setFinishError(reason instanceof Error ? reason.message : 'Onboarding status is temporarily unavailable.')
-    } finally {
-      verificationInFlight.current = false
-      if (!completionStarted.current) setFinishing(false)
-    }
-  }, [onCheck, onFinish])
-
-  useEffect(() => {
-    if (step !== ONBOARDING_STEP.VERIFY || !onCheck) return undefined
-    setCheckNotice('')
-    checkVerification()
-    const timer = window.setInterval(checkVerification, 3000)
-    return () => window.clearInterval(timer)
-  }, [checkVerification, onCheck, step])
-
   const isCompany = workspaceType === WORKSPACE_TYPE.COMPANY
   const visibleChoices = showAllChoices
     ? choices
     : choices.filter(choice => choice.value === workspaceType)
 
-  if (step === ONBOARDING_STEP.CONNECT) {
-    return (
-      <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
-        <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
-          <p className="annotation mb-3 uppercase tracking-widest">Step 2 of 3 · {isCompany ? 'connect an admin device' : 'connect your tool'}</p>
-          <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
-            {isCompany ? 'Connect the first admin device.' : 'Connect your tools in one command.'}
-          </h1>
-          <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
-            {isCompany
-              ? 'Use a revocable device credential for local work. Production systems get separate scoped service keys after setup.'
-              : 'The BVX installer opens this dashboard for approval, configures supported tools, starts its service, and runs setup checks.'}
-          </p>
-        </header>
-        <InstallCommand phase="setup" audience={isCompany ? 'company' : 'personal'} />
-        <div className="mt-6 flex justify-end">
-          <button
-            type="button"
-            onClick={() => setStep(current => nextOnboardingStep(current))}
-            className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
-          >
-            Continue to verification
-          </button>
-        </div>
-      </section>
-    )
-  }
-
-  if (step === ONBOARDING_STEP.VERIFY) {
-    return (
-      <section aria-labelledby={headingId} className="mx-auto w-full max-w-4xl">
-        <header className="mx-auto mb-7 max-w-2xl text-center sm:mb-10">
-          <p className="annotation mb-3 uppercase tracking-widest">Step 3 of 3 · live verification</p>
-          <h1 id={headingId} className="font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
-            Make one normal request. We’ll detect it.
-          </h1>
-          <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
-            Run diagnostics, then send a prompt from a tool BVX configured. This page checks the server automatically and opens your {isCompany ? 'enterprise' : 'personal'} dashboard when the request arrives.
-          </p>
-        </header>
-        <InstallCommand phase="verify" audience={isCompany ? 'company' : 'personal'} />
-        <div className="mt-5 grid gap-3 sm:grid-cols-2" aria-live="polite">
-          <div className={`rounded-xl border p-4 ${verification.cliConnected ? 'border-brand-teal/40 bg-brand-teal-dim dark:bg-brand-dark-teal-dim' : 'border-brand-border bg-white dark:border-brand-dark-border dark:bg-brand-dark-surface'}`}>
-            <p className={`text-sm font-medium ${verification.cliConnected ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
-              {verification.cliConnected ? '✓' : '1'} CLI connected
-            </p>
-            <p className="mt-1 text-xs text-brand-muted dark:text-brand-dark-muted">A revocable BVX device key is registered to this workspace.</p>
-          </div>
-          <div className={`rounded-xl border p-4 ${verification.proxiedRequestObserved ? 'border-brand-teal/40 bg-brand-teal-dim dark:bg-brand-dark-teal-dim' : 'border-brand-border bg-white dark:border-brand-dark-border dark:bg-brand-dark-surface'}`}>
-            <p className={`text-sm font-medium ${verification.proxiedRequestObserved ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
-              {verification.proxiedRequestObserved ? '✓' : '2'} First request observed
-            </p>
-            <p className="mt-1 text-xs text-brand-muted dark:text-brand-dark-muted">Server evidence confirms a configured tool used that exact device key.</p>
-          </div>
-        </div>
-        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <button
-            type="button"
-            onClick={() => setStep(ONBOARDING_STEP.CONNECT)}
-            disabled={finishing}
-            className="min-h-11 rounded-xl border border-brand-border px-5 py-3 text-sm font-medium text-brand-navy disabled:opacity-50 dark:border-brand-dark-border dark:text-brand-dark-navy"
-          >
-            Back to setup
-          </button>
-          <button
-            type="button"
-            onClick={onCheck ? () => checkVerification({ manual: true }) : finish}
-            disabled={finishing}
-            className="min-h-11 rounded-xl bg-brand-blue px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {finishing
-              ? 'Opening your dashboard…'
-              : verification.checking
-                ? 'Checking…'
-                : 'Check now'}
-          </button>
-        </div>
-        {finishError && <p role="alert" className="mt-4 text-sm text-red-500">{finishError}</p>}
-        {!finishError && checkNotice && (
-          <p role="status" className="mt-4 text-sm text-brand-muted dark:text-brand-dark-muted">{checkNotice}</p>
-        )}
-      </section>
-    )
-  }
-
   return (
     <section aria-labelledby={headingId} className="w-full max-w-5xl mx-auto">
       <header className="max-w-2xl mx-auto text-center mb-7 sm:mb-10">
-        <p className="annotation tracking-widest uppercase mb-3">Step 1 of 3 · {isCompany ? 'enterprise setup' : workspaceType ? 'personal setup' : 'choose your path'}</p>
+        <p className="annotation tracking-widest uppercase mb-3">{isCompany ? 'Enterprise setup' : workspaceType ? 'Personal setup' : 'Choose your path'}</p>
         <h1 id={headingId} className="font-serif text-4xl sm:text-5xl leading-tight text-brand-navy dark:text-brand-dark-navy">
           {isCompany ? 'Set up your enterprise boundary.' : workspaceType ? 'Set up your personal workspace.' : 'How will you use Brevitas?'}
         </h1>
@@ -273,7 +114,7 @@ export default function OnboardingWorkspaceChoice({
           {isCompany
             ? 'Your company gets shared repositories, role-based access, scoped service keys, consolidated usage, and billing.'
             : workspaceType
-              ? 'Start with one private workspace and one guided tool connection. You can add enterprise controls later without moving your work.'
+              ? 'Your dashboard opens as soon as this exists. Connecting a tool is waiting for you inside it.'
               : 'Choose the lighter personal experience or a company boundary with roles and production credentials.'}
         </p>
       </header>
