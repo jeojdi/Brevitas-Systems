@@ -251,46 +251,97 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
       'workspace_experiences',
     ][index]}.sql`,
   )
-  assert.equal(expectedFreshMigrationOrder.length, 52)
-  assert.equal(expectedUpgradeMigrationOrder.length, 40)
-  assert.deepEqual(expectedFreshMigrationOrder.slice(-27, -9), securitySuffix)
-  assert.deepEqual(expectedUpgradeMigrationOrder.slice(-27, -9), securitySuffix)
+  // What follows is an independent, human-reviewed statement of the release migration
+  // chain. verify-migrations.mjs checks its own expected order against the filesystem, so
+  // a migration deleted or renamed in BOTH places would still pass there; re-stating the
+  // contract here means such a silent drop fails the release gate. Every assertion is
+  // either derived from the filesystem or anchored FORWARD from a fixed migration, never
+  // counted back from the end, so appending a migration does not shift any of them.
+  const migrationInventory = readdirSync(resolve(root, 'supabase/migrations'))
+    .filter((name) => name.endsWith('.sql'))
+    .map((name) => `supabase/migrations/${name}`)
+    .sort()
+  assert.deepEqual(
+    expectedFreshMigrationOrder,
+    migrationInventory,
+    'the fresh order must be exactly the on-disk forward migrations, in lexicographic (deployment) order',
+  )
   assert.equal(
-    expectedFreshMigrationOrder.at(-9),
+    new Set(expectedFreshMigrationOrder).size,
+    expectedFreshMigrationOrder.length,
+    'a forward migration is listed more than once',
+  )
+  assert.deepEqual(
+    expectedFreshMigrationOrder.slice(-expectedUpgradeMigrationOrder.length),
+    expectedUpgradeMigrationOrder,
+    'the upgrade order must remain the exact tail of the fresh order',
+  )
+  // The chain is append-only, so its length may grow but never shrink. This floor catches
+  // a dropped or renamed migration without needing an edit for every legitimate addition:
+  // ADDING A MIGRATION KEEPS THIS GREEN. Raise it only when deliberately re-baselining the
+  // release chain, and extend releaseChain below in the same commit.
+  assert.ok(
+    expectedFreshMigrationOrder.length >= 53,
+    `the release contract lists ${expectedFreshMigrationOrder.length} forward migrations, ` +
+      'but the chain is append-only and has had at least 53: one was dropped or renamed. ' +
+      'Restore it rather than lowering this floor.',
+  )
+  // The pre-upgrade production baseline is frozen history: nothing is ever inserted
+  // before it, and nothing in it carries a frozen checksum, so pin it by identity.
+  assert.deepEqual(
+    expectedFreshMigrationOrder.slice(
+      0,
+      expectedFreshMigrationOrder.length - expectedUpgradeMigrationOrder.length,
+    ),
+    [
+      'supabase/migrations/20260611_create_user_keys.sql',
+      'supabase/migrations/20260624_create_profiles.sql',
+      'supabase/migrations/20260626_create_billing.sql',
+      'supabase/migrations/20260627_add_tracking_labels.sql',
+      'supabase/migrations/20260710_cloud_usage.sql',
+      'supabase/migrations/20260711_bvx_device_auth.sql',
+      'supabase/migrations/20260714_legal_acceptances.sql',
+      'supabase/migrations/20260715_analytics_privacy.sql',
+      'supabase/migrations/20260716_bvx_repository_registry.sql',
+      'supabase/migrations/20260716_posthog_warehouse_view.sql',
+      'supabase/migrations/20260716_stripe_billing.sql',
+      'supabase/migrations/20260716_stripe_billing_rate_25pct.sql',
+    ],
+    'the production baseline preceding the upgrade chain was altered',
+  )
+  // Exact identity and order of every hardened migration from the security baseline
+  // through the current head. Migrations added later append after this chain and are
+  // still covered by the inventory equality above.
+  const releaseChain = [
+    ...securitySuffix,
     'supabase/migrations/20260720_split_savings_metrics.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-8),
     'supabase/migrations/202607220001_service_role_data_plane.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-7),
     'supabase/migrations/202607220002_supabase_advisor_hardening.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-6),
     'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-5),
     'supabase/migrations/202607270002_widen_billing_events_money.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-4),
     'supabase/migrations/202607280001_cache_warming.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-3),
     'supabase/migrations/202607280002_usage_stats_cache_metrics.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-2),
     'supabase/migrations/202607280003_multi_provider_warming.sql',
-  )
-  assert.equal(
-    expectedFreshMigrationOrder.at(-1),
     'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
-  )
+    'supabase/migrations/202607280005_installation_on_device_activation.sql',
+  ]
+  for (const [label, order] of [
+    ['fresh', expectedFreshMigrationOrder],
+    ['upgrade', expectedUpgradeMigrationOrder],
+  ]) {
+    const start = order.indexOf(releaseChain[0])
+    assert.ok(start > 0, `${label} order lost the 202607200001 security baseline`)
+    assert.equal(
+      order[start - 1],
+      'supabase/migrations/202607170013_active_company_selection.sql',
+      `${label} order must enter the security baseline directly after 202607170013`,
+    )
+    assert.deepEqual(
+      order.slice(start, start + releaseChain.length),
+      releaseChain,
+      `${label} order dropped, renamed, or reordered a hardened release migration`,
+    )
+  }
   const workflow = read('.github/workflows/migrations.yml')
   assert.match(workflow, /pgvector\/pgvector:pg16-bookworm@sha256:[0-9a-f]{64}/)
   assert.match(workflow, /docker run --detach --rm --network host/)

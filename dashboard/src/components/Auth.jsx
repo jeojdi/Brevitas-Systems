@@ -1,10 +1,22 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   authErrorMessage,
   confirmationPathForLoginAudience,
   LOGIN_AUDIENCE,
+  resendSignupConfirmation,
   supabase,
 } from '../lib/supabase.js'
+import {
+  normalizeAuthEmail,
+  passwordsMatch,
+  passwordStrengthProblem,
+  PASSWORD_MISMATCH_MESSAGE,
+} from '../lib/auth-credentials.js'
+import {
+  createSignupTracker,
+  DUPLICATE_SIGNUP_NOTICE,
+  SIGNUP_CONFIRMATION_NOTICE,
+} from '../lib/signup-submission.js'
 import { capture } from '../lib/analytics.js'
 
 const AUDIENCE_CONTENT = {
@@ -34,18 +46,34 @@ export default function Auth({
   onPasswordUpdated,
 }) {
   const [mode, setMode]       = useState(initialMode)
-  const [email, setEmail]     = useState('')
+  const [emailInput, setEmailInput] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [loading, setLoading] = useState(false)
+  const [resending, setResending] = useState(false)
   const [error, setError]     = useState('')
   const [notice, setNotice]   = useState('')
   const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [confirmationEmail, setConfirmationEmail] = useState('')
+  // Which addresses this tab already sent to signup. A ref, not state: a repeat
+  // submission must be recognized without re-rendering the form.
+  const signupAttempts = useRef(createSignupTracker())
   const audienceContent = AUDIENCE_CONTENT[loginAudience]
   const confirmationRedirect = `${window.location.origin}${confirmationPathForLoginAudience(loginAudience)}`
+  // The address the auth server stores. The input keeps whatever was typed, so a
+  // stray space or capital never becomes an "Invalid login credentials" mystery.
+  const email = normalizeAuthEmail(emailInput)
 
   const reset = () => { setError(''); setNotice('') }
+
+  /**
+   * Why the chosen password cannot be used, or '' when it is fine.
+   * Shared by signup and recovery so both flows reject the same input.
+   */
+  const newPasswordProblem = () => (
+    passwordStrengthProblem(password)
+    || (passwordsMatch(password, passwordConfirmation) ? '' : PASSWORD_MISMATCH_MESSAGE)
+  )
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -59,6 +87,18 @@ export default function Auth({
         capture('login_completed', { login_audience: loginAudience || 'unspecified' })
       } else if (mode === 'signup') {
         capture('signup_started')
+        // GoTrue answers a signup for an existing address by resending the
+        // confirmation mail and dropping the rest of the request, so a second
+        // submission never stores the newly typed password. Say so instead of
+        // reporting a success that did not happen.
+        if (signupAttempts.current.hasAttempted(email)) {
+          setConfirmationEmail(email)
+          setNotice(DUPLICATE_SIGNUP_NOTICE)
+          setMode('login')
+          return
+        }
+        const passwordProblem = newPasswordProblem()
+        if (passwordProblem) throw new Error(passwordProblem)
         const { error } = await supabase.auth.signUp({
           email,
           password,
@@ -74,7 +114,9 @@ export default function Auth({
         })
         if (error) throw error
         capture('signup_submitted')
-        setNotice('Your request was received. Access is currently invite/waitlist-based — the team will reach out when your account is ready to activate. If you already have access, sign in or reset your password.')
+        signupAttempts.current.record(email)
+        setConfirmationEmail(email)
+        setNotice(SIGNUP_CONFIRMATION_NOTICE)
         setMode('login')
       } else if (mode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
@@ -85,9 +127,8 @@ export default function Auth({
         setNotice('Password reset link sent — check your email.')
         setMode('login')
       } else if (mode === 'recovery') {
-        if (password !== passwordConfirmation) {
-          throw new Error('Passwords do not match.')
-        }
+        const passwordProblem = newPasswordProblem()
+        if (passwordProblem) throw new Error(passwordProblem)
         const { error } = await supabase.auth.updateUser({ password })
         if (error) throw error
         capture('password_updated')
@@ -104,8 +145,27 @@ export default function Auth({
     }
   }
 
+  /** Send the confirmation mail again for an account that was never activated. */
+  async function handleResend() {
+    setResending(true)
+    reset()
+    try {
+      await resendSignupConfirmation(confirmationEmail, confirmationRedirect)
+      setNotice(`Confirmation email sent again to ${confirmationEmail}. Check your spam folder if it does not arrive.`)
+    } catch (err) {
+      setError(authErrorMessage(err))
+    } finally {
+      setResending(false)
+    }
+  }
+
   const isReset = mode === 'reset'
   const isRecovery = mode === 'recovery'
+  const isSignup = mode === 'signup'
+  // Account creation and password recovery both take a password the user cannot
+  // read back, so both make them type it twice.
+  const needsPasswordConfirmation = isSignup || isRecovery
+  const canResendConfirmation = Boolean(confirmationEmail) && mode === 'login'
 
   if (mode === 'login' && !audienceContent && !notice && !confirmationEmail) {
     return (
@@ -155,8 +215,12 @@ export default function Auth({
             {mode === 'recovery' && 'Enter a new password for your account.'}
           </p>
 
+          {/* Masked from analytics: the resend notice interpolates the user's address. */}
           {notice && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue text-[12px]">
+            <div
+              className="mb-4 px-4 py-3 rounded-xl bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue text-[12px] ph-no-capture"
+              data-ph-sensitive
+            >
               {notice}
             </div>
           )}
@@ -164,6 +228,17 @@ export default function Auth({
             <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-[12px]">
               {error}
             </div>
+          )}
+          {/* The only way out for an account that was created but never confirmed. */}
+          {canResendConfirmation && (
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resending}
+              className="w-full mb-4 py-2.5 rounded-xl border border-brand-blue/40 text-brand-blue text-[11px] tracking-widest uppercase font-medium hover:bg-brand-blue-dim dark:hover:bg-brand-dark-blue-dim transition disabled:opacity-50"
+            >
+              {resending ? 'Sending…' : 'Resend confirmation email'}
+            </button>
           )}
           <form onSubmit={handleSubmit} className="space-y-3 ph-no-capture" data-ph-sensitive>
             {!isRecovery && <div>
@@ -173,9 +248,12 @@ export default function Auth({
               <input
                 type="email"
                 autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
+                value={emailInput}
+                onChange={e => setEmailInput(e.target.value)}
                 placeholder="you@example.com"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
               />
@@ -188,10 +266,28 @@ export default function Auth({
                 </label>
                 <input
                   type="password"
-                  autoComplete={isRecovery ? 'new-password' : 'current-password'}
+                  autoComplete={needsPasswordConfirmation ? 'new-password' : 'current-password'}
                   required
                   value={password}
                   onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  minLength={6}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
+                />
+              </div>
+            )}
+
+            {needsPasswordConfirmation && (
+              <div>
+                <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
+                  {isRecovery ? 'Confirm new password' : 'Confirm password'}
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={passwordConfirmation}
+                  onChange={e => setPasswordConfirmation(e.target.value)}
                   placeholder="••••••••"
                   minLength={6}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
@@ -212,24 +308,6 @@ export default function Auth({
                   I agree to the <a href="/terms" target="_blank" rel="noreferrer" className="text-brand-blue underline">Terms of Service</a>, including its arbitration and class-action waiver, and acknowledge the <a href="/privacy" target="_blank" rel="noreferrer" className="text-brand-blue underline">Privacy Policy</a>, including automatic analytics and strictly masked session replay with an anytime opt-out.
                 </span>
               </label>
-            )}
-
-            {isRecovery && (
-              <div>
-                <label className="block text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-1.5">
-                  Confirm new password
-                </label>
-                <input
-                  type="password"
-                  required
-                  autoComplete="new-password"
-                  value={passwordConfirmation}
-                  onChange={e => setPasswordConfirmation(e.target.value)}
-                  placeholder="••••••••"
-                  minLength={6}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg text-brand-navy dark:text-brand-dark-navy text-sm placeholder:text-brand-muted/40 dark:placeholder:text-brand-dark-muted/40 focus:outline-none focus:ring-2 focus:ring-brand-blue/20 transition"
-                />
-              </div>
             )}
 
             <button
