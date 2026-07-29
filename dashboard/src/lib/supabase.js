@@ -38,6 +38,30 @@ export const supabaseCredentialKind = supabaseMisconfigured ? 'missing' : keyKin
 export const AUTH_SERVER_ERROR_TTL_MS = 30 * 1000
 export const AUTH_UNKNOWN_ERROR_MESSAGE =
   'Something went wrong on our end. Please try again in a moment.'
+export const EMAIL_DELIVERY_FAILED_MESSAGE =
+  "We couldn't send to that address. Check that the email is spelled correctly and try again."
+
+/**
+ * GoTrue reports every mail-send failure as "Error sending <kind> email".
+ *
+ * That single message covers two very different situations: our mailer is
+ * genuinely down, or — far more often — the address simply cannot receive mail,
+ * because the local part is wrong or the domain does not resolve at all. A
+ * signup for an unregistered domain fails exactly this way: the SMTP provider
+ * rejects the recipient and GoTrue answers 500 with this text.
+ *
+ * Shown verbatim it reads as a fault in Brevitas and gives the user nothing to
+ * act on, so both cases collapse to the one instruction that helps either way.
+ * Deliberately does not assert which cause it was — we cannot tell from here.
+ */
+const EMAIL_DELIVERY_FAILURE = /^error sending\b.*\be?mail$/i
+
+export const isEmailDeliveryFailure = message =>
+  EMAIL_DELIVERY_FAILURE.test(String(message ?? '').trim())
+
+const friendlyAuthMessage = message => (
+  isEmailDeliveryFailure(message) ? EMAIL_DELIVERY_FAILED_MESSAGE : message
+)
 
 let lastAuthServerError = null
 
@@ -81,9 +105,11 @@ export function createAuthErrorCapturingFetch(baseFetch = fetch, now = Date.now)
  */
 export function authErrorMessage(error, now = Date.now()) {
   const raw = typeof error?.message === 'string' ? error.message.trim() : ''
-  if (raw && raw !== '{}') return raw
+  if (raw && raw !== '{}') return friendlyAuthMessage(raw)
   const captured = lastAuthServerError
-  if (captured && now - captured.at <= AUTH_SERVER_ERROR_TTL_MS) return captured.message
+  if (captured && now - captured.at <= AUTH_SERVER_ERROR_TTL_MS) {
+    return friendlyAuthMessage(captured.message)
+  }
   return AUTH_UNKNOWN_ERROR_MESSAGE
 }
 
