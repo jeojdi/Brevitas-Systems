@@ -6,7 +6,13 @@
   var pending = [];
 
   function privacySignalEnabled() {
-    return navigator.globalPrivacyControl === true || navigator.doNotTrack === '1' || window.doNotTrack === '1';
+    // GPC only. It is legally binding under CCPA/CPRA (California) and the Colorado and
+    // Connecticut privacy acts, so it must be honoured. Do Not Track is deliberately NOT
+    // checked: it carries no legal force in any jurisdiction, the industry abandoned it,
+    // PostHog's own default is to ignore it (respect_dnt: false), and Firefox enables it
+    // for many users who never made a specific choice — so honouring it silently discarded
+    // real, countable traffic for no compliance benefit.
+    return navigator.globalPrivacyControl === true;
   }
 
   function storedPreference() {
@@ -28,14 +34,56 @@
     }
   }
 
+  // Keys the SDK owns and populates itself. The sensitivity filter below exists to keep
+  // *application* properties clean; applying it to the SDK's own keys breaks ingestion.
+  // Critically, posthog-js carries the project API key as the `token` PROPERTY and builds
+  // the request body as `{api_key: properties.token, batch, sent_at}` — sanitize_properties
+  // replaces the whole property bag, so dropping `token` yields `api_key: undefined`, which
+  // JSON.stringify omits entirely and PostHog rejects with 400. That silently discards every
+  // event. `$`-prefixed keys are SDK internals ($feature_flag_response, $session_entry_*) and
+  // the campaign params are collected by the SDK, not by us.
+  var SDK_RESERVED_KEY = /^\$|^(?:token|distinct_id)$|^utm_[a-z]+$|^(?:gclid|gad_source|fbclid|msclkid|twclid|dclid|igshid|ttclid|li_fat_id|mc_cid|rdt_cid|epik|qclid|sccid|irclid)$/;
+  var SENSITIVE_KEY = /token|secret|password|authorization|api.?key|prompt|response|content|email/i;
+
   function sanitizeProperties(properties) {
     if (!properties || typeof properties !== 'object') return properties;
     var safe = {};
     Object.keys(properties).forEach(function (key) {
-      if (/token|secret|password|authorization|api.?key|prompt|response|content/i.test(key)) return;
+      if (!SDK_RESERVED_KEY.test(key) && SENSITIVE_KEY.test(key)) return;
       safe[key] = /url/i.test(key) ? cleanUrl(properties[key]) : properties[key];
     });
     return safe;
+  }
+
+  // Fires the initial $pageview and one more per SPA navigation. The SDK's own
+  // 'history_change' mode is unusable here: it defers to a historyAutocapture chunk this
+  // bootstrap never loads, so it recorded no $pageview at all. The dashboard is a
+  // client-side SPA that routes via history.replaceState, so without this every in-app
+  // navigation would be invisible to path and funnel analysis.
+  function startPageviewTracking(ph) {
+    var lastLocation = location.pathname + location.search;
+
+    function capturePageview() {
+      var current = location.pathname + location.search;
+      // Guard against SPA routers that re-write the same URL repeatedly, which would
+      // otherwise inflate pageview counts.
+      if (current === lastLocation) return;
+      lastLocation = current;
+      ph.capture('$pageview');
+    }
+
+    ph.capture('$pageview');
+
+    ['pushState', 'replaceState'].forEach(function (method) {
+      var original = history[method];
+      if (typeof original !== 'function') return;
+      history[method] = function () {
+        var result = original.apply(this, arguments);
+        try { capturePageview(); } catch (_) { /* never break navigation */ }
+        return result;
+      };
+    });
+    window.addEventListener('popstate', capturePageview);
   }
 
   function call(method, args) {
@@ -173,7 +221,22 @@
         ui_host: config.uiHost,
         defaults: '2026-05-30',
         autocapture: true,
-        capture_pageview: true,
+        // We fire $pageview ourselves from `loaded` below rather than letting the SDK do it.
+        // Both SDK-driven modes were verified failing on a real page load here: `true` and
+        // 'history_change' each produced $pageleave and $set but ZERO $pageview, because the
+        // SDK's own initial-pageview call sits behind a consent check that a visitor who
+        // never touches the privacy banner does not satisfy. Every visit must count, so this
+        // must not depend on banner interaction. `false` also disables the SDK's pageview
+        // call inside opt_in_capturing(), so a visitor who later clicks "Allow analytics"
+        // cannot produce a second $pageview for the same page load.
+        capture_pageview: false,
+        loaded: function (ph) {
+          // One $pageview per page load, for every visitor who has not opted out. Visitors
+          // sending GPC, or who chose "Turn off", are already opted out by
+          // opt_out_capturing_by_default below and the capture is dropped by the SDK; the
+          // analyticsEnabled() guard just avoids queueing work we know will be discarded.
+          if (analyticsEnabled()) startPageviewTracking(ph);
+        },
         capture_pageleave: true,
         capture_exceptions: true,
         person_profiles: 'identified_only',
