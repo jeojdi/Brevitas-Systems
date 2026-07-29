@@ -237,17 +237,43 @@ declare
     v_arrangement text;
     v_evidence jsonb;
 begin
+    -- Argument validation runs FIRST, mirroring the inner guard's checks at
+    -- 202607280008, so that a malformed call reports 22023 rather than being
+    -- mistaken for an attestation problem. It cannot be delegated to the inner
+    -- guard: the attestation branch below fires on every non-marginal_per_call
+    -- org — which, given the fail-closed 'unattested' default, is every org
+    -- that has not been attested — and would raise 55000 before the inner
+    -- guard was ever reached, masking the argument error.
+    if p_organization_id is null then
+        raise exception using
+            errcode = '22023',
+            message = 'halting conditions require an organization: the netting unit is the org';
+    end if;
+    if p_period_start is null or p_period_end is null
+       or p_period_end <= p_period_start then
+        raise exception using
+            errcode = '22023',
+            message = 'halting conditions require a half-open period with end after start';
+    end if;
+    if p_fee_microusd is null then
+        raise exception using
+            errcode = '22023',
+            message = 'halting conditions require an explicit fee to evaluate';
+    end if;
+    if p_fee_microusd < 0 then
+        raise exception using
+            errcode = '22023',
+            message = 'halting_condition=negative_fee: a settlement fee may not be negative',
+            detail  = format('fee_microusd=%s', p_fee_microusd);
+    end if;
+
     v_arrangement := public.organization_billing_arrangement_state(p_organization_id);
 
     -- Checked before the arithmetic conditions because it is not derivable from
     -- any of them: an org on committed capacity produces perfectly ordinary
     -- evidence, since actual_cost_usd is list price and carries no organization
-    -- dimension. Settling zero is always allowed; it moves no money. Argument
-    -- validation is left to the inner guard, so a malformed call still reports
-    -- 22023 rather than being mistaken for an attestation problem.
-    if p_organization_id is not null
-       and p_fee_microusd is not null
-       and p_fee_microusd > 0
+    -- dimension. Settling zero is always allowed; it moves no money.
+    if p_fee_microusd > 0
        and v_arrangement <> 'marginal_per_call' then
         raise exception using
             errcode = '55000',

@@ -118,16 +118,30 @@
 --      send; the aggregate path dropped that sum on the false premise that a
 --      period ledger has exactly one row per period.
 --
---      Which rows count is taken verbatim from that `committed` computation:
---      'sending' and 'reported', plus 'review' rows whose outbound send was
---      started (outbound_started_at set), because Stripe may already have
---      ingested an ambiguous send. A 'review' row with no outbound_started_at
---      was provably never sent and is excluded. 'draft' and 'pending' are
---      excluded too, which is also what makes the test safe to run on the
---      candidate's own behalf: the guard runs before the settlement row exists
---      (or while it is still draft/pending), so it never counts itself.
+--      Which rows count follows that `committed` computation, generalized from
+--      "which statuses imply a send" to "was this row EVER sent": 'sending' and
+--      'reported', plus ANY row whose outbound send was started
+--      (outbound_started_at set), because Stripe may already have ingested an
+--      ambiguous send. A row with no outbound_started_at that is not
+--      'sending'/'reported' was provably never sent and is excluded. 'draft'
+--      and 'pending' are therefore excluded, which is also what makes the test
+--      safe to run on the candidate's own behalf: the guard runs before the
+--      settlement row exists (or while it is still draft/pending, where
+--      outbound_started_at has no default and is NULL), so it never counts
+--      itself.
 --      Superseded and 'void' rows are NOT excluded — being superseded or
---      retracted says nothing about whether Stripe was already paid.
+--      retracted says nothing about whether Stripe was already paid. Note the
+--      two are excluded by DIFFERENT mechanisms and only the first is free:
+--      supersession is stamped in its own column (superseded_at), so a
+--      superseded row keeps status='reported' and is summed regardless of the
+--      predicate. Voiding IS a status, so a status-only predicate would silently
+--      drop a retracted-but-already-paid row from the sum and reopen the exact
+--      double settlement this condition exists to prevent (202607280007 admits
+--      'void' from ANY state, its identity trigger deliberately does not freeze
+--      `status`, and 'void' is exempted from both the live-period unique index
+--      and the billing-owner requirement — so the period slot comes fully free).
+--      The outbound_started_at branch is what closes that: it counts on
+--      evidence of a send, not on the row's current status.
 --
 --      Consequence, stated plainly for the Phase 4 writer: a corrective
 --      revision on an already-reported period will halt unless the period's
@@ -551,8 +565,7 @@ begin
        and settlement.period_start = p_period_start
        and settlement.period_end = p_period_end
        and (settlement.status in ('sending', 'reported')
-            or (settlement.status = 'review'
-                and settlement.outbound_started_at is not null));
+            or settlement.outbound_started_at is not null);
 
     if p_fee_microusd > 0
        and v_committed_microusd + p_fee_microusd > v_ceiling_microusd then
@@ -755,6 +768,34 @@ begin
     ) then
         raise exception '202607280008 halting conditions no longer sum already-committed '
                         'period fees; a corrective revision would re-bill the period';
+    end if;
+
+    -- ...and it must count a row as committed on evidence that it was SENT, not
+    -- on its current status. 202607280007 admits 'void' from any state and does
+    -- not freeze `status` in its identity trigger, so a status-only predicate
+    -- lets an operator retract an already-reported row (`set status='void'`) and
+    -- drop its fee out of the sum — after which 'void' is also exempt from the
+    -- live-period unique index and the billing-owner CHECK, so the period slot
+    -- comes free and the successor settles at the full ceiling a second time.
+    -- The unconditional `or ... outbound_started_at is not null` branch is what
+    -- prevents that; draft/pending rows have no default for that column and stay
+    -- excluded, preserving self-exclusion.
+    -- Substring check, so it is sensitive to reformatting the predicate — that
+    -- is deliberate: reformatting it is the moment to re-derive this property.
+    -- TODO(phase-4): replace with a behavioural test that reports a revision at
+    -- the ceiling, voids it, and asserts the successor still halts.
+    if not exists (
+        select 1
+          from pg_proc guard_function
+          join pg_namespace guard_schema
+            on guard_schema.oid = guard_function.pronamespace
+         where guard_schema.nspname = 'public'
+           and guard_function.proname = 'assert_billing_period_halting_conditions'
+           and guard_function.prosrc like '%or settlement.outbound_started_at is not null%'
+    ) then
+        raise exception '202607280008 cumulative ceiling counts committed fees by status '
+                        'alone; voiding a reported row would free the period to be '
+                        'settled at the ceiling a second time';
     end if;
 
     -- The warm deduction must be recomputed here, not trusted from the
