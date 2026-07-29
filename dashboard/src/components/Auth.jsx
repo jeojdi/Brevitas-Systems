@@ -17,6 +17,7 @@ import {
   DUPLICATE_SIGNUP_NOTICE,
   SIGNUP_CONFIRMATION_NOTICE,
 } from '../lib/signup-submission.js'
+import { PENDING_VERIFICATION_METADATA } from '../lib/email-verification.js'
 import { capture } from '../lib/analytics.js'
 
 const AUDIENCE_CONTENT = {
@@ -99,12 +100,13 @@ export default function Auth({
         }
         const passwordProblem = newPasswordProblem()
         if (passwordProblem) throw new Error(passwordProblem)
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
             emailRedirectTo: confirmationRedirect,
             data: {
+              ...PENDING_VERIFICATION_METADATA,
               accepted_terms_at: new Date().toISOString(),
               terms_version: '2026-07-14',
               privacy_version: '2026-07-15',
@@ -115,6 +117,14 @@ export default function Auth({
         if (error) throw error
         capture('signup_submitted')
         signupAttempts.current.record(email)
+        // The account is usable immediately, so a session comes back with the
+        // signup and `onAuthStateChange` drops the user into the dashboard, which
+        // asks them to verify the address there. Nothing to render here.
+        if (data?.session) return
+        // No session means the auth server withheld one: either the project still
+        // requires a confirmation link, or the address already exists and GoTrue
+        // answered with an obfuscated user rather than an error. Both are the
+        // "check your email" path.
         setConfirmationEmail(email)
         setNotice(SIGNUP_CONFIRMATION_NOTICE)
         setMode('login')

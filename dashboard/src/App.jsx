@@ -17,6 +17,14 @@ import CompanyAdministration from './components/CompanyAdministration.jsx'
 import OnboardingWorkspaceChoice from './components/OnboardingWorkspaceChoice.jsx'
 import InstallCommand from './components/InstallCommand.jsx'
 import InvitationAcceptance, { hasPendingCompanyInvitation } from './components/InvitationAcceptance.jsx'
+import EmailVerificationBanner from './components/EmailVerificationBanner.jsx'
+import SetupBanner from './components/SetupBanner.jsx'
+import {
+  isEmailVerificationReturn,
+  markEmailVerified,
+  needsEmailVerification,
+  urlWithoutVerificationMarker,
+} from './lib/email-verification.js'
 import { capture, identify, resetAnalytics } from './lib/analytics.js'
 import { WORKSPACE_TYPE } from './lib/onboarding-workspace.js'
 
@@ -75,7 +83,7 @@ const PREVIEW_BILLING = {
 }
 const emptyCompanyContext = (loading = false) => ({
   companies: [], activeCompanyId: '', selectedCompanyId: '', loading, error: '',
-  needsOnboarding: false, workspaceCreated: false,
+  needsOnboarding: false, workspaceCreated: false, setupComplete: true,
 })
 
 function pendingDeviceCode() {
@@ -205,7 +213,6 @@ function DashboardPreview({ darkMode, onToggleDark }) {
       <OnboardingWorkspaceChoice
         initialWorkspaceType={onboardingType}
         onContinue={async () => {}}
-        onCheck={previewOnboardingCheck}
       />
     </div>
   }
@@ -258,6 +265,8 @@ function DashboardPreview({ darkMode, onToggleDark }) {
         </header>
       </div>
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+        {/* Lets the setup bar be reviewed at ?preview=dashboard without an account. */}
+        <SetupBanner onCheck={previewOnboardingCheck} onComplete={async () => {}} onOpenSetup={() => {}} />
         {enterprisePreview || personalPreview ? (
           <div className="space-y-10">
             <WorkspaceStart enterprise={enterprisePreview} onNavigate={() => {}} />
@@ -291,6 +300,9 @@ export default function App() {
   const [pendingCompanyInvitation, setPendingCompanyInvitation] = useState(hasPendingCompanyInvitation)
   const credentialUserId = useRef('')
   const credentialCompanyId = useRef('')
+  // Read at mount: auth-js consumes the URL fragment, and the effect below clears
+  // the query marker, so the answer has to be captured before either happens.
+  const verificationReturn = useRef(isEmailVerificationReturn(window.location.search))
 
   const toggleDark = () => {
     const next = !darkMode
@@ -305,6 +317,18 @@ export default function App() {
   useEffect(() => {
     if (session && loginAudience) history.replaceState(null, '', '/dashboard')
   }, [session, loginAudience])
+
+  // The verification email redirects back here and auth-js turns its fragment into
+  // a session for that address, which is the proof. Record it once, then drop the
+  // marker so a reload is not read as another return trip.
+  useEffect(() => {
+    if (!verificationReturn.current || !session?.user || !supabase) return
+    verificationReturn.current = false
+    // A failed write leaves the banner up, which is the honest outcome: one more
+    // click resends the link.
+    markEmailVerified(supabase.auth).catch(() => {})
+    history.replaceState(null, '', urlWithoutVerificationMarker(window.location))
+  }, [session?.user])
 
   // Initialise Supabase session
   useEffect(() => {
@@ -360,7 +384,11 @@ export default function App() {
           : context.activeCompanyId,
         loading: false,
         error: '',
-        needsOnboarding: context.onboarding.status !== 'complete',
+        // Only a missing workspace can hold the dashboard back. Whether BVX has
+        // connected and proxied a request is setup work, surfaced by SetupBanner
+        // inside the dashboard rather than gating entry to it.
+        needsOnboarding: context.companies.length === 0,
+        setupComplete: context.onboarding.status === 'complete',
         workspaceCreated: true,
       })))
       .catch(reason => {
@@ -386,6 +414,9 @@ export default function App() {
         loading: false,
         error: '',
         needsOnboarding: false,
+        // This payload carries company membership, not onboarding evidence, so the
+        // setup bar's state has to survive it untouched.
+        setupComplete: current.setupComplete,
         workspaceCreated: true,
       }))
     } catch {
@@ -415,7 +446,10 @@ export default function App() {
       selectedCompanyId: workspace.company_id,
       loading: false,
       error: '',
-      needsOnboarding: true,
+      // The workspace exists, so the dashboard opens now. BVX still has to connect
+      // and proxy a request, which the setup bar asks for from inside.
+      needsOnboarding: false,
+      setupComplete: false,
       workspaceCreated: true,
     }))
   }, [session?.access_token])
@@ -658,7 +692,6 @@ export default function App() {
           </div>
         </div>
         <OnboardingWorkspaceChoice
-          initialWorkspaceCreated={companyContext.workspaceCreated}
           initialWorkspaceType={activeWorkspace?.account_type === 'individual'
             ? WORKSPACE_TYPE.PERSONAL
             : activeWorkspace?.account_type === 'company'
@@ -669,8 +702,6 @@ export default function App() {
               ? WORKSPACE_TYPE.COMPANY
               : ''}
           onContinue={setupWorkspace}
-          onCheck={checkWorkspaceSetup}
-          onFinish={finishWorkspaceSetup}
         />
       </div>
     )
@@ -808,6 +839,20 @@ export default function App() {
 
       {/* ── Page content ── */}
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+        {/* Signup does not wait on a confirmation link, so the address is proven
+            from here instead. Nothing in the dashboard is gated on it. */}
+        {needsEmailVerification(session.user) && (
+          <EmailVerificationBanner email={session.user.email} />
+        )}
+        {/* BVX connection and the first proxied request are asked for here rather
+            than gating the dashboard behind them. */}
+        {!companyContext.setupComplete && (
+          <SetupBanner
+            onCheck={checkWorkspaceSetup}
+            onComplete={finishWorkspaceSetup}
+            onOpenSetup={() => setActiveTab('Connect')}
+          />
+        )}
         {companySwitchError && <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-red-200 px-4 py-3 text-xs text-red-500 dark:border-red-900/40">
           <span>{companySwitchError}</span>
           <button type="button" onClick={() => setCompanySwitchError('')} className="font-mono uppercase tracking-wider">Dismiss</button>
