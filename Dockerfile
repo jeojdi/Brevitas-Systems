@@ -40,9 +40,13 @@ USER brevitas
 # Railway injects $PORT at runtime; default to 8000 for local `docker run`.
 EXPOSE 8000
 STOPSIGNAL SIGTERM
-# --host :: binds dual-stack (IPv4+IPv6), consistent with the compressor's IPv6 fix for
-# Railway private networking. --forwarded-allow-ips names the trusted edge proxy hop(s) so
-# request.client.host reflects the real client peer (which the rate limiter buckets on)
-# instead of collapsing every request onto the edge IP. It is validated as required in
-# production by _validate_runtime_config; default to loopback for local `docker run`.
-CMD ["/usr/local/bin/start-with-adc.sh", "sh", "-c", "exec uvicorn api.server:app --host :: --port ${PORT:-8000} --workers 1 --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --timeout-graceful-shutdown ${BREVITAS_SHUTDOWN_GRACE_SECONDS:-120}"]
+# api/serve.py binds one explicit dual-stack socket (IPV6_V6ONLY=0) instead of using
+# uvicorn's --host, which cannot cover both families: `--host ::` is IPv6-ONLY because
+# CPython's asyncio sets IPV6_V6ONLY=1 on the AF_INET6 sockets it creates, so Railway's
+# IPv4 healthcheck prober got connection-refused and every deploy failed "service
+# unavailable"; `--host 0.0.0.0` passes that check but leaves the IPv6 private mesh
+# (api.railway.internal) with NO_SOCKET. Same fix as services/compress/serve.py.
+# PORT, FORWARDED_ALLOW_IPS and BREVITAS_SHUTDOWN_GRACE_SECONDS are read inside the
+# launcher, so no shell is needed here; start-with-adc.sh execs it as PID 1 so
+# STOPSIGNAL SIGTERM still reaches uvicorn directly.
+CMD ["/usr/local/bin/start-with-adc.sh", "python", "-m", "api.serve"]

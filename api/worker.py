@@ -15,6 +15,7 @@ import json
 import math
 import os
 import signal
+import socket
 import threading
 import time
 import uuid
@@ -818,19 +819,29 @@ async def run() -> None:
         except NotImplementedError:  # Windows
             pass
 
+    # Both address families are required: Railway's healthcheck prober reaches
+    # /ready over IPv4, while the private mesh (*.railway.internal) is IPv6-only.
+    # asyncio sets IPV6_V6ONLY=1 on every AF_INET6 socket it opens, so letting
+    # uvicorn bind host="::" yields an IPv6-ONLY listener that refuses the IPv4
+    # healthcheck, and host="0.0.0.0" passes the healthcheck but leaves the mesh
+    # with no socket. Bind one socket here with IPV6_V6ONLY=0 and hand it to
+    # uvicorn, which then ignores config host/port and serves both families.
+    health_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    health_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    health_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    health_socket.bind(("::", int(os.getenv("PORT", "8001"))))
     health_config = uvicorn.Config(
         health_app,
-        # Railway private networking resolves service hostnames to IPv6; bind
-        # dual-stack "::" so health probes over the private network reach us.
-        host="::",
-        port=int(os.getenv("PORT", "8001")),
         access_log=False,
         log_level=os.getenv("BREVITAS_LOG_LEVEL", "info").lower(),
     )
     health_server = uvicorn.Server(health_config)
     # This process owns signal handling so it can drain leased work before stopping Uvicorn.
     health_server.install_signal_handlers = lambda: None
-    health_task = asyncio.create_task(health_server.serve(), name="worker-health-server")
+    # Uvicorn calls listen() on the handed-off socket during startup and closes it
+    # on shutdown, so the should_exit drain below still releases the port.
+    health_task = asyncio.create_task(
+        health_server.serve(sockets=[health_socket]), name="worker-health-server")
     health_task.add_done_callback(lambda _task: stop.set())
 
     async def consume(slot: int) -> None:
