@@ -230,6 +230,83 @@ def test_onboarding_accepts_local_proxy_receipt_from_bound_device(
     assert raw_key not in persisted
 
 
+def test_device_activation_alone_registers_installation_for_cli_gate(
+        tmp_path, monkeypatch):
+    """The shipped local-proxy BVX never calls /v1/installations, so device-key
+    activation must itself register the installation the cli_connected gate joins
+    against. Without a separate register_installation call, activation alone must
+    flip cli_connected (202607280005)."""
+    client, store = _client(tmp_path, monkeypatch, "device-only-owner")
+    organization_id = client.post(
+        "/v1/organization/bootstrap", json={"account_type": "individual"},
+    ).json()["company_id"]
+
+    raw_key = "bvt_device_only"
+    key_hash = hash_key(raw_key)
+    device_hash = hash_key("device-code-only")
+    store.create_device_request(
+        device_hash,
+        (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat())
+    assert store.approve_device_request(
+        device_hash, "device-only-owner", key_hash, "kms-ct", organization_id)
+    consumed = store.consume_device_request_idempotent(
+        device_hash, key_hash, "device-only-activation")
+    assert consumed and consumed["key_hash"] == key_hash
+
+    # No register_installation call — activation alone registered the row.
+    installs = store.list_installations(organization_id)
+    assert len(installs) == 1
+    assert installs[0]["client_name"] == "bvx"
+    assert installs[0]["bvx_version"] == "device-auth"
+
+    status = store.onboarding_status("device-only-owner", organization_id)
+    assert status["cli_connected"] is True
+    assert status["proxied_request_observed"] is False
+
+    # A local-proxy receipt from the same bound device key then flips the proxy
+    # evidence, without any separate installation registration.
+    store.record_usage(
+        key_hash, 10, 10, owner_id="device-only-owner",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="device-only-proxy-receipt")
+    status = store.onboarding_status("device-only-owner", organization_id)
+    assert status["proxied_request_observed"] is True
+
+    # Idempotent re-consume returns the retained receipt and never adds a second
+    # installation for the same activation.
+    again = store.consume_device_request_idempotent(
+        device_hash, key_hash, "device-only-activation")
+    assert again and again["already_consumed"] is True
+    assert len(store.list_installations(organization_id)) == 1
+
+
+def test_installation_on_activation_migration_registers_and_backfills():
+    raw = (Path(__file__).parent.parent / "supabase/migrations/"
+           "202607280005_installation_on_device_activation.sql").read_text()
+    migration = "\n".join(
+        line for line in raw.splitlines() if not line.lstrip().startswith("--"))
+
+    # Redefines the atomic consume RPC to register the gate-satisfying row bound
+    # to the just-activated device key and its consumption receipt.
+    assert ("create or replace function public.consume_bvx_device_idempotent"
+            in migration)
+    assert migration.count("insert into public.installations") == 2
+    assert "'bvx', 'device-auth'" in migration
+    assert "registration_key_id" in migration
+    assert "device_auth_receipt_id" in migration
+    assert "v_exchange.key_hash, v_key_id, v_receipt.id" in migration
+    # installations.device_id has a composite FK to devices, so a real devices
+    # row is created for both the live path and the backfill.
+    assert migration.count("insert into public.devices") == 2
+    # Backfill only touches activated device keys with no installation yet.
+    assert "not exists (" in migration
+    assert "device_key.activated" in migration
+    assert ("grant execute on function "
+            "public.consume_bvx_device_idempotent(text,text,text)\n"
+            "    to service_role" in migration)
+    assert "from public, anon, authenticated, service_role" in migration
+
+
 def test_onboarding_rejects_forged_install_and_mismatched_usage(tmp_path):
     store = UsageStore(str(tmp_path / "forged-onboarding.db"))
     owner_id = "forged-owner"
