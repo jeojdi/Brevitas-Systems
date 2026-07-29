@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
 import { authModeForPath, cacheApiKey, clearSessionKeyCache, supabase, supabaseMisconfigured, getOrCreateApiKey, invalidateCachedApiKey, LOGIN_AUDIENCE, loginAudienceForPath } from './lib/supabase.js'
 import { activateCompany, fetchCompanyContext, normalizeCompanyContext } from './lib/company-context.js'
 import { configureApiAuthenticationRecovery } from './lib/api.js'
@@ -563,10 +563,18 @@ export default function App() {
   )
   const enterpriseWorkspace = activeWorkspace?.account_type === 'company'
   const dashboardTabs = enterpriseWorkspace ? ENTERPRISE_TABS : PERSONAL_TABS
+  // `Admin` is appended for brevitas_admin sessions and is deliberately absent from
+  // PERSONAL_TABS/ENTERPRISE_TABS. The guard below has to test the same list the nav
+  // renders — against dashboardTabs alone, selecting Admin snapped straight back to
+  // Overview, so the tab was visible but unreachable.
+  const visibleTabs = useMemo(
+    () => (isAdmin ? [...dashboardTabs, 'Admin'] : dashboardTabs),
+    [dashboardTabs, isAdmin],
+  )
 
   useEffect(() => {
-    if (!dashboardTabs.includes(activeTab)) setActiveTab('Overview')
-  }, [activeTab, dashboardTabs])
+    if (!visibleTabs.includes(activeTab)) setActiveTab('Overview')
+  }, [activeTab, visibleTabs])
 
   if (PREVIEW_MODE) {
     return <DashboardPreview darkMode={darkMode} onToggleDark={toggleDark} />
@@ -780,7 +788,7 @@ export default function App() {
             className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
             aria-label="Dashboard sections"
           >
-            {[...dashboardTabs, ...(isAdmin ? ['Admin'] : [])].map(tab => (
+            {visibleTabs.map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
