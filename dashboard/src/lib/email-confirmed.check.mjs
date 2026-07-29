@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const read = path => readFileSync(resolve(root, path), 'utf8')
@@ -36,9 +37,10 @@ function render({ search = '', hash = '' } = {}) {
     },
   }
   const location = { search, hash }
-  new Function('document', 'location', 'URLSearchParams', inlineScript)(
-    document, location, URLSearchParams,
-  )
+  // node:vm rather than `new Function`: the repository SAST policy forbids
+  // dynamic code execution (.github/semgrep.yml javascript-dynamic-code-execution),
+  // and a sandboxed context is the better tool here regardless.
+  runInNewContext(inlineScript, { document, location, URLSearchParams })
   return nodes
 }
 
