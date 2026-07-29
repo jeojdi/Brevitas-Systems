@@ -17,6 +17,13 @@ import CompanyAdministration from './components/CompanyAdministration.jsx'
 import OnboardingWorkspaceChoice from './components/OnboardingWorkspaceChoice.jsx'
 import InstallCommand from './components/InstallCommand.jsx'
 import InvitationAcceptance, { hasPendingCompanyInvitation } from './components/InvitationAcceptance.jsx'
+import EmailVerificationBanner from './components/EmailVerificationBanner.jsx'
+import {
+  isEmailVerificationReturn,
+  markEmailVerified,
+  needsEmailVerification,
+  urlWithoutVerificationMarker,
+} from './lib/email-verification.js'
 import { capture, identify, resetAnalytics } from './lib/analytics.js'
 import { WORKSPACE_TYPE } from './lib/onboarding-workspace.js'
 
@@ -291,6 +298,9 @@ export default function App() {
   const [pendingCompanyInvitation, setPendingCompanyInvitation] = useState(hasPendingCompanyInvitation)
   const credentialUserId = useRef('')
   const credentialCompanyId = useRef('')
+  // Read at mount: auth-js consumes the URL fragment, and the effect below clears
+  // the query marker, so the answer has to be captured before either happens.
+  const verificationReturn = useRef(isEmailVerificationReturn(window.location.search))
 
   const toggleDark = () => {
     const next = !darkMode
@@ -305,6 +315,18 @@ export default function App() {
   useEffect(() => {
     if (session && loginAudience) history.replaceState(null, '', '/dashboard')
   }, [session, loginAudience])
+
+  // The verification email redirects back here and auth-js turns its fragment into
+  // a session for that address, which is the proof. Record it once, then drop the
+  // marker so a reload is not read as another return trip.
+  useEffect(() => {
+    if (!verificationReturn.current || !session?.user || !supabase) return
+    verificationReturn.current = false
+    // A failed write leaves the banner up, which is the honest outcome: one more
+    // click resends the link.
+    markEmailVerified(supabase.auth).catch(() => {})
+    history.replaceState(null, '', urlWithoutVerificationMarker(window.location))
+  }, [session?.user])
 
   // Initialise Supabase session
   useEffect(() => {
@@ -808,6 +830,11 @@ export default function App() {
 
       {/* ── Page content ── */}
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+        {/* Signup does not wait on a confirmation link, so the address is proven
+            from here instead. Nothing in the dashboard is gated on it. */}
+        {needsEmailVerification(session.user) && (
+          <EmailVerificationBanner email={session.user.email} />
+        )}
         {companySwitchError && <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-red-200 px-4 py-3 text-xs text-red-500 dark:border-red-900/40">
           <span>{companySwitchError}</span>
           <button type="button" onClick={() => setCompanySwitchError('')} className="font-mono uppercase tracking-wider">Dismiss</button>
