@@ -6,12 +6,14 @@ import {
   AUTH_CLIENT_OPTIONS,
   AUTH_SERVER_ERROR_TTL_MS,
   AUTH_UNKNOWN_ERROR_MESSAGE,
+  EMAIL_DELIVERY_FAILED_MESSAGE,
   SESSION_KEY_CACHE_MAX_ENTRIES,
   SESSION_KEY_MINT_MAX_IN_FLIGHT,
   SESSION_KEY_CACHE_TTL_MS,
   LOGIN_AUDIENCE,
   authErrorMessage,
   authModeForPath,
+  isEmailDeliveryFailure,
   clearCapturedAuthServerError,
   createAuthErrorCapturingFetch,
   cacheApiKey,
@@ -98,10 +100,11 @@ test('a 5xx auth failure reports the server reason instead of auth-js "{}"', asy
   // The body must stay readable for auth-js after we peek at it.
   assert.equal((await response.json()).error_code, 'unexpected_failure')
 
-  // auth-js stringifies the Response for 500-504/520-530, yielding '{}'.
+  // auth-js stringifies the Response for 500-504/520-530, yielding '{}'. The
+  // captured reason is a mail-send failure, which the user sees as advice.
   assert.equal(
     authErrorMessage(new Error('{}'), 1_000 + AUTH_SERVER_ERROR_TTL_MS),
-    'Error sending confirmation email',
+    EMAIL_DELIVERY_FAILED_MESSAGE,
   )
   // A stale capture must never be pinned onto a later, unrelated failure.
   assert.equal(
@@ -132,6 +135,56 @@ test('auth error messages prefer a real message and survive malformed failures',
   )
   await rateLimited('https://project.supabase.co/auth/v1/signup')
   assert.equal(authErrorMessage(new Error('{}'), 3_000), AUTH_UNKNOWN_ERROR_MESSAGE)
+})
+
+test('a mail-send failure becomes advice the user can act on', async () => {
+  clearCapturedAuthServerError()
+
+  // GoTrue uses one message shape for every mail it fails to send. The real
+  // 2026-07-29 case was a signup to an unregistered domain: the SMTP provider
+  // rejected the recipient and GoTrue answered 500 "Error sending confirmation
+  // email", which read as a Brevitas outage rather than a bad address.
+  for (const reason of [
+    'Error sending confirmation email',
+    'Error sending recovery email',
+    'Error sending magic link email',
+    'Error sending invite email',
+    'error sending confirmation mail',
+    '  Error Sending Confirmation Email  ',
+  ]) {
+    assert.equal(isEmailDeliveryFailure(reason), true, reason)
+    // Applies on the raw path, not only to a captured 5xx body.
+    assert.equal(authErrorMessage(new Error(reason)), EMAIL_DELIVERY_FAILED_MESSAGE, reason)
+  }
+
+  // Every other failure keeps its own wording; this must not swallow messages
+  // that already tell the user something specific and true.
+  for (const unrelated of [
+    'Invalid login credentials',
+    'Email rate limit exceeded',
+    'Email not confirmed',
+    'User already registered',
+    'Signups not allowed for this instance',
+  ]) {
+    assert.equal(isEmailDeliveryFailure(unrelated), false, unrelated)
+    assert.equal(authErrorMessage(new Error(unrelated)), unrelated, unrelated)
+  }
+
+  assert.equal(isEmailDeliveryFailure(''), false)
+  assert.equal(isEmailDeliveryFailure(null), false)
+  assert.equal(isEmailDeliveryFailure(undefined), false)
+  assert.equal(isEmailDeliveryFailure(42), false)
+
+  // The captured-5xx path resolves to the same advice.
+  const failingMailer = createAuthErrorCapturingFetch(
+    async () => new Response(
+      JSON.stringify({ error_code: 'unexpected_failure', msg: 'Error sending confirmation email' }),
+      { status: 500, headers: { 'content-type': 'application/json' } },
+    ),
+    () => 4_000,
+  )
+  await failingMailer('https://project.supabase.co/auth/v1/signup')
+  assert.equal(authErrorMessage(new Error('{}'), 4_000), EMAIL_DELIVERY_FAILED_MESSAGE)
 })
 
 test('browser Supabase config distinguishes public keys from service credentials', () => {
