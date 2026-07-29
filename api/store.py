@@ -2096,12 +2096,13 @@ class UsageStore:
                                  "proxy:invoke,usage:write,repositories:register,"
                                  "installations:register,customers:import"),
                             )
+                            receipt_id = str(uuid.uuid4())
                             db.execute(
                                 "INSERT INTO bvx_device_consumption_receipts("
                                 "device_hash,id,key_hash,encrypted_key,owner_id,"
                                 "approver_id,organization_id,consumed_at,expires_at,request_id) "
                                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                (device_hash, str(uuid.uuid4()), exchange["key_hash"],
+                                (device_hash, receipt_id, exchange["key_hash"],
                                  exchange["encrypted_key"], owner_id, exchange["owner_id"],
                                  organization_id, now, exchange["expires_at"], request_id),
                             )
@@ -2112,6 +2113,26 @@ class UsageStore:
                                 (organization_id, exchange["owner_id"],
                                  "device_key.activated", "api_key", key_id, now,
                                  request_id, exchange["owner_id"], role, "committed"),
+                            )
+                            # Register the server-side BVX installation for this
+                            # activation so onboarding's cli_connected gate is
+                            # satisfiable. The shipped local-proxy BVX never calls
+                            # /v1/installations, so bind the row here to the
+                            # just-activated device key and its consumption
+                            # receipt (mirrors migration 202607280005). device_id
+                            # is derived from the device-auth hash; bvx_version
+                            # records the 'device-auth' provenance sentinel.
+                            db.execute(
+                                "INSERT INTO installations(id,organization_id,device_id,"
+                                "service_account_id,repository_id,repository,environment,"
+                                "device_platform,device_arch,client_name,bvx_version,"
+                                "installed_at,last_seen_at,registration_key_hash,"
+                                "registration_key_id,device_auth_receipt_id) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (str(uuid.uuid4()), organization_id,
+                                 "deviceauth:" + device_hash[:40], "", "", "", "",
+                                 "", "", "bvx", "device-auth", now, now,
+                                 exchange["key_hash"], key_id, receipt_id),
                             )
                             db.execute("DELETE FROM bvx_device_auth WHERE device_hash=?",
                                        (device_hash,))

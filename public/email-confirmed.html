@@ -43,18 +43,46 @@
     <a id="continue" href="/login">Continue to sign in →</a>
   </main>
   <script>
-    const params = new URLSearchParams(location.search || location.hash.slice(1));
+    // GoTrue puts the verified session in the URL *fragment*
+    // (`#access_token=…&refresh_token=…&expires_in=…&token_type=bearer`) and puts
+    // failures there too, while `?audience=` arrives in the query string. Merge both
+    // the way @supabase/auth-js's parseParametersFromURL does — hash first, query
+    // wins on collision — so neither source can mask the other.
+    const params = new URLSearchParams();
+    for (const source of [location.hash.slice(1), location.search.slice(1)]) {
+      for (const [key, value] of new URLSearchParams(source)) params.set(key, value);
+    }
     const audience = params.get('audience');
     const destinations = {
       personal: '/login/personal',
       enterprise: '/login/enterprise',
     };
+    const continueLink = document.querySelector('#continue');
+    let target = destinations[audience] || '/login';
     if (destinations[audience]) {
       const label = audience === 'personal' ? 'personal' : 'enterprise';
-      document.querySelector('#continue').href = destinations[audience];
-      document.querySelector('#continue').textContent = `Continue to ${label} sign in →`;
+      continueLink.textContent = `Continue to ${label} sign in →`;
     }
-    if (params.get('error') || params.get('error_description')) {
+
+    const failed = Boolean(params.get('error') || params.get('error_description') || params.get('error_code'));
+    // A real session is present. This page is static and deliberately ships no auth
+    // SDK, so it must not try to persist the session itself — hand-writing auth-js's
+    // storage record would silently rot the moment its key format or flow type moves.
+    // Instead carry the fragment verbatim onto a dashboard route: those paths are
+    // rewritten to the SPA, whose Supabase client runs with the auth-js defaults
+    // (flowType 'implicit', detectSessionInUrl true, persistSession true) and so
+    // validates the tokens and writes the session under its own storage key.
+    // Fragments are never sent to the server and the analytics layer strips them
+    // from `$current_url`, so nothing leaks by forwarding one.
+    const hasSession = Boolean(params.get('access_token') && params.get('refresh_token'));
+    if (hasSession && !failed) {
+      target += location.hash;
+      continueLink.textContent = 'Continue to your dashboard →';
+      document.querySelector('#message').textContent = 'Your account is ready. Continue to open your token tracking dashboard.';
+    }
+    continueLink.href = target;
+
+    if (failed) {
       document.querySelector('.check').textContent = '!';
       document.querySelector('#title').textContent = 'That link did not work.';
       document.querySelector('#message').textContent = params.get('error_description') || 'The confirmation link may have expired. Sign in to request another.';

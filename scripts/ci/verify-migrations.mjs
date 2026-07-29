@@ -62,6 +62,7 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607280002_usage_stats_cache_metrics.sql',
   'supabase/migrations/202607280003_multi_provider_warming.sql',
   'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
+  'supabase/migrations/202607280005_installation_on_device_activation.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
