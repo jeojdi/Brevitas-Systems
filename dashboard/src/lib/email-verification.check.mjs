@@ -37,6 +37,43 @@ test('only accounts created by the deferred flow are asked to verify', () => {
   }
 })
 
+test('following the confirmation email already satisfies the bar', () => {
+  const pending = { needs_email_verification: true }
+  // Project requires confirmation: the stamp lands when the link is clicked.
+  assert.equal(needsEmailVerification({
+    user_metadata: pending,
+    created_at: '2026-07-29T12:00:00.000Z',
+    email_confirmed_at: '2026-07-29T12:04:31.000Z',
+  }), false)
+  // Older clients only expose confirmed_at.
+  assert.equal(needsEmailVerification({
+    user_metadata: pending,
+    created_at: '2026-07-29T12:00:00.000Z',
+    confirmed_at: '2026-07-29T12:04:31.000Z',
+  }), false)
+  // Project auto-confirms: the stamp is written as the row is created and proves
+  // nothing, so the bar still has something to ask for.
+  assert.equal(needsEmailVerification({
+    user_metadata: pending,
+    created_at: '2026-07-29T12:00:00.000Z',
+    email_confirmed_at: '2026-07-29T12:00:00.000Z',
+  }), true)
+  assert.equal(needsEmailVerification({
+    user_metadata: pending,
+    created_at: '2026-07-29T12:00:00.000Z',
+    email_confirmed_at: '2026-07-29T12:00:01.200Z',
+  }), true)
+  // No usable timestamps: fall back to the flag rather than guessing verified.
+  for (const user of [
+    { user_metadata: pending },
+    { user_metadata: pending, created_at: 'not-a-date', email_confirmed_at: 'nope' },
+    { user_metadata: pending, email_confirmed_at: '2026-07-29T12:04:31.000Z' },
+    { user_metadata: pending, created_at: '2026-07-29T12:00:00.000Z' },
+  ]) {
+    assert.equal(needsEmailVerification(user), true, JSON.stringify(user))
+  }
+})
+
 test('a recorded verification timestamp wins over a stale pending flag', () => {
   // updateUser merges metadata, so a client that wrote the timestamp without
   // clearing the flag must still count as verified.
