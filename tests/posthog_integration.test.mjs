@@ -8,7 +8,10 @@ import vm from 'node:vm'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const read = path => readFileSync(resolve(root, path), 'utf8')
 
-function analyticsContext() {
+// `overrides` lets a test start from a non-default visitor: `navigator` (GPC / DNT),
+// `windowDoNotTrack`, a stored `preference` ('on' | 'off'), and the initial `pathname` /
+// `search` the pageview dedupe keys off.
+function analyticsContext(overrides = {}) {
   const appendedToHead = []
   const button = { addEventListener() {}, focus() {}, setAttribute() {} }
   const panel = { hidden: true, querySelector: () => button }
@@ -36,6 +39,7 @@ function analyticsContext() {
     querySelector: () => null,
   }
   const storage = new Map()
+  if (overrides.preference) storage.set('brevitas_analytics', overrides.preference)
   const localStorage = {
     getItem: key => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, String(value)),
@@ -43,8 +47,22 @@ function analyticsContext() {
   const location = {
     origin: 'https://brevitassystems.com',
     href: 'https://brevitassystems.com/pricing?campaign=private#plans',
+    pathname: overrides.pathname ?? '/pricing',
+    search: overrides.search ?? '',
   }
-  const window = { doNotTrack: '0', location }
+  // Real enough for startPageviewTracking to patch and for a test to drive: the bootstrap
+  // wraps history.pushState/replaceState and subscribes to popstate.
+  const history = { pushState() {}, replaceState() {} }
+  const listeners = new Map()
+  const window = {
+    doNotTrack: overrides.windowDoNotTrack ?? '0',
+    location,
+    history,
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, [])
+      listeners.get(type).push(handler)
+    },
+  }
   const context = {
     URL,
     document,
@@ -57,15 +75,26 @@ function analyticsContext() {
         uiHost: 'https://us.posthog.com',
       }),
     }),
+    history,
     localStorage,
     location,
-    navigator: { doNotTrack: '0', globalPrivacyControl: false },
+    navigator: { doNotTrack: '0', globalPrivacyControl: false, ...overrides.navigator },
     window,
   }
   window.window = window
   window.document = document
   window.localStorage = localStorage
-  return { appendedToHead, context, window }
+  const fire = type => (listeners.get(type) ?? []).forEach(handler => handler())
+  return { appendedToHead, context, fire, window }
+}
+
+// Boots public/analytics.js in a fresh context and waits for the config fetch to resolve.
+async function bootAnalytics(overrides) {
+  const harness = analyticsContext(overrides)
+  vm.runInNewContext(read('public/analytics.js'), harness.context)
+  await new Promise(resolvePromise => setImmediate(resolvePromise))
+  const [projectToken, options] = harness.window.posthog._i[0]
+  return { ...harness, options, projectToken }
 }
 
 test('website bootstrap loads PostHog through the proxy with privacy safeguards', async () => {
@@ -101,6 +130,122 @@ test('website bootstrap loads PostHog through the proxy with privacy safeguards'
   assert.equal(queuedCapture[2].landing_url, 'https://brevitassystems.com/pricing')
   assert.equal(queuedCapture[2].safe_value, 'kept')
   assert.equal('api_key' in queuedCapture[2], false)
+})
+
+test('sanitize_properties keeps the keys PostHog owns and still drops application secrets', async () => {
+  const { options } = await bootAnalytics()
+  const sanitize = options.sanitize_properties
+  assert.equal(typeof sanitize, 'function')
+
+  // The load-bearing case. posthog-js carries the project API key as a property literally
+  // named `token` and builds its request body as {api_key: properties.token, ...}. Because
+  // sanitize_properties REPLACES the property bag, dropping `token` yields api_key:
+  // undefined, JSON.stringify omits it, and PostHog rejects the whole batch with a 400 —
+  // which is why $lib='web' sat at zero. Narrowing this exemption silently kills ingestion
+  // again, so assert every key class the SDK populates for itself.
+  const kept = sanitize({
+    token: 'phc_test_public_token',
+    distinct_id: 'anon-1',
+    $feature_flag_response: 'variant-a',
+    $session_entry_referrer: 'https://news.example.com/',
+    utm_source: 'newsletter',
+    utm_content: 'header-link',
+    gclid: 'abc123',
+    safe_value: 'kept',
+    $current_url: 'https://brevitassystems.com/pricing?campaign=private#plans',
+  })
+  assert.equal(kept.token, 'phc_test_public_token')
+  assert.equal(kept.distinct_id, 'anon-1')
+  assert.equal(kept.$feature_flag_response, 'variant-a')
+  assert.equal(kept.$session_entry_referrer, 'https://news.example.com/')
+  assert.equal(kept.utm_source, 'newsletter')
+  assert.equal(kept.utm_content, 'header-link')
+  assert.equal(kept.gclid, 'abc123')
+  assert.equal(kept.safe_value, 'kept')
+  // Exempt from the drop filter, but URL-shaped keys are still stripped of query and fragment.
+  assert.equal(kept.$current_url, 'https://brevitassystems.com/pricing')
+
+  // The exemption must not become a hole. These are application-owned and must never leave
+  // the browser; note `access_token` is NOT exempt because the `token` exemption is anchored.
+  const secrets = {
+    api_key: 'sk-live',
+    apiKey: 'sk-live',
+    access_token: 'ghp_x',
+    refresh_token: 'ghp_x',
+    secret: 'x',
+    client_secret: 'x',
+    password: 'hunter2',
+    authorization: 'Bearer x',
+    user_prompt: 'private question',
+    model_response: 'private answer',
+    message_content: 'private text',
+    email: 'someone@example.com',
+  }
+  // Keys, not the object itself: sanitize_properties builds its result inside the vm realm,
+  // so deepStrictEqual would fail on the prototype rather than on the contents.
+  const survivors = Object.keys(sanitize(secrets))
+  assert.deepEqual(survivors, [],
+    `expected every secret-shaped key to be dropped, kept ${survivors.join(', ')}`)
+})
+
+test('GPC opts a visitor out by default and Do Not Track alone does not', async () => {
+  const gpc = await bootAnalytics({ navigator: { globalPrivacyControl: true } })
+  assert.equal(gpc.window.brevitasAnalytics.isEnabled(), false)
+  assert.equal(gpc.options.opt_out_capturing_by_default, true)
+
+  // Do Not Track is deliberately not honoured: no legal force, PostHog ignores it by default,
+  // and Firefox sets it for users who never chose it. public/privacy.html promises GPC only,
+  // and the test below pins the two together — if this flips back, the policy moves with it.
+  const dnt = await bootAnalytics({ navigator: { doNotTrack: '1' }, windowDoNotTrack: '1' })
+  assert.equal(dnt.window.brevitasAnalytics.isEnabled(), true)
+  assert.equal(dnt.options.opt_out_capturing_by_default, false)
+
+  const off = await bootAnalytics({ preference: 'off' })
+  assert.equal(off.window.brevitasAnalytics.isEnabled(), false)
+  assert.equal(off.options.opt_out_capturing_by_default, true)
+})
+
+test('the published privacy policy describes the signals the bootstrap actually honours', () => {
+  const bootstrap = read('public/analytics.js')
+  const policy = read('public/privacy.html')
+
+  assert.match(bootstrap, /navigator\.globalPrivacyControl === true/,
+    'the bootstrap must honour Global Privacy Control')
+  assert.match(policy, /Global Privacy Control/,
+    'the policy must tell visitors GPC is honoured')
+
+  // These two drifted apart once already: DNT was removed from the bootstrap while /privacy
+  // kept promising it was respected. Whichever way that decision goes, both files move together.
+  const checksDoNotTrack = /(?:navigator|window)\.doNotTrack/.test(bootstrap)
+  assert.equal(checksDoNotTrack, false,
+    'public/analytics.js checks Do Not Track again — restore the promise in public/privacy.html')
+  assert.doesNotMatch(policy, /Do Not Track/i,
+    'public/privacy.html promises Do Not Track is honoured, but public/analytics.js does not check it')
+})
+
+test('the bootstrap fires exactly one $pageview per page load and per SPA navigation', async () => {
+  const { context, fire, options } = await bootAnalytics({ pathname: '/pricing' })
+
+  // capture_pageview is false, so nothing records a $pageview unless `loaded` installs it.
+  assert.equal(options.capture_pageview, false)
+  const captured = []
+  options.loaded({ capture: event => captured.push(event) })
+  assert.deepEqual(captured, ['$pageview'], 'one $pageview for the initial page load')
+
+  // An SPA navigation to a new path counts once...
+  context.location.pathname = '/dashboard'
+  context.history.pushState(null, '', '/dashboard')
+  assert.deepEqual(captured, ['$pageview', '$pageview'])
+
+  // ...and a router rewriting the same URL must not inflate the count.
+  context.history.replaceState(null, '', '/dashboard')
+  context.history.pushState(null, '', '/dashboard')
+  assert.deepEqual(captured, ['$pageview', '$pageview'], 'same URL must not re-count')
+
+  // Back/forward counts, and the query string is part of the identity.
+  context.location.search = '?tab=audit'
+  fire('popstate')
+  assert.deepEqual(captured, ['$pageview', '$pageview', '$pageview'])
 })
 
 test('billing conversions use correlated and flushed server events', () => {
