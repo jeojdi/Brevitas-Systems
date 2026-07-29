@@ -32,19 +32,54 @@ export const VERIFICATION_SENT_NOTICE =
 export const VERIFICATION_DONE_NOTICE = 'Your email is verified.'
 
 /**
+ * How much later than signup a confirmation has to land to count as a real click
+ * rather than the auto-confirm stamp GoTrue writes as it creates the row.
+ */
+export const CONFIRMATION_CLICK_THRESHOLD_MS = 2000
+
+const timestamp = value => {
+  const parsed = typeof value === 'string' && value ? Date.parse(value) : NaN
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Whether GoTrue's own confirmation already proves this address.
+ *
+ * The project setting decides what `email_confirmed_at` means. With confirmations
+ * required it is written when the user clicks the emailed link, which is proof.
+ * With them disabled it is written as the account is created, which proves
+ * nothing. The gap from `created_at` is what separates the two.
+ */
+function confirmedByEmailLink(user) {
+  const created = timestamp(user?.created_at)
+  const confirmed = timestamp(user?.email_confirmed_at) ?? timestamp(user?.confirmed_at)
+  if (created === null || confirmed === null) return false
+  return confirmed - created > CONFIRMATION_CLICK_THRESHOLD_MS
+}
+
+/**
  * Whether the dashboard should still ask this user to prove their address.
  *
  * Absent metadata means "not our concern": an account that predates deferred
  * verification, or one confirmed through the old signup email.
  *
- * @param {{ user_metadata?: Record<string, unknown> }|null|undefined} user
+ * @param {{
+ *   user_metadata?: Record<string, unknown>,
+ *   created_at?: string,
+ *   email_confirmed_at?: string,
+ *   confirmed_at?: string,
+ * }|null|undefined} user
  * @returns {boolean}
  */
 export function needsEmailVerification(user) {
   const metadata = user?.user_metadata
   if (typeof metadata !== 'object' || metadata === null) return false
   if (typeof metadata.email_verified_at === 'string' && metadata.email_verified_at) return false
-  return metadata.needs_email_verification === true
+  if (metadata.needs_email_verification !== true) return false
+  // Signup marks every new account pending, including while the project still
+  // sends a confirmation link. Someone who followed that link has already done
+  // exactly what this bar would ask for.
+  return !confirmedByEmailLink(user)
 }
 
 /**
