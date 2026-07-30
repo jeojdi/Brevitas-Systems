@@ -226,6 +226,16 @@ class RotationSummary:
     dry_run: bool
 
 
+@dataclass(frozen=True)
+class RotationInventory:
+    total: int
+    current: int
+    stale: int
+    unreadable: int
+    legacy: int
+    stale_keys: tuple[str, ...]
+
+
 class EnvelopeCipher:
     """Encrypt credentials under one active managed key version."""
 
@@ -587,6 +597,127 @@ def rotate_envelopes(
     return RotationSummary(inspected, reencrypted, already_current, failed, dry_run)
 
 
+def rotation_inventory(
+    ciphertexts: Iterable[str],
+    *,
+    cipher: EnvelopeCipher,
+    max_records: int = 100_000,
+) -> RotationInventory:
+    """Count stored ciphertexts that are not wrapped by the configured key version.
+
+    Metadata only: no KMS call, no plaintext, no identifiers. This is the gauge the
+    rotation runbook needs *before* a retired key version is disabled — a non-zero
+    ``stale`` (or ``legacy``) means credentials still depend on the old version and
+    destroying it would make them permanently undecryptable.
+    """
+
+    total = current = stale = unreadable = legacy = 0
+    stale_keys: dict[str, None] = {}
+    for position, ciphertext in enumerate(ciphertexts):
+        if position >= max_records:
+            break
+        total += 1
+        if not EnvelopeCipher.is_envelope(ciphertext):
+            legacy += 1
+            continue
+        try:
+            metadata = cipher.inspect_metadata(ciphertext)
+        except EnvelopeError:
+            unreadable += 1
+            continue
+        key_id = str(metadata.get("key_id", ""))
+        key_version = str(metadata.get("key_version", ""))
+        algorithm = str(metadata.get("wrap_algorithm", ""))
+        rotated = (
+            key_id != cipher.key_id
+            or key_version != cipher.key_version
+            or (cipher.wrap_algorithm != "provider-default" and algorithm != cipher.wrap_algorithm)
+        )
+        if rotated:
+            stale += 1
+            stale_keys[f"{key_id}/{key_version}/{algorithm}"] = None
+        else:
+            current += 1
+    return RotationInventory(total, current, stale, unreadable, legacy, tuple(stale_keys))
+
+
+def _rotation_cli(argv: list[str] | None = None) -> int:
+    """Operator entry point: ``python -m brevitas.security.envelope --help``.
+
+    Deliberately offline and unroutable — rotation decrypts every credential it
+    touches, so it must never be reachable from an HTTP session. Records arrive as
+    JSON lines on stdin (``{"id": ..., "ciphertext": ..., "context": {...}}``); the
+    per-table AAD context and the id -> ciphertext write are the caller's job, so this
+    never talks to a database and cannot clobber a concurrent credential change.
+
+      inventory  metadata-only staleness counts (no KMS, no plaintext)
+      rewrap     re-encrypt under the current key; prints {"id","ciphertext"} lines
+                 for the caller to apply with a compare-and-swap update. Requires
+                 --confirm; without it the batch is only planned.
+    """
+
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m brevitas.security.envelope",
+        description="Inspect or re-wrap stored credential envelopes (offline operator tool).",
+    )
+    parser.add_argument("mode", choices=("inventory", "rewrap"))
+    parser.add_argument("--input", default="-", help="JSON-lines file, or - for stdin.")
+    parser.add_argument("--max-records", type=int, default=500,
+                        help="Batch ceiling; keep small, the provider_config write path "
+                             "locks api_keys rows.")
+    parser.add_argument("--confirm", action="store_true",
+                        help="Actually emit re-wrapped ciphertext (rewrap only).")
+    args = parser.parse_args(argv)
+
+    stream = sys.stdin if args.input == "-" else open(args.input, "r", encoding="utf-8")
+    try:
+        rows = [json.loads(line) for line in stream if line.strip()]
+    finally:
+        if stream is not sys.stdin:
+            stream.close()
+
+    identities = [str(row.get("id", position)) for position, row in enumerate(rows)]
+    ciphertexts = [str(row.get("ciphertext", "")) for row in rows]
+
+    if args.mode == "inventory":
+        cipher = build_envelope_cipher()
+        inventory = rotation_inventory(ciphertexts, cipher=cipher, max_records=args.max_records)
+        print(json.dumps({
+            "total": inventory.total, "current": inventory.current,
+            "stale": inventory.stale, "unreadable": inventory.unreadable,
+            "legacy": inventory.legacy, "stale_key_versions": list(inventory.stale_keys),
+        }, indent=2))
+        return 0 if inventory.stale == 0 and inventory.legacy == 0 else 1
+
+    cipher = build_envelope_cipher()
+    records = [
+        RotationRecord(ciphertexts[position], dict(rows[position].get("context") or {}))
+        for position in range(len(rows))
+    ]
+
+    def persist(position: int, replacement: str) -> None:
+        # Position -> identity is resolved here, from the same materialized list the
+        # batch was built from, so ciphertext can never land on the wrong row.
+        print(json.dumps({"id": identities[position], "ciphertext": replacement}))
+
+    summary = rotate_envelopes(
+        records,
+        cipher=cipher,
+        persist=persist if args.confirm else None,
+        dry_run=not args.confirm,
+        max_records=max(1, min(args.max_records, 10_000)),
+    )
+    print(json.dumps({
+        "inspected": summary.inspected, "reencrypted": summary.reencrypted,
+        "already_current": summary.already_current, "failed": summary.failed,
+        "dry_run": summary.dry_run,
+    }, indent=2), file=sys.stderr)
+    return 0 if summary.failed == 0 else 1
+
+
 __all__ = [
     "BoundedTTLKeyCache",
     "DATA_ALGORITHM",
@@ -597,8 +728,14 @@ __all__ = [
     "EnvelopeError",
     "EnvelopeFormatError",
     "LegacyFernetDecryptor",
+    "RotationInventory",
     "RotationRecord",
     "RotationSummary",
     "build_envelope_cipher",
     "rotate_envelopes",
+    "rotation_inventory",
 ]
+
+
+if __name__ == "__main__":  # operator tool; see _rotation_cli
+    raise SystemExit(_rotation_cli())

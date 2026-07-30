@@ -83,7 +83,7 @@ def resolve_labels(
 
     project = (_brevitas_meta.get("project") or _brevitas_meta.get("repo")
                or os.getenv("BREVITAS_PROJECT") or os.getenv("BREVITAS_REPO")
-               or _git_root_name())
+               or _auto_project())
     source = (_brevitas_meta.get("source") or _brevitas_meta.get("client")
               or os.getenv("BREVITAS_SOURCE") or os.getenv("BREVITAS_CLIENT") or "sdk")
     return {
@@ -97,6 +97,22 @@ def resolve_labels(
         "gateway": _brevitas_meta.get("gateway", ""),
         "run_id": _brevitas_meta.get("run_id") or get_run_id(),
     }
+
+
+def _auto_project() -> str:
+    """Fall back to the local Git-root folder name unless the customer opts out.
+
+    The fallback is a display/filter dimension the dashboard depends on, so it
+    stays on by default and stays human-readable. But the folder name is the
+    customer's own material (release codenames, client names), and an empty
+    ``BREVITAS_PROJECT`` cannot express "send nothing" because it is falsy — so
+    ``BREVITAS_PROJECT_AUTO=0`` suppresses the fallback entirely.
+    """
+    if str(os.getenv("BREVITAS_PROJECT_AUTO", "1")).strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return ""
+    return _git_root_name()
 
 
 def _git_root_name() -> str:

@@ -60,6 +60,31 @@ def mark_documented_upstream_outage(request: Request, provider: str) -> bool:
     return active
 
 
+def record_savings_row(
+    *, authoritative: bool, billable: bool,
+    verified_savings_usd: float | None = None,
+) -> None:
+    """Count each usage row the control plane actually persisted.
+
+    Every other billing alert is a "too much bad" rule and reads green when the
+    money path produces nothing at all; this is the "too little good" series, and
+    the two labels separate "traffic stopped" from "traffic continued but nothing
+    was billable". Routed through the Metrics facade, which swallows exporter
+    faults — a receipt must never fail because telemetry is down. Deliberately
+    carries no tenant or key label.
+
+    ``verified_savings_usd`` is the magnitude half: rows alone stay green while
+    the pipeline emits rows worth nothing (the 2026-07-29 hand-repricing shape).
+    Passing ``None`` leaves the dollar series absent rather than publishing a
+    fleet-wide $0; the facade coerces NaN/inf/negative/non-numeric values, so no
+    validation is needed here.
+    """
+    get_runtime(default_service="api").metrics.record_savings_row(
+        authoritative=authoritative, billable=billable,
+        verified_savings_usd=verified_savings_usd,
+    )
+
+
 class RequestObservabilityMiddleware:
     """ASGI middleware retaining correlation/traces through the final response byte."""
 
@@ -134,7 +159,11 @@ class RequestObservabilityMiddleware:
                         route=route,
                         status_code=status_code,
                         duration_ms=duration * 1000,
+                        # Same partition Metrics.record_api_request uses, so a log
+                        # line and its metric series never disagree about whether a
+                        # 401/403 was a malformed request or a rejected credential.
                         outcome=("server_error" if status_code >= 500 else
+                                 "auth_denied" if status_code in (401, 403) else
                                  "client_error" if status_code >= 400 else "success"),
                     )
 

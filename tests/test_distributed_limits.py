@@ -321,3 +321,42 @@ def test_redis_telemetry_failure_does_not_change_limiter_behavior(monkeypatch):
     )
     lease = asyncio.run(DistributedLimiter(FakeRedis(), policy=policy()).acquire(identity()))
     assert lease.allowed is True
+
+
+def test_lease_ttl_is_derived_from_the_provider_request_deadline(monkeypatch):
+    from brevitas.provider_reliability import ProviderReliabilityConfig
+
+    for name in ("BREVITAS_PROVIDER_CONNECT_TIMEOUT_S",
+                 "BREVITAS_PROVIDER_READ_TIMEOUT_S",
+                 "BREVITAS_PROVIDER_WRITE_TIMEOUT_S",
+                 "BREVITAS_PROVIDER_MAX_RETRIES",
+                 "BREVITAS_PROVIDER_RETRY_MAX_S",
+                 "BREVITAS_LIMIT_LEASE_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    config = ProviderReliabilityConfig.from_env()
+    attempts = config.max_retries + 1
+    deadline = ((config.connect_timeout_s + config.read_timeout_s
+                 + config.write_timeout_s) * attempts
+                + config.retry_max_s * (attempts - 1))
+
+    for lease_seconds in (LimitPolicy().lease_seconds,
+                          LimitPolicy.from_env().lease_seconds):
+        # Nothing reclaims an orphaned slot before its TTL, so it must not be a
+        # multiple of the real deadline; but a non-streaming request is never
+        # renewed, so it must still outlive one.
+        assert deadline < lease_seconds < 900
+
+
+def test_lease_ttl_shrinks_with_a_tightened_provider_read_timeout(monkeypatch):
+    monkeypatch.delenv("BREVITAS_LIMIT_LEASE_SECONDS", raising=False)
+    monkeypatch.setenv("BREVITAS_PROVIDER_READ_TIMEOUT_S", "10")
+    tightened = LimitPolicy.from_env().lease_seconds
+    monkeypatch.delenv("BREVITAS_PROVIDER_READ_TIMEOUT_S")
+    assert tightened < LimitPolicy.from_env().lease_seconds / 2
+
+
+def test_explicit_lease_override_still_wins_and_is_clamped(monkeypatch):
+    monkeypatch.setenv("BREVITAS_LIMIT_LEASE_SECONDS", "120")
+    assert LimitPolicy.from_env().lease_seconds == 120
+    monkeypatch.setenv("BREVITAS_LIMIT_LEASE_SECONDS", "99999")
+    assert LimitPolicy.from_env().lease_seconds == 3_600

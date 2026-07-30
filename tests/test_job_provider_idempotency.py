@@ -330,6 +330,13 @@ def test_marker_response_loss_after_commit_cannot_enable_provider_replay():
                         and row["idempotency_key"] == self._eq(params["idempotency_key"])
                     ]
                     return matches[:1]
+                if params.get("select") == "id":
+                    # Per-organization queue-depth probe: PostgREST returns at
+                    # most `limit` ids and SupabaseJobStore counts the rows.
+                    ceiling = max(1, int(params["limit"]) - 1)
+                    depth = self.database.count_active(
+                        self._eq(params["organization_id"]), ceiling)
+                    return [{"id": f"active_{index}"} for index in range(depth)]
                 row = self.database.get(
                     self._eq(params["id"]),
                     self._eq(params["organization_id"]),

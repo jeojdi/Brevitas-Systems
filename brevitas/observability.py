@@ -90,9 +90,9 @@ _OPERATIONS = frozenset({
     "recovery", "responses", "unknown",
 })
 _OUTCOMES = frozenset({
-    "cancelled", "circuit_open", "client_error", "dead", "error", "failed", "hit",
-    "lease_lost", "miss", "rejected", "retry", "server_error", "success", "timeout",
-    "unavailable", "unknown",
+    "auth_denied", "cancelled", "circuit_open", "client_error", "dead", "error",
+    "failed", "hit", "lease_lost", "miss", "rejected", "retry", "server_error",
+    "success", "timeout", "unavailable", "unknown",
 })
 _DEPENDENCIES = frozenset({"compressor", "postgres", "provider", "redis", "stripe"})
 _SERVICES = frozenset({"api", "billing-worker", "compressor", "dashboard", "worker"})
@@ -111,7 +111,8 @@ _STATIC_ROUTE_SEGMENTS = frozenset({
     "live", "messages", "models", "ollama", "openai", "optimize", "optimize-prompt",
     "organization", "pipelines", "playground", "provider",
     "provider-costs", "providers", "quality", "ready", "register", "repositories", "reset",
-    "responses", "retrieval", "runs", "start", "startup", "stats", "stream", "token",
+    "responses", "retrieval", "runs", "settlement", "start", "startup", "stats",
+    "stream", "token",
     "usage", "v1",
 })
 _SPAN_ATTRIBUTES = frozenset({
@@ -120,14 +121,18 @@ _SPAN_ATTRIBUTES = frozenset({
     "http.response.status_code",
 })
 _METRIC_ATTRIBUTES = frozenset({
-    "cache", "dependency", "fault_domain", "method", "operation", "outcome",
-    "provider", "queue", "route", "service", "sla_eligible", "state", "status",
-    "surface",
+    "authoritative", "billable", "cache", "dependency", "fault_domain", "method",
+    "operation", "outcome", "provider", "queue", "route", "service", "sla_eligible",
+    "state", "status", "surface",
 })
 _SERIALIZED_LOG_FIELDS = frozenset({
     *_LOG_FIELDS,
-    "environment", "event", "logger", "service", "span_id", "timestamp", "trace_id",
+    "call_site", "environment", "event", "logger", "service", "span_id", "timestamp",
+    "trace_id",
 })
+# Source location of a caller that used plain `logging` instead of StructuredLogger.
+# Developer-authored (module basename + line), so it carries no customer material.
+_CALL_SITE = re.compile(r"^[A-Za-z0-9_.]{1,48}:[0-9]{1,6}$")
 
 
 def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -393,6 +398,17 @@ def _trace_ids() -> tuple[str, str]:
     return "", ""
 
 
+def _call_site(record: logging.LogRecord) -> str:
+    """Identify a plain-`logging` call site by source location, never by its text."""
+    module = str(getattr(record, "module", "") or "unknown")[:48]
+    try:
+        line = max(0, min(int(getattr(record, "lineno", 0) or 0), 999_999))
+    except (TypeError, ValueError):
+        line = 0
+    candidate = f"{module}:{line}"
+    return candidate if _CALL_SITE.fullmatch(candidate) else "unknown:0"
+
+
 class JsonLogFormatter(logging.Formatter):
     """Stable JSON formatter that intentionally discards free-form log messages."""
 
@@ -402,8 +418,9 @@ class JsonLogFormatter(logging.Formatter):
         self.environment = redact_text(environment, maximum=32) or "development"
 
     def format(self, record: logging.LogRecord) -> str:
-        event = getattr(record, "telemetry_event", "application_log")
-        if not isinstance(event, str) or not _EVENT_NAME.fullmatch(event):
+        event = getattr(record, "telemetry_event", "")
+        structured = isinstance(event, str) and bool(_EVENT_NAME.fullmatch(event))
+        if not structured:
             event = "application_log"
         payload: dict[str, object] = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
@@ -413,6 +430,11 @@ class JsonLogFormatter(logging.Formatter):
             "logger": redact_text(record.name, maximum=80),
             "event": event,
         }
+        if not structured:
+            # The message and its args stay discarded (docs/OBSERVABILITY.md), but
+            # without a source location every `%`-style caller collapses into one
+            # indistinguishable application_log line, which is unactionable.
+            payload["call_site"] = _call_site(record)
         request_id = current_request_id()
         job_id = current_job_id()
         if request_id:
@@ -521,6 +543,31 @@ def _gauge(meter: object, name: str, **kwargs: object) -> object:
     return creator(name, **kwargs) if creator else _NoopInstrument()
 
 
+_unmapped_lock = threading.Lock()
+_unmapped_billing_metrics: set[str] = set()
+
+
+def _warn_unmapped_billing_metric(name: str) -> None:
+    """Make billing metric-name drift visible instead of silently dropping it.
+
+    ``record_billing_metric`` speaks a name-based protocol, so a producer that
+    renames or adds a field otherwise loses the series with no exception and no
+    log. Bounded and emitted once per name: this runs on the billing loop.
+    """
+    try:
+        key = str(name)[:64]
+        with _unmapped_lock:
+            if key in _unmapped_billing_metrics or len(_unmapped_billing_metrics) >= 32:
+                return
+            _unmapped_billing_metrics.add(key)
+        StructuredLogger("brevitas.observability").warning(
+            "billing_metric_unmapped", alert=key, outcome="unknown",
+        )
+    except Exception:
+        # Telemetry bookkeeping must never affect the billing loop.
+        pass
+
+
 class Metrics:
     """Typed, low-cardinality metric facade for every production dependency."""
 
@@ -547,6 +594,15 @@ class Metrics:
         self.billing_stale = _gauge(meter, "brevitas.billing.stale", unit="1")
         self.billing_catalog_contract = _gauge(
             meter, "brevitas.billing.catalog.contract", unit="1"
+        )
+        self.billing_savings_rows = meter.create_counter(
+            "brevitas.billing.savings_rows", unit="1"
+        )
+        self.billing_verified_savings = meter.create_counter(
+            "brevitas.billing.verified_savings_usd", unit="USD"
+        )
+        self.billing_settlement_age = _gauge(
+            meter, "brevitas.billing.last_settlement_age", unit="s"
         )
         self.dependency_operations = meter.create_counter(
             "brevitas.dependency.operations", unit="1"
@@ -583,6 +639,12 @@ class Metrics:
         outcome = "success"
         if status_code >= 500:
             outcome = "server_error" if domain == "brevitas" else "unavailable"
+        elif status_code in {401, 403}:
+            # A rejected credential or membership is a distinct failure mode from a
+            # malformed request; collapsing both into client_error leaves the auth
+            # path with no signal at all. This partitions the existing label instead
+            # of adding an attribute, so the series count does not multiply.
+            outcome = "auth_denied"
         elif status_code >= 400:
             outcome = "client_error"
         attrs = {
@@ -654,6 +716,49 @@ class Metrics:
         self._emit(self.dependency_operations, "add", 1, attrs)
         self._emit(self.dependency_duration, "record", max(0.0, float(duration_seconds)), attrs)
 
+    def record_savings_row(
+        self, *, authoritative: bool, billable: bool,
+        verified_savings_usd: float | None = None,
+    ) -> None:
+        """Count produced usage rows so a stalled money path becomes visible.
+
+        Every billing alert today is a "too much bad" rule, and all of them read
+        green when nothing is produced at all: no pending entries, no review, no
+        dead rows. This is the "too little good" counterpart, and the two labels
+        separate "traffic stopped" from "traffic continued but nothing was
+        billable" — the shape of the 2026-07-17 stall.
+
+        The dollar counter is the magnitude half of the same control: rows alone
+        stay green when the pipeline keeps producing rows whose verified savings
+        round to nothing (the shape of the 2026-07-29 hand-repricing). Once a
+        caller passes an amount it is emitted for every persisted row *including
+        a zero one*, on purpose — an OTel counter exports no series until its
+        first increment, so a rate floor over a never-incremented instrument
+        reads *absent*, not zero, and absent never fires. Writing 0.0 makes
+        "zero dollars produced" an observable value.
+
+        ``verified_savings_usd=None`` (the default) emits nothing at all, so a
+        producer that has not been wired up yet leaves the series absent rather
+        than reporting a fleet-wide $0 that is indistinguishable from a real
+        revenue stall. Carries only the authoritative flag: no org, no customer,
+        no key.
+        """
+        self._emit(self.billing_savings_rows, "add", 1, {
+            "authoritative": "true" if authoritative else "false",
+            "billable": "true" if billable else "false",
+        })
+        if verified_savings_usd is None:
+            return
+        try:
+            dollars = float(verified_savings_usd)
+        except (TypeError, ValueError):
+            dollars = 0.0
+        if dollars != dollars or dollars in (float("inf"), float("-inf")):
+            dollars = 0.0                      # NaN/inf would poison the sum
+        self._emit(self.billing_verified_savings, "add",
+                   max(0.0, min(dollars, 10_000_000.0)),
+                   {"authoritative": "true" if authoritative else "false"})
+
     def record_billing_metric(
         self, name: str, value: float, attributes: Mapping[str, str] | None = None,
     ) -> None:
@@ -676,6 +781,20 @@ class Metrics:
             self._emit(self.billing_batch_duration, "record", safe_value / 1000.0)
         elif name == "billing.oldest_pending_seconds":
             self._emit(self.billing_queue_lag, "set", safe_value)
+        elif name == "billing.pending_count":
+            # The billing queue's depth, reported on the same fixed gauge (and
+            # under the same `queue` label) as record_queue(queue="billing").
+            self._emit(self.queue_depth, "set", safe_value, {"queue": "billing"})
+        elif name == "billing.stripe_unavailable":
+            # Stripe rate-limited a definitively non-ingested request. This is
+            # the only signal that distinguishes it from an ambiguous send.
+            self._emit(self.billing_recovery, "add", safe_value, {
+                "outcome": "stripe_unavailable",
+            })
+        elif name == "billing.catalog_validation_error":
+            self._emit(self.billing_recovery, "add", safe_value, {
+                "outcome": "catalog_validation_error",
+            })
         elif name == "billing.review_count":
             self._emit(self.billing_review, "set", safe_value)
         elif name == "billing.dead_count":
@@ -686,6 +805,13 @@ class Metrics:
             self._emit(self.billing_catalog_contract, "set", 1 if safe_value > 0 else 0)
         elif name == "billing.catalog_contract_invalid":
             self._emit(self.billing_catalog_contract, "set", 0)
+        elif name == "billing.last_settlement_age_seconds":
+            # Always-present staleness gauge. The producer must seed it fail-closed
+            # (large until a real settlement read succeeds) so a silent settler can
+            # never be mistaken for a fresh one.
+            self._emit(self.billing_settlement_age, "set", safe_value)
+        else:
+            _warn_unmapped_billing_metric(name)
 
 
 @dataclass(frozen=True)
@@ -922,6 +1048,23 @@ def get_runtime(*, default_service: str = "api") -> ObservabilityRuntime:
         return _runtime
 
 
+def telemetry_ready(*, default_service: str = "api") -> bool:
+    """Report whether metrics are exporting where the environment requires them.
+
+    Telemetry is opt-in (``BREVITAS_OTEL_ENABLED``), and a replica that ships with
+    it off serves traffic while every alert rule evaluates against absent series.
+    Readiness probes should include this term, but only where an exporter is
+    mandatory: local and CI runs legitimately never enable one, so this is true
+    outside production. Callers must set and verify the environment variable
+    before adding the term to a healthcheck, or the first deploy restart-loops.
+    """
+    runtime = get_runtime(default_service=default_service)
+    if runtime.enabled:
+        return True
+    environment = str(runtime.settings.environment or "").strip().lower()
+    return environment not in {"prod", "production"}
+
+
 def shutdown_observability() -> None:
     runtime = _runtime
     if runtime is not None:
@@ -957,5 +1100,6 @@ __all__ = [
     "job_context", "new_request_id",
     "normalize_job_id", "normalize_request_id", "provider_correlation_headers",
     "redact_text", "route_label", "sanitize_log_fields", "sanitize_span_attributes",
-    "shutdown_observability", "sla_eligible_fault", "valid_correlation_id",
+    "shutdown_observability", "sla_eligible_fault", "telemetry_ready",
+    "valid_correlation_id",
 ]

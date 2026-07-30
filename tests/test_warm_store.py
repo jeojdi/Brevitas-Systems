@@ -393,12 +393,20 @@ def test_purge_warm_state_drops_expired_rows(tmp_path):
     enable_warming(store)
     observe(store)
     past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    # The ledger day is relative and far outside any retention horizon in play.
+    # 202607280017 floors the Postgres ledger horizon at 365 days -- warm spend is
+    # the evidence a 7-day settlement period is recomputed from, so a 7-day
+    # maintenance window must not be able to delete it -- and this store is the
+    # declared SQLite mirror of that function. A fixed '2026-01-01' asserted the
+    # purge under the 7-day window only and would have to be edited again the day
+    # the mirror adopts the floor.
+    aged_out_day = (datetime.now(timezone.utc) - timedelta(days=400)).date().isoformat()
     with sqlite3.connect(store.db_path) as db:
         db.execute("UPDATE warm_prefixes SET expires_at=?", (past,))
         db.execute(
             "INSERT INTO warm_budget_ledger(organization_id,provider,day,"
             "reserved_usd,spent_usd,updated_at) VALUES(?,?,?,0,0,?)",
-            (ORG, "anthropic", "2026-01-01", past))
+            (ORG, "anthropic", aged_out_day, past))
     result = store.purge_warm_state(retention_days=7)
     assert result["prefixes_deleted"] == 1
     assert result["ledger_deleted"] == 1

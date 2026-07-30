@@ -1,4 +1,10 @@
-"""Tests for Lever 5 — RLM (Algorithm 1: context-as-variable + symbolic recursion)."""
+"""Tests for Lever 5 — RLM (Algorithm 1: context-as-variable + symbolic recursion).
+
+The REPL execs model-emitted code and is default-off for that reason, so every test that
+needs the emitted code to actually run passes `allow_unsandboxed_exec=True` explicitly.
+The scripted `fake_llm`s here are fully test-controlled input, which is the only condition
+under which that opt-in is legitimate.
+"""
 
 from token_efficiency_model.lossless.rlm import RLM, _extract_code, _metadata
 
@@ -34,7 +40,7 @@ def test_rlm_finds_needle_via_code_without_reading_P_into_context():
             )
         return "unused"
 
-    rlm = RLM(fake_llm)
+    rlm = RLM(fake_llm, allow_unsandboxed_exec=True)
     res = rlm.run(P, "What is the secret code?")
     assert res.answer == needle
     # the root context never contained the 1M-char P (only metadata + code + stdout meta)
@@ -58,7 +64,7 @@ def test_rlm_symbolic_recursion_over_slices():
         # sub-call: 'extract the integer after value=' — return it
         return text.split("value=")[-1].strip()
 
-    rlm = RLM(fake_llm)
+    rlm = RLM(fake_llm, allow_unsandboxed_exec=True)
     res = rlm.run(P, "Sum all the values")
     assert res.answer == str(sum(range(10)))   # 45
     assert res.sub_calls >= 1
@@ -70,10 +76,39 @@ def test_rlm_repl_error_is_surfaced_not_crashed():
             return "```python\nundefined_name + 1\n```"  # will raise inside REPL
         return ""
     # without set_final, loop exhausts iters but must not crash
-    rlm = RLM(fake_llm, max_iters=2)
+    rlm = RLM(fake_llm, max_iters=2, allow_unsandboxed_exec=True)
     res = rlm.run("small P", "q")
     assert res.answer == ""           # never finalized
     assert res.iters == 2
+
+
+def test_rlm_repl_captures_systemexit_but_propagates_interrupt():
+    """SystemExit in emitted code is a REPL error; Ctrl-C must still interrupt.
+
+    The live benchmark (bench_rlm_e2e.py) makes paid provider calls per iteration,
+    so a swallowed KeyboardInterrupt keeps spending money after the operator has
+    asked it to stop.
+    """
+    import pytest
+
+    def fake_llm(text: str) -> str:
+        if "Question:" in text:
+            # set_final first so the SystemExit run never reaches fallback
+            # synthesis (which would call the raising sub_llm again).
+            return "```python\nset_final('done')\nsub_llm('boom')\n```"
+        if "boom" in text:  # the sub (provider) call is where Ctrl-C lands
+            raise fake_llm.exc
+        return ""
+
+    fake_llm.exc = SystemExit(3)
+    rlm = RLM(fake_llm, max_iters=1, allow_unsandboxed_exec=True)
+    res = rlm.run("small P", "q")   # SystemExit: surfaced, not fatal
+    assert res.answer == "done"
+
+    fake_llm.exc = KeyboardInterrupt()
+    rlm = RLM(fake_llm, max_iters=1, allow_unsandboxed_exec=True)
+    with pytest.raises(KeyboardInterrupt):
+        rlm.run("small P", "q")     # KeyboardInterrupt: propagates
 
 
 def test_rlm_grep_function_finds_patterns():
@@ -90,7 +125,7 @@ def test_rlm_grep_function_finds_patterns():
             )
         return ""
 
-    rlm = RLM(fake_llm)
+    rlm = RLM(fake_llm, allow_unsandboxed_exec=True)
     res = rlm.run(P, "How many lines have 'middle'?")
     # grep should find 2 lines with 'middle' (plus 1 '---' separator each) = should be > 0
     assert res.answer != ""
@@ -111,7 +146,7 @@ def test_rlm_peek_function_extracts_slice():
             )
         return ""
 
-    rlm = RLM(fake_llm)
+    rlm = RLM(fake_llm, allow_unsandboxed_exec=True)
     res = rlm.run(P, "Get chars 5-10")
     assert res.answer == "56789"
 
@@ -130,7 +165,7 @@ def test_rlm_fallback_synthesis_when_no_set_final():
         # fallback synthesis call — just return a fixed answer
         return "Paris"
 
-    rlm = RLM(fake_llm, max_iters=2)
+    rlm = RLM(fake_llm, max_iters=2, allow_unsandboxed_exec=True)
     res = rlm.run(P, "What is the capital of France?")
     # After 2 iters without set_final, should trigger fallback synthesis
     assert res.answer == "Paris"

@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
+from api.billing_recovery import BillingHealth
 import api.observability as api_observability
 from api.observability import (
     BillingTelemetryAdapter,
@@ -38,6 +39,7 @@ from brevitas.observability import (
     redact_text,
     route_label,
     sanitize_span_attributes,
+    telemetry_ready,
     valid_correlation_id,
 )
 
@@ -161,6 +163,52 @@ def test_structured_json_logging_never_serializes_freeform_or_sensitive_fields()
     for forbidden in (raw_secret, raw_email, raw_prompt, "authorization", "prompt", "body"):
         assert forbidden not in encoded
     assert "[REDACTED]" in redact_text(f"Bearer {raw_secret} {raw_email}")
+
+
+def test_plain_logging_calls_keep_their_source_location_not_their_message():
+    """~70 `%`-style call sites otherwise collapse into one identical line.
+
+    The message and args stay discarded on purpose (docs/OBSERVABILITY.md), so the
+    only thing that can distinguish "usage write failed" from any other error is a
+    developer-authored source location.
+    """
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonLogFormatter("api", "test"))
+    logger = logging.Logger("brevitas.api")
+    logger.addHandler(handler)
+
+    secret = "sk_live_1234567890 person@example.com the acquisition prompt"
+    logger.error("usage write failed: %s", secret)
+    first, plain = stream.getvalue(), json.loads(stream.getvalue())
+    assert plain["event"] == "application_log"
+    assert plain["severity"] == "error"
+    assert re.fullmatch(r"[A-Za-z0-9_.]{1,48}:[0-9]{1,6}", plain["call_site"])
+    assert secret not in first
+    assert "usage write failed" not in first
+
+    stream.truncate(0)
+    stream.seek(0)
+    logger.error("another failure entirely: %s", secret)
+    second = json.loads(stream.getvalue())
+    assert second["call_site"] != plain["call_site"]
+
+    # A StructuredLogger record already names itself; it must stay unchanged.
+    stream.truncate(0)
+    stream.seek(0)
+    named = logging.getLogger("brevitas.test.call_site")
+    named.addHandler(handler)
+    named.propagate = False
+    try:
+        observability.StructuredLogger("brevitas.test.call_site").error(
+            "usage_write_failed", error_type="ValueError", outcome="error",
+        )
+    finally:
+        named.removeHandler(handler)
+    structured = json.loads(stream.getvalue())
+    assert structured["event"] == "usage_write_failed"
+    assert structured["error_type"] == "ValueError"
+    assert "call_site" not in structured
 
 
 def test_shared_redactor_handles_attacker_keys_values_and_kms_exception(monkeypatch):
@@ -596,6 +644,203 @@ def test_billing_catalog_contract_metric_and_alert_share_fixed_gauge(monkeypatch
     assert catalog == [("set", 1, {}), ("set", 0, {})]
 
 
+def _emitted_billing_metric_names() -> set[str]:
+    """Harvest every metric name api/billing_recovery.py can hand to telemetry.
+
+    The worker's telemetry protocol is name-based, so a name with no branch in
+    ``record_billing_metric`` is silently discarded — no exception, no export,
+    nothing in the logs. This harvester is the only thing that can notice.
+    """
+    source = (ROOT / "api/billing_recovery.py").read_text()
+    names = set(re.findall(r'\.metric\(\s*"(billing\.[A-Za-z0-9_.]+)"', source))
+    # check_health() emits one metric per BillingHealth field via an f-string.
+    dynamic = re.findall(r'\.metric\(\s*f"billing\.\{(\w+)\}"', source)
+    if dynamic:
+        assert dynamic == ["name"], dynamic
+        assert "for name in BillingHealth.__dataclass_fields__" in source
+        names |= {
+            f"billing.{field}" for field in BillingHealth.__dataclass_fields__
+        }
+    return names
+
+
+def test_every_billing_metric_name_the_worker_emits_has_a_recording_branch():
+    emitted = _emitted_billing_metric_names()
+
+    # Anchor the harvester itself: if a refactor stops it from finding names,
+    # the contract below would pass vacuously.
+    assert emitted >= {
+        "billing.batch.claimed",
+        "billing.batch.duration_ms",
+        "billing.catalog_contract_valid",
+        "billing.catalog_validation_error",
+        "billing.dead_count",
+        "billing.entries",
+        "billing.lease_lost",
+        "billing.oldest_pending_seconds",
+        "billing.pending_count",
+        "billing.review_count",
+        "billing.stale_sending_count",
+        "billing.stripe_unavailable",
+    }
+
+    dropped = []
+    for name in sorted(emitted):
+        meter = _Meter()
+        Metrics(meter).record_billing_metric(name, 1)
+        if not meter.calls:
+            dropped.append(name)
+    assert dropped == []
+
+
+def test_produced_savings_volume_is_measured_with_two_boolean_labels():
+    """The only signal that separates "no traffic" from "nothing billable"."""
+    meter = _Meter()
+    metrics = Metrics(meter)
+    metrics.record_savings_row(
+        authoritative=True, billable=True, verified_savings_usd=1.25,
+    )
+    metrics.record_savings_row(
+        authoritative=False, billable=False, verified_savings_usd=0.0,
+    )
+    assert meter.calls == [
+        (
+            "brevitas.billing.savings_rows", "add", 1,
+            {"authoritative": "true", "billable": "true"},
+        ),
+        (
+            "brevitas.billing.verified_savings_usd", "add", 1.25,
+            {"authoritative": "true"},
+        ),
+        (
+            "brevitas.billing.savings_rows", "add", 1,
+            {"authoritative": "false", "billable": "false"},
+        ),
+        # Emitted at zero on purpose: a counter that has never been incremented
+        # exports no series at all, and a rate floor over an absent series can
+        # never fire. This is what makes "$0 produced" observable.
+        (
+            "brevitas.billing.verified_savings_usd", "add", 0.0,
+            {"authoritative": "false"},
+        ),
+    ]
+
+
+def test_unwired_dollar_producer_leaves_the_series_absent_not_zero():
+    """A caller that passes no amount must not publish a fleet-wide $0, which
+    would be indistinguishable from a real stall. Absent means "not wired"."""
+    meter = _Meter()
+    Metrics(meter).record_savings_row(authoritative=True, billable=True)
+    assert meter.calls == [
+        (
+            "brevitas.billing.savings_rows", "add", 1,
+            {"authoritative": "true", "billable": "true"},
+        ),
+    ]
+
+
+@pytest.mark.parametrize("amount", [
+    float("nan"), float("inf"), float("-inf"), -12.5, "not-a-number",
+    10_000_000_000.0,
+])
+def test_verified_savings_dollars_never_poison_the_counter(amount):
+    """A receipt is customer-influenced input; a NaN/inf/negative sum is
+    unrecoverable for a monotonic counter, so the value is coerced, not trusted."""
+    meter = _Meter()
+    Metrics(meter).record_savings_row(
+        authoritative=True, billable=True, verified_savings_usd=amount,
+    )
+    dollars = [
+        value for name, _method, value, _attrs in meter.calls
+        if name == "brevitas.billing.verified_savings_usd"
+    ]
+    assert len(dollars) == 1
+    assert 0.0 <= dollars[0] <= 10_000_000.0
+
+
+def test_settlement_age_gauge_and_unmapped_metric_names_are_both_visible(caplog):
+    meter = _Meter()
+    metrics = Metrics(meter)
+    metrics.record_billing_metric("billing.last_settlement_age_seconds", 259_200)
+    assert meter.calls == [
+        ("brevitas.billing.last_settlement_age", "set", 259_200.0, {}),
+    ]
+
+    # Name-based protocol: a producer that renames a field must not vanish silently.
+    observability._unmapped_billing_metrics.clear()
+    with caplog.at_level(logging.WARNING, logger="brevitas.observability"):
+        metrics.record_billing_metric("billing.some_new_field", 1)
+        metrics.record_billing_metric("billing.some_new_field", 1)
+    events = [
+        record.__dict__.get("telemetry_fields", {})
+        for record in caplog.records
+        if record.__dict__.get("telemetry_event") == "billing_metric_unmapped"
+    ]
+    assert events == [{"alert": "billing.some_new_field", "outcome": "unknown"}]
+    assert meter.calls == [
+        ("brevitas.billing.last_settlement_age", "set", 259_200.0, {}),
+    ]
+    observability._unmapped_billing_metrics.clear()
+
+
+def test_auth_denials_are_their_own_outcome_and_not_an_slo_excluded_bucket():
+    meter = _Meter()
+    metrics = Metrics(meter)
+    for status in (401, 403, 400, 500):
+        metrics.record_api_request(
+            duration_seconds=.1, method="POST", route="/v1/stats", status_code=status,
+        )
+    outcomes = [
+        attrs["outcome"] for name, method, _value, attrs in meter.calls
+        if name == "brevitas.api.requests" and method == "add"
+    ]
+    assert outcomes == ["auth_denied", "auth_denied", "client_error", "server_error"]
+    # No new attribute key, so brevitas_api_requests_total series do not multiply.
+    assert set(meter.calls[0][3]) == {
+        "method", "route", "outcome", "surface", "fault_domain", "sla_eligible",
+    }
+
+
+def test_telemetry_readiness_fails_closed_only_where_an_exporter_is_mandatory(monkeypatch):
+    class Runtime:
+        def __init__(self, enabled, environment):
+            self.enabled = enabled
+            self.settings = ObservabilitySettings(
+                enabled=enabled, environment=environment
+            )
+
+    monkeypatch.setattr(
+        observability, "get_runtime", lambda **_kwargs: Runtime(False, "development")
+    )
+    assert telemetry_ready() is True
+    monkeypatch.setattr(
+        observability, "get_runtime", lambda **_kwargs: Runtime(False, "production")
+    )
+    assert telemetry_ready() is False
+    monkeypatch.setattr(
+        observability, "get_runtime", lambda **_kwargs: Runtime(True, "production")
+    )
+    assert telemetry_ready() is True
+
+
+def test_previously_dropped_billing_metrics_map_to_fixed_low_cardinality_series():
+    meter = _Meter()
+    metrics = Metrics(meter)
+
+    metrics.record_billing_metric("billing.pending_count", 7)
+    metrics.record_billing_metric("billing.stripe_unavailable", 1)
+    metrics.record_billing_metric("billing.catalog_validation_error", 1)
+
+    assert meter.calls == [
+        ("brevitas.queue.depth", "set", 7.0, {"queue": "billing"}),
+        ("brevitas.billing.recovery", "add", 1.0, {"outcome": "stripe_unavailable"}),
+        (
+            "brevitas.billing.recovery", "add", 1.0,
+            {"outcome": "catalog_validation_error"},
+        ),
+    ]
+
+
 def test_dashboard_alert_and_collector_definitions_parse_and_cover_required_alerts():
     collector = json.loads((ROOT / "observability/collector/otel-collector.yml").read_text())
     alerts = json.loads((ROOT / "observability/prometheus/alerts.yml").read_text())
@@ -604,7 +849,8 @@ def test_dashboard_alert_and_collector_definitions_parse_and_cover_required_aler
     assert set(collector["service"]["pipelines"]) == {"traces", "metrics"}
     assert collector["processors"]["memory_limiter"]["limit_mib"] == 256
     assert collector["exporters"]["otlphttp/monitoring"]["sending_queue"]["queue_size"] == 2048
-    rules = [rule for group in alerts["groups"] for rule in group["rules"]]
+    every_rule = [rule for group in alerts["groups"] for rule in group["rules"]]
+    rules = [rule for rule in every_rule if "alert" in rule]
     names = {rule["alert"] for rule in rules}
     assert names >= {
         "ExternalApiAvailabilityFastBurn",
@@ -623,6 +869,14 @@ def test_dashboard_alert_and_collector_definitions_parse_and_cover_required_aler
         "PostgresDegraded",
         "RedisDegraded",
         "CompressorDegraded",
+        # "Too little good" detective controls: every rule above is "too much bad"
+        # and all of them read green while revenue is exactly zero.
+        "BillableSavingsStalledWhileServingTraffic",
+        "VerifiedSavingsDollarsCollapsedWhileRowsContinue",
+        "BillingSettlementStale",
+        "ExternalApiTelemetrySilent",
+        "InternalTelemetrySilent",
+        "ExternalApiAuthDenialSpike",
     }
     rendered_rules = json.dumps(rules)
     assert "0.001" in rendered_rules  # 99.9% external monthly budget
@@ -643,6 +897,52 @@ def test_dashboard_alert_and_collector_definitions_parse_and_cover_required_aler
     assert catalog_missing["expr"] == "absent(brevitas_billing_catalog_contract) == 1"
     assert len({panel["id"] for panel in dashboard["panels"]}) == len(dashboard["panels"])
     assert dashboard["uid"] == "brevitas-enterprise-overview"
+
+    # Every detective control ships disarmed. A rate floor on a pipeline that is
+    # currently producing nothing would fire immediately and permanently, which is
+    # the worst possible state for a rule whose whole job is to be believed.
+    gates = {
+        rule["record"]: rule for rule in every_rule if "record" in rule
+    }
+    assert set(gates) == {
+        "brevitas_alerting_armed_telemetry_absence",
+        "brevitas_alerting_armed_billing_volume",
+        "brevitas_alerting_armed_auth_denial",
+    }
+    assert all(gate["expr"] == "vector(0)" for gate in gates.values())
+    for name in (
+        "BillableSavingsStalledWhileServingTraffic",
+        "VerifiedSavingsDollarsCollapsedWhileRowsContinue",
+        "BillingSettlementStale",
+        "ExternalApiTelemetrySilent",
+        "InternalTelemetrySilent",
+        "ExternalApiAuthDenialSpike",
+    ):
+        rule = next(item for item in rules if item["alert"] == name)
+        gate = next(key for key in gates if key in rule["expr"])
+        assert f"and on() ({gate} == 1)" in rule["expr"]
+        assert rule["annotations"]["arming"]
+        assert rule["for"] == "30m"
+    savings = next(
+        rule for rule in rules
+        if rule["alert"] == "BillableSavingsStalledWhileServingTraffic"
+    )
+    # An OTel counter exports nothing before its first increment, so the floor must
+    # default the missing series to zero rather than rely on absent().
+    assert "or vector(0)" in savings["expr"]
+    # It also must not fire during legitimate idleness.
+    assert 'brevitas_api_requests_total{surface=\\"external\\"}' in json.dumps(savings)
+
+    dollars = next(
+        rule for rule in rules
+        if rule["alert"] == "VerifiedSavingsDollarsCollapsedWhileRowsContinue"
+    )
+    # The magnitude half is the mirror image and must NOT default the missing
+    # series to zero: while no producer passes verified_savings_usd the series is
+    # absent, and `or vector(0)` would turn "not wired yet" into a firing rule.
+    assert "or vector(0)" not in dollars["expr"]
+    assert "brevitas_billing_verified_savings_usd_total" in dollars["expr"]
+    assert 'brevitas_billing_savings_rows_total{billable=\\"true\\"}' in json.dumps(dollars)
 
 
 def test_server_posthog_is_pseudonymous_allowlisted_and_bounded():

@@ -406,6 +406,86 @@ def test_rotation_workflow_supports_dry_run_and_bounded_persistence():
     assert current.decrypt_with_metadata(persisted[0][1]).needs_rotation is False
 
 
+def test_rotation_inventory_counts_stale_rows_without_kms_or_plaintext():
+    """The pre-rotation gauge: which stored credentials still need the old key version.
+
+    Without this the operator cannot tell whether disabling a retired KMS key version
+    would make customer provider credentials permanently undecryptable.
+    """
+    from brevitas.security.envelope import rotation_inventory
+
+    kms = MockManagedKMS()
+    old = cipher(kms, version="6")
+    current = cipher(kms, version="7")
+    stored = [
+        old.encrypt_text("stale-one"),
+        old.encrypt_text("stale-two"),
+        current.encrypt_text("fresh"),
+        "plain-legacy-fernet-value",
+        "bvt-envelope:v1:not-base64-at-all!!",
+    ]
+
+    before = kms.unwrap_calls
+    inventory = rotation_inventory(stored, cipher=current)
+    assert kms.unwrap_calls == before          # metadata only: no KMS, no plaintext
+    assert (inventory.total, inventory.current, inventory.stale) == (5, 1, 2)
+    assert inventory.legacy == 1 and inventory.unreadable == 1
+    assert inventory.stale_keys == ("credential-primary/6/MOCK-KMS-AEAD",)
+
+    # After a rotation pass the gauge must converge to zero.
+    rewrapped = [current.reencrypt(value) for value in stored[:3]]
+    assert rotation_inventory(rewrapped, cipher=current).stale == 0
+
+
+def test_rotation_driver_maps_batch_positions_back_to_row_identities(tmp_path, capsys, monkeypatch):
+    """rotate_envelopes hands the callback a position, never a row id.
+
+    The operator entry point owns that mapping, so it must be pinned: writing
+    ciphertext onto the wrong row would hand one tenant another tenant's credential.
+    """
+    from brevitas.security import envelope as envelope_module
+
+    kms = MockManagedKMS()
+    old = cipher(kms, version="6")
+    current = cipher(kms, version="7")
+    contexts = [
+        {"purpose": "provider_credential", "key_hash": "aaa"},
+        {"purpose": "provider_credential", "key_hash": "bbb"},
+    ]
+    rows = [
+        {"id": "cfg-a", "ciphertext": old.encrypt_text("key-a", context=contexts[0]),
+         "context": contexts[0]},
+        {"id": "cfg-b", "ciphertext": old.encrypt_text("key-b", context=contexts[1]),
+         "context": contexts[1]},
+    ]
+    source = tmp_path / "rows.jsonl"
+    source.write_text("\n".join(json.dumps(row) for row in rows))
+    argv = ["rewrap", "--input", str(source)]
+    monkeypatch.setattr(envelope_module, "build_envelope_cipher", lambda **_: current)
+
+    # Dry run by default: nothing is emitted for the caller to apply.
+    assert envelope_module._rotation_cli(argv) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+    assert envelope_module._rotation_cli([*argv, "--confirm"]) == 0
+    emitted = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+    assert [item["id"] for item in emitted] == ["cfg-a", "cfg-b"]
+    # Each row's ciphertext must still decrypt under ITS OWN context, i.e. no swap.
+    assert current.decrypt_text(
+        emitted[0]["ciphertext"],
+        context={"purpose": "provider_credential", "key_hash": "aaa"},
+    ) == "key-a"
+    assert current.decrypt_text(
+        emitted[1]["ciphertext"],
+        context={"purpose": "provider_credential", "key_hash": "bbb"},
+    ) == "key-b"
+    assert current.decrypt_with_metadata(
+        emitted[1]["ciphertext"],
+        context={"purpose": "provider_credential", "key_hash": "bbb"},
+    ).needs_rotation is False
+
+
 def test_data_key_cache_has_hard_size_ttl_and_lru_bounds():
     now = [100.0]
     cache = BoundedTTLKeyCache(max_entries=2, ttl_seconds=5, clock=lambda: now[0])

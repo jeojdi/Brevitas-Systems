@@ -34,6 +34,9 @@ from .runtime import hosted_runtime
 
 _SAFE_IDEMPOTENCY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _TERMINAL = {"succeeded", "failed", "cancelled", "dead"}
+# Rows that still occupy the organization's queue depth. Anything terminal has
+# either been answered or given up on and is waiting only for retention purge.
+_ACTIVE = ("queued", "leased", "running")
 _SECRET_FIELDS = {
     "authorization", "api_key", "apikey", "provider_api_key", "secret",
     "token", "x-api-key", "x-brevitas-key",
@@ -230,6 +233,30 @@ class InMemoryJobStore:
                 return None
             return dict(row)
 
+    def find_by_idempotency(self, organization_id: str, customer_id: str,
+                            idempotency_key: str) -> dict | None:
+        with self._lock:
+            job_id = self.idempotency.get(
+                (organization_id, customer_id, idempotency_key))
+            return dict(self.rows[job_id]) if job_id in self.rows else None
+
+    def count_active(self, organization_id: str, ceiling: int) -> int:
+        """Queue depth for one organization, probed no further than ceiling+1.
+
+        The caller only needs to know whether the quota is reached, so every
+        backend stops counting one row past it.
+        """
+        bound = max(1, int(ceiling)) + 1
+        with self._lock:
+            count = 0
+            for row in self.rows.values():
+                if (row["organization_id"] == organization_id
+                        and row["status"] not in _TERMINAL):
+                    count += 1
+                    if count >= bound:
+                        break
+            return count
+
     def cancel(self, job_id: str, organization_id: str, customer_id: str) -> dict | None:
         with self._lock:
             row = self.rows.get(job_id)
@@ -237,10 +264,16 @@ class InMemoryJobStore:
                 return None
             if row["status"] in _TERMINAL:
                 return dict(row)
+            # The lock makes this read-modify-write atomic, which is the same
+            # guarantee the SQLite/Supabase adapters get from their status
+            # predicate. Releasing the lease matches them too: a terminal row
+            # must never keep a live lease.
             row["cancel_requested"] = True
             if row["status"] in ("queued", "leased"):
                 row["status"] = "cancelled"
                 row["completed_at"] = _now()
+                row["lease_owner"] = None
+                row["lease_expires_at"] = None
             row["updated_at"] = _now()
             return dict(row)
 
@@ -448,6 +481,24 @@ class SQLiteJobStore:
                 (job_id, organization_id, customer_id),
             ).fetchone())
 
+    def find_by_idempotency(self, organization_id: str, customer_id: str,
+                            idempotency_key: str) -> dict | None:
+        with self.store._conn() as db:
+            return self._dict(db.execute(
+                "SELECT * FROM ai_jobs WHERE organization_id=? AND customer_id=? "
+                "AND idempotency_key=?",
+                (organization_id, customer_id, idempotency_key),
+            ).fetchone())
+
+    def count_active(self, organization_id: str, ceiling: int) -> int:
+        with self.store._conn() as db:
+            row = db.execute(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM ai_jobs WHERE organization_id=? "
+                f"AND status IN ({','.join('?' for _ in _ACTIVE)}) LIMIT ?)",
+                (organization_id, *_ACTIVE, max(1, int(ceiling)) + 1),
+            ).fetchone()
+            return int(row[0] or 0)
+
     def cancel(self, job_id: str, organization_id: str, customer_id: str) -> dict | None:
         with self.store._conn() as db:
             row = self._dict(db.execute(
@@ -456,13 +507,29 @@ class SQLiteJobStore:
             ).fetchone())
             if not row or row["status"] in _TERMINAL:
                 return row
-            terminal = row["status"] in ("queued", "leased")
-            db.execute(
-                "UPDATE ai_jobs SET cancel_requested=1,status=?,completed_at=?,updated_at=? "
-                "WHERE id=? AND organization_id=? AND customer_id=?",
-                ("cancelled" if terminal else row["status"], _now() if terminal else None, _now(),
-                 job_id, organization_id, customer_id),
-            )
+            if row["status"] in ("queued", "leased"):
+                # Compare-and-set on the states the read decided from: a worker
+                # that finished in the window has already written its result,
+                # and an unfenced UPDATE would overwrite it back to cancelled.
+                # Releasing the lease keeps a terminal row from carrying one.
+                db.execute(
+                    "UPDATE ai_jobs SET cancel_requested=1,status='cancelled',"
+                    "completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL "
+                    "WHERE id=? AND organization_id=? AND customer_id=? "
+                    "AND status IN ('queued','leased')",
+                    (_now(), _now(), job_id, organization_id, customer_id),
+                )
+            else:
+                # 'running' is cancelled cooperatively by process_one; never
+                # flip it terminal out from under a live lease.
+                db.execute(
+                    "UPDATE ai_jobs SET cancel_requested=1,updated_at=? "
+                    "WHERE id=? AND organization_id=? AND customer_id=? "
+                    "AND status NOT IN ('succeeded','failed','cancelled','dead')",
+                    (_now(), job_id, organization_id, customer_id),
+                )
+            # Either branch may match zero rows if the row moved on; the
+            # re-read answers with current truth rather than a client-visible 404.
             return self._dict(db.execute("SELECT * FROM ai_jobs WHERE id=?", (job_id,)).fetchone())
 
     def claim(self, worker_id: str, lease_seconds: int) -> dict | None:
@@ -617,12 +684,28 @@ class SupabaseJobStore:
             raise
 
     def _by_idempotency(self, row: dict) -> dict | None:
+        return self.find_by_idempotency(
+            row["organization_id"], row["customer_id"], row["idempotency_key"])
+
+    def find_by_idempotency(self, organization_id: str, customer_id: str,
+                            idempotency_key: str) -> dict | None:
         rows = self.store._request("GET", "ai_jobs", params={
-            "select": "*", "organization_id": f"eq.{row['organization_id']}",
-            "customer_id": f"eq.{row['customer_id']}",
-            "idempotency_key": f"eq.{row['idempotency_key']}", "limit": "1",
+            "select": "*", "organization_id": f"eq.{organization_id}",
+            "customer_id": f"eq.{customer_id}",
+            "idempotency_key": f"eq.{idempotency_key}", "limit": "1",
         }) or []
         return rows[0] if rows else None
+
+    def count_active(self, organization_id: str, ceiling: int) -> int:
+        # PostgREST reports an exact count only in a response header that the
+        # shared _request client discards, so bound the read at ceiling+1 ids:
+        # the quota only needs to know whether the ceiling is reached.
+        rows = self.store._request("GET", "ai_jobs", params={
+            "select": "id", "organization_id": f"eq.{organization_id}",
+            "status": f"in.({','.join(_ACTIVE)})",
+            "limit": str(max(1, int(ceiling)) + 1),
+        }) or []
+        return len(rows)
 
     def mark_provider_outbound_started(
         self, job_id: str, worker_id: str,
@@ -658,14 +741,31 @@ class SupabaseJobStore:
         row = self.get(job_id, organization_id, customer_id)
         if not row or row["status"] in _TERMINAL:
             return row
-        values = {"cancel_requested": True, "updated_at": _now()}
-        if row["status"] in ("queued", "leased"):
-            values.update(status="cancelled", completed_at=_now())
-        rows = self.store._request("PATCH", "ai_jobs", params={
+        params = {
             "id": f"eq.{job_id}", "organization_id": f"eq.{organization_id}",
             "customer_id": f"eq.{customer_id}",
-        }, data=values) or []
-        return rows[0] if rows else None
+        }
+        values = {"cancel_requested": True, "updated_at": _now()}
+        if row["status"] in ("queued", "leased"):
+            # Compare-and-set on the states the read decided from. Every other
+            # mutation on this table is lease-fenced; without a predicate here a
+            # worker that succeeded between the GET and the PATCH has its result
+            # overwritten back to cancelled and the tenant can never read it.
+            # Releasing the lease keeps a terminal row from carrying a live one.
+            params["status"] = "in.(queued,leased)"
+            values.update(status="cancelled", completed_at=_now(),
+                          lease_owner=None, lease_expires_at=None)
+        else:
+            # 'running' is cancelled cooperatively by process_one; never flip it
+            # terminal out from under a live lease.
+            params["status"] = f"not.in.({','.join(sorted(_TERMINAL))})"
+        rows = self.store._request(
+            "PATCH", "ai_jobs", params=params, data=values) or []
+        if rows:
+            return rows[0]
+        # The row moved between the read and the write. Answer with current
+        # truth so the route reports the real state instead of a 404.
+        return self.get(job_id, organization_id, customer_id)
 
     def claim(self, worker_id: str, lease_seconds: int) -> dict | None:
         rows = self.store._request("POST", "rpc/claim_ai_job", data={
@@ -781,6 +881,7 @@ class JobService:
         self.crypto = crypto
         self.dispatcher = dispatcher or RedisJobDispatcher(bounds=self.bounds)
         self.lease_seconds = max(30, min(3600, lease_seconds))
+        self.max_active_per_org = self._resolve_max_active_per_org(self.bounds)
 
     def configure_crypto(self, crypto: JobCrypto) -> None:
         if not isinstance(crypto, JobCrypto):
@@ -792,6 +893,19 @@ class JobService:
             raise KMSConfigurationError("durable job encryption is unavailable")
         return self.crypto
 
+    @staticmethod
+    def _resolve_max_active_per_org(bounds: ResourceBounds) -> int:
+        """Per-organization queue-depth ceiling, resolved once at composition.
+
+        The IP-bucketed route limit in api/server.py is a runaway-client brake,
+        not cross-tenant fairness; this is the bound that stops one organization
+        from occupying the whole shared queue. Deliberately generous — it is a
+        fairness brake, not a capacity plan. The constant, its BREVITAS_JOB_MAX_
+        ACTIVE_PER_ORG env knob and its clamp all live in ResourceBounds, so a
+        malformed value already failed at startup by the time we get here.
+        """
+        return max(1, int(bounds.job_max_active_per_org))
+
     async def submit(self, tenant: JobTenant, request: JobRequest,
                      idempotency_key: str = "") -> tuple[dict, bool]:
         if not tenant.organization_id or not tenant.customer_id:
@@ -800,6 +914,22 @@ class JobService:
             idempotency_key = uuid.uuid4().hex
         if not _SAFE_IDEMPOTENCY.fullmatch(idempotency_key):
             raise ValueError("invalid idempotency key")
+        # Idempotency is resolved before the quota and before any KMS work: a
+        # client retrying a key it already owns must get that row back, never a
+        # 429 for a job it already has and never a second envelope wrap. create()
+        # keeps its own check to close the race between this read and the insert.
+        existing = await asyncio.to_thread(
+            self.store.find_by_idempotency, tenant.organization_id,
+            tenant.customer_id, idempotency_key,
+        )
+        if existing:
+            return self.public(existing), False
+        ceiling = self.max_active_per_org
+        active = await asyncio.to_thread(
+            self.store.count_active, tenant.organization_id, ceiling,
+        )
+        if active >= ceiling:
+            raise ResourceLimitExceeded("organization has too many unfinished jobs")
         now = datetime.now(timezone.utc)
         job_id = str(uuid.uuid4())
         retention_seconds = min(
@@ -819,8 +949,10 @@ class JobService:
             "completed_at": None,
             "expires_at": (now + timedelta(seconds=retention_seconds)).isoformat(),
         }
-        row["payload_ciphertext"] = self._crypto().encrypt(
-            request.model_dump(), row=row, field="payload",
+        # The envelope wrap is a blocking KMS round trip; POST /v1/jobs is an
+        # async route, so it must not run on the event loop.
+        row["payload_ciphertext"] = await asyncio.to_thread(
+            self._crypto().encrypt, request.model_dump(), row=row, field="payload",
         )
         created_row, created = await asyncio.to_thread(self.store.create, row)
         if created:
@@ -835,7 +967,13 @@ class JobService:
         row = await asyncio.to_thread(
             self.store.get, job_id, tenant.organization_id, tenant.customer_id
         )
-        return self.public(row, include_result=True) if row else None
+        if not row:
+            return None
+        # Attaching the result decrypts (a KMS unwrap, and a re-wrap when the
+        # data key has rotated) and may repair the row, so it is offloaded the
+        # same way the store read is. Jobs are a 202-poll API: doing it inline
+        # would stall every tenant sharing this replica on each poll.
+        return await asyncio.to_thread(self._public_with_result, row)
 
     async def cancel(self, tenant: JobTenant, job_id: str) -> dict | None:
         row = await asyncio.to_thread(
@@ -1062,26 +1200,37 @@ class JobService:
             if not renewed:
                 raise JobLeaseLost("job lease renewal was rejected")
 
-    def public(self, row: dict, *, include_result: bool = False) -> dict:
-        result = {
+    def public(self, row: dict) -> dict:
+        """Tenant-safe projection of a durable row. Never does crypto or I/O."""
+        return {
             key: row.get(key) for key in (
                 "id", "status", "operation", "provider", "model", "attempts", "max_attempts",
                 "cancel_requested", "last_error_code", "created_at", "updated_at", "completed_at",
                 "expires_at",
             )
         }
-        if include_result and row.get("status") == "succeeded" and row.get("result_ciphertext"):
-            try:
-                decoded, replacement = self._crypto().decrypt(
-                    row["result_ciphertext"], row=row, field="result",
-                )
-            except CorruptJobCiphertext:
-                self.store.quarantine_result(row)
-                result.update(status="dead", last_error_code="ciphertext_unreadable")
-                return result
-            if replacement is not None:
-                self.store.migrate_ciphertext(
-                    row, "result", row["result_ciphertext"], replacement,
-                )
-            result["result"] = decoded
+
+    def _public_with_result(self, row: dict) -> dict:
+        """Projection plus the decrypted result, with ciphertext repair.
+
+        Blocking: a KMS unwrap always, plus a KMS wrap and a store write when
+        the data key has rotated, or a store write to quarantine an unreadable
+        row. Callers on the event loop must reach this through a worker thread.
+        """
+        result = self.public(row)
+        if row.get("status") != "succeeded" or not row.get("result_ciphertext"):
+            return result
+        try:
+            decoded, replacement = self._crypto().decrypt(
+                row["result_ciphertext"], row=row, field="result",
+            )
+        except CorruptJobCiphertext:
+            self.store.quarantine_result(row)
+            result.update(status="dead", last_error_code="ciphertext_unreadable")
+            return result
+        if replacement is not None:
+            self.store.migrate_ciphertext(
+                row, "result", row["result_ciphertext"], replacement,
+            )
+        result["result"] = decoded
         return result

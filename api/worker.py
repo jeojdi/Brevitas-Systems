@@ -19,7 +19,7 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 
 import httpx
@@ -186,10 +186,30 @@ def _billing_health_status() -> tuple[bool, dict[str, Any]]:
     return ready, public
 
 
+def _billing_recovery_block() -> tuple[str, dict[str, Any]]:
+    """Honest billing-loop status for /ready, whatever this worker's role is.
+
+    The health payload is always the real BillingLoopHealth snapshot. A
+    non-required role used to hardcode ready with a fabricated all-false health
+    block, so a dead loop on an `optional` worker reported "ready" forever
+    (WR-1). Billing recovery stays non-authoritative for durable job acceptance
+    either way; only this diagnostic block changes.
+    """
+    healthy, health = _billing_health_status()
+    if _BILLING_ROLE == "nonbilling" or not _BILLING_CONFIGURED:
+        # No loop is supposed to exist here, so there is nothing to call
+        # degraded: report it as deliberately off rather than as a dead loop.
+        return "disabled", health
+    return ("ready" if healthy else "unavailable"), health
+
+
 def _billing_loop_ready() -> bool:
-    if not _BILLING_REQUIRED:
-        return True
-    return _billing_health_status()[0]
+    """Whether billing recovery is healthy or deliberately disabled.
+
+    Never gates durable job acceptance; it answers the same question /ready
+    surfaces, from the same snapshot, for callers that want one boolean.
+    """
+    return _billing_recovery_block()[0] != "unavailable"
 
 
 async def _dependencies_ready() -> tuple[bool, bool]:
@@ -225,18 +245,7 @@ async def readiness():
     database_ready, redis_ready = await _dependencies_ready()
     kms = await _kms_readiness_status()
     kms_ready = _kms_dependency_ready(kms)
-    if _BILLING_REQUIRED:
-        billing_ready, billing_health = _billing_health_status()
-    else:
-        billing_ready, billing_health = True, {
-            "running": _BILLING_LOOP_RUNNING,
-            "initial_validation_succeeded": False,
-            "catalog_valid": False,
-            "last_success_fresh": False,
-            "last_success_age_seconds": None,
-            "consecutive_errors": 0,
-            "error_threshold_exceeded": False,
-        }
+    billing_status, billing_health = _billing_recovery_block()
     ready = (
         _WORKER_ACCEPTING
         and database_ready
@@ -259,8 +268,9 @@ async def readiness():
                 **kms,
             },
             "billing_recovery": {
-                "status": ("disabled" if _BILLING_ROLE == "nonbilling" else
-                           "ready" if billing_ready else "unavailable"),
+                # Derived from the real loop snapshot for every role: a dead
+                # loop must never advertise "ready" (WR-1).
+                "status": billing_status,
                 # Non-authoritative for job acceptance: billing degradation is
                 # surfaced here but never gates durable job consumption.
                 "authoritative": False,
@@ -619,7 +629,17 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
         try:
             status, data = await asyncio.to_thread(
                 _send_warm_ping, provider, spec, body, headers)
-        except (ProviderCircuitOpen, httpx.HTTPError):
+        except ProviderCircuitOpen:
+            # Fires before any request is issued, so nothing was spent.
+            return
+        except httpx.HTTPError:
+            # Known residual gap: a read timeout or reset after the provider
+            # already accepted the request settles 'release', which books no
+            # spend. Booking it needs a settle outcome that releases the
+            # reservation while recording spend ('spent_unknown'), which has to
+            # be added to warm_ping_settle and its RPC whitelist together — a
+            # forward migration plus api/store.py, neither of which can change
+            # here. Until then this is capped by max_pings_per_customer_day.
             return
         if status in (401, 403):
             outcome = "auth_failed"
@@ -629,9 +649,27 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
             return
         if not 200 <= status < 300:
             return
+        # The provider has already charged for this ping, so it must settle as
+        # 'warmed' from here on: that is the only outcome warm_ping_settle books
+        # spend for, and the one that advances next_due_at. Start from the
+        # reservation — warm_due_claim observer-prices it as an upper bound on
+        # this ping and the daily ceiling already admitted it — and refine it
+        # downward only once a parseable, priced receipt proves the real cost.
+        # Booking 0 for an unreadable 2xx body would release the whole
+        # reservation, so daily_budget_usd would never bind and
+        # billing_period_settlement_evidence.warm_spend_usd would compute the
+        # fee ceiling as if this spend never happened.
+        outcome = "warmed"
+        spent_usd = float(row.get("reserved_usd") or 0.0)
         receipt = normalize_usage(data.get("usage"), provider)
         costs = calculate_costs(provider, model, receipt.input_tokens, receipt)
-        spent_usd = float(costs.get("actual_cost_usd") or 0.0)
+        if receipt.total_tokens and str(costs.get("pricing_status")) == "priced":
+            spent_usd = float(costs.get("actual_cost_usd") or 0.0)
+        else:
+            logger.warning(
+                "warm_ping_usage_unreadable", provider=provider,
+                pricing_status=str(costs.get("pricing_status") or "unpriced"),
+            )
         await asyncio.to_thread(
             _safe_record_usage,
             auth_context=AuthContext(
@@ -657,8 +695,11 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
             pricing_status=costs.get("pricing_status") or "unpriced",
             pricing_version=costs.get("pricing_version") or "",
         )
-        outcome = "warmed"
     except Exception as exc:
+        # outcome/spent_usd are already committed above for any ping the provider
+        # answered, so a failure after that point still books the spend. This also
+        # covers asyncio.CancelledError on shutdown, which `except Exception`
+        # cannot see: it propagates, the finally settles, and the ping is booked.
         logger.error("warm_ping_failed", error_type=type(exc).__name__)
     finally:
         if lease is not None:
@@ -710,6 +751,106 @@ async def warming(stop: asyncio.Event) -> None:
             pass
 
 
+def _billing_restart_delay(restart_backoff: float, restarts: int) -> float:
+    """Bounded restart backoff: linear in restart count, hard-capped at 60s."""
+    return min(max(0.0, restart_backoff) * max(1, restarts), 60.0)
+
+
+async def _run_billing_supervisor(
+    stop: asyncio.Event,
+    loop_factory: Callable[[], Coroutine[Any, Any, None]],
+    *,
+    max_restarts: int,
+    restart_backoff: float,
+) -> None:
+    """Supervise the billing recovery loop: restart, back off, then escalate.
+
+    The loop is decoupled from durable job consumption (a billing outage must not
+    stop jobs), but its process-level exit still needs supervision: otherwise a
+    single unexpected escape (a bug in the loop body, MemoryError, etc.)
+    permanently halts Stripe reporting while /ready stays green — silent revenue
+    loss. On an unexpected exit we log it, back off, and recreate the loop. If
+    self-heal is exhausted on an authoritative worker (billing is required), we
+    escalate to a full process restart by setting `stop` — the orchestrator
+    brings the worker back, restoring the pre-decoupling safety net — rather than
+    run on indefinitely with billing dead.
+
+    The inner task is never cancelled from here: the loop defers cancellation
+    until its current bounded `to_thread` call returns and releases its own
+    never-started claims, so cancelling it could duplicate an in-flight send
+    (docs/STRIPE_BILLING.md, W1 worker integration contract items 3 and 5).
+    """
+    global _BILLING_LOOP_RUNNING
+    restarts = 0
+    while not stop.is_set():
+        inner = asyncio.create_task(loop_factory(), name="billing-recovery")
+        _BILLING_LOOP_RUNNING = True
+        failure: BaseException | None = None
+        try:
+            await inner
+        except asyncio.CancelledError:
+            _BILLING_LOOP_RUNNING = False
+            inner.cancel()
+            await asyncio.gather(inner, return_exceptions=True)
+            raise
+        except Exception as exc:
+            # WR-1: without this branch an exception escaping the loop body kills
+            # the supervisor right here, so every line below — the advertised
+            # restart, backoff and escalation — was dead code under *every*
+            # execution. `await inner` re-raises, so the exception is held in
+            # `failure` instead of being re-read off the completed task (which,
+            # on the only other way out of the loop, is provably always None).
+            failure = exc
+        _BILLING_LOOP_RUNNING = False
+        with _BILLING_HEALTH_LOCK:
+            stopped_health = dict(_BILLING_HEALTH)
+        stopped_health["running"] = False
+        _report_billing_health(stopped_health)
+        if failure is None and stop.is_set():
+            break  # normal shutdown: the loop observed `stop` and returned
+        restarts += 1
+        logger.error(
+            "billing_loop_stopped", outcome="degraded", restart=restarts,
+            error_type=type(failure).__name__ if failure is not None else "none")
+        if stop.is_set():
+            # A drain (or a previous escalation) is already under way: never
+            # start another loop that the bounded shutdown would have to await.
+            break
+        if restarts > max_restarts:
+            logger.error("billing_loop_unrecoverable", outcome="halted",
+                         restarts=restarts, billing_required=_BILLING_REQUIRED)
+            if _BILLING_REQUIRED:
+                # Authoritative billing cannot silently halt. Escalate to a
+                # process restart; the loop is not cancelled, so no in-flight
+                # send is duplicated.
+                stop.set()
+            break
+        try:
+            await asyncio.wait_for(
+                stop.wait(),
+                timeout=_billing_restart_delay(restart_backoff, restarts))
+        except TimeoutError:
+            pass
+
+
+async def _drain_billing_supervisor(billing_task: "asyncio.Task[None] | None") -> None:
+    """Await the billing supervisor without letting its failure skip cleanup.
+
+    The billing loop shields bounded thread work and releases its own leases, so
+    it must finish naturally; cancellation could duplicate an in-flight send. A
+    bare `await` here would re-raise a stored supervisor exception out of run()'s
+    finally block and skip every shutdown step after it (health server, provider
+    clients, Redis clients, credential cipher cache, observability flush).
+    """
+    if billing_task is None:
+        return
+    try:
+        await billing_task
+    except Exception as exc:
+        logger.error("billing_supervisor_failed", outcome="degraded",
+                     error_type=type(exc).__name__)
+
+
 async def run() -> None:
     global _WORKER_ACCEPTING, _BILLING_ROLE, _BILLING_REQUIRED
     global _BILLING_CONFIGURED, _BILLING_LOOP_RUNNING
@@ -749,69 +890,21 @@ async def run() -> None:
         if reporter_supported:
             billing_kwargs["health_reporter"] = _report_billing_health
 
-        # Supervise the billing loop instead of firing it once and forgetting it.
-        # The loop is decoupled from durable job consumption (a billing outage must
-        # not stop jobs), but its process-level exit still needs supervision:
-        # otherwise a single unexpected escape (a bug in the loop body, MemoryError,
-        # etc.) permanently halts Stripe reporting while /ready stays green — silent
-        # revenue loss. On an unexpected exit we log it, back off, and recreate the
-        # loop. If self-heal is exhausted on an authoritative worker (billing is
-        # required), we escalate to a full process restart by setting `stop` — the
-        # orchestrator brings the worker back, restoring the pre-decoupling safety
-        # net — rather than run on indefinitely with billing dead.
+        # Supervise the billing loop instead of firing it once and forgetting it
+        # (see _run_billing_supervisor for the restart/escalation contract).
         max_restarts = int(_billing_readiness_bound(
             "BREVITAS_BILLING_LOOP_MAX_RESTARTS", 5, 0, 100))
         restart_backoff = _billing_readiness_bound(
             "BREVITAS_BILLING_LOOP_RESTART_BACKOFF_SECONDS", 2.0, 0.0, 60.0)
-
-        async def billing_supervisor() -> None:
-            global _BILLING_LOOP_RUNNING
-            restarts = 0
-            while not stop.is_set():
-                inner = asyncio.create_task(
-                    run_billing_recovery_loop(billing_processor, stop, **billing_kwargs),
-                    name="billing-recovery",
-                )
-                _BILLING_LOOP_RUNNING = True
-                try:
-                    await inner
-                except asyncio.CancelledError:
-                    _BILLING_LOOP_RUNNING = False
-                    inner.cancel()
-                    await asyncio.gather(inner, return_exceptions=True)
-                    raise
-                _BILLING_LOOP_RUNNING = False
-                with _BILLING_HEALTH_LOCK:
-                    stopped_health = dict(_BILLING_HEALTH)
-                stopped_health["running"] = False
-                _report_billing_health(stopped_health)
-                if stop.is_set():
-                    break  # normal shutdown: the loop observed `stop` and returned
-                try:
-                    failure = inner.exception()
-                except (asyncio.CancelledError, asyncio.InvalidStateError):
-                    failure = None
-                restarts += 1
-                logger.error(
-                    "billing_loop_stopped", outcome="degraded", restart=restarts,
-                    error_type=type(failure).__name__ if failure is not None else "none")
-                if restarts > max_restarts:
-                    logger.error("billing_loop_unrecoverable", outcome="halted",
-                                 restarts=restarts, billing_required=_BILLING_REQUIRED)
-                    if _BILLING_REQUIRED:
-                        # Authoritative billing cannot silently halt. Escalate to a
-                        # process restart; the loop is not cancelled, so no in-flight
-                        # send is duplicated.
-                        stop.set()
-                    break
-                try:
-                    await asyncio.wait_for(
-                        stop.wait(), timeout=min(restart_backoff * restarts, 60.0))
-                except TimeoutError:
-                    pass
-
         billing_task = asyncio.create_task(
-            billing_supervisor(), name="billing-recovery-supervisor")
+            _run_billing_supervisor(
+                stop,
+                lambda: run_billing_recovery_loop(
+                    billing_processor, stop, **billing_kwargs),
+                max_restarts=max_restarts,
+                restart_backoff=restart_backoff,
+            ),
+            name="billing-recovery-supervisor")
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -899,12 +992,30 @@ async def run() -> None:
                     error_type=type(exc).__name__,
                 )
             try:
+                # 365, not 7: 202607280017 floors the warm_budget_ledger horizon at
+                # 365 days internally because the ledger is settlement evidence, so
+                # a 7-day default was only misleading about the ledger. The same
+                # value drives the warm_prefixes TTL cleanup, where it is the
+                # operative bound — so state the retention intent explicitly rather
+                # than relying on the database floor to correct it.
                 await asyncio.to_thread(
                     _store.purge_warm_state,
-                    int(_warm_bound("BREVITAS_WARM_RETENTION_DAYS", 7, 1, 365)),
+                    int(_warm_bound("BREVITAS_WARM_RETENTION_DAYS", 365, 1, 365)),
                 )
             except Exception as exc:
                 logger.error("warm_state_purge_failed", error_type=type(exc).__name__)
+            # 202607280025's limiter janitor. Every limiter scope sweeps itself
+            # inline, but only while its own endpoint is being hit — waitlist.global,
+            # waitlist.identity and the billing_* scopes linger when their endpoint
+            # goes quiet. Deletes expired rows ONLY, so it can never widen a budget.
+            # Absent on the local store and a no-op until the migration is applied.
+            purge_limits = getattr(_store, "purge_shared_endpoint_rate_limits", None)
+            if callable(purge_limits):
+                try:
+                    await asyncio.to_thread(purge_limits, 5000)
+                except Exception as exc:
+                    logger.error("shared_rate_limit_purge_failed",
+                                 error_type=type(exc).__name__)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=300)
             except TimeoutError:
@@ -932,10 +1043,10 @@ async def run() -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
-        if billing_task is not None:
-            # The billing loop shields bounded thread work and releases its leases.
-            # It must finish naturally; cancellation could duplicate an in-flight send.
-            await billing_task
+        # `stop` is already set here. The billing loop shields bounded thread work
+        # and releases its own leases, so it is awaited (never cancelled) — and a
+        # supervisor failure must not skip any cleanup below it.
+        await _drain_billing_supervisor(billing_task)
         health_server.should_exit = True
         await asyncio.gather(health_task, return_exceptions=True)
         provider_drain = max(

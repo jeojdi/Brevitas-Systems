@@ -817,7 +817,16 @@ def test_playground_cache_replay_is_tenant_scoped_and_not_token_deletion(
     expected_tenant = tenant_key(raw_key, "customer-a")
 
     assert observed["gate_key"] == expected_tenant
-    assert observed["body"]["_brevitas_cache_namespace"] == expected_tenant
+    # The cache namespace is deliberately NOT the tenant key any more. Both cleanup paths —
+    # the purge in PUT /v1/cache-policy and compliance_delete_tenant — only ever target
+    # f"{organization}:{customer or 'unattributed'}" (the form brevitas/proxy.py writes), so
+    # a key-derived namespace left Playground-cached prompts and responses in place after
+    # {"purged": true} and after a tenant-deletion DSR, and made them unreconstructable once
+    # the key rotated. Tenant scoping — what this test is about — is unchanged, and the
+    # quality levers still key on the tenant key above.
+    provisioned = store.find_customer(organization["id"], "customer-a")
+    assert observed["body"]["_brevitas_cache_namespace"] == (
+        f"{organization['id']}:{provisioned['id']}")
     assert result["provider_input_tokens_avoided"] == 5
     assert result["calls_avoided"] == 1
     assert result["tokens_saved_total"] == 5

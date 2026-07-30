@@ -33,6 +33,35 @@ def test_google_cloud_kms_runtime_is_pinned_in_package_and_release_locks():
             assert requirement in lock
 
 
+def test_customer_install_declares_every_module_scope_third_party_import():
+    """`pip install brevitas-systems` must resolve everything the SDK imports eagerly.
+
+    brevitas/security/envelope.py, brevitas/security/kms.py and brevitas/semantic_cache.py
+    import cryptography at module scope. It used to reach only the server image, via
+    api/requirements.txt, and brevitas/proxy.py swallows the resulting ImportError, so a
+    customer install could lose the local cache with no error surfaced anywhere.
+    """
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    declared = project["project"]["dependencies"]
+    names = {requirement.split(">=")[0].split("==")[0].split("[")[0] for requirement in declared}
+
+    eager_importers = (
+        "brevitas/security/envelope.py",
+        "brevitas/security/kms.py",
+        "brevitas/semantic_cache.py",
+    )
+    for path in eager_importers:
+        source = (ROOT / path).read_text()
+        assert "\nfrom cryptography" in source or "\nimport cryptography" in source, path
+    assert "cryptography" in names
+
+    # The declared floor must not exceed what the server image already installs.
+    api_floor = next(line for line in (ROOT / "api" / "requirements.txt").read_text().splitlines()
+                     if line.startswith("cryptography"))
+    sdk_floor = next(line for line in declared if line.startswith("cryptography"))
+    assert sdk_floor == api_floor
+
+
 def test_optimizer_distribution_does_not_shadow_bvx_manager_cli():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     scripts = project["project"]["scripts"]

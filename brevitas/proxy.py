@@ -8,7 +8,11 @@ Zero-code integration — set one env var and your existing code works:
     export OPENAI_BASE_URL=http://localhost:4242/openai
 
 Start:
-    brevitas start [--port 4242] [--api-key bvt_...] [--base-url http://localhost:8000]
+    brevitas start [--port 4242] [--api-key bvt_...]
+
+--base-url overrides the Brevitas control plane and defaults to
+https://api.brevitassystems.com; pass it only when you are running your own API
+(self-hosted or local development), e.g. --base-url http://localhost:8000.
 
 The proxy:
   1. Receives the request in the provider's native format
@@ -22,9 +26,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 import asyncio
+import contextvars
 import inspect
 import math
 import threading
@@ -34,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -59,6 +66,10 @@ from token_efficiency_model.lossless.batch_group import BatchGroupGate
 from token_efficiency_model.lossless.engine import optimize_request, record_usage
 from token_efficiency_model.lossless.router import BrevitasRouter
 from token_efficiency_model.quality.gate import lever_allowed
+
+# getLogger only: this module ships inside the customer-installed SDK, so it must
+# never configure handlers or levels for the host application.
+logger = logging.getLogger("brevitas.proxy")
 
 # Batch prefix grouping (pathfinder gate, CR1): concurrent same-prefix requests wait
 # for the first one's prefill to write the provider cache, then read it instead of all
@@ -95,15 +106,22 @@ def _inject_stream_usage(body: dict, provider: str) -> None:
 
 
 def _apply_xai_affinity(headers: dict[str, str], request: Request,
-                        provider: str, state_key: str) -> bool:
+                        provider: str, state_key: str,
+                        upstream_base: str = "") -> bool:
     """Pin xAI replica affinity so their prompt cache can actually hit.
 
     Verified live 2026-07-28: xAI's cached_tokens never exceeds the ~128-token
     template floor without x-grok-conv-id — prompt_cache_key alone routes to
     arbitrary replicas and misses. The id is an opaque tenant-scoped digest
-    (no PII); a caller-supplied header always wins. Returns True only when
-    Brevitas added the header, which is what makes any resulting cache
-    discount Brevitas-attributable.
+    (no PII); a caller-supplied header always wins.
+
+    Header injection is gated on the declared provider (x-brevitas-provider is
+    the routing contract, see _provider_for). ATTRIBUTION is gated on the
+    resolved destination as well: the return value drives cache_attributable,
+    i.e. "this discount exists because Brevitas caused it", which is only true
+    when the bytes actually went to api.x.ai. x-brevitas-upstream can send an
+    xai-labelled request to a different allowlisted host, and billing 25% of a
+    discount Brevitas demonstrably did not cause would not survive an audit.
     """
     if provider != "xai" or not _xai_affinity_enabled() or not state_key:
         return False
@@ -111,7 +129,7 @@ def _apply_xai_affinity(headers: dict[str, str], request: Request,
         return False
     digest = hashlib.sha256(f"brevitas-xai-affinity:{state_key}".encode()).hexdigest()
     headers["x-grok-conv-id"] = digest[:32]
-    return True
+    return upstream_base == _UPSTREAMS["xai"]
 _bg = BatchGroupGate(max_wait=float(os.environ.get("BREVITAS_BATCH_GROUP_MAX_WAIT", "15")))
 _BG_WARM = {"deepseek": 2880.0, "anthropic": 240.0, "openai": 240.0}  # ~0.8x cache TTL
 
@@ -418,6 +436,23 @@ _UPSTREAMS = {
 _CHAT_ENDPOINTS = {provider: f"{base}/v1/chat/completions" for provider, base in _UPSTREAMS.items()}
 _CHAT_ENDPOINTS["perplexity"] = "https://api.perplexity.ai/chat/completions"
 _ALLOWED_UPSTREAMS = set(_UPSTREAMS.values())
+# Destination host -> provider. Keyed on netloc, not the base URL: groq's base
+# carries a path (/openai) and perplexity's chat endpoint is a non-/v1 override,
+# so only the host is a stable identity for "where did the bytes actually go".
+_UPSTREAM_HOSTS = {urlsplit(base).netloc.lower(): provider
+                   for provider, base in _UPSTREAMS.items()}
+
+
+def _provider_for_host(base: str) -> str:
+    """The provider label implied by a resolved destination, '' if unrecognized.
+
+    x-brevitas-provider (routing/behaviour) and x-brevitas-upstream (destination)
+    are independent caller headers, so the BILLED label must be derived from the
+    destination instead of the declaration. Otherwise a tenant routes to
+    api.openai.com while declaring a reseller label, which has no MODEL_PRICES
+    rows, so every receipt prices as 'unpriced' and never bills.
+    """
+    return _UPSTREAM_HOSTS.get(urlsplit(base or "").netloc.lower(), "")
 
 _usage_reporter: Callable | None = None
 
@@ -451,7 +486,14 @@ def _get_cache():
     try:
         from .semantic_cache import make_semantic_cache
         _cache_singleton = make_semantic_cache()
-    except Exception:
+    except Exception as exc:
+        # Still never raises — but say why, or an absent optional dependency
+        # (e.g. cryptography) reads as "caching is off" with no way to tell that
+        # the operator asked for it and did not get it.
+        logger.warning(
+            "semantic cache disabled despite BREVITAS_CACHE_ENABLED: %s: %s",
+            type(exc).__name__, exc,
+        )
         _cache_singleton = None
     return _cache_singleton
 
@@ -587,21 +629,31 @@ def _upstream_ok(response: httpx.Response) -> bool:
 
 
 async def _report_cache_hit(request: Request, provider: str, model: str, hit,
-                            session: _SessionHandle, labels: dict) -> None:
-    """A cache hit avoided both the recorded prompt and completion costs."""
+                            session: _SessionHandle, labels: dict,
+                            billing_provider: str = "") -> None:
+    """A cache hit avoided both the recorded prompt and completion costs.
+
+    `billing_provider` is the label derived from the resolved destination host
+    (_provider_for_host). Cache hits never touch an upstream, so it must be
+    computed from the header pair up front: these are the rows that carry
+    cache_attributable=True and ~100% savings, so a forged provider label here
+    is the single highest-value way to make billable savings price as unpriced.
+    """
     baseline = int(hit.prompt_tokens) + int(hit.completion_tokens)
     if baseline > 0:
         session.last_quality = float(getattr(hit, "similarity", 1.0))
         kind = str(getattr(hit, "kind", "semantic") or "semantic").lower()
         strategy = "exact_cache" if kind == "exact" else "semantic_cache"
-        await _emit_usage(request, {"provider": provider, "model": model,
+        await _emit_usage(request, {"provider": billing_provider or provider, "model": model,
             "operation": "chat", "baseline_tokens": int(hit.prompt_tokens),
             "baseline_output_tokens": int(hit.completion_tokens), "compressed_tokens": 0,
             "fresh_input_tokens": 0, "cached_input_tokens": 0, "cache_write_tokens": 0,
             "output_tokens": 0, "quality_score": session.last_quality,
             "cache_attributable": True,
+            # Labels first: server-minted fields must always win. See _record_receipt.
+            **labels,
             "request_id": _request_id(request), "strategy": strategy,
-            "session_id": session.session_id, "receipt_source": "proxy", **labels})
+            "session_id": session.session_id, "receipt_source": "proxy"})
 
 
 proxy_app = FastAPI(title="Brevitas Proxy", docs_url=None, redoc_url=None)
@@ -677,10 +729,45 @@ def _explicit_provider(request: Request) -> str:
     return request.headers.get("x-brevitas-provider", "") or os.getenv("BREVITAS_PROVIDER", "")
 
 
+# Namespace for every server-minted metering id. It is what keeps a proxy receipt
+# from ever colliding with a caller-declared /v1/usage idempotency key on the same
+# key hash, and it is what api.server._hosted_proxy_receipt checks before trusting
+# an incoming request_id. Keep the two in sync.
+RECEIPT_ID_PREFIX = "proxy:"
+
+
 def _request_id(request: Request, provider_id: str = "") -> str:
-    return (request.headers.get("x-brevitas-request-id")
-            or request.headers.get("x-client-request-id")
-            or provider_id or uuid.uuid4().hex)
+    """Mint this request's metering id — never read it from a caller header.
+
+    The receipt's request_id IS the billing dedupe key: the API drops any receipt
+    whose (key_hash, request_id) already exists, and a unique index enforces the
+    same thing. Taking it from x-brevitas-request-id / x-client-request-id let a
+    tenant pin one constant value and suppress every receipt after the first for
+    the life of that key — full optimization, one metered call. Gateways also set
+    x-client-request-id to non-unique values by accident, which zeroes that
+    tenant's own savings dashboard.
+
+    The caller's correlation id is not lost: the observability middleware still
+    reads those headers and echoes the id back on the response.
+
+    Cached on request.state so a request that emits more than once (e.g. a
+    receipt after a cache-hit report) yields exactly ONE metering id, which a
+    bare uuid4 at emit time would not give.
+    """
+    minted = str(getattr(request.state, "brevitas_receipt_id", "") or "")
+    if not minted:
+        # Only borrow the provider's response id when it can actually carry
+        # uniqueness. Truncating a long id at 128 would let two responses sharing
+        # a prefix mint the same metering id, and an upstream that returns a
+        # constant or near-empty id would make every call after the first
+        # unmetered — both losses show up as `duplicate_request_id`, not as
+        # missing revenue. uuid4 is the safe fallback in every doubtful case.
+        borrowed = str(provider_id or "")
+        if len(borrowed) < 8 or len(borrowed) > 100:
+            borrowed = ""
+        minted = f"{RECEIPT_ID_PREFIX}{borrowed or uuid.uuid4().hex}"
+        request.state.brevitas_receipt_id = minted
+    return minted
 
 
 async def _emit_usage(request: Request, payload: dict) -> None:
@@ -708,8 +795,13 @@ async def _emit_usage(request: Request, payload: dict) -> None:
             payload.get("pipeline", ""), payload.get("agent", ""), payload.get("run_id", ""),
             payload.get("usage_raw"), payload.get("strategy", ""), payload,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Keep swallowing — a reporting fault must never alter the provider
+        # response — but never silently: on the hosted path this is the only
+        # write that records billable savings, so a dropped receipt is lost
+        # revenue and understated customer savings. Type only: the payload
+        # carries customer prompt-derived fields and must not be logged.
+        logger.error("usage receipt emit failed error_type=%s", type(exc).__name__)
 
 
 # ── Predictive warming observation ────────────────────────────────────────────
@@ -793,8 +885,14 @@ async def _deliver_warm_prefix(organization_id: str, customer_id: str, body: dic
         if inspect.iscoroutinefunction(observer):
             await observer(organization_id, customer_id, prefix, cache_read)
         else:
+            # run_in_executor does NOT copy the caller's contextvars, and the
+            # hosted observer (_hosted_warm_observe) reads the request's auth
+            # context from a ContextVar as its first act — without the copy every
+            # hosted observation is a silent no-op. Deliberately NOT
+            # asyncio.to_thread: the default executor is forbidden here.
+            ctx = contextvars.copy_context()
             await asyncio.get_running_loop().run_in_executor(
-                _get_warm_executor(), observer,
+                _get_warm_executor(), ctx.run, observer,
                 organization_id, customer_id, prefix, cache_read)
     except Exception:
         pass
@@ -846,7 +944,11 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
                           response_id: str = "", strategy: str = "native_cache",
                           fleet_pipe: str = "", cache_attributable: bool = False,
                           optimized_tokens: int | None = None,
-                          tenant_key: str = "") -> None:
+                          tenant_key: str = "", billing_provider: str = "") -> None:
+    # `provider` stays the header-derived routing label — it drives the receipt
+    # shape, the meter, and the router's economics. `billing_provider` is the
+    # label implied by the resolved destination host and is used ONLY for the
+    # emitted receipt, so pricing follows the bytes rather than the declaration.
     has_receipt = receipt.total_tokens > 0
     usage = _router_usage(receipt, provider) if has_receipt else {}
     if has_receipt:
@@ -864,7 +966,7 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
             pass
     receipt_fields = receipt.as_dict() if has_receipt else {}
     await _emit_usage(request, {
-        "provider": provider, "model": model, "operation": operation,
+        "provider": billing_provider or provider, "model": model, "operation": operation,
         "baseline_tokens": baseline,
         # Both values use the same local counter and therefore carry only a
         # transformation DELTA. The API anchors the LEVEL of both legs to the
@@ -878,9 +980,13 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
         **receipt_fields, "quality_score": session.last_quality,
         "cache_attributable": cache_attributable,
         "receipt_available": has_receipt,
+        # Labels are splatted FIRST so server-minted fields always win. With the
+        # splat last, adding any label key named request_id / receipt_source would
+        # hand the caller the billing dedupe key back.
+        **labels,
         "request_id": _request_id(request, response_id),
         "strategy": (strategy if has_receipt else f"{strategy}:missing_receipt")[:64],
-        "session_id": session.session_id, "receipt_source": "proxy", **labels,
+        "session_id": session.session_id, "receipt_source": "proxy",
     })
 
 
@@ -917,28 +1023,51 @@ def get_openai_compatible_upstream(model: str, override_header: str | None = Non
 
     return _UPSTREAMS[_provider_for(model, provider)]
 
+def _clean_label(value: str, limit: int) -> str:
+    """Coerce a tracking label to something UsageReportRequest always accepts."""
+    text = str(value or "")
+    # Mirrors the API's _safe_metadata rule, which REJECTS control characters
+    # rather than stripping them — a rejection here would drop the whole receipt.
+    text = "".join(char for char in text if ord(char) >= 32 and ord(char) != 127)
+    return text[:limit]
+
+
 def parse_brevitas_headers(headers: dict) -> dict[str, str]:
     """Extract brevitas tracking labels from request headers (x-brevitas-pipeline/agent/run-id).
-    Returns dict with 'pipeline', 'agent', 'run_id' keys (empty strings if not present)."""
-    def _get(name: str) -> str:
+    Returns dict with 'pipeline', 'agent', 'run_id' keys (empty strings if not present).
+
+    Every value is sanitized to what UsageReportRequest accepts. These labels are
+    cosmetic, but they ride the receipt payload: the API validates the whole
+    payload in one pass, so a label the schema rejects — over its max_length, or
+    carrying a control character — raises before the row is written and the
+    receipt is silently dropped. That made a caller header a metering kill switch
+    (unmetered use of a paid product), and misfired by accident on any customer
+    whose pipeline name ran long. Clamp here so a label can never decide whether
+    a call is billed; the API coerces again on the far side.
+    """
+    def _get(name: str, limit: int = 128) -> str:
         try:
-            return headers.get(name, "") or ""
+            value = headers.get(name, "") or ""
         except AttributeError:
             return ""
+        return _clean_label(value, limit)
     project = (_get("x-brevitas-project") or _get("x-brevitas-repo")
-               or os.getenv("BREVITAS_PROJECT") or os.getenv("BREVITAS_REPO")
-               or _git_root_name())
+               or _clean_label(os.getenv("BREVITAS_PROJECT", ""), 128)
+               or _clean_label(os.getenv("BREVITAS_REPO", ""), 128)
+               or _clean_label(_git_root_name(), 128))
     source = (_get("x-brevitas-source") or _get("x-brevitas-client")
-              or os.getenv("BREVITAS_SOURCE") or os.getenv("BREVITAS_CLIENT")
+              or _clean_label(os.getenv("BREVITAS_SOURCE", ""), 128)
+              or _clean_label(os.getenv("BREVITAS_CLIENT", ""), 128)
               or "proxy")
     return {
         "project": project, "repo": project,
-        "environment": (_get("x-brevitas-environment")
-                        or os.getenv("BREVITAS_ENVIRONMENT", "")),
+        "environment": (_get("x-brevitas-environment", 64)
+                        or _clean_label(os.getenv("BREVITAS_ENVIRONMENT", ""), 64)),
         "source": source, "client": source,
         "pipeline": _get("x-brevitas-pipeline"), "agent": _get("x-brevitas-agent"),
         "call_site_id": _get("x-brevitas-call-site"),
-        "framework": _get("x-brevitas-framework"), "gateway": _get("x-brevitas-gateway"),
+        "framework": _get("x-brevitas-framework", 64),
+        "gateway": _get("x-brevitas-gateway", 64),
         "run_id": _get("x-brevitas-run-id"),
     }
 
@@ -1207,13 +1336,21 @@ async def proxy_openai_chat(request: Request) -> Any:
     session = _session_for(sess_key)
     router = _router_for(sess_key, provider)
 
+    # Resolve the destination before anything that reports a receipt: a cache hit
+    # returns without ever touching an upstream, and the billed label has to
+    # follow the host on that path too (see _report_cache_hit).
+    override_upstream = request.headers.get("x-brevitas-upstream")
+    upstream_base = get_openai_compatible_upstream(model, override_upstream, provider)
+    billing_provider = _provider_for_host(upstream_base) or provider
+
     # Semantic cache: key on the ORIGINAL request; model_id already isolates per model.
     cache = _cache_for_request(request)
     cache_body = _cache_body(body, request, brevitas_key, auth) if cache is not None else None
     if cache is not None and lever_allowed("cache", gate_key):
         hit = _cache_lookup(cache, cache_body, provider, model, gate_key)
         if hit is not None:
-            await _report_cache_hit(request, provider, model, hit, session, labels)
+            await _report_cache_hit(request, provider, model, hit, session, labels,
+                                    billing_provider)
             session.advance()
             return JSONResponse(content=hit.response, status_code=200)
 
@@ -1245,13 +1382,11 @@ async def proxy_openai_chat(request: Request) -> Any:
     headers = _passthrough_headers(request, "openai")
     is_stream = body.get("stream", False)
     _inject_stream_usage(body, provider)
-    if _apply_xai_affinity(headers, request, provider, state_key):
+    if _apply_xai_affinity(headers, request, provider, state_key, upstream_base):
         # Without the injected affinity xAI's cache never hits, so any
         # discount on this request exists because Brevitas caused it.
         cache_attributable = True
 
-    override_upstream = request.headers.get("x-brevitas-upstream")
-    upstream_base = get_openai_compatible_upstream(model, override_upstream, provider)
     endpoint = _CHAT_ENDPOINTS.get(provider, f"{upstream_base.rstrip('/')}/v1/chat/completions")
     if override_upstream:
         endpoint = f"{upstream_base.rstrip('/')}/v1/chat/completions"
@@ -1304,7 +1439,7 @@ async def proxy_openai_chat(request: Request) -> Any:
                         session, router, labels, optimized, parser.response_id, strategy, fleet_pipe,
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
-                        tenant_key=gate_key,
+                        tenant_key=gate_key, billing_provider=billing_provider,
                     )
                     session.advance()
 
@@ -1342,7 +1477,7 @@ async def proxy_openai_chat(request: Request) -> Any:
             optimized, str(data.get("id") or ""), strategy, fleet_pipe,
             cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
-            tenant_key=gate_key,
+            tenant_key=gate_key, billing_provider=billing_provider,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -1394,12 +1529,13 @@ async def proxy_openai_responses(request: Request) -> Any:
     base = get_openai_compatible_upstream(
         model, request.headers.get("x-brevitas-upstream"), provider
     )
+    billing_provider = _provider_for_host(base) or provider
     endpoint = f"{base.rstrip('/')}/v1/responses"
     headers = _passthrough_headers(request, "openai")
     # Header-only injection here: the body may be forwarded byte-verbatim
     # below, and the Responses API reports usage on response.completed
     # natively, so no stream_options mutation is needed or wanted.
-    if _apply_xai_affinity(headers, request, provider, state_key):
+    if _apply_xai_affinity(headers, request, provider, state_key, base):
         cache_attributable = True
     is_stream = bool(body.get("stream"))
     request_content = None if body_changed else raw_body
@@ -1436,7 +1572,7 @@ async def proxy_openai_responses(request: Request) -> Any:
                         labels.get("pipeline", ""),
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
-                        tenant_key=gate_key,
+                        tenant_key=gate_key, billing_provider=billing_provider,
                     )
                     session.advance()
 
@@ -1458,7 +1594,7 @@ async def proxy_openai_responses(request: Request) -> Any:
             optimized, str(data.get("id") or ""), strategy, labels.get("pipeline", ""),
             cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
-            tenant_key=gate_key,
+            tenant_key=gate_key, billing_provider=billing_provider,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,
@@ -1479,6 +1615,7 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
     base = get_openai_compatible_upstream(
         model, request.headers.get("x-brevitas-upstream"), provider
     )
+    billing_provider = _provider_for_host(base) or provider
     endpoint = f"{base.rstrip('/')}/v1/{operation}"
     headers = _passthrough_headers(request, "openai")
     if body.get("stream"):
@@ -1509,7 +1646,8 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
                 if completed:
                     await _record_receipt(request, provider, model, operation, baseline,
                         parser.finish(), session, router, labels, False, parser.response_id,
-                        "passthrough", labels.get("pipeline", ""), tenant_key=gate_key)
+                        "passthrough", labels.get("pipeline", ""), tenant_key=gate_key,
+                        billing_provider=billing_provider)
                     session.advance()
         return StreamingResponse(stream_gen(), status_code=upstream.status_code,
                                  headers=_response_headers(upstream), media_type="text/event-stream")
@@ -1525,7 +1663,7 @@ async def _proxy_openai_plain(request: Request, operation: str) -> Any:
             request, provider, model, operation, baseline,
             normalize_usage(data.get("usage"), provider), session, router, labels,
             False, str(data.get("id") or ""), "passthrough", labels.get("pipeline", ""),
-            tenant_key=gate_key,
+            tenant_key=gate_key, billing_provider=billing_provider,
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,

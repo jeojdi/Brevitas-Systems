@@ -15,6 +15,8 @@ from brevitas.provider_reliability import (
     ProviderHTTPClientPool,
     ProviderReliabilityConfig,
     ProviderSyncHTTPClientPool,
+    circuit_scope_token,
+    provider_circuit_scope,
 )
 from brevitas.resource_bounds import ResourceBounds
 
@@ -632,6 +634,122 @@ def test_circuit_state_is_lru_and_ttl_bounded():
     assert circuit.state_count() == 0
 
 
+def test_one_tenants_failures_cannot_open_the_shared_provider_circuit():
+    """Cross-tenant DoS: five engineered timeouts must not 503 every other tenant."""
+    now = [0.0]
+    config = _config(circuit_failure_threshold=3, circuit_open_s=10.0)
+    circuit = ProviderCircuitBreaker(config, clock=lambda: now[0])
+
+    with provider_circuit_scope("org-abuser"):
+        for _ in range(config.circuit_failure_threshold):
+            circuit.record_failure(circuit.before_request("openai"))
+        # The abusing tenant now fails fast against its own circuit.
+        with pytest.raises(ProviderCircuitOpen):
+            circuit.before_request("openai")
+
+    with provider_circuit_scope("org-enterprise"):
+        victim = circuit.before_request("openai")
+        circuit.record_success(victim)
+
+    # Scoped state is opaque: no tenant identifier is retained anywhere in it.
+    assert circuit.scope_state_count() == 2
+    assert "org-abuser" not in repr(circuit._scopes)
+    assert circuit_scope_token("org-abuser") in "".join(circuit._scopes)
+
+    # The abusing tenant is readmitted once its own open window elapses.
+    now[0] = 11.0
+    with provider_circuit_scope("org-abuser"):
+        circuit.record_success(circuit.before_request("openai"))
+
+
+def test_multi_tenant_failure_streak_still_opens_the_shared_provider_circuit():
+    """A real provider outage trips several tenants, and must still fail fast."""
+    now = [0.0]
+    config = _config(circuit_failure_threshold=3, circuit_open_s=10.0)
+    circuit = ProviderCircuitBreaker(config, clock=lambda: now[0])
+
+    with provider_circuit_scope("org-first"):
+        for _ in range(config.circuit_failure_threshold):
+            circuit.record_failure(circuit.before_request("openai"))
+    # One tenant tripping is not yet provider-wide evidence.
+    with provider_circuit_scope("org-unaffected"):
+        circuit.record_success(circuit.before_request("openai"))
+
+    with provider_circuit_scope("org-second"):
+        for _ in range(config.circuit_failure_threshold):
+            circuit.record_failure(circuit.before_request("openai"))
+
+    with provider_circuit_scope("org-unaffected"), pytest.raises(ProviderCircuitOpen):
+        circuit.before_request("openai")
+    with pytest.raises(ProviderCircuitOpen):
+        circuit.before_request("openai")
+
+
+def test_one_tenant_cannot_prime_the_shared_counter_for_another_tenants_failure():
+    """Amplification check: a stray failure elsewhere must not open the shared circuit."""
+    now = [0.0]
+    config = _config(circuit_failure_threshold=3, circuit_open_s=10.0)
+    circuit = ProviderCircuitBreaker(config, clock=lambda: now[0])
+
+    with provider_circuit_scope("org-abuser"):
+        for _ in range(config.circuit_failure_threshold * 3):
+            try:
+                circuit.record_failure(circuit.before_request("openai"))
+            except ProviderCircuitOpen:
+                pass
+
+    with provider_circuit_scope("org-unlucky"):
+        circuit.record_failure(circuit.before_request("openai"))
+        # One failure of its own: still admitted, and everyone else still is too.
+        circuit.record_success(circuit.before_request("openai"))
+    with provider_circuit_scope("org-bystander"):
+        circuit.record_success(circuit.before_request("openai"))
+
+
+def test_unscoped_callers_keep_the_original_shared_breaker_semantics():
+    now = [0.0]
+    config = _config(circuit_failure_threshold=3, circuit_open_s=10.0)
+    circuit = ProviderCircuitBreaker(config, clock=lambda: now[0])
+    for _ in range(config.circuit_failure_threshold):
+        circuit.record_failure(circuit.before_request("openai"))
+    with pytest.raises(ProviderCircuitOpen):
+        circuit.before_request("openai")
+    assert circuit.scope_state_count() == 0
+
+
+def test_scope_state_exhaustion_degrades_to_the_shared_circuit_not_to_503s():
+    """Bounded maps must never reject healthy traffic the way capacity does globally."""
+    now = [0.0]
+    config = _config(
+        circuit_failure_threshold=3, circuit_open_s=10.0, max_scope_states=1)
+    circuit = ProviderCircuitBreaker(config, clock=lambda: now[0])
+    with provider_circuit_scope("org-holds-the-slot"):
+        for _ in range(config.circuit_failure_threshold):
+            circuit.record_failure(circuit.before_request("openai"))
+    assert circuit.scope_state_count() == 1
+
+    with provider_circuit_scope("org-arrives-late"):
+        permit = circuit.before_request("openai")  # no ProviderCircuitOpen
+        circuit.record_success(permit)
+    assert circuit.scope_state_count() == 1
+
+
+def test_scope_state_is_ttl_bounded_once_its_open_window_elapses():
+    now = [0.0]
+    circuit = ProviderCircuitBreaker(
+        _config(circuit_failure_threshold=1, circuit_open_s=5.0,
+                circuit_state_ttl_s=30.0),
+        clock=lambda: now[0],
+    )
+    with provider_circuit_scope("org-transient"):
+        circuit.record_failure(circuit.before_request("openai"))
+    assert circuit.scope_state_count() == 1
+    now[0] = 4.0
+    assert circuit.scope_state_count() == 1  # still open, never evicted
+    now[0] = 31.0
+    assert circuit.scope_state_count() == 0
+
+
 def test_proxy_transport_error_is_sanitized(monkeypatch):
     import brevitas.proxy as proxy
 
@@ -1068,3 +1186,58 @@ def test_sdk_wrappers_close_underlying_pool_in_context_manager(
     with wrapper_class(sdk) as wrapped:
         assert wrapped is not sdk
     assert sdk.closed == 1
+
+
+def test_hosted_proxy_binds_the_tenant_circuit_scope(tmp_path, monkeypatch):
+    """The hosted API must attribute provider failures to the authenticated tenant.
+
+    Finding 44: current_circuit_scope() was empty for every real caller, so the
+    per-tenant fairness machinery shipped inert and one tenant's failures still
+    opened the shared circuit for everyone. The middleware now binds the scope
+    where the tenant is verified; assert it is visible in the context the
+    provider call (and therefore before_request/record_failure) runs in.
+    """
+    import api.server as server
+    import brevitas.proxy as proxy
+    from fastapi.testclient import TestClient
+
+    from api.auth import hash_key
+    from api.store import UsageStore
+    from brevitas.provider_reliability import current_circuit_scope
+
+    store = UsageStore(str(tmp_path / "circuit-scope.db"))
+    organization = store.ensure_organization("scope-owner", "Scope Co")
+    raw_key = "bvt_circuit_scope_key"
+    store.create_key(hash_key(raw_key), "scope", owner_id="scope-owner",
+                     organization_id=organization["id"])
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+
+    seen: list[str] = []
+
+    def _respond(request):
+        seen.append(current_circuit_scope())
+        return httpx.Response(
+            200, headers={"content-type": "application/json"}, content=(
+                b'{"id":"chat_1","choices":[{"message":{"content":"ok"},'
+                b'"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":4,"completion_tokens":2}}'))
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
+        transport=httpx.MockTransport(_respond)))
+    proxy._cache_init_done = True
+    proxy._cache_singleton = None
+    monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
+    server._proxy_windows.clear()
+    server._proxy_active.clear()
+
+    client = TestClient(server.app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"X-Brevitas-Key": raw_key, "Authorization": "Bearer provider-key"},
+        json={"model": "gpt-4o-mini",
+              "messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 200
+    assert seen == [circuit_scope_token(organization["id"])]

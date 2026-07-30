@@ -301,6 +301,138 @@ def test_usage_api_is_tenant_scoped_and_idempotent(tmp_path, monkeypatch):
     assert admin.json()["total_calls"] == 2
 
 
+def test_forged_proxy_prefixed_id_cannot_suppress_the_billable_receipt(
+        tmp_path, monkeypatch):
+    """Negative control for the reserved billing-id namespace (critical finding).
+
+    The streaming paths yield the provider response id to the caller in the
+    first SSE chunk BEFORE the receipt is recorded in the generator's finally,
+    so an attacker can read `proxy:<provider id>` out of its own in-flight
+    stream and pre-insert an analytics row under it via POST /v1/usage. If that
+    row occupies the (key_hash, request_id) slot, the authoritative receipt is
+    silently dropped as a duplicate: full optimization, zero billed. Two
+    independent guards close it — the /v1/usage intake rewrites any
+    caller-supplied id claiming the reserved prefix into `client:`, and the
+    dedupe probe is scoped to rows of the same authority.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "forged.db"))
+    raw_key = "bvt_forged_prefix"
+    store.create_key(hash_key(raw_key), "forged", owner_id="customer-forged")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+
+    forged = "proxy:chatcmpl-XYZ"
+    sdk = {"provider": "openai", "model": "gpt-4o-mini", "baseline_tokens": 100,
+           "compressed_tokens": 80, "request_id": forged, "strategy": "native_cache"}
+    first = client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key}, json=sdk)
+    assert first.status_code == 200
+    assert first.json().get("duplicate") is not True
+
+    # Guard 1: the forged id was quarantined out of the reserved namespace, and
+    # the caller's retry idempotency still works under the rewritten id.
+    stored = [row["request_id"] for row in store._rows(hash_key(raw_key))]
+    assert stored == ["client:chatcmpl-XYZ"]
+    retry = client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key}, json=sdk)
+    assert retry.json()["duplicate"] is True
+
+    # The hosted authoritative receipt under the very same id must still record.
+    server._hosted_proxy_receipt(raw_key, {
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 100, "compressed_tokens": 80,
+        "fresh_input_tokens": 60, "cached_input_tokens": 20, "output_tokens": 10,
+        "request_id": forged, "strategy": "passthrough",
+        "receipt_source": "proxy", "receipt_available": True,
+    })
+    authoritative = [row for row in store._rows(hash_key(raw_key))
+                     if row["authoritative"]]
+    assert [row["request_id"] for row in authoritative] == [forged]
+
+    # Guard 2 (authority-scoped dedupe) also protects the mirror image: the
+    # authoritative row must not swallow a later SDK analytics report that
+    # arrives under an id sharing the same suffix.
+    assert len(store._rows(hash_key(raw_key))) == 2
+
+
+@pytest.mark.parametrize("label,value", [
+    ("pipeline", "P" * 200),          # over max_length=128
+    ("environment", "E" * 100),       # over max_length=64
+    ("agent", "checkout\x01worker"),  # control character
+])
+def test_an_unusable_tracking_label_cannot_suppress_the_billable_receipt(
+        tmp_path, monkeypatch, label, value):
+    """A cosmetic label must never decide whether a call is metered.
+
+    The tracking labels ride the receipt payload, and the API validates the whole
+    payload in one pass. A label over its max_length — or carrying a control
+    character, which _safe_metadata rejects outright — raised ValidationError
+    inside the hosted bridge's try block, which swallowed it and returned without
+    writing a row. That handed any caller a metering kill switch cheaper than the
+    request_id pin it replaced: it needs no knowledge of a prior id, works on
+    every request including ~100%-savings cache hits, and leaves no duplicate
+    marker behind. It also misfired by accident on a customer whose pipeline name
+    ran long, silently flatlining their savings dashboard.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / f"label-{label}.db"))
+    raw_key = "bvt_label_suppression"
+    store.create_key(hash_key(raw_key), "labels", owner_id="customer-labels")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+
+    server._hosted_proxy_receipt(raw_key, {
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 100, "compressed_tokens": 80,
+        "fresh_input_tokens": 60, "cached_input_tokens": 20, "output_tokens": 10,
+        "request_id": "proxy:chatcmpl-labelled", "strategy": "passthrough",
+        "receipt_source": "proxy", "receipt_available": True,
+        label: value,
+    })
+
+    # The money is recorded; only the offending label is dropped.
+    rows = [row for row in store._rows(hash_key(raw_key)) if row["authoritative"]]
+    assert [row["request_id"] for row in rows] == ["proxy:chatcmpl-labelled"]
+    assert rows[0]["baseline_tokens"] == 100
+
+
+def test_proxy_label_parsing_clamps_every_value_to_the_schema(monkeypatch):
+    """The SDK-side half: labels are clamped before they ever reach the receipt."""
+    from brevitas.proxy import parse_brevitas_headers
+
+    monkeypatch.delenv("BREVITAS_PROJECT", raising=False)
+    monkeypatch.delenv("BREVITAS_ENVIRONMENT", raising=False)
+    labels = parse_brevitas_headers({
+        "x-brevitas-pipeline": "P" * 500,
+        "x-brevitas-environment": "E" * 500,
+        "x-brevitas-agent": "checkout\x01worker",
+        "x-brevitas-project": "billing",
+    })
+    assert len(labels["pipeline"]) == 128
+    assert len(labels["environment"]) == 64
+    assert labels["agent"] == "checkoutworker"
+    # Whatever comes back must validate, or the receipt is lost downstream.
+    from api.server import UsageReportRequest
+    UsageReportRequest.model_validate(
+        {"baseline_tokens": 1, "compressed_tokens": 1, **labels})
+
+
+def test_a_label_can_never_override_a_server_minted_receipt_field():
+    """Labels are splatted first so request_id/receipt_source cannot be shadowed."""
+    import inspect as _inspect
+    from brevitas import proxy as _proxy
+
+    source = _inspect.getsource(_proxy)
+    for marker in ('"session_id": session.session_id, "receipt_source": "proxy",\n',
+                   '"session_id": session.session_id, "receipt_source": "proxy"}'):
+        assert marker in source
+    # A trailing **labels splat would re-open the original critical finding.
+    assert '"receipt_source": "proxy", **labels' not in source
+
+
 def test_quality_stream_and_reset_are_scoped_to_end_customer(tmp_path, monkeypatch):
     import api.server as server
     from brevitas.identity import tenant_key
@@ -315,8 +447,12 @@ def test_quality_stream_and_reset_are_scoped_to_end_customer(tmp_path, monkeypat
         hash_key(raw_key), "shared", owner_id="owner-1",
         organization_id=organization["id"], service_account_id=service["id"],
         key_type="organization_service", environment="test",
+        # quality:manage is now required by POST /v1/quality/stream/reset: the reset
+        # re-enables the risky levers and erases accumulated mSPRT evidence, so it is a
+        # mutation and no longer rides on the read scope every member key carries. This
+        # test is about per-customer scoping of the reset, not about who may call it.
         scopes=["proxy:invoke", "usage:read_own", "customer:route",
-                "customer:auto_provision"],
+                "customer:auto_provision", "quality:manage"],
     )
     monkeypatch.setattr(server, "_store", store)
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
@@ -663,10 +799,23 @@ def test_admin_financial_report_is_filtered_paginated_and_protected(tmp_path, mo
     billing = client.get("/v1/admin/billing?range=all", headers={
         "Authorization": "Bearer " + "test-admin-session"})
     assert billing.status_code == 200
+    # The per-row fee sum is published as gross, un-netted evidence. It is NOT a
+    # settlement figure: per-row fees were floored at zero when written, so a
+    # period whose true net is negative still bills every positive row in it, and
+    # no warm-ping deduction is applied. amount_owed_usd keeps emitting the same
+    # value only until the dashboard reads the honest field (the two deploy
+    # separately, and the dashboard renders a missing field as "$0.00").
+    assert billing.json()["gross_positive_row_fees_usd"] == .013
     assert billing.json()["amount_owed_usd"] == .013
+    assert billing.json()["basis"] == "gross_positive_row_fees_unnetted"
+    assert billing.json()["netted"] is False
+    assert billing.json()["warm_spend_deducted"] is False
+    assert billing.json()["settlement_pending"] is True
     assert billing.json()["payment_status_tracked"] is False
     assert {account["account_id"] for account in billing.json()["accounts"]} == {
         "user-a", "user-b"}
+    assert [account["gross_positive_row_fees_usd"] == account["amount_owed_usd"]
+            for account in billing.json()["accounts"]] == [True, True]
 
 
 def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
@@ -878,12 +1027,20 @@ def test_combined_hosted_proxy_writes_customer_dashboard_row(tmp_path, monkeypat
     server._valid_key_cache.clear()
     server._seq_streams.clear()
 
-    response_raw = (b'{"id":"resp_e2e","output":[],"usage":{"input_tokens":32,'
-                    b'"input_tokens_details":{"cached_tokens":12},"output_tokens":4}}')
+    served = []
+
+    def _respond(request):
+        # A distinct provider response id per call, as every real provider gives.
+        raw = (b'{"id":"resp_e2e_%d","output":[],"usage":{"input_tokens":32,'
+               b'"input_tokens_details":{"cached_tokens":12},"output_tokens":4}}'
+               % len(served))
+        served.append(raw)
+        return httpx.Response(200, content=raw,
+                              headers={"content-type": "application/json"})
+
     real = httpx.AsyncClient
     monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
-        transport=httpx.MockTransport(lambda request: httpx.Response(
-            200, content=response_raw, headers={"content-type": "application/json"}))))
+        transport=httpx.MockTransport(_respond)))
     proxy._cache_init_done = True
     proxy._cache_singleton = None
     proxy.set_usage_reporter(server._hosted_proxy_receipt)
@@ -901,7 +1058,7 @@ def test_combined_hosted_proxy_writes_customer_dashboard_row(tmp_path, monkeypat
     response = client.post("/v1/responses", headers=headers,
         json={"model": "gpt-4o-mini", "input": "private input"})
     assert response.status_code == 200
-    assert response.content == response_raw
+    assert response.content == served[0]
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "no-store"
     assert client.post("/v1/responses", headers=headers,
@@ -910,11 +1067,163 @@ def test_combined_hosted_proxy_writes_customer_dashboard_row(tmp_path, monkeypat
         json={"model": "gpt-4o-mini", "input": "private input"}).status_code == 429
     breakdown = client.get("/v1/stats/breakdown",
                            headers={"X-Brevitas-Key": raw_key}).json()
-    assert breakdown["totals"]["total_calls"] == 1
+    # BOTH billable calls are metered. This assertion used to read `== 1`: the
+    # receipt's request_id was taken from X-Brevitas-Request-Id, which is the
+    # billing dedupe key, so pinning one value suppressed every receipt after the
+    # first while the proxy kept optimizing every call.
+    assert breakdown["totals"]["total_calls"] == 2
     assert [(row["project"], row["source"], row["provider"], row["model"])
             for row in breakdown["rows"]] == [
                 ("backend-service", "api-worker", "openai", "gpt-4o-mini")]
+    metering_ids = [row["request_id"] for row in store._rows(hash_key(raw_key))]
+    assert sorted(metering_ids) == ["proxy:resp_e2e_0", "proxy:resp_e2e_1"]
+    assert "e2e-1" not in repr(metering_ids)
     assert "private input" not in repr(store._rows(hash_key(raw_key)))
+    proxy.set_usage_reporter(None)
+
+
+def test_pinned_client_request_id_cannot_suppress_hosted_metering(tmp_path, monkeypatch):
+    """One constant caller header must not zero a tenant's metered savings.
+
+    The metering id is minted server-side per request and namespaced `proxy:`, so
+    it can neither be chosen by the caller nor collide with a caller-declared
+    /v1/usage idempotency key. A cache hit — the row with ~100% savings and no
+    provider response id at all — is covered too.
+    """
+    import api.server as server
+    import brevitas.proxy as proxy
+
+    store = UsageStore(str(tmp_path / "pinned.db"))
+    raw_key = "bvt_pinned_id"
+    store.create_key(hash_key(raw_key), "pinned", owner_id="customer-pinned")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    calls = []
+
+    def _respond(request):
+        calls.append(request.url.host)
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=(
+            b'{"id":"chat_%d","choices":[{"message":{"content":"ok"},'
+            b'"finish_reason":"stop"}],"usage":{"prompt_tokens":40,'
+            b'"prompt_tokens_details":{"cached_tokens":10},"completion_tokens":5}}'
+            % len(calls)))
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
+        transport=httpx.MockTransport(_respond)))
+    proxy._cache_init_done = True
+    proxy._cache_singleton = None
+    proxy.set_usage_reporter(server._hosted_proxy_receipt)
+    monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
+    monkeypatch.setenv("BREVITAS_PROXY_RPM", "50")
+    server._proxy_windows.clear()
+    server._proxy_active.clear()
+
+    client = TestClient(server.app)
+    headers = {"X-Brevitas-Key": raw_key, "Authorization": f"{BEARER} provider-key",
+               "X-Brevitas-Request-Id": "pinned", "X-Client-Request-Id": "pinned-too"}
+    for _ in range(3):
+        assert client.post("/v1/chat/completions", headers=headers, json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hello"}]}).status_code == 200
+
+    metering_ids = [row["request_id"] for row in store._rows(hash_key(raw_key))]
+    assert len(metering_ids) == len(set(metering_ids)) == 3
+    assert all(mid.startswith("proxy:") for mid in metering_ids)
+    assert "pinned" not in repr(metering_ids)
+
+    # A caller-declared id on the non-authoritative /v1/usage path keeps working:
+    # SDK retries legitimately want caller idempotency there.
+    sdk = {"provider": "openai", "model": "gpt-4o-mini", "baseline_tokens": 10,
+           "compressed_tokens": 8, "request_id": "pinned", "strategy": "native_cache"}
+    assert client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key},
+                       json=sdk).status_code == 200
+    assert client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key},
+                       json=sdk).json()["duplicate"] is True
+    proxy.set_usage_reporter(None)
+
+
+def test_billed_provider_label_follows_the_destination_host(tmp_path, monkeypatch):
+    """x-brevitas-provider must not decouple the billed label from the real host.
+
+    Declaring a reseller (no MODEL_PRICES rows -> pricing_status 'unpriced' ->
+    zero verified savings -> zero fee) while routing to api.openai.com was free
+    use of a paid product. The label now follows the resolved destination, on the
+    completion path and on the cache-hit path.
+    """
+    import api.server as server
+    import brevitas.proxy as proxy
+
+    store = UsageStore(str(tmp_path / "label.db"))
+    raw_key = "bvt_label"
+    store.create_key(hash_key(raw_key), "label", owner_id="customer-label")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    hosts = []
+
+    def _respond(request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=(
+            b'{"id":"chat_%d","choices":[{"message":{"content":"ok"},'
+            b'"finish_reason":"stop"}],"usage":{"prompt_tokens":60,'
+            b'"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5}}'
+            % len(hosts)))
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
+        transport=httpx.MockTransport(_respond)))
+    proxy._cache_init_done = True
+    proxy._cache_singleton = None
+    proxy.set_usage_reporter(server._hosted_proxy_receipt)
+    monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
+    monkeypatch.setenv("BREVITAS_PROXY_RPM", "50")
+    server._proxy_windows.clear()
+    server._proxy_active.clear()
+
+    client = TestClient(server.app)
+    assert client.post("/v1/chat/completions", headers={
+        "X-Brevitas-Key": raw_key, "Authorization": f"{BEARER} provider-key",
+        "X-Brevitas-Provider": "groq", "X-Brevitas-Upstream": "https://api.openai.com",
+    }, json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+    ).status_code == 200
+    assert hosts == ["api.openai.com"]
+    row = store._rows(hash_key(raw_key))[0]
+    assert row["provider"] == "openai"
+    assert row["pricing_status"] == "priced"
+
+    # Cache hits carry ~100% savings and never touch an upstream, so the label
+    # has to be derived from the header pair up front.
+    class _Hit:
+        kind = "exact"
+        similarity = 1.0
+        prompt_tokens = 60
+        completion_tokens = 5
+        response = {"id": "cached", "choices": [
+            {"message": {"content": "ok"}, "finish_reason": "stop"}]}
+
+    class _Cache:
+        def lookup(self, *args, **kwargs):
+            return _Hit()
+
+        def store(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(proxy, "_cache_for_request", lambda request: _Cache())
+    assert client.post("/v1/chat/completions", headers={
+        "X-Brevitas-Key": raw_key, "Authorization": f"{BEARER} provider-key",
+        "X-Brevitas-Provider": "groq", "X-Brevitas-Upstream": "https://api.openai.com",
+    }, json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+    ).status_code == 200
+    assert hosts == ["api.openai.com"]      # served from cache, no second call
+    replay = [r for r in store._rows(hash_key(raw_key))
+              if str(r["strategy"]).startswith("exact_cache")][0]
+    assert replay["provider"] == "openai"
+    assert replay["pricing_status"] == "priced"
+    assert float(replay["verified_savings_usd"]) > 0
     proxy.set_usage_reporter(None)
 
 
@@ -1170,3 +1479,379 @@ def test_receipt_plausibility_quarantine_is_observe_only_by_default(tmp_path, mo
     assert dropped["receipt_plausibility"] == "implausible"
     assert dropped["tokens_saved"] == 0
     assert dropped["reported_token_delta"] == 20   # the caller's claim is kept for audit
+
+
+# ── GET /v1/admin/billing/settlement ──────────────────────────────────────────
+# The honest, netted, period-scoped figure. Every test below is about the SAME
+# rule: this route may refuse to state a number, and must never state a WRONG
+# one. A $0 on an invoice screen reads as "nothing is owed"; that specific lie is
+# what 202607280007/0008/0012/0013 (and this endpoint) exist to prevent.
+
+ORGANIZATION_A = "11111111-1111-4111-8111-1111111111aa"
+ORGANIZATION_B = "11111111-1111-4111-8111-1111111111bb"
+PERIOD_START = "2026-07-27T00:00:00+00:00"
+
+
+def _postgrest_error(status: int, code: str) -> Exception:
+    """A `requests` HTTPError carrying PostgREST's own error body."""
+    import requests
+
+    response = SimpleNamespace(status_code=status, json=lambda: {
+        "code": code, "message": "synthetic", "details": "", "hint": ""})
+    return requests.HTTPError("synthetic", response=response)
+
+
+def _settlement_store(handler):
+    from api.store import SupabaseUsageStore
+
+    store = SupabaseUsageStore("https://example.supabase.co", "service-role")
+    store._request = handler  # type: ignore[method-assign]
+    return store
+
+
+def _ok_summary(**overrides) -> dict:
+    return {
+        "ok": True, "organization_id": ORGANIZATION_A,
+        "period_start": PERIOD_START, "period_end": "2026-08-03T00:00:00+00:00",
+        "settlement_status": "accruing", "settlement_id": None, "revision": None,
+        "estimated_fee_microusd": 22_500_000, "settled_fee_microusd": 0,
+        "reported_fee_microusd": 0, "committed_fee_microusd": 0,
+        "needs_review_count": 0, "attention_count": 0,
+        "billing_arrangement": "marginal_per_call", "billable": True,
+        "evidence": {"eligible_rows": 12, "net_verified_savings_usd": 90},
+        **overrides,
+    }
+
+
+def test_settlement_refuses_when_the_summary_rpc_is_not_applied_yet():
+    """PGRST202 is the EXPECTED state, not an error: api/ deploys on push while
+    202607280013 is hand-applied. It must degrade to a stated refusal."""
+    calls = []
+
+    def handler(method, path, **kwargs):
+        calls.append(path)
+        if path == "usage_log":
+            return []
+        if path == "billing_accounts":
+            return [{"organization_id": ORGANIZATION_A,
+                     "current_period_start": PERIOD_START}]
+        raise _postgrest_error(404, "PGRST202")
+
+    settlement = _settlement_store(handler).get_billing_settlement()
+    assert settlement["settleable"] is False
+    assert settlement["reason"] == "settlement_summary_rpc_not_deployed"
+    # No money stated at all — not a zero, not a null-shaped fee field.
+    assert not [key for key in _flatten_keys(settlement) if key.endswith("_usd")]
+    assert "rpc/billing_period_settlement_summary" in calls
+
+
+def test_settlement_refuses_when_a_dependency_relation_is_missing():
+    """A missing table/view/column is the same deploy-ordering state as a missing
+    function, and 42501/5xx deliberately are NOT: they need a different fix."""
+    import pytest as _pytest
+    import requests
+
+    for status, code in ((404, "PGRST205"), (400, "42P01"), (400, "42703")):
+        def handler(method, path, _code=code, _status=status, **kwargs):
+            if path == "usage_log":
+                return []
+            raise _postgrest_error(_status, _code)
+
+        settlement = _settlement_store(handler).get_billing_settlement()
+        assert settlement["settleable"] is False, code
+        assert settlement["reason"] == "billing_accounts_unavailable", code
+
+    def denied(method, path, **kwargs):
+        if path == "usage_log":
+            return []
+        raise _postgrest_error(403, "42501")
+
+    with _pytest.raises(requests.HTTPError):
+        _settlement_store(denied).get_billing_settlement()
+
+
+def test_settlement_refuses_while_any_authoritative_row_has_no_organization():
+    """THE risk note. usage_log.organization_id is a nullable uuid and every
+    evidence query is `where organization_id = $1`, so a null row is not a small
+    fee — it is NO row in anybody's evidence. Summing the per-organization
+    answers anyway would understate the platform total by an unknown amount and
+    look exactly like a correct sum."""
+    def handler(method, path, **kwargs):
+        if path == "usage_log":
+            assert kwargs["params"]["organization_id"] == "is.null"
+            assert kwargs["params"]["authoritative"] == "is.true"
+            return [{"id": 4171}]
+        if path == "billing_accounts":
+            return [{"organization_id": ORGANIZATION_A,
+                     "current_period_start": PERIOD_START}]
+        return _ok_summary()
+
+    settlement = _settlement_store(handler).get_billing_settlement()
+    assert settlement["settleable"] is False
+    assert settlement["reason"] == "unattributed_authoritative_usage"
+    assert settlement["unattributed_authoritative_usage"] is True
+    # The organization that DID price cleanly is still reported, so an operator
+    # can see the platform total is the thing that is unstatable.
+    assert settlement["organizations"][0]["settleable"] is True
+    assert settlement["organizations"][0]["estimated_fee_usd"] == 22.5
+
+
+def test_settlement_reports_netted_micro_dollar_buckets_separately():
+    def handler(method, path, **kwargs):
+        if path == "usage_log":
+            return []
+        if path == "billing_accounts":
+            return [{"organization_id": ORGANIZATION_A,
+                     "current_period_start": PERIOD_START}]
+        return _ok_summary(settled_fee_microusd=22_500_000,
+                           reported_fee_microusd=1_000_000,
+                           committed_fee_microusd=22_500_000,
+                           settlement_status="reported", settlement_id=7,
+                           revision=1)
+
+    settlement = _settlement_store(handler).get_billing_settlement()
+    assert settlement["settleable"] is True
+    assert settlement["reason"] == ""
+    entry = settlement["organizations"][0]
+    assert entry["organization_id"] == ORGANIZATION_A
+    # Four DIFFERENT numbers a single "amount owed" would conflate.
+    assert entry["estimated_fee_usd"] == 22.5
+    assert entry["settled_fee_usd"] == 22.5
+    assert entry["reported_fee_usd"] == 1.0
+    assert entry["committed_fee_usd"] == 22.5
+    assert entry["settlement_status"] == "reported"
+    assert entry["billable"] is True
+    assert entry["evidence"]["eligible_rows"] == 12
+
+
+def test_settlement_carries_the_rpcs_own_refusal_instead_of_flattening_it():
+    """billing_period_settlement_summary answers {'ok': false, 'code': ...} for
+    the states it will not price. Those must not collapse into zeros."""
+    def handler(method, path, **kwargs):
+        if path == "usage_log":
+            return []
+        if path == "billing_accounts":
+            return [{"organization_id": ORGANIZATION_A,
+                     "current_period_start": PERIOD_START},
+                    {"organization_id": ORGANIZATION_B,
+                     "current_period_start": None}]
+        return {"ok": False, "code": "period_anchor_mismatch"}
+
+    settlement = _settlement_store(handler).get_billing_settlement()
+    assert settlement["settleable"] is False
+    assert settlement["reason"] == "organization_not_settleable"
+    assert [entry["reason"] for entry in settlement["organizations"]] == [
+        "period_anchor_mismatch", "no_current_period"]
+    assert not [key for key in _flatten_keys(settlement) if key.endswith("_usd")]
+
+
+def _flatten_keys(value, prefix=""):
+    keys = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.append(str(key))
+            keys.extend(_flatten_keys(item))
+    elif isinstance(value, list):
+        for item in value:
+            keys.extend(_flatten_keys(item))
+    return keys
+
+
+def test_settlement_route_degrades_instead_of_500_and_never_shows_a_zero(
+        tmp_path, monkeypatch):
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "settlement-route.db"))
+    monkeypatch.setattr(server, "_store", store)
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer test-admin-session"}
+
+    # Staff-only before anything else: a settlement view is cross-tenant money.
+    assert client.get("/v1/admin/billing/settlement",
+                      headers=headers).status_code == 403
+
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
+
+    # 1. SQLite has no settlement ledger at all, and says so rather than
+    #    synthesising the un-netted per-row sum /v1/admin/billing already shows.
+    sqlite = client.get("/v1/admin/billing/settlement", headers=headers)
+    assert sqlite.status_code == 200
+    assert sqlite.json()["settleable"] is False
+    assert sqlite.json()["reason"] == "settlement_ledger_requires_postgres"
+    assert sqlite.json()["organizations"] == []
+    assert "amount_owed_usd" not in sqlite.json()
+
+    # 2. A store that blows up must still not 500 and must still not imply $0.
+    class Exploding(UsageStore):
+        def get_billing_settlement(self):
+            raise RuntimeError("SENTINEL-SETTLEMENT")
+
+    monkeypatch.setattr(server, "_store", Exploding(str(tmp_path / "boom.db")))
+    broken = client.get("/v1/admin/billing/settlement", headers=headers)
+    assert broken.status_code == 200
+    assert broken.json()["settleable"] is False
+    assert broken.json()["reason"] == "settlement_read_failed"
+    assert not [key for key in _flatten_keys(broken.json())
+                if key.endswith("_usd")]
+
+    # 3. Attributed: a cross-tenant staff read leaves an audit row.
+    with store._conn() as db:
+        actions = [row[0] for row in db.execute(
+            "SELECT action FROM audit_events ORDER BY id").fetchall()]
+    assert actions == ["platform.billing_settlement.read"]
+
+
+def test_admin_billing_keeps_amount_owed_until_the_dashboard_moves(
+        tmp_path, monkeypatch):
+    """Contract with the dashboard lane: /v1/admin/billing must NOT drop
+    amount_owed_usd yet. The API (Railway) and the dashboard (Vercel) ship
+    separately and dashboard billingUsd() renders `Number(undefined || 0)` as a
+    confident $0.00, so removing it before the dashboard reads the new route
+    would create the exact wrong number in the other direction."""
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "amount-owed.db"))
+    store.create_key(hash_key("bvt_owed"), "cli", owner_id="user-a")
+    store.record_usage(hash_key("bvt_owed"), 1000, 400, owner_id="user-a",
+                       provider="openai", model="gpt-4o-mini",
+                       verified_savings_usd=0.4, brevitas_fee_usd=0.1)
+    monkeypatch.setattr(server, "_store", store)
+    monkeypatch.setattr(server, "_dashboard_identity", lambda request: {
+        "id": "admin-user", "app_metadata": {"brevitas_admin": True}})
+    body = TestClient(server.app).get("/v1/admin/billing?range=all", headers={
+        "Authorization": "Bearer test-admin-session"}).json()
+    assert body["amount_owed_usd"] == 0.1
+    assert body["settlement_pending"] is True
+    assert body["settlement_endpoint"] == "/v1/admin/billing/settlement"
+
+
+# ── receipt bridge: no OTHER swallow-everything path may drop a billable row ───
+
+@pytest.mark.parametrize("fault", ["seq_stream", "snapshot"])
+def test_a_quality_stream_fault_cannot_suppress_the_billable_receipt(
+        tmp_path, monkeypatch, fault):
+    """Second member of the same class as the tracking-label kill switch.
+
+    _hosted_proxy_receipt's caller (brevitas.proxy._emit_usage) swallows
+    everything by contract, so ANY exception raised inside _record_usage_report
+    before _store.record_usage means the authoritative row is never written and
+    the only trace is one 'write failed' line. The sequential quality stream sat
+    on that path and could raise three different ways: _seq_stream goes through
+    a BoundedTTLMap that raises ResourceLimitExceeded and constructs the gate
+    from env-var floats, the trip branch does a LAZY import of
+    token_efficiency_model.quality.gate, and to_dict() runs on the way out.
+
+    None of it is money -- a byte-preserving receipt's quality_status is fixed by
+    the MODE, not by the stream -- so a fault there must degrade the analytics
+    and still bank the fee.
+
+    Only the two calls a BYTE-PRESERVING (billable) receipt actually makes are
+    exercised here. stream.update and the lazy trip_lever import belong to the
+    non-byte-preserving branch, which the next test covers.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / f"stream-{fault}.db"))
+    raw_key = "bvt_stream_fault"
+    store.create_key(hash_key(raw_key), "stream", owner_id="customer-stream")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("SENTINEL-QUALITY-STREAM")
+
+    if fault == "seq_stream":
+        monkeypatch.setattr(server, "_seq_stream", explode)
+    else:
+        monkeypatch.setattr(server, "_stream_snapshot", explode)
+
+    payload = {
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 1000, "compressed_tokens": 200,
+        "fresh_input_tokens": 200, "cached_input_tokens": 0, "output_tokens": 10,
+        "request_id": "proxy:chatcmpl-streamfault", "strategy": "exact_cache",
+        "receipt_source": "proxy", "receipt_available": True,
+        "cache_attributable": True, "quality_verified": False,
+    }
+    if fault == "snapshot":
+        # _stream_snapshot runs AFTER the write, so a raise there cannot lose
+        # the row -- it can only 500 the caller for a row that was persisted.
+        # Prove the row survives and the bridge does not log a write failure.
+        with pytest.raises(RuntimeError):
+            server._record_usage_report(
+                hash_key(raw_key), server.UsageReportRequest(**payload),
+                authoritative=True)
+        rows = [row for row in store._rows(hash_key(raw_key)) if row["authoritative"]]
+        assert [row["request_id"] for row in rows] == ["proxy:chatcmpl-streamfault"]
+        assert rows[0]["brevitas_fee_usd"] > 0
+        return
+
+    server._hosted_proxy_receipt(raw_key, payload)
+
+    rows = [row for row in store._rows(hash_key(raw_key)) if row["authoritative"]]
+    assert [row["request_id"] for row in rows] == ["proxy:chatcmpl-streamfault"]
+    # THE assertion: the money is banked, not merely the row.
+    assert rows[0]["verified_savings_usd"] > 0
+    assert rows[0]["brevitas_fee_usd"] > 0
+    # And the degraded field is the cosmetic one, never upgraded to 'verified'
+    # by the failure itself.
+    assert rows[0]["quality_status"] in ("verified", "unverified")
+
+
+@pytest.mark.parametrize("fault", ["seq_stream", "update"])
+def test_a_quality_stream_fault_never_manufactures_a_verified_status(
+        tmp_path, monkeypatch, fault):
+    """The conservative half of the degrade.
+
+    A NON byte-preserving receipt reaches stream.update and, if the martingale
+    trips, the LAZY `from token_efficiency_model.quality.gate import trip_lever`
+    — the two calls the previous test cannot reach. Its analytics row still
+    feeds the settlement evidence (actual_spend_usd and the zero-spend share
+    that drives the halting conditions), so losing it distorts a ceiling.
+
+    And whatever fails, the receipt must not inherit 'verified': that is the one
+    status that would let a caller-reported strategy become billable.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / f"stream-conservative-{fault}.db"))
+    raw_key = "bvt_stream_conservative"
+    store.create_key(hash_key(raw_key), "stream", owner_id="customer-stream2")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("SENTINEL-QUALITY-STREAM")
+
+    if fault == "seq_stream":
+        monkeypatch.setattr(server, "_seq_stream", explode)
+    else:
+        from token_efficiency_model.quality.sequential import SequentialQualityGate
+        monkeypatch.setattr(SequentialQualityGate, "update", explode)
+
+    server._hosted_proxy_receipt(raw_key, {
+        "provider": "openai", "model": "gpt-4o-mini",
+        "baseline_tokens": 1000, "compressed_tokens": 200,
+        "fresh_input_tokens": 200, "output_tokens": 10,
+        "request_id": "proxy:chatcmpl-reorder", "strategy": "reorder",
+        "receipt_source": "proxy", "receipt_available": True,
+        "quality_verified": True,
+    })
+    rows = [row for row in store._rows(hash_key(raw_key)) if row["authoritative"]]
+    assert len(rows) == 1
+    assert rows[0]["quality_status"] == "unverified"
+    # Analytics are kept; nothing billable was invented out of a failure.
+    assert rows[0]["verified_savings_usd"] == 0
+    assert rows[0]["brevitas_fee_usd"] == 0
+    assert rows[0]["tokens_saved"] == 800
+    # The stream state is STATED as unavailable, not silently absent -- for a
+    # stream that was never built AND for one whose serializer failed.
+    class _Broken:
+        def to_dict(self):
+            raise RuntimeError("SENTINEL-SNAPSHOT")
+
+    assert server._stream_snapshot(None) == {"available": False}
+    assert server._stream_snapshot(_Broken()) == {"available": False}

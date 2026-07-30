@@ -37,6 +37,27 @@ logger = logging.getLogger("brevitas.billing_recovery")
 _STRIPE_BASE_URL = "https://api.stripe.com"
 _SUPABASE_RPC_PREFIX = "/rest/v1/rpc/"
 
+# The ONE Stripe API version this system speaks. Sending no Stripe-Version (the
+# previous behaviour of this worker) does not mean "latest": it means the
+# *account* default, which is settable from the Stripe dashboard with no deploy
+# and no review, so the shapes this parser depends on could change underneath a
+# running worker. Pin it instead, to the same literal as the two other Stripe
+# callers — src/lib/billing/config.ts (STRIPE_API_VERSION, passed as the SDK's
+# apiVersion) and scripts/ci/staging-canary.mjs (STRIPE_API_VERSION). See the
+# long note in config.ts for why this specific version: the item-level
+# subscription period fields and invoice.parent.subscription_details shapes it
+# introduced are the ones the Node side is validated against.
+# tests/stripe_api_version_pin.test.mjs fails if the three literals disagree.
+STRIPE_API_VERSION = "2026-06-24.dahlia"
+
+# Stripe rejects an unusable Stripe-Version header with HTTP 400
+# invalid_request_error whose message names the API version (confirmed against
+# the live sandbox: "Invalid Stripe API version: ..."). Some surfaces use
+# error.code == "invalid_api_version" instead; match either. Kept deliberately
+# narrow — a version rejection must park the row (StripeUnavailable), while
+# every other 400 stays a terminal StripeRejected.
+_VERSION_REJECTION = re.compile(r"\bstripe(?:[- ])?(?:api[- ])?version\b", re.IGNORECASE)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -196,6 +217,8 @@ class BillingStore(Protocol):
 
     def release_owner(self, owner: str) -> int: ...
 
+    def release_unsent(self, entry_id: int, owner: str) -> bool: ...
+
     def check_health(self) -> BillingHealth: ...
 
 
@@ -311,6 +334,15 @@ class SupabaseBillingStore:
     def release_owner(self, owner: str) -> int:
         return int(self._rpc("release_billing_ledger_leases", {"p_owner": owner}) or 0)
 
+    def release_unsent(self, entry_id: int, owner: str) -> bool:
+        # Lease-fenced release of a row whose outbound marker is already set.
+        # Only legitimate when Stripe definitively did not ingest the event
+        # (HTTP 429), which is why it is a separate RPC from release_owner.
+        return bool(self._rpc("release_billing_ledger_unsent", {
+            "p_entry_id": entry_id,
+            "p_owner": owner,
+        }))
+
     def check_health(self) -> BillingHealth:
         rows = self._rpc("billing_recovery_health", {})
         row = rows[0] if isinstance(rows, list) and rows else rows
@@ -360,11 +392,22 @@ class StripeRestBillingGateway:
         self._now = now
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+        # Every Stripe REST call this class makes funnels through here — send()
+        # (POST /v1/billing/meter_events), validate_contract() (GET /v1/prices,
+        # GET /v1/billing/meters) and reconcile() (GET .../event_summaries) —
+        # so pinning Stripe-Version here pins the whole worker. It is applied
+        # here rather than only on the session because callers pass their own
+        # `headers` (send() passes Idempotency-Key), and it is merged LAST so a
+        # caller cannot downgrade the pinned version, deliberately or by
+        # accident.
+        headers = {**(kwargs.pop("headers", None) or {}),
+                   "Stripe-Version": STRIPE_API_VERSION}
         try:
             response = self.session.request(
                 method,
                 f"{_STRIPE_BASE_URL}{path}",
                 timeout=(min(3.0, self.timeout_seconds), self.timeout_seconds),
+                headers=headers,
                 **kwargs,
             )
         except (requests.Timeout, requests.ConnectionError) as exc:
@@ -380,11 +423,26 @@ class StripeRestBillingGateway:
             raise StripeAmbiguous(f"Stripe returned retryable status {response.status_code}")
         if response.status_code >= 400:
             try:
-                error_type = str(response.json().get("error", {}).get("type", ""))
+                error = response.json().get("error", {})
+                error_type = str(error.get("type", ""))
+                error_code = str(error.get("code", ""))
+                error_message = str(error.get("message", ""))
             except (ValueError, AttributeError):
-                error_type = ""
+                error_type = error_code = error_message = ""
             if error_type == "idempotency_error":
                 raise StripeAmbiguous("Stripe idempotency result requires reconciliation")
+            # A version rejection is a CONFIGURATION failure, never a fact about
+            # this fee. StripeRejected becomes terminal 'dead' (permanently
+            # discarded revenue, no review queue), which is only correct when
+            # Stripe judged the event itself invalid. If the pinned
+            # STRIPE_API_VERSION is rejected — Stripe retires it, or the pin is
+            # edited to a bad value — every fee would silently die. Park the row
+            # for retry instead and let the catalog/alert path surface it.
+            if error_code == "invalid_api_version" or _VERSION_REJECTION.search(error_message):
+                raise StripeUnavailable(
+                    "Stripe rejected the pinned API version; the meter event was "
+                    "not processed and the row must not be terminalized"
+                )
             raise StripeRejected(f"Stripe rejected meter event with status {response.status_code}")
         return response
 
@@ -446,6 +504,13 @@ class StripeRestBillingGateway:
                 or price.get("billing_scheme") != "per_unit"
                 or str(price.get("unit_amount_decimal")) != "0.0001"
                 or recurring.get("interval") != "week"
+                # An absent interval_count means Stripe's default of 1. Any
+                # other value (a 2-week price) yields a 14-day subscription
+                # anchor, which billing_period_for_occurrence rejects for every
+                # row (202607170004:78-82 raises on a non-7-day anchor, and
+                # 202607200006:386-389 turns that into `review`). Reject the
+                # catalog here instead of stalling every fee downstream.
+                or recurring.get("interval_count") not in (None, 1)
                 or recurring.get("usage_type") != "metered"
             ):
                 self._catalog_error = "Stripe Price violates the billing meter contract"
@@ -584,6 +649,22 @@ class BillingRecoveryProcessor:
             "catalog_contract_valid": 0,
         })
 
+    def _release_unsent(self, entry: BillingEntry, owner: str) -> bool:
+        """Return a provably unsent row to `pending` without burning an attempt.
+
+        Only valid for HTTP 429, the one status the gateway documents as
+        non-ingestion. A store that has not yet learned the RPC (rolling deploy
+        ahead of the migration) must not crash the cycle: the row then keeps
+        today's behavior and stays in 'sending' until lease expiry.
+        """
+        try:
+            return self.store.release_unsent(entry.id, owner)
+        except Exception as exc:
+            logger.error(
+                "billing unsent release failed error_type=%s", type(exc).__name__,
+            )
+            return False
+
     def _complete(
         self, result: BillingRunResult, entry: BillingEntry, owner: str,
         status: str, error: str = "",
@@ -708,14 +789,18 @@ class BillingRecoveryProcessor:
             result.errors += 1
             self._complete(result, entry, owner, "dead", str(exc))
         except StripeUnavailable:
-            # Stripe definitively did not ingest the event (e.g. rate limited).
-            # The outcome is unambiguous, so do not reconcile or review it.
-            # release_owner is a safe no-op once outbound has begun (the store
-            # releases only never-submitted claims); the row stays 'sending' and
-            # a later claim after lease expiry replays the same stable
-            # identifier under the same idempotency key.
+            # Stripe definitively did not ingest the event (e.g. rate limited);
+            # see _request, where only a 429 raises this. The outcome is
+            # unambiguous, so do not reconcile or review it — and do not leave
+            # the row in 'sending' either. release_owner cannot help here: it
+            # only touches rows with a NULL outbound marker (202607170004:390-407),
+            # so it is a no-op after begin_send, and each subsequent reclaim
+            # re-increments attempts (202607170004:290) until the DB sweep parks
+            # a provably-unsent fee in 'review' (202607200006:349-353) after a
+            # handful of rate-limited cycles. release_unsent clears the marker
+            # and gives the attempt back under the same lease fence.
             result.errors += 1
-            self.store.release_owner(owner)
+            self._release_unsent(entry, owner)
             self.telemetry.metric("billing.stripe_unavailable", 1)
         except (StripeAmbiguous, requests.Timeout, requests.ConnectionError, TimeoutError):
             # Ambiguous outcome: Stripe may or may not have ingested the event.

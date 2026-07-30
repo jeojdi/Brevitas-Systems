@@ -11,15 +11,15 @@ import importlib
 import json
 import logging
 import math
-import queue
 import re
 import secrets
 import sqlite3
 import threading
 import time as _time
+import uuid
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -28,10 +28,10 @@ import httpx
 from fastapi import FastAPI, HTTPException, Header, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from typing import Callable, FrozenSet, List, Optional
+from typing import Any, Callable, FrozenSet, List, Optional
 
 from token_efficiency_model.lossless.api_adapter import retrieval_select
 from token_efficiency_model.lossless.provider_cache import count_tokens
@@ -39,10 +39,11 @@ from token_efficiency_model.lossless.message_optimizer import optimize_message_t
 
 from brevitas.provider_reliability import (
     ProviderCircuitOpen,
+    bind_circuit_scope,
     close_provider_sync_clients,
     provider_sync_http,
 )
-from brevitas.resource_bounds import BoundedTTLMap, ResourceBounds
+from brevitas.resource_bounds import BoundedTTLMap, ResourceBounds, ResourceLimitExceeded
 from brevitas.security import (
     EnvelopeCipher,
     EnvelopeError,
@@ -55,6 +56,7 @@ from brevitas.observability import documented_upstream_outage_active
 
 from .company_admin import (
     COMPANY_ROLES,
+    ROLE_PERMISSIONS,
     CompanyPrincipal,
     company_admin_for_store,
     configure_company_admin,
@@ -76,6 +78,7 @@ from .observability import (
     graceful_observability_shutdown,
     install_fastapi_observability,
     mark_documented_upstream_outage,
+    record_savings_row,
 )
 from .security import credential_cipher_from_environment
 from .runtime import hosted_runtime
@@ -847,7 +850,74 @@ def _rate_key(request: Request) -> str:
     """
     return request.client.host if request.client else "unknown"
 
-limiter = Limiter(key_func=_rate_key)
+
+def _job_poll_rate_key(request: Request) -> str:
+    """Bucket the documented 202-poll route on the caller's credential, not the peer.
+
+    GET /v1/jobs/{job_id} is a status poll the API itself tells clients to repeat, and
+    _rate_key collapses every process behind one NAT egress onto one bucket — a customer
+    polling a handful of healthy jobs at 1 Hz from one office IP would eat 429s. Keying on
+    the credential digest is safe HERE, despite _rate_key's warning, because the
+    _authenticated dependency has already resolved (and 401'd unknown keys) before slowapi
+    consults the bucket on this route — rotating garbage header values never reaches the
+    limiter, and rotating VALID keys only spreads one tenant's own budget across that
+    tenant's own credentials. Cross-tenant fairness is the per-organization active-job
+    ceiling, not this brake. Digest, never the raw header: limiter storage (memory or
+    Redis) must not hold key material.
+    """
+    raw_key = (request.headers.get("x-brevitas-key", "")
+               or request.headers.get("x-api-key", ""))
+    if raw_key:
+        return f"jobpoll:{hash_key(raw_key)[:32]}"
+    return _rate_key(request)
+
+
+def _rate_limit_storage_uri() -> str:
+    """Shared storage for the control-plane limits, or "" for per-process memory.
+
+    With memory storage every documented limit is really N_replicas x the number
+    (railway.json declares numReplicas: 2) and resets on every deploy — exactly when an
+    abuse burst is cheapest. Redis makes the counters one fleet-wide bucket, matching what
+    api/distributed_limits.py already does for the proxy path.
+
+    Deliberately reuses REDIS_URL, so no new production secret is needed; when it is unset
+    (dev, tests, CI) the limiter keeps today's in-memory behaviour.
+    """
+    url = os.getenv("BREVITAS_RATE_LIMIT_STORAGE_URI", "").strip()
+    if url:
+        return url
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    return redis_url if redis_url.startswith(("redis://", "rediss://")) else ""
+
+
+def _build_limiter() -> Limiter:
+    # slowapi 0.1.10 evaluates limits through the SYNCHRONOUS limits strategies, so a
+    # shared backend costs one blocking Redis round trip (~1-3 ms intra-region) per
+    # rate-limited request. That is acceptable on the control plane — the proxy hot path
+    # carries no @limiter.limit at all and is admitted by the async DistributedLimiter —
+    # but it is the reason this is not wired to an async storage: there is no async-capable
+    # hook in this slowapi version. in_memory_fallback_enabled keeps a Redis outage
+    # degrading to today's per-process counters instead of 500ing every route.
+    storage_uri = _rate_limit_storage_uri()
+    if not storage_uri:
+        return Limiter(key_func=_rate_key)
+    try:
+        return Limiter(key_func=_rate_key, storage_uri=storage_uri,
+                       in_memory_fallback_enabled=True)
+    except Exception as exc:
+        logger.error("shared rate-limit storage unavailable, falling back to per-process "
+                     "memory error_type=%s", type(exc).__name__)
+        return Limiter(key_func=_rate_key)
+
+
+limiter = _build_limiter()
+
+
+def _rate_limit_storage_is_shared() -> bool:
+    """True when the limiter counters are fleet-wide rather than per replica."""
+    storage = getattr(limiter, "_storage", None)
+    return bool(storage is not None
+                and type(storage).__name__ not in {"MemoryStorage", "NoneType"})
 
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -906,6 +976,14 @@ def _validate_runtime_config() -> None:
     redis_url = os.getenv("REDIS_URL", "").strip()
     if redis_url and not redis_url.startswith("rediss://"):
         raise RuntimeError("Production REDIS_URL must use TLS (rediss://)")
+    if not _rate_limit_storage_is_shared():
+        # Deliberately loud rather than fatal: tests/test_production_topology.py pins
+        # startup as valid without REDIS_URL, so promoting this to a RuntimeError belongs
+        # in the same change that updates that contract. Per-process storage means every
+        # documented limit is really replica-count x the number and resets on each deploy.
+        logger.error(
+            "control-plane rate limits are using per-process memory storage: set REDIS_URL "
+            "(or BREVITAS_RATE_LIMIT_STORAGE_URI) so the counters are fleet-wide")
 
 
 @asynccontextmanager
@@ -969,12 +1047,24 @@ app.add_middleware(
 
 
 def _request_collection_exceeds(value: object, maximum: int) -> bool:
-    if isinstance(value, list):
-        return len(value) > maximum or any(
-            _request_collection_exceeds(item, maximum) for item in value)
-    if isinstance(value, dict):
-        return len(value) > maximum or any(
-            _request_collection_exceeds(item, maximum) for item in value.values())
+    """Iterative on purpose: this runs pre-authentication in the outermost middleware.
+
+    A recursive walk costs ~2 Python frames per nesting level against json.loads's one
+    C-level check, so a few hundred nested arrays (under 1 KB) raised RecursionError here
+    — a RuntimeError nobody caught. brevitas/proxy.py:_json_object already uses this
+    worklist shape; the two enforce the same request_max_items bound.
+    """
+    pending: list[object] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, list):
+            if len(item) > maximum:
+                return True
+            pending.extend(item)
+        elif isinstance(item, dict):
+            if len(item) > maximum:
+                return True
+            pending.extend(item.values())
     return False
 
 
@@ -1034,6 +1124,11 @@ class _AggregateRequestBoundsMiddleware:
                 value = json.loads(body)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 value = None
+            except RecursionError:
+                # json.loads itself exhausts the C recursion budget past ~1000 nesting
+                # levels. The body is then un-inspectable here, not oversized: leave the
+                # 400 to the handler's own parse instead of raising a pre-auth 500.
+                value = None
             if value is not None and _request_collection_exceeds(value, self.max_items):
                 response = JSONResponse(
                     {"detail": "Request contains too many items"}, status_code=413)
@@ -1060,7 +1155,10 @@ async def _security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.url.path != "/v1/health":
+    # Only the process-only liveness probe is cacheable. /v1/health carries live dependency
+    # verdicts and is served from the public marketing origin, where an intermediary could
+    # otherwise hand a stale "ok" (or a stale 503) to whoever asks next.
+    if request.url.path != "/v1/health/live":
         response.headers.setdefault("Cache-Control", "no-store")
     return response
 
@@ -1140,9 +1238,24 @@ class AuthContext:
     key_type: str = "legacy"
     scopes: FrozenSet[str] = frozenset()
     environment: str = ""
+    # Live company role behind a dashboard-session key, resolved by the
+    # per-request membership revalidation below. Empty for every other key type:
+    # device/service/legacy keys carry no human role.
+    company_role: str = ""
 
     def permits(self, scope: str) -> bool:
         return scope in self.scopes or "*" in self.scopes
+
+    def holds_company_permission(self, permission: str) -> bool:
+        """True only for a human session whose CURRENT role grants `permission`.
+
+        Mirrors public.company_role_permissions so this gate cannot drift from
+        /api/billing/status, which already refuses billing data to roles without
+        billing:manage.
+        """
+        if self.key_type != "dashboard_session":
+            return False
+        return permission in ROLE_PERMISSIONS.get(self.company_role, frozenset())
 
 
 _proxy_auth_context: ContextVar[AuthContext | None] = ContextVar(
@@ -1161,10 +1274,49 @@ def _authoritative_service_key_context(kh: str) -> dict | None:
         return service_account_key_context(_store, kh)
 
 
-def _require_current_dashboard_membership(context: AuthContext) -> None:
-    """Revalidate a dashboard-session key's exact human membership every request."""
+def _device_credential_max_age_s() -> int:
+    """Optional lifetime ceiling for `bvx login` device credentials (0 = none).
+
+    Device keys are inserted with expires_at NULL, so nothing bounds them. A hard
+    expiry cannot be the default yet: it needs a CLI re-login path and the
+    onboarding evidence gates (202607200016 / 202607280004) still require the
+    credential to be LIVE, so expiring one silently regresses cli_connected. This
+    knob lets an operator bound them now and stays inert until they do.
+    """
+    try:
+        return max(0, int(os.getenv("BREVITAS_DEVICE_KEY_MAX_AGE_SECONDS", "0")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _device_credential_expired(row: dict) -> bool:
+    if str(row.get("key_type") or "") != "device":
+        return False
+    max_age = _device_credential_max_age_s()
+    if max_age <= 0:
+        return False
+    created = str(row.get("created") or "")
+    if not created:
+        return False
+    try:
+        minted = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if minted.tzinfo is None:
+        minted = minted.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - minted).total_seconds() > max_age
+
+
+def _require_current_dashboard_membership(context: AuthContext) -> str:
+    """Revalidate a dashboard-session key's exact human membership every request.
+
+    Returns the live company role (empty for other key types). Device keys are
+    deliberately NOT revalidated here: their contexts are cached for at most 30s
+    (_auth_context_cache), so event-driven revocation converges within that window
+    without putting a Supabase round trip on every /v1/compress call.
+    """
     if context.key_type != "dashboard_session":
-        return
+        return ""
     if not context.actor_user_id or not context.organization_id:
         raise HTTPException(status_code=403, detail="Active company membership required")
     resolver = getattr(_store, "resolve_device_approval_organization", None)
@@ -1195,6 +1347,43 @@ def _require_current_dashboard_membership(context: AuthContext) -> None:
         raise HTTPException(
             status_code=503, detail="Membership verification unavailable",
             headers={"Retry-After": "1"},
+        )
+    return membership_role
+
+
+def _customer_provision_cap() -> int:
+    try:
+        return max(1, int(os.getenv("BREVITAS_MAX_CUSTOMERS_PER_ORG", "10000")))
+    except (TypeError, ValueError):
+        return 10_000
+
+
+def _enforce_customer_provision_quota(organization_id: str) -> None:
+    """Bound the one write path a client header can drive on its own.
+
+    X-Brevitas-Customer-ID mints a permanent `customers` row on every lookup miss — there
+    is no TTL and no purge for them — so a key holding customer:route plus
+    customer:auto_provision can convert its RPM allowance into millions of junk rows in the
+    shared Postgres, each also costing two extra PostgREST round trips on the auth path.
+    The count is racy by nature; bounded overshoot is acceptable for a DoS control. The
+    durable guard belongs inside rpc/import_enterprise_customers so POST
+    /v1/customers/import is covered by the same rule.
+    """
+    probe = getattr(_store, "customer_count_at_least", None)
+    if not callable(probe):
+        return
+    try:
+        exhausted = bool(probe(organization_id, _customer_provision_cap()))
+    except Exception as exc:
+        # Availability over the quota: a store blip must not reject live traffic.
+        logger.warning("customer quota probe unavailable error_type=%s",
+                       type(exc).__name__)
+        return
+    if exhausted:
+        logger.error("customer auto-provisioning refused: organization at quota")
+        raise HTTPException(
+            status_code=429, detail="Customer limit reached for this organization",
+            headers={"Retry-After": "60"},
         )
 
 
@@ -1235,6 +1424,7 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
         if customer is None:
             if "customer:auto_provision" not in scopes:
                 raise HTTPException(status_code=404, detail="Customer is not registered")
+            _enforce_customer_provision_quota(organization_id)
             customer = _store.upsert_customer(organization_id, external_id)
         if customer.get("status") != "active":
             raise HTTPException(status_code=403, detail="Customer is not active")
@@ -1250,7 +1440,11 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
         key_type=str(row.get("key_type") or "legacy"), scopes=scopes,
         environment=str(row.get("environment") or ""),
     )
-    _require_current_dashboard_membership(context)
+    if _device_credential_expired(row):
+        raise HTTPException(status_code=401, detail="Device credential expired")
+    company_role = _require_current_dashboard_membership(context)
+    if company_role:
+        context = replace(context, company_role=company_role)
     with _auth_context_lock:
         try:
             configured_cap = max(
@@ -1291,21 +1485,60 @@ def _provider_bucket(path: str, raw_body: bytes) -> str:
     return "openai" if model else "all"
 
 
-def _key_exists(kh: str) -> bool:
+# Admission control only. A full BPE encode of a 2 MiB body (the request_max_bytes
+# default, env-raisable to 16 MiB) costs 100-200+ ms of pure CPU, and it ran on the single
+# event loop BEFORE _distributed_limiter.acquire could reject anything — so one tenant's
+# maximum-size prompts stalled every other tenant on the replica, and a request destined
+# for a 429 still burned the whole encode. asyncio.to_thread would only relocate that CPU
+# into the same default executor the auth lookups use.
+_TOKEN_ESTIMATE_SAMPLE_BYTES = 64 * 1024
+
+
+def _estimated_token_cost(raw_body: bytes) -> int:
+    """Bounded token estimate for the rate limiter — never for billing.
+
+    Tokenizes a head sample and scales by total length, which keeps the tokens-per-byte
+    ratio of the actual payload: a high-entropy body still gets charged at its real
+    density (~1.5 bytes/token), where a flat len//4 would under-charge it ~2.7x and walk
+    it through the TPM guard. Billed tokens come from provider receipts (brevitas/receipts),
+    never from here — token_cost feeds _distributed_limiter.acquire and nothing else.
+    """
+    if not raw_body:
+        return 1
+    head = raw_body[:_TOKEN_ESTIMATE_SAMPLE_BYTES]
+    sample = count_tokens(head.decode("utf-8", errors="ignore"))
+    if len(raw_body) > len(head):
+        sample = sample * len(raw_body) // len(head)
+    return max(1, sample)
+
+
+def _key_validity(kh: str) -> str:
+    """Return valid / unknown / store_unavailable — fail-closed, but attributable.
+
+    A bare boolean collapses a store outage into "this key is not valid", which on the
+    billable receipt path (_hosted_proxy_receipt) is the difference between a tenant
+    that legitimately has no key and a Supabase blip silently discarding every
+    authoritative usage row. Callers that only need a yes/no still get fail-closed
+    behaviour from _key_exists; nothing here ever fails open.
+    """
     with _valid_key_lock:
         if _valid_key_cache.get(kh, False):
-            return True
+            return "valid"
     try:
         row = _store.key_context(kh)
         valid = bool(row)
         if valid and str(row.get("key_type") or "") == "organization_service":
             valid = _authoritative_service_key_context(kh) is not None
     except Exception:
-        valid = False
+        return "store_unavailable"
     if valid:
         with _valid_key_lock:
             _valid_key_cache.put(kh, True)
-    return valid
+    return "valid" if valid else "unknown"
+
+
+def _key_exists(kh: str) -> bool:
+    return _key_validity(kh) == "valid"
 
 
 def _admission_renewal_interval(lease) -> float:
@@ -1433,6 +1666,64 @@ def _warm_enabled_cached(organization_id: str, customer_id: str = "") -> bool:
     return enabled
 
 
+# Cache policy is a per-tenant boolean read on EVERY authenticated request (including
+# POST /v1/usage at 300/minute) and on every proxied completion, and it was both uncached
+# — 1-2 PostgREST GETs per request — and fail-closed, so a Supabase blip on a feature flag
+# turned into a 503 for inference traffic and lost usage receipts. Keyed on
+# (organization, customer) because SupabaseUsageStore.cache_enabled consults the customer
+# row first and only falls back to the organization: an org-only key would leak one
+# customer's override onto its siblings. The TTL is deliberately short because
+# PUT /v1/cache-policy {enabled:false} answers {"purged": true} — the other replica keeps
+# serving cache for at most this window (railway.json numReplicas: 2).
+_CACHE_ENABLED_TTL_S = 30
+_cache_enabled_cache = BoundedTTLMap[str, bool](
+    ttl_s=min(_CACHE_ENABLED_TTL_S, _RESOURCE_BOUNDS.registry_ttl_s),
+    max_entries=_RESOURCE_BOUNDS.registry_max_entries,
+    max_value_bytes=16,
+    sizer=lambda _value: 1,
+    copier=lambda value: value,
+)
+
+
+def _cache_policy_cache_key(organization_id: str, customer_id: str = "") -> str:
+    return f"{organization_id}\x00{customer_id}"
+
+
+def _cache_enabled_cached(organization_id: str, customer_id: str = "") -> bool:
+    """Caching is best-effort: a store failure means not-cached, never a 503.
+
+    Same contract as _warm_enabled_cached. Failing open to False can only disable an
+    optimization; it can never serve a cached answer the tenant did not consent to.
+    """
+    if not organization_id:
+        return False
+    cache_key = _cache_policy_cache_key(organization_id, customer_id)
+    cached = _cache_enabled_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        enabled = bool(_store.cache_enabled(organization_id, customer_id))
+    except Exception as exc:
+        logger.warning("cache policy lookup unavailable error_type=%s",
+                       type(exc).__name__)
+        return False
+    _cache_enabled_cache.put(cache_key, enabled)
+    return enabled
+
+
+def _invalidate_cache_policy(organization_id: str) -> None:
+    """Drop every cached decision for one organization, before the caller is answered.
+
+    An organization-level change flips the fallback for all of its customers, so the whole
+    org prefix goes — anything less keeps caching for up to the TTL after the API has
+    already reported the namespaces purged.
+    """
+    prefix = f"{organization_id}\x00"
+    for cache_key, _value in _cache_enabled_cache.items():
+        if str(cache_key).startswith(prefix):
+            _cache_enabled_cache.discard(cache_key)
+
+
 @app.middleware("http")
 async def _protect_model_proxy(request: Request, call_next):
     if request.url.path not in _PROXY_PATHS:
@@ -1469,11 +1760,19 @@ async def _protect_model_proxy(request: Request, call_next):
             request.state.brevitas_organization_id = auth_context.organization_id
             request.state.brevitas_customer_id = auth_context.customer_id
             request.state.brevitas_cache_enabled = await asyncio.to_thread(
-                _store.cache_enabled, auth_context.organization_id, auth_context.customer_id)
+                _cache_enabled_cached,
+                auth_context.organization_id, auth_context.customer_id)
             request.state.brevitas_warm_enabled = await asyncio.to_thread(
                 _warm_enabled_cached, auth_context.organization_id,
                 auth_context.customer_id)
             _proxy_auth_context.set(auth_context)
+            # Per-tenant circuit fairness (finding 44): attribute this request's
+            # provider failures to the authenticated tenant's own circuit so one
+            # tenant's engineered timeouts cannot 503 every other tenant. Bound
+            # here — the one place the tenant is verified — exactly like the auth
+            # context above, and set without reset for the same streaming-body
+            # lifetime reason.
+            bind_circuit_scope(auth_context.organization_id)
         except HTTPException as exc:
             return JSONResponse(
                 status_code=exc.status_code, content={"detail": exc.detail},
@@ -1489,7 +1788,9 @@ async def _protect_model_proxy(request: Request, call_next):
     local_admitted = False
     if auth_context:
         raw_body = await request.body()
-        token_cost = max(1, count_tokens(raw_body.decode("utf-8", errors="ignore")))
+        token_cost = _estimated_token_cost(raw_body)
+        # json.loads of a 2 MiB body is ~1 ms, so this stays on the loop deliberately: a
+        # thread hop would only add queue latency to the executor the auth lookups share.
         provider = _provider_bucket(request.url.path, raw_body)
         try:
             lease = await _distributed_limiter.acquire(
@@ -1597,7 +1898,14 @@ def _safe_record_usage(*, auth_context: AuthContext | None = None, **values) -> 
                 values["owner_id"] = auth_context.billing_owner_id
         if "owner_id" not in values and values.get("key_hash"):
             values["owner_id"] = _store.key_owner(values["key_hash"])
-        values.setdefault("authoritative", True)
+        # No `authoritative` default. Every caller of this helper is an advisory
+        # transform endpoint that never observed a provider call, so it passes
+        # authoritative=False explicitly. `authoritative` is the load-bearing
+        # billing predicate (202607280007) and only _hosted_proxy_receipt, which
+        # did observe the provider response, may set it — a default of True here
+        # silently labelled every /v1/compress and Playground row as billable
+        # evidence. _usage_row treats an omitted value as False, the safe
+        # direction, so a future caller cannot re-acquire the label by accident.
         return bool(_store.record_usage(**values))
     except Exception as exc:
         logger.error("usage write failed: %s", type(exc).__name__)
@@ -1629,16 +1937,10 @@ def _authenticated(request: Request, x_api_key: Optional[str] = Header(None),
     request.state.brevitas_tenant_key = tenant_key(key, customer_external_id)
     request.state.brevitas_organization_id = context.organization_id
     request.state.brevitas_customer_id = context.customer_id
-    try:
-        request.state.brevitas_cache_enabled = _store.cache_enabled(
-            context.organization_id, context.customer_id)
-    except Exception as exc:
-        logger.error("cache policy lookup unavailable error_type=%s",
-                     type(exc).__name__)
-        raise HTTPException(
-            status_code=503, detail="Authentication store unavailable",
-            headers={"Retry-After": "1"},
-        ) from exc
+    # Never a 503: an unreachable store on a caching feature flag must not reject the
+    # caller's inference traffic or their usage receipts (see _cache_enabled_cached).
+    request.state.brevitas_cache_enabled = _cache_enabled_cached(
+        context.organization_id, context.customer_id)
     return kh
 
 
@@ -1796,14 +2098,68 @@ def _configure_company_admin_runtime() -> None:
 _compliance_admin_service = None
 
 
+COMPLIANCE_TENANT_HEADER = "X-Brevitas-Compliance-Tenant"
+
+
+def _compliance_tenant_authority_only() -> bool:
+    """Refuse the operator's own workspace as a compliance tenant when set.
+
+    Default off so a running compliance workflow does not stop the moment this
+    ships; turn it on once compliance_tenant_authority is populated.
+    """
+    return os.getenv("BREVITAS_COMPLIANCE_TENANT_AUTHORITY_ONLY", "").lower() in (
+        "1", "true", "yes", "on")
+
+
+def _authorized_compliance_tenant(actor_id: str, organization_id: str) -> str:
+    """Return the named tenant only if a platform grant authorizes this operator."""
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", organization_id):
+        raise HTTPException(status_code=400, detail="Invalid compliance tenant")
+    checker = getattr(_store, "compliance_tenant_authority", None)
+    if not callable(checker):
+        raise HTTPException(
+            status_code=503, detail="Compliance tenant authority unavailable",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        authorized = bool(checker(actor_id, organization_id))
+    except ValueError:
+        return ""
+    except Exception as exc:
+        logger.error("compliance tenant authority unavailable error_type=%s",
+                     type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Compliance tenant authority unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
+    return organization_id if authorized else ""
+
+
 def _compliance_admin_principal(request: Request) -> ComplianceAdminPrincipal:
-    """Derive compliance authority only from verified identity and live DB state."""
+    """Derive compliance authority only from verified identity and live DB state.
+
+    A DSR belongs to the SUBJECT's tenant, which is rarely one the operator is a
+    member of, so the request names it explicitly and an immutable platform grant
+    (compliance_tenant_authority, re-checked inside the submit RPCs) decides. The
+    operator's own active workspace is a mutable UI preference and must not choose
+    the tenant a two-person-approved erasure lands in; it survives only as a
+    transitional fallback for when no tenant is named.
+    """
     identity = _dashboard_identity(request)
     actor_id = str(identity.get("id") or "")
     metadata = identity.get("app_metadata")
     if (not actor_id or not isinstance(metadata, dict)
             or metadata.get("role") != "brevitas_admin"):
         return ComplianceAdminPrincipal(actor_id, "", "")
+    named_tenant = str(request.headers.get(COMPLIANCE_TENANT_HEADER, "") or "").strip()
+    if named_tenant:
+        return ComplianceAdminPrincipal(
+            actor_id, _authorized_compliance_tenant(actor_id, named_tenant),
+            "brevitas_admin")
+    if _compliance_tenant_authority_only():
+        logger.error("compliance request named no tenant and the workspace "
+                     "fallback is disabled")
+        return ComplianceAdminPrincipal(actor_id, "", "brevitas_admin")
     organization_id, membership_role = _active_company_membership(actor_id)
     if not organization_id or membership_role not in COMPANY_ROLES:
         return ComplianceAdminPrincipal(actor_id, "", "brevitas_admin")
@@ -1864,6 +2220,88 @@ def _admin_authenticated(request: Request) -> str:
     if metadata.get("brevitas_admin") is True or metadata.get("role") == "brevitas_admin":
         return str(identity.get("id") or "admin")
     raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _audit_platform_read(request: Request, actor_id: str, action: str, *,
+                         target_type: str = "platform",
+                         target_id: str = "all_tenants") -> None:
+    """Attribute a Brevitas-staff cross-tenant read in audit_events before serving it.
+
+    The DB audit log is the authoritative record (docs/OBSERVABILITY.md) and general
+    telemetry may not carry actor or tenant identity, so there is no log-only
+    substitute: the %s-style logger.info lines these routes used to carry emitted
+    nothing at all, because JsonLogFormatter never reads record.args.
+
+    organization_id stays NULL: these reads span every tenant.
+    """
+    recorder = getattr(_store, "append_audit_event", None)
+    if not callable(recorder):
+        logger.error("platform admin read is unattributable action=%s", action)
+        return
+    state = getattr(request, "state", None)
+    try:
+        recorder(
+            action=action, target_type=target_type, target_id=target_id,
+            actor_id=actor_id or "admin", actor_role="brevitas_admin",
+            request_id=str(getattr(state, "brevitas_request_id", "") or ""),
+        )
+    except Exception as exc:
+        logger.error("platform admin audit write failed action=%s error_type=%s",
+                     action, type(exc).__name__)
+        # Fail closed on the hosted store: an unattributable cross-tenant read is
+        # exactly what an enterprise audit review asks us to prove cannot happen.
+        if hasattr(_store, "_request"):
+            raise HTTPException(
+                status_code=503, detail="Audit trail unavailable",
+                headers={"Retry-After": "1"},
+            ) from exc
+
+
+def _audit_tenant_mutation(request: Request, organization_id: str, actor_id: str,
+                           actor_role: str, action: str, *, target_type: str,
+                           target_id: str) -> None:
+    """Attribute a credential/policy write that has ALREADY committed.
+
+    Provider credentials, warming spend consent and cache policy are the three
+    tenant mutations that never went through an audited RPC: provider_config has no
+    updated_by/updated_at at all, warm_credentials overwrites consent_actor_id on
+    every change, and warm_credentials_purge deletes the row outright. Without this
+    row, "who swapped our provider key / wiped our cache" has no answer.
+
+    Best effort on purpose: the write cannot be rolled back, so a failed append is
+    logged loudly instead of being reported to the caller as a failed mutation. The
+    durable fix is an append_company_audit call inside those security-definer
+    functions, in the same transaction.
+    """
+    recorder = getattr(_store, "append_audit_event", None)
+    if not callable(recorder) or not organization_id:
+        logger.error("tenant mutation is unattributable action=%s", action)
+        return
+    try:
+        recorder(
+            action=action, target_type=target_type, target_id=target_id,
+            actor_id=actor_id or "system", actor_role=actor_role or "legacy",
+            request_id=str(getattr(request.state, "brevitas_request_id", "") or ""),
+            organization_id=organization_id,
+        )
+    except Exception as exc:
+        logger.error("tenant mutation audit write failed action=%s error_type=%s",
+                     action, type(exc).__name__)
+
+
+def _key_actor_audit_identity(context: AuthContext) -> tuple[str, str]:
+    """Audit (actor_id, actor_role) for an API-key caller — never the key hash.
+
+    validate_audit_event_insert rejects a 64-hex actor_id and any non-null
+    actor_key_hash, so the resolved human/service identity is the only usable one.
+    """
+    if context.key_type == "dashboard_session":
+        return context.actor_user_id or "system", context.company_role or "none"
+    if context.key_type == "organization_service":
+        return context.service_account_id or "system", "service_account"
+    # A device/legacy credential's owner_id is the BILLING owner, not the holder,
+    # so naming it here would be a false attribution.
+    return "system", "legacy"
 
 
 _POSTHOG_CACHE_TTL = 300
@@ -2381,6 +2819,25 @@ def _key_admin_unavailable(exc: Exception) -> HTTPException:
     )
 
 
+def _dashboard_session_scopes(actor_role: str) -> list[str]:
+    """Scopes for a browser session key.
+
+    quality:manage clears a deliberately-held quality trip, so it is minted only for the
+    roles allowed to mutate company state — every other scope here is granted to a plain
+    member as well. Long-lived organization_service keys deliberately never get it: the
+    credential whose own reports trip the stream must not be able to clear the trip.
+    In production the scope array is chosen inside
+    company_admin_create_dashboard_session_key, which does not mint quality:manage, so
+    this list only governs the dev/SQLite path. POST /v1/quality/stream/reset therefore
+    authorizes on the live company role and treats the scope as an alternative, so nothing
+    depends on this list reaching production.
+    """
+    scopes = ["proxy:invoke", "usage:read_own", "provider:read", "provider:manage"]
+    if _canonical_company_role(actor_role) in ("company_owner", "company_admin"):
+        scopes.append("quality:manage")
+    return scopes
+
+
 @app.post("/v1/keys")
 @limiter.limit("10/minute")
 def create_key(request: Request, body: CreateKeyRequest):
@@ -2413,8 +2870,7 @@ def create_key(request: Request, body: CreateKeyRequest):
                 "", body.name,
                 owner_id=organization.get("billing_owner_id") or owner_id,
                 organization_id=organization["id"], key_type="dashboard_session",
-                scopes=["proxy:invoke", "usage:read_own", "provider:read",
-                        "provider:manage"],
+                scopes=_dashboard_session_scopes(actor_role),
                 environment="dashboard", created_by=owner_id,
                 expires_at=expires_at, request_id=request_id,
                 actor_role=actor_role,
@@ -2451,7 +2907,7 @@ def create_key(request: Request, body: CreateKeyRequest):
     key = generate_api_key()
     kh = hash_key(key)
     if dashboard_session:
-        scopes = ["proxy:invoke", "usage:read_own", "provider:read", "provider:manage"]
+        scopes = _dashboard_session_scopes(actor_role)
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
     else:
         scopes = ["proxy:invoke", "usage:write", "usage:read_own",
@@ -2563,15 +3019,30 @@ def revoke_key(request: Request, key_id: str):
             raise _key_admin_unavailable(exc) from exc
         if active_organization != str(organization.get("id") or "") or not actor_role:
             raise HTTPException(status_code=403, detail="Organization access denied")
+    # `bvx login` device credentials have their own audited revocation RPC (the
+    # dashboard-session one rejects every other type by design), so read the type
+    # first and let the store dispatch. Without this the Revoke button the
+    # dashboard already renders for a device key can only ever answer 403.
+    key_type = ""
+    reader = getattr(_store, "organization_key_type", None)
+    if callable(reader):
+        try:
+            key_type = str(reader(organization["id"], key_id) or "")
+        except Exception as exc:
+            raise _key_admin_unavailable(exc) from exc
     try:
         revoked = _store.revoke_organization_key(
             organization["id"], key_id, actor_user_id=owner_id,
             request_id=str(getattr(request.state, "brevitas_request_id", "")),
-            actor_role=actor_role)
+            actor_role=actor_role, key_type=key_type)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Key revocation denied") from exc
     except RuntimeError as exc:
-        if str(exc).endswith("forbidden_or_not_found"):
+        # Both are permanent refusals from the revocation dispatcher, not outages:
+        # organization_service keys stay under the service-account lifecycle RPCs,
+        # so retrying this route can never succeed.
+        if str(exc).endswith(("forbidden_or_not_found",
+                              "service_account_lifecycle_required")):
             raise HTTPException(status_code=403, detail="Key revocation denied") from exc
         logger.error("atomic key revocation unavailable error_type=%s",
                      type(exc).__name__)
@@ -2618,6 +3089,12 @@ def _customer_import_organization(request: Request) -> dict:
     return {"id": context.organization_id}
 
 
+# Page size for GET /v1/customers. The default is generous on purpose: no dashboard or SDK
+# caller pages yet, so a small default would silently truncate an existing tenant's list.
+_CUSTOMER_PAGE_DEFAULT = 200
+_CUSTOMER_PAGE_MAX = 500
+
+
 @app.post("/v1/customers/import")
 @limiter.limit("120/minute")
 def import_customers(request: Request, body: CustomerImportRequest):
@@ -2632,9 +3109,18 @@ def import_customers(request: Request, body: CustomerImportRequest):
 
 @app.get("/v1/customers")
 @limiter.limit("60/minute")
-def list_customers(request: Request):
+def list_customers(
+    request: Request,
+    limit: int = Query(_CUSTOMER_PAGE_DEFAULT, ge=1, le=_CUSTOMER_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+):
+    """Paged: every sibling listing endpoint is, and this one materialized the whole
+    `customers` table for an organization into one Python list in a shared replica."""
     _, organization = _member_organization(request)
-    return {"customers": _store.list_customers(organization["id"])}
+    page = _store.list_customers(organization["id"], limit=limit + 1, offset=offset)
+    has_more = len(page) > limit
+    return {"customers": page[:limit], "limit": limit, "offset": offset,
+            "has_more": has_more}
 
 
 class CachePolicyRequest(BaseModel):
@@ -2668,10 +3154,28 @@ def get_cache_policy(
     return {"enabled": bool(enabled), "customer_external_id": customer_external_id}
 
 
+def _tenant_cache_namespace(request: Request) -> str:
+    """The ONE semantic-cache namespace shape every writer must use.
+
+    brevitas/proxy.py writes this form, and it is the only form the two cleanup paths know:
+    the purge in set_cache_policy below, and compliance_delete_tenant's
+    digest(org||':unattributed') / digest(org||':'||customer) branches. A key-derived
+    namespace (sha256 of the tenant key) matched neither, so Playground-cached prompts and
+    responses survived both {"purged": true} and a tenant-deletion DSR — and became
+    unreconstructable once the key rotated. Returns "" when there is no resolved
+    organization, in which case the caller must not cache at all.
+    """
+    organization_id = str(getattr(request.state, "brevitas_organization_id", "") or "")
+    if not organization_id:
+        return ""
+    customer_id = str(getattr(request.state, "brevitas_customer_id", "") or "")
+    return f"{organization_id}:{customer_id or 'unattributed'}"
+
+
 @app.put("/v1/cache-policy")
 @limiter.limit("30/minute")
 def set_cache_policy(request: Request, body: CachePolicyRequest):
-    _, organization = _member_organization(request, write=True)
+    user_id, organization = _member_organization(request, write=True)
     customer_id = ""
     if body.customer_external_id:
         customer = _store.find_customer(organization["id"], body.customer_external_id)
@@ -2679,9 +3183,13 @@ def set_cache_policy(request: Request, body: CachePolicyRequest):
             raise HTTPException(status_code=404, detail="Customer not found")
         customer_id = str(customer["id"])
     _store.set_cache_enabled(organization["id"], body.enabled, customer_id)
+    # Synchronously, before the purge and before answering: otherwise this replica keeps
+    # admitting cache reads for up to _CACHE_ENABLED_TTL_S after reporting purged: true.
+    _invalidate_cache_policy(organization["id"])
     if not body.enabled:
         try:
             cache = make_semantic_cache()
+            # Same shape as _tenant_cache_namespace — every writer must be purgeable here.
             namespaces = [f"{organization['id']}:{customer_id or 'unattributed'}"]
             if not customer_id:
                 namespaces.extend(
@@ -2693,6 +3201,15 @@ def set_cache_policy(request: Request, body: CachePolicyRequest):
         except Exception as exc:
             logger.error("cache purge failed error_type=%s", type(exc).__name__)
             raise HTTPException(status_code=503, detail="Cache purge unavailable") from exc
+    actor_role = _canonical_company_role(organization.get("role"))
+    target_id = f"{organization['id']}:{customer_id or 'organization'}"
+    _audit_tenant_mutation(
+        request, organization["id"], user_id, actor_role, "cache_policy.changed",
+        target_type="cache_policy", target_id=target_id)
+    if not body.enabled:
+        _audit_tenant_mutation(
+            request, organization["id"], user_id, actor_role, "cache.purged",
+            target_type="cache_policy", target_id=target_id)
     return {"enabled": body.enabled, "customer_external_id": body.customer_external_id,
             "purged": not body.enabled}
 
@@ -2709,7 +3226,19 @@ def _job_tenant(request: Request, kh: str, scope: str) -> JobTenant:
     return JobTenant(context.organization_id, context.customer_id, kh)
 
 
+# These three were the only mutating job routes with no limit of any kind, while ~45
+# neighbouring routes carry one. On the mutating routes _rate_key buckets on the verified
+# peer IP, so this is a runaway-client / accident brake and NOT the anti-abuse control: an
+# attacker rotating source addresses walks straight through it. The GET poll is different:
+# this is a documented 202-poll API, so status polls bucket per credential
+# (_job_poll_rate_key) with a budget sized for many concurrent healthy jobs — an office
+# NAT must not 429 one customer because another is polling. Cross-tenant fairness has to
+# come from a per-organization queued-job quota in JobService.submit (enforced AFTER the
+# idempotency lookup, so a legitimate retry still returns the existing row) plus per-org
+# fairness in claim_ai_job. Until that lands, a store that reports capacity is at least
+# answered with a 429 here instead of being swallowed into a 503.
 @app.post("/v1/jobs", status_code=202)
+@limiter.limit("300/minute")
 async def create_job(request: Request, body: JobRequest,
                      kh: str = Depends(_authenticated)):
     tenant = _job_tenant(request, kh, "jobs:create")
@@ -2718,6 +3247,12 @@ async def create_job(request: Request, body: JobRequest,
             tenant, body, request.headers.get("idempotency-key", ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ResourceLimitExceeded as exc:
+        logger.warning("job submission refused: queue at capacity")
+        raise HTTPException(
+            status_code=429, detail="Too many queued jobs",
+            headers={"Retry-After": "5"},
+        ) from exc
     except _CREDENTIAL_DEPENDENCY_ERRORS as exc:
         raise _credential_dependency_unavailable(exc) from exc
     except Exception as exc:
@@ -2728,6 +3263,7 @@ async def create_job(request: Request, body: JobRequest,
 
 
 @app.get("/v1/jobs/{job_id}")
+@limiter.limit("600/minute", key_func=_job_poll_rate_key)
 async def get_job(request: Request, job_id: str, kh: str = Depends(_authenticated)):
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", job_id):
         raise HTTPException(status_code=400, detail="Invalid job id")
@@ -2741,6 +3277,7 @@ async def get_job(request: Request, job_id: str, kh: str = Depends(_authenticate
 
 
 @app.post("/v1/jobs/{job_id}/cancel")
+@limiter.limit("120/minute")
 async def cancel_job(request: Request, job_id: str, kh: str = Depends(_authenticated)):
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", job_id):
         raise HTTPException(status_code=400, detail="Invalid job id")
@@ -2881,8 +3418,31 @@ def installation_inventory(request: Request):
 @app.get("/v1/organization/inventory")
 @limiter.limit("60/minute")
 def organization_inventory(request: Request):
-    _, organization = _member_organization(request)
-    return _store.organization_inventory(organization["id"])
+    """Access review for the tenant: current members, devices, installations, keys.
+
+    The key half needs actor/request/role context — the hosted store has no
+    unauthenticated key reader — so thread it through the same way GET /v1/keys
+    does, and surface a store failure as 503 rather than a bare 500.
+    """
+    actor_user_id, organization = _member_organization(request)
+    actor_role = _canonical_company_role(organization.get("role"))
+    try:
+        if hasattr(_store, "_request"):
+            active_organization, actor_role = _active_company_membership(actor_user_id)
+            if (active_organization != str(organization.get("id") or "")
+                    or not actor_role):
+                raise HTTPException(status_code=403, detail="Organization access denied")
+        return _store.organization_inventory(
+            organization["id"], actor_user_id=actor_user_id,
+            request_id=str(getattr(request.state, "brevitas_request_id", "")),
+            actor_role=actor_role,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Organization access denied") from exc
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
 
 
 @app.delete("/v1/installations/{installation_id}")
@@ -2957,6 +3517,12 @@ def set_provider(request: Request, body: ProviderConfigRequest, kh: str = Depend
         _store.set_provider_config(kh, body.provider, encrypted_key, body.model)
     except Exception as exc:
         raise _provider_config_unavailable(exc) from exc
+    context = _request_auth_context(request, kh)
+    actor_id, actor_role = _key_actor_audit_identity(context)
+    _audit_tenant_mutation(
+        request, context.organization_id, actor_id, actor_role,
+        "provider_credential.updated", target_type="provider_config",
+        target_id=f"{context.organization_id}:{body.provider}")
     return {"ok": True, "provider": body.provider, "model": body.model}
 
 
@@ -3019,9 +3585,22 @@ class WarmingConfigRequest(BaseModel):
 def get_warming(request: Request):
     _, organization = _member_organization(request)
     try:
-        return _store.warm_status(organization["id"])
+        status = _store.warm_status(organization["id"])
     except Exception as exc:
         raise _key_admin_unavailable(exc) from exc
+    # Warming status carries the organization's daily provider spend budget and the
+    # spend booked against it. A plain member keeps the operational view (which
+    # providers are warm, ping/hit counts) but not the money, on the same
+    # billing:manage rule /api/billing/status already enforces. Owners and admins
+    # manage warming spend, so they always see it.
+    role = _canonical_company_role(organization.get("role"))
+    if (role in ("company_owner", "company_admin")
+            or "billing:manage" in ROLE_PERMISSIONS.get(role, frozenset())):
+        return status
+    redacted = _without_spend_fields(status)
+    if isinstance(redacted, dict):
+        redacted["spend_redacted"] = True
+    return redacted
 
 
 @app.put("/v1/warming")
@@ -3062,6 +3641,12 @@ def set_warming(request: Request, body: WarmingConfigRequest):
     except Exception as exc:
         raise _key_admin_unavailable(exc) from exc
     _warm_enabled_cache.discard(organization["id"])
+    _audit_tenant_mutation(
+        request, organization["id"], user_id,
+        _canonical_company_role(organization.get("role")),
+        "warming.consent_granted" if body.enabled else "warming.disabled",
+        target_type="warm_credential",
+        target_id=f"{organization['id']}:{body.provider}")
     masked = ("*" * 8 + body.provider_api_key[-4:]
               if len(body.provider_api_key) > 4 else "")
     return {"ok": True, "provider": saved["provider"],
@@ -3072,7 +3657,7 @@ def set_warming(request: Request, body: WarmingConfigRequest):
 @app.delete("/v1/warming/{provider}")
 @limiter.limit("30/minute")
 def delete_warming(request: Request, provider: str):
-    _, organization = _member_organization(request, write=True)
+    user_id, organization = _member_organization(request, write=True)
     if provider not in _WARM_PROVIDERS:
         raise HTTPException(status_code=400,
                             detail=f"Unknown warming provider '{provider}'")
@@ -3081,6 +3666,14 @@ def delete_warming(request: Request, provider: str):
     except Exception as exc:
         raise _key_admin_unavailable(exc) from exc
     _warm_enabled_cache.discard(organization["id"])
+    if purged.get("credentials_deleted"):
+        # warm_credentials_purge deletes the consent row, so this audit event is
+        # the only remaining evidence that spend consent ever existed.
+        _audit_tenant_mutation(
+            request, organization["id"], user_id,
+            _canonical_company_role(organization.get("role")),
+            "warming.credential_deleted", target_type="warm_credential",
+            target_id=f"{organization['id']}:{provider}")
     if not purged.get("credentials_deleted"):
         raise HTTPException(status_code=404,
                             detail="Warming is not configured for this provider")
@@ -3147,6 +3740,9 @@ def compress(request: Request, body: CompressRequest, kh: str = Depends(_authent
         _safe_record_usage(
             auth_context=_request_auth_context(request, kh),
             key_hash=kh,
+            # Advisory transform: no provider call was observed, so this row
+            # is telemetry, never billing evidence.
+            authoritative=False,
             baseline_tokens=pipe["baseline_tokens"],
             optimized_tokens=pipe["optimized_tokens"],
             savings_pct=pipe["savings_pct"],
@@ -3222,6 +3818,9 @@ def optimize_prompt_endpoint(request: Request, body: OptimizePromptRequest,
     _safe_record_usage(
         auth_context=_request_auth_context(request, kh),
         key_hash=kh,
+        # Advisory transform: no provider call was observed, so this row
+        # is telemetry, never billing evidence.
+        authoritative=False,
         baseline_tokens=r.tokens_before,
         optimized_tokens=r.tokens_after,
         savings_pct=r.saved_pct,
@@ -3267,6 +3866,9 @@ def compress_retrieval(request: Request, body: RetrievalCompressRequest,
     _safe_record_usage(
         auth_context=_request_auth_context(request, kh),
         key_hash=kh,
+        # Advisory transform: no provider call was observed, so this row
+        # is telemetry, never billing evidence.
+        authoritative=False,
         baseline_tokens=out["baseline_tokens"],
         optimized_tokens=out["optimized_tokens"],
         savings_pct=out["savings_pct"],
@@ -3327,6 +3929,35 @@ def _stream_error_event(route: str, exc: Exception, request: Request,
     return {"stage": "error", "code": code, "message": message}
 
 
+class _ThreadEventChannel:
+    """Worker-thread -> event-loop hand-off for the SSE endpoints.
+
+    The previous drain — `await loop.run_in_executor(None, lambda: q.get(timeout=0.5))` in
+    a loop — parked one DEFAULT-executor thread per open stream at ~100% duty cycle for the
+    whole life of that stream (up to the 120 s provider read timeout). That is the same pool
+    every asyncio.to_thread uses, including the proxy auth lookups and the readiness
+    probe's _store.healthy, so enough concurrent streams degraded authentication for all
+    tenants and could flap /v1/health/ready. call_soon_threadsafe + asyncio.Queue costs no
+    pool thread at all, and awaiting with a timeout keeps request.is_disconnected() polled.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+        self._queue: asyncio.Queue = asyncio.Queue()
+
+    def put(self, item: object) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        except RuntimeError:
+            # The loop is gone (client aborted and the response finished): the worker is
+            # already being cancelled through cancel_event, so dropping is correct.
+            pass
+
+    async def get(self, timeout: float) -> object:
+        """Raises asyncio.TimeoutError, like queue.Empty did, so the caller can re-poll."""
+        return await asyncio.wait_for(self._queue.get(), timeout)
+
+
 @app.post("/v1/compress/stream")
 @limiter.limit("60/minute")
 async def compress_stream(request: Request, body: CompressRequest, kh: str = Depends(_authenticated)):
@@ -3336,7 +3967,7 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
     # in the worker thread.
     config, backend = await asyncio.to_thread(
         _resolve_configured_model_backend, kh, request)
-    event_queue: queue.Queue = queue.Queue()
+    event_queue = _ThreadEventChannel(asyncio.get_running_loop())
     SENTINEL = object()
     cancel_event = threading.Event()
 
@@ -3381,6 +4012,9 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
                 _safe_record_usage(
                     auth_context=_request_auth_context(request, kh),
                     key_hash=kh,
+                    # Advisory transform: no provider call was observed, so this row
+                    # is telemetry, never billing evidence.
+                    authoritative=False,
                     baseline_tokens=pipe["baseline_tokens"],
                     optimized_tokens=pipe["optimized_tokens"],
                     savings_pct=pipe["savings_pct"],
@@ -3417,14 +4051,13 @@ async def compress_stream(request: Request, body: CompressRequest, kh: str = Dep
     threading.Thread(target=_run, daemon=True).start()
 
     async def event_stream():
-        loop = asyncio.get_event_loop()
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    item = await loop.run_in_executor(None, lambda: event_queue.get(timeout=0.5))
-                except queue.Empty:
+                    item = await event_queue.get(0.5)
+                except asyncio.TimeoutError:
                     continue
                 if item is SENTINEL:
                     break
@@ -3478,8 +4111,9 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
     provider, model, backend = _build_chat_backend(
         body.byok_provider, body.byok_model, body.byok_key, request)
     tenant_gate_key = _request_tenant_key(request, kh)
+    cache_namespace = _tenant_cache_namespace(request)
 
-    event_queue: queue.Queue = queue.Queue()
+    event_queue = _ThreadEventChannel(asyncio.get_running_loop())
     SENTINEL = object()
     cancel_event = threading.Event()
 
@@ -3523,10 +4157,10 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
                 prompt = "\n\n".join(filter(None, [
                     f"Task: {task}" if task else "", *out_messages, *pipe["selected_context"],
                 ]))
-                cache = _get_playground_cache(request)
+                cache = _get_playground_cache(request) if cache_namespace else None
                 cbody = {"messages": [{"role": "user", "content": prompt}],
                          "temperature": 0,
-                         "_brevitas_cache_namespace": tenant_gate_key}
+                         "_brevitas_cache_namespace": cache_namespace}
                 hit = None
                 from token_efficiency_model.quality.gate import lever_allowed
                 # Gate on the safe exact-cache lever for this tenant; the fuzzy semantic
@@ -3590,6 +4224,9 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
             _safe_record_usage(
                 auth_context=_request_auth_context(request, kh),
                 key_hash=kh,
+                # Advisory transform: no provider call was observed, so this row
+                # is telemetry, never billing evidence.
+                authoritative=False,
                 baseline_tokens=pipe["baseline_tokens"],
                 optimized_tokens=pipe["optimized_tokens"],
                 savings_pct=pipe["savings_pct"],
@@ -3640,14 +4277,13 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
     threading.Thread(target=_run, daemon=True).start()
 
     async def event_stream():
-        loop = asyncio.get_event_loop()
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    item = await loop.run_in_executor(None, lambda: event_queue.get(timeout=0.5))
-                except queue.Empty:
+                    item = await event_queue.get(0.5)
+                except asyncio.TimeoutError:
                     continue
                 if item is SENTINEL:
                     break
@@ -3663,6 +4299,15 @@ async def playground_stream(request: Request, body: PlaygroundChatRequest,
 
 
 # ── External usage reporting (SDK / proxy) ────────────────────────────────────
+
+# Caller-supplied tracking labels: cosmetic attribution only, never money. Kept
+# together so the receipt bridge can drop them wholesale when one fails
+# validation rather than lose the billable row with them.
+_RECEIPT_LABEL_FIELDS = frozenset({
+    "project", "repo", "environment", "source", "client", "pipeline", "agent",
+    "call_site_id", "framework", "gateway", "run_id",
+})
+
 
 class UsageReportRequest(BaseModel):
     provider: str = Field(default="", max_length=64)
@@ -3883,7 +4528,24 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
                          authoritative: bool = False,
                          tenant_gate_key: str | None = None) -> dict:
     tenant_gate_key = tenant_gate_key or kh
-    if body.request_id and _store.has_request(kh, body.request_id):
+    # Dedupe within the SAME authority. request_id is derived from provider-visible
+    # material (the SDK mints `proxy:<provider response id>`, which the streaming paths
+    # yield to the client in the first SSE chunk), so a caller can name an id it has seen.
+    # Scoped to (key_hash, request_id) across the whole usage_log, one cheap
+    # authoritative=False POST /v1/usage with that id would suppress the billable
+    # authoritative receipt that the hosted bridge writes afterwards.
+    #
+    # This probe is authority-scoped and, since 202607280026, so is the storage
+    # layer: the unique index is usage_log_request_authority_unique on
+    # (key_hash, request_id, authoritative) where request_id <> ''. Index and
+    # probe now agree on the same key, so a non-authoritative row no longer
+    # collides with a later authoritative one and this probe IS load-bearing.
+    # KEEP the RECEIPT_ID_PREFIX namespace reservation on the /v1/usage intake
+    # path anyway — it rewrites any caller-supplied `proxy:` id into `client:`.
+    # It is now genuine defence in depth rather than the only defence, and it is
+    # also what protects deployments where 202607280026 is not yet applied.
+    if body.request_id and _store.has_request(kh, body.request_id,
+                                              authoritative=authoritative):
         return {"duplicate": True, "request_id": body.request_id,
                 "tokens_saved": 0, "measured_savings_usd": 0.0,
                 "verified_savings_usd": 0.0, "quality_status": "duplicate"}
@@ -3951,23 +4613,49 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
 
     mode = _verification_mode(body.strategy,
                               cache_attributable=body.cache_attributable)
-    stream = _seq_stream(tenant_gate_key)
-    if mode == "byte_preserving":
-        quality_status = "verified"
-    elif body.quality_verified is None:
-        quality_status = "unverified"
-    else:
-        stream.update(body.quality_verified)
-        if stream.state.tripped:
-            quality_status = "stream_tripped"
-            # A tripped stream must stop THIS TENANT's request path from applying any
-            # unproven lever — not just stop billing. Trips are keyed by the customer key,
-            # so one tenant's failing reports never disable levers for other tenants.
-            from token_efficiency_model.quality.gate import trip_lever
-            for _lever in ("retrieval", "compression", "semantic_cache", "reorder"):
-                trip_lever(_lever, key=tenant_gate_key)
-        else:
-            quality_status = "verified" if body.quality_verified else "failed"
+    # The sequential quality stream is ANALYTICS, never money. Note that
+    # `verified` below is non-zero only when mode == "byte_preserving", and that
+    # branch fixes quality_status without consulting the stream at all — so no
+    # billable amount can ever depend on anything inside this block.
+    #
+    # It nonetheless used to be able to DESTROY a billable amount. Everything
+    # here can raise before _store.record_usage runs: _seq_stream goes through a
+    # BoundedTTLMap whose get_or_create raises ResourceLimitExceeded (an
+    # over-long tenant key, or a value the sizer rejects), SequentialQualityGate
+    # is constructed from BREVITAS_QUALITY_P0/ALPHA and float() on a
+    # mistyped env var raises ValueError, and the lever trip does a LAZY import
+    # of token_efficiency_model.quality.gate. Any of those propagated out of
+    # this function into _hosted_proxy_receipt's `except Exception`, was logged
+    # once as "write failed", and the authoritative receipt was gone — same
+    # swallow-everything class as the label-validation drop above it, and
+    # invisible for the same reason. Record the money, degrade the cosmetic
+    # field.
+    #
+    # The initial value is the CONSERVATIVE one for each mode, and it is only
+    # ever revised upward inside the try, so a fault mid-way cannot manufacture
+    # a "verified" status: byte_preserving is verified by definition of the
+    # mode, everything else stays "unverified" until the stream says otherwise.
+    stream = None
+    quality_status = "verified" if mode == "byte_preserving" else "unverified"
+    try:
+        stream = _seq_stream(tenant_gate_key)
+        if mode != "byte_preserving" and body.quality_verified is not None:
+            stream.update(body.quality_verified)
+            if stream.state.tripped:
+                quality_status = "stream_tripped"
+                # A tripped stream must stop THIS TENANT's request path from applying any
+                # unproven lever — not just stop billing. Trips are keyed by the customer key,
+                # so one tenant's failing reports never disable levers for other tenants.
+                from token_efficiency_model.quality.gate import trip_lever
+                for _lever in _QUALITY_TRIP_LEVERS:
+                    trip_lever(_lever, key=tenant_gate_key)
+            else:
+                quality_status = "verified" if body.quality_verified else "failed"
+    except Exception as exc:
+        # Type-only, like every other receipt-path log: the payload is customer
+        # content. Loud (warning) because a degraded stream means the quality
+        # gate stopped accumulating evidence for this tenant.
+        logger.warning("usage quality stream degraded error_type=%s", type(exc).__name__)
     # Caller-reported SDK values are analytics only. Only the in-process proxy,
     # which observed the provider response, may create verified/billable savings.
     # Live charging is intentionally narrower than analytics. Only authoritative
@@ -4061,6 +4749,12 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         return {"duplicate": True, "request_id": body.request_id,
                 "tokens_saved": 0, "measured_savings_usd": 0.0,
                 "verified_savings_usd": 0.0, "quality_status": "duplicate"}
+    # Emitted after the dedupe return so the series counts rows that were really
+    # persisted; a duplicate produces no row and must not read as billable work.
+    record_savings_row(
+        authoritative=bool(authoritative), billable=verified > 0,
+        verified_savings_usd=verified,
+    )
     return {
         "tokens_saved": tokens_saved,
         "savings_pct": savings_pct,
@@ -4084,13 +4778,52 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         "token_basis": anchored.basis,
         "reported_token_delta": anchored.reported_delta,
         "receipt_plausibility": anchored.plausibility,
-        "stream": stream.to_dict(),
+        # Serialized AFTER the row is written, but still guarded: raising here
+        # would 500 the /v1/usage caller (and log "write failed" in the hosted
+        # bridge) for a row that was in fact persisted, which is worse than
+        # saying the stream state is unavailable.
+        "stream": _stream_snapshot(stream),
     }
+
+
+def _stream_snapshot(stream: Any) -> dict:
+    """Serialized quality-stream state, or an explicit 'no state' marker.
+
+    Never None and never absent: a consumer must be able to tell "the stream
+    said nothing" from "the stream said zero observations".
+    """
+    if stream is None:
+        return {"available": False}
+    try:
+        state = stream.to_dict()
+    except Exception as exc:
+        logger.warning("usage quality stream snapshot failed error_type=%s",
+                       type(exc).__name__)
+        return {"available": False}
+    return state if isinstance(state, dict) else {"available": False}
+
+
+# Namespace a caller-reported id is rewritten into when it claims the server-minted
+# RECEIPT_ID_PREFIX. Deterministic, not random: the local BVX proxy legitimately reports
+# its own `proxy:<provider id>` receipts over this route, so replacing the prefix keeps
+# its retries idempotent while leaving the billable namespace unoccupied.
+_CLIENT_REQUEST_ID_PREFIX = "client:"
 
 
 @app.post("/v1/usage")
 @limiter.limit("300/minute")
 def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_authenticated)):
+    # RECEIPT_ID_PREFIX is a RESERVED namespace, not merely a named one. usage_log
+    # carries a unique index on (key_hash, request_id) where request_id <> ''
+    # (20260710_cloud_usage.sql:125), so a caller that pre-inserts an analytics row under
+    # an id it read out of its own in-flight SSE stream would occupy that slot and the
+    # authoritative receipt written afterwards by _hosted_proxy_receipt would be silently
+    # ignored as a duplicate — full optimization, zero billed. Rewrite rather than reject:
+    # this route is the local proxy's own reporting transport.
+    if body.request_id.startswith(RECEIPT_ID_PREFIX):
+        body = body.model_copy(update={
+            "request_id": (_CLIENT_REQUEST_ID_PREFIX
+                           + body.request_id[len(RECEIPT_ID_PREFIX):])[:128]})
     return _record_usage_report(
         kh, body,
         auth_context=_require_scope(request, kh, "usage:write"),
@@ -4102,8 +4835,13 @@ def report_usage(request: Request, body: UsageReportRequest, kh: str = Depends(_
 # ── Sequential quality streams (brief b4) ─────────────────────────────────────
 # One always-valid mSPRT stream per customer key. In-memory for now (process
 # lifetime); serialized state is exposed via /v1/quality/stream for auditability.
+# The TTL is an IDLE window, refreshed on every access (see _seq_stream): with
+# BoundedTTLMap's create-time stamp the martingale was destroyed exactly one hour after a
+# tenant's FIRST report and rebuilt at n=0/log_m=0, so a tenant reporting fewer than the
+# ~30-40 observations the trip threshold needs per hour could never trip at all — which
+# contradicts the "anytime-valid over the whole monitoring horizon" claim the gate makes.
 _seq_streams = BoundedTTLMap[str, object](
-    ttl_s=_RESOURCE_BOUNDS.registry_ttl_s,
+    ttl_s=max(_RESOURCE_BOUNDS.registry_ttl_s, 6 * 3600),
     max_entries=_RESOURCE_BOUNDS.registry_max_entries,
     max_value_bytes=1024,
     sizer=lambda _value: 256,
@@ -4111,35 +4849,105 @@ _seq_streams = BoundedTTLMap[str, object](
     snapshotter=lambda value: value,
 )
 
+# The four risky levers a tripped stream must stop the request path from applying.
+_QUALITY_TRIP_LEVERS = ("retrieval", "compression", "semantic_cache", "reorder")
+# Plus the byte-preserving levers, reported so a poller sees every decision.
+_QUALITY_GATE_LEVERS = _QUALITY_TRIP_LEVERS + ("cache", "cache_injection")
+
 
 def _seq_stream(kh: str):
     from token_efficiency_model.quality.sequential import SequentialQualityGate
-    return _seq_streams.get_or_create(
+    stream = _seq_streams.get_or_create(
         kh,
         lambda: SequentialQualityGate(
             p0=float(os.environ.get("BREVITAS_QUALITY_P0", "0.9")),
             alpha=float(os.environ.get("BREVITAS_QUALITY_ALPHA", "0.05")),
         ),
     )
+    # get_or_create only reorders LRU on a hit; it never restamps expires_at. Re-put so an
+    # actively-reporting tenant keeps its accumulated evidence. Identity copier/snapshotter
+    # means this is the same object the caller just mutated, not a copy.
+    with suppress(ResourceLimitExceeded):
+        _seq_streams.put(kh, stream)
+    return stream
+
+
+def _quality_lever_state(tenant_gate_key: str) -> dict[str, dict[str, bool]]:
+    from token_efficiency_model.quality.gate import lever_allowed
+    return {name: {"allowed": bool(lever_allowed(name, tenant_gate_key))}
+            for name in _QUALITY_GATE_LEVERS}
 
 
 @app.get("/v1/quality/stream")
 def quality_stream(request: Request, kh: str = Depends(_authenticated)):
-    """Auditable state of this customer's sequential quality stream."""
+    """Auditable state of this customer's sequential quality stream.
+
+    The lever decisions ship alongside it because the two live in different structures:
+    _tripped_levers never expires while the stream is evicted under memory pressure, so a
+    fresh n=0/tripped=false stream can coexist with still-disabled levers. Reporting both
+    is what lets an operator see WHY levers are off.
+    """
     _require_scope(request, kh, "usage:read_own")
-    return _seq_stream(_request_tenant_key(request, kh)).to_dict()
+    tenant_gate_key = _request_tenant_key(request, kh)
+    payload = _seq_stream(tenant_gate_key).to_dict()
+    return {**payload, "levers": _quality_lever_state(tenant_gate_key)}
+
+
+@app.get("/v1/quality/levers")
+@limiter.limit("120/minute")
+def quality_levers(request: Request, kh: str = Depends(_authenticated)):
+    """This tenant's lever decisions, so the customer-installed proxy can stop applying an
+    unproven lever instead of only the replica that recorded the trip.
+
+    Replica-local by construction: token_efficiency_model/quality/gate.py keeps the trip set
+    in a module global, so this answers for whichever replica serves the poll and a redeploy
+    clears it. Durable, fleet-wide trip state needs a table keyed on
+    (organization_id, customer_id, lever) that preserves the empty-key global kill switch.
+    """
+    _require_scope(request, kh, "usage:read_own")
+    return {"levers": _quality_lever_state(_request_tenant_key(request, kh)),
+            "replica_local": True}
 
 
 @app.post("/v1/quality/stream/reset")
+@limiter.limit("30/minute")
 def quality_stream_reset(request: Request, kh: str = Depends(_authenticated)):
     """Reset a tripped stream (after investigation). Deliberately explicit.
     Also clears this tenant's lever trips so the request-path levers re-enable together
-    with the billing stream (the two must not drift apart)."""
-    _require_scope(request, kh, "usage:read_own")
+    with the billing stream (the two must not drift apart).
+
+    Not authorized by usage:read_own alone: this re-enables
+    retrieval/compression/semantic-cache over the tenant's prompt content and erases the
+    accumulated mSPRT evidence, so it is a mutation, and usage:read_own is minted into
+    every dashboard session key including a plain member's.
+
+    Authorization is the LIVE company role, with an explicit quality:manage scope accepted
+    as the alternative. The scope cannot carry this on its own in production: the hosted
+    session key's scope array is chosen inside
+    public.company_admin_create_dashboard_session_key, which mints
+    proxy:invoke/usage:read_own/provider:read/provider:manage and nothing else, so a
+    scope-only gate would 403 every caller — including the owner — and leave a tripped
+    stream unclearable short of a replica redeploy, which stops the savings this bills on.
+    A long-lived organization_service key still does not get the scope from
+    _dashboard_session_scopes(): the credential whose own reports trip the stream must not
+    be able to clear the trip unless an operator granted it deliberately.
+    """
+    context = _require_scope(request, kh, "usage:read_own")
+    if (context.company_role not in ("company_owner", "company_admin")
+            and not context.permits("quality:manage")):
+        raise HTTPException(status_code=403,
+                            detail="Organization admin access required")
     tenant_gate_key = _request_tenant_key(request, kh)
     _seq_streams.pop(tenant_gate_key, None)
     from token_efficiency_model.quality.gate import reset_all_levers
     reset_all_levers(key=tenant_gate_key)
+    actor_id, actor_role = _key_actor_audit_identity(context)
+    # target_id must satisfy the audit trigger's ^[A-Za-z0-9._:-]{1,200}$ and must not be a
+    # 64-hex digest, so the tenant key itself is unusable here.
+    _audit_tenant_mutation(
+        request, context.organization_id, actor_id, actor_role,
+        "quality.stream_reset", target_type="quality_stream",
+        target_id=f"{context.organization_id}:{context.customer_id or 'organization'}")
     return {"reset": True}
 
 
@@ -4150,26 +4958,95 @@ def provider_costs():
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
+# usage:read_own is minted into EVERY dashboard session key, including a plain
+# 'member''s, but the backing RPCs are organization-wide. Money is the one part of
+# that answer the product already refuses to a role without billing:manage
+# (/api/billing/status -> 403), so it is stripped here on the same rule instead of
+# being silently readable on a third surface. Every dollar figure in these payloads
+# is a *_usd key, at any nesting depth.
+_SPEND_FIELD_SUFFIX = "_usd"
+
+
+def _without_spend_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _without_spend_fields(item) for key, item in value.items()
+                if not str(key).endswith(_SPEND_FIELD_SUFFIX)}
+    if isinstance(value, list):
+        return [_without_spend_fields(item) for item in value]
+    return value
+
+
+def _spend_readable(context: AuthContext) -> bool:
+    """Only a human session is role-gated.
+
+    Device, organization-service and legacy keys carry no human role and
+    legitimately aggregate their tenant's own rows, so they are unchanged.
+
+    Owners and admins always read their own tenant's money — the same rule
+    get_warming() applies. ROLE_PERMISSIONS grants billing:manage to
+    company_owner and billing_admin only, so gating on the permission alone
+    would blank the money view for a company_admin session; only a plain
+    'member' is redacted here.
+    """
+    if context.key_type != "dashboard_session":
+        return True
+    return (context.company_role in ("company_owner", "company_admin")
+            or context.holds_company_permission("billing:manage"))
+
+
+def _spend_filtered(context: AuthContext, payload: Any) -> Any:
+    if _spend_readable(context):
+        return payload
+    filtered = _without_spend_fields(payload)
+    if isinstance(filtered, dict):
+        # Named, not silent: a consumer must be able to tell "withheld" from
+        # "zero" rather than rendering a confident $0.00.
+        filtered["spend_redacted"] = True
+    return filtered
+
+
+def _spend_filtered_rows(context: AuthContext, rows: Any) -> dict:
+    """CONTRACT A envelope for the per-dimension stats lists.
+
+    /v1/stats/pipelines, /v1/stats/agents and /v1/stats/runs used to return a
+    BARE LIST. _spend_filtered strips every `*_usd` key from a redacted caller's
+    payload but can only hang the `spend_redacted` marker on a dict, so a list
+    response reached the dashboard indistinguishable from "this pipeline saved
+    nothing" — a confident $0.00 over withheld money, the exact failure the flag
+    exists to prevent.
+
+    The flag is emitted UNCONDITIONALLY (False when the caller may read spend)
+    so a consumer never has to infer redaction from an absent key. The dashboard
+    additionally reads a bare array as {rows, spend_redacted: false}, so API
+    (Railway) and dashboard (Vercel) may ship in either order.
+    """
+    payload = _spend_filtered(context, {"rows": rows})
+    if not isinstance(payload, dict):  # pragma: no cover - defensive
+        payload = {"rows": payload}
+    payload.setdefault("spend_redacted", False)
+    return payload
+
+
 @app.get("/v1/stats")
 @limiter.limit("120/minute")
 def stats(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
-    return _store.get_stats(kh)
+    context = _require_scope(request, kh, "usage:read_own")
+    return _spend_filtered(context, _store.get_stats(kh))
 
 
 @app.get("/v1/stats/breakdown")
 @limiter.limit("120/minute")
 def stats_breakdown(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
+    context = _require_scope(request, kh, "usage:read_own")
     rows = _store.get_breakdown(kh)
-    return {"rows": rows, "totals": _store.get_stats(kh)}
+    return _spend_filtered(context, {"rows": rows, "totals": _store.get_stats(kh)})
 
 
 @app.get("/v1/stats/activity")
 @limiter.limit("120/minute")
 def stats_activity(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
-    return _store.get_activity(kh)
+    context = _require_scope(request, kh, "usage:read_own")
+    return _spend_filtered(context, _store.get_activity(kh))
 
 
 # Per-provider breakdown rows for /v1/stats/cache. Additive contract: a store
@@ -4183,7 +5060,7 @@ _CACHE_STATS_PROVIDER_FIELDS = (
 @app.get("/v1/stats/cache")
 @limiter.limit("120/minute")
 def stats_cache(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
+    context = _require_scope(request, kh, "usage:read_own")
     body = _store.cache_stats(kh)
     if not isinstance(body, dict):
         return body
@@ -4194,7 +5071,7 @@ def stats_cache(request: Request, kh: str = Depends(_authenticated)):
             for row in rows if isinstance(row, dict)]
     else:
         body.pop("per_provider", None)
-    return body
+    return _spend_filtered(context, body)
 
 
 # ── Optimization audit (traffic side) ─────────────────────────────────────────
@@ -4605,22 +5482,22 @@ def _build_audit_report(metrics: dict) -> dict:
 @app.get("/v1/audit")
 @limiter.limit("120/minute")
 def audit_report(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
+    context = _require_scope(request, kh, "usage:read_own")
     metrics = _store.audit_metrics(kh)
-    return _build_audit_report(metrics)
+    return _spend_filtered(context, _build_audit_report(metrics))
 
 
 @app.get("/v1/admin/stats")
 @limiter.limit("60/minute")
 def admin_stats(request: Request, _: str = Depends(_admin_authenticated)):
-    logger.info("admin usage overview accessed actor=%s", _)
+    _audit_platform_read(request, _, "platform.usage_overview.read")
     return _store.get_admin_stats()
 
 
 @app.get("/v1/admin/keys")
 @limiter.limit("60/minute")
 def admin_keys(request: Request, _: str = Depends(_admin_authenticated)):
-    logger.info("admin key inventory accessed actor=%s", _)
+    _audit_platform_read(request, _, "platform.key_inventory.read")
     return _store.get_admin_key_inventory()
 
 
@@ -4640,7 +5517,7 @@ def admin_stats_breakdown(
     cursor: str = Query("", max_length=512),
     _: str = Depends(_admin_authenticated),
 ):
-    logger.info("admin usage breakdown accessed actor=%s", _)
+    _audit_platform_read(request, _, "platform.usage_breakdown.read")
     start = ""
     if range != "all":
         days = int(range[:-1])
@@ -4660,7 +5537,8 @@ def admin_stats_breakdown(
 def admin_account_usage(request: Request, owner_id: str, _: str = Depends(_admin_authenticated)):
     if not (0 < len(owner_id) <= 64 and all(c.isalnum() or c in "-_" for c in owner_id)):
         raise HTTPException(status_code=400, detail="Invalid account id")
-    logger.info("admin account usage accessed actor=%s account=%s", _, owner_id)
+    _audit_platform_read(request, _, "platform.account_usage.read",
+                         target_type="account", target_id=owner_id)
     return _store.get_admin_account_detail(owner_id)
 
 
@@ -4676,7 +5554,7 @@ def admin_billing(
     model: str = Query("", max_length=128),
     _: str = Depends(_admin_authenticated),
 ):
-    logger.info("admin billing summary accessed actor=%s", _)
+    _audit_platform_read(request, _, "platform.billing.read")
     start = ""
     if range != "all":
         days = int(range[:-1])
@@ -4703,16 +5581,94 @@ def admin_billing(
     for bucket in accounts.values():
         for field in ("actual_spend_usd", "verified_savings_usd", "amount_owed_usd"):
             bucket[field] = round(bucket[field], 8)
+        # Same number under its honest name; see the response-level comment below.
+        bucket["gross_positive_row_fees_usd"] = bucket["amount_owed_usd"]
     totals = report["totals"]
+    gross_row_fees_usd = round(float(totals.get("total_brevitas_fee_usd") or 0), 8)
     return {
         "currency": "USD",
-        "amount_owed_usd": round(float(totals.get("total_brevitas_fee_usd") or 0), 8),
-        "basis": "metered_brevitas_fees",
+        # NOT a settlement figure. This is sum(usage_log.brevitas_fee_usd), and each
+        # row's fee was floored at zero when it was written (_record_usage_report):
+        # a byte-preserving row may legitimately carry NEGATIVE savings, so a period
+        # whose true net is negative still bills every positive row in it. No
+        # warm_budget_ledger deduction is applied either, which 202607280008 calls a
+        # mandatory 100% pre-rate deduction. The honest figure is period-scoped
+        # (202607280007/0008) and has no writer yet, hence settlement_pending.
+        #
+        # amount_owed_usd is retained ON PURPOSE while the dashboard still reads it:
+        # the API (Railway) and the dashboard (Vercel) do not ship together, and
+        # dashboard billingUsd() renders `Number(undefined || 0)` as a confident
+        # "$0.00". Drop it only after the dashboard reads the field below.
+        "amount_owed_usd": gross_row_fees_usd,
+        "gross_positive_row_fees_usd": gross_row_fees_usd,
+        "netted": False,
+        "warm_spend_deducted": False,
+        "settlement_pending": True,
+        "basis": "gross_positive_row_fees_unnetted",
         "payment_status_tracked": False,
         "accounts": sorted(accounts.values(),
                            key=lambda item: (-item["amount_owed_usd"], item["account_id"])),
         "range": range,
+        # Where the honest number lives, so an operator reading this payload is
+        # never left guessing why amount_owed_usd is labelled unnetted.
+        "settlement_endpoint": "/v1/admin/billing/settlement",
     }
+
+
+# Reasons the settlement view can refuse that this route decides itself, rather
+# than receiving from the store. Kept in the same vocabulary as the store's
+# (lowercase snake_case, machine-readable, never a sentence to parse).
+_SETTLEMENT_STORE_MISSING = "settlement_read_unsupported_by_store"
+_SETTLEMENT_READ_FAILED = "settlement_read_failed"
+
+
+@app.get("/v1/admin/billing/settlement")
+@limiter.limit("30/minute")
+def admin_billing_settlement(request: Request, _: str = Depends(_admin_authenticated)):
+    """The netted, period-scoped figure — or an explicit refusal to state one.
+
+    /v1/admin/billing reports sum(usage_log.brevitas_fee_usd): every row floored
+    at zero, no warm-spend deduction, no period boundary. This route reports
+    what 202607280007/0008/0012/0013 actually define — savings netted across the
+    period, warm ping spend deducted before the rate, and the ledger's own
+    settled/reported/committed buckets kept apart from the open week's estimate.
+
+    THE CONTRACT IS "settleable", NOT "amount". Every failure mode below returns
+    {"settleable": false, "reason": "..."} and states no money at all:
+
+      * the migration chain is not applied yet (PGRST202 / missing relation) —
+        the normal state on production today, since api/ deploys on push and
+        migrations are hand-applied one file at a time with no ledger;
+      * the store backend has no settlement ledger (SQLite);
+      * any authoritative usage row carries no organization_id, so it is
+        invisible to every per-organization evidence query and the platform
+        total would silently understate by an unknown amount;
+      * the read failed for any other reason.
+
+    A $0 here would be indistinguishable from "nothing is owed" on an invoice
+    screen, and that specific wrong number is what this workstream exists to
+    prevent. /v1/admin/billing keeps amount_owed_usd untouched until the
+    dashboard is confirmed reading this route.
+    """
+    _audit_platform_read(request, _, "platform.billing_settlement.read")
+    base = {"currency": "USD", "basis": "period_settlement_netted",
+            "netted": True, "warm_spend_deducted": True,
+            "unattributed_authoritative_usage": None, "organizations": []}
+    if not hasattr(_store, "get_billing_settlement"):
+        return {**base, "settleable": False, "reason": _SETTLEMENT_STORE_MISSING}
+    try:
+        settlement = _store.get_billing_settlement()
+    except Exception as exc:
+        # Degrade, never 500: an operator staring at a stack trace and an
+        # operator staring at "$0.00" both make the wrong call, but only one of
+        # them can be told what is actually wrong. Type-only, like every other
+        # money-path log.
+        logger.error("admin settlement read failed error_type=%s", type(exc).__name__)
+        return {**base, "settleable": False, "reason": _SETTLEMENT_READ_FAILED}
+    if not isinstance(settlement, dict):  # pragma: no cover - defensive
+        return {**base, "settleable": False, "reason": _SETTLEMENT_READ_FAILED}
+    return {**base, **settlement,
+            "settleable": settlement.get("settleable") is True}
 
 
 @app.get("/v1/admin/analytics")
@@ -4722,29 +5678,29 @@ def admin_analytics(
     range: str = Query("30d", pattern=r"^(7d|30d|90d)$"),
     _: str = Depends(_admin_authenticated),
 ):
-    logger.info("admin traffic analytics accessed actor=%s", _)
+    _audit_platform_read(request, _, "platform.analytics.read")
     return _posthog_admin_summary(int(range[:-1]))
 
 
 @app.get("/v1/stats/pipelines")
 @limiter.limit("120/minute")
 def stats_pipelines(request: Request, kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
-    return _store.get_stats_by_pipeline(kh)
+    context = _require_scope(request, kh, "usage:read_own")
+    return _spend_filtered_rows(context, _store.get_stats_by_pipeline(kh))
 
 
 @app.get("/v1/stats/agents")
 @limiter.limit("120/minute")
 def stats_agents(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
-    return _store.get_stats_by_agent(kh, pipeline=pipeline)
+    context = _require_scope(request, kh, "usage:read_own")
+    return _spend_filtered_rows(context, _store.get_stats_by_agent(kh, pipeline=pipeline))
 
 
 @app.get("/v1/stats/runs")
 @limiter.limit("120/minute")
 def stats_runs(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
-    _require_scope(request, kh, "usage:read_own")
-    return _store.get_stats_by_run(kh, pipeline=pipeline)
+    context = _require_scope(request, kh, "usage:read_own")
+    return _spend_filtered_rows(context, _store.get_stats_by_run(kh, pipeline=pipeline))
 
 
 _COMPRESSOR_STATUS: dict = {"ts": 0.0, "data": None}
@@ -4877,8 +5833,84 @@ def _warn_if_compressor_missing(status: dict):
                        "unreachable/not-loaded (%s) — falling back to lossless.", st)
 
 
-@app.get("/v1/health")
+_DEPENDENCY_PROBE_TTL_S = 2.0
+_DEPENDENCY_PROBE_FAILURE_TTL_S = 1.0
+_dependency_probe_cache: dict[str, dict] = {}
+_dependency_probe_running: set[str] = set()
+_dependency_probe_lock = threading.Lock()
+
+
+async def _cached_dependency_probe(name: str, probe: Callable[[], Any],
+                                   timeout: float) -> bool:
+    """Memoize one readiness probe for a couple of seconds, one probe at a time.
+
+    /v1/health and /v1/health/ready are unauthenticated and reachable through the marketing
+    origin's /v1/:path* rewrite, and each call ran an uncached PostgREST GET plus a Redis
+    PING — an anonymous loop was therefore an amplifier onto the same Supabase budget and
+    the same default executor the proxy auth path uses. Caching makes the endpoint O(1) in
+    call rate while keeping the platform probe meaningful: railway.json's healthcheckTimeout
+    is 120 s, so a 2 s window cannot mask an outage from the prober, and a FAILURE is held
+    for less time than a success so recovery is never delayed.
+
+    No asyncio primitives on purpose: this module-level state outlives any single event loop
+    (every TestClient creates a new one), and an asyncio.Lock would bind to the first.
+    """
+    now = _time.monotonic()
+    with _dependency_probe_lock:
+        entry = _dependency_probe_cache.get(name)
+        if entry is not None and now - entry["ts"] < entry["ttl"]:
+            return bool(entry["ready"])
+        if name in _dependency_probe_running:
+            # A probe is already in flight; serve the previous verdict rather than stacking
+            # a second dependency call behind it. No verdict yet means not-ready.
+            return bool(entry["ready"]) if entry is not None else False
+        _dependency_probe_running.add(name)
+    ready = False
+    completed = False
+    try:
+        result = probe()
+        if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+            ready = bool(await asyncio.wait_for(result, timeout=timeout))
+        else:
+            ready = bool(result)
+        completed = True
+    except (Exception, asyncio.TimeoutError):
+        ready = False
+        completed = True
+    finally:
+        with _dependency_probe_lock:
+            # Publish before clearing the marker so the next caller reads the fresh verdict
+            # instead of starting a second probe in the same instant. A cancelled probe
+            # publishes nothing: the caller went away, its verdict is not evidence.
+            if completed:
+                _dependency_probe_cache[name] = {
+                    "ts": _time.monotonic(), "ready": ready,
+                    "ttl": (_DEPENDENCY_PROBE_TTL_S if ready
+                            else _DEPENDENCY_PROBE_FAILURE_TTL_S),
+                }
+            _dependency_probe_running.discard(name)
+    return ready
+
+
 @app.get("/v1/health/ready")
+async def readiness():
+    """Railway's healthcheck target: deliberately NOT rate limited.
+
+    _rate_key buckets on the peer address, which behind the Railway edge collapses every
+    caller onto one bucket, so a 429 here would be answered to the platform prober itself
+    and cause the very restart loop this endpoint exists to avoid. The dependency probes are
+    TTL-cached instead, which bounds the cost regardless of call rate.
+    """
+    return await health()
+
+
+@app.get("/v1/health")
+@limiter.limit("120/minute")
+async def public_health(request: Request):
+    """Public alias, reachable anonymously through the marketing origin's rewrite."""
+    return await health()
+
+
 async def health():
     compressor = await _compressor_status()
     compressor_healthy = all(
@@ -4892,18 +5924,14 @@ async def health():
     compressor_active = _lossy_enabled() or compressor_required
     compressor_ready = not compressor_active or compressor_healthy
     dependency_timeout = max(0.1, float(os.getenv("BREVITAS_HEALTH_TIMEOUT_SECONDS", "3")))
-    try:
-        database_ready = await asyncio.wait_for(
-            asyncio.to_thread(_store.healthy), timeout=dependency_timeout,
-        )
-    except (Exception, asyncio.TimeoutError):
-        database_ready = False
-    try:
-        redis_ready = await asyncio.wait_for(
-            _distributed_limiter.healthy(), timeout=dependency_timeout,
-        )
-    except (Exception, asyncio.TimeoutError):
-        redis_ready = False
+    # Keyed by the identity of the probed dependency: a swapped store/limiter (deployment
+    # reconfiguration, or a test double) must never read the previous object's verdict.
+    database_ready = await _cached_dependency_probe(
+        f"postgres:{id(_store)}", lambda: asyncio.to_thread(_store.healthy),
+        dependency_timeout)
+    redis_ready = await _cached_dependency_probe(
+        f"redis:{id(_distributed_limiter)}", _distributed_limiter.healthy,
+        dependency_timeout)
     kms = await _kms_readiness_status()
     kms_ready = _kms_dependency_ready(kms)
     accepting_traffic = bool(getattr(app.state, "accepting_traffic", False))
@@ -4957,20 +5985,75 @@ async def version():
 
 
 def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
-    """In-process bridge: hosted proxy receipts use the caller's tenant key."""
+    """In-process bridge: hosted proxy receipts use the caller's tenant key.
+
+    This is the ONLY path that writes authoritative (billable) usage, and its
+    caller (brevitas.proxy._emit_usage) swallows everything by contract so a
+    reporting fault can never alter a provider response. Every non-recording exit
+    is therefore logged here, type-only — including the two plain `return`s, which
+    a logger inside _emit_usage's except clause would never see. A dropped receipt
+    is lost revenue and understated customer savings, so it must not be silent.
+    Never fail open: an unverified key is logged and dropped, never recorded.
+    """
     if not raw_key:
+        logger.warning("hosted proxy receipt dropped reason=missing_key")
         return
     kh = hash_key(raw_key)
-    if not _key_exists(kh):
+    try:
+        validity = _key_validity(kh)
+    except Exception as exc:
+        # _key_validity is a store read, so a transient database fault used to
+        # leave this function by RAISING — straight into _emit_usage's
+        # swallow-everything except clause, with no log anywhere. A dropped
+        # billable receipt must never be silent, and the claim in the docstring
+        # above ("every non-recording exit is logged here") has to stay true.
+        # Still fails CLOSED: an unverifiable key is dropped, never recorded.
+        logger.error("hosted proxy receipt dropped reason=key_validity_unavailable "
+                     "error_type=%s", type(exc).__name__)
+        return
+    if validity != "valid":
+        logger.warning("hosted proxy receipt dropped reason=%s", validity)
         return
     payload = dict(payload)
     tenant_gate_key = str(payload.pop("_brevitas_tenant_key", "") or kh)
-    context = _proxy_auth_context.get()
-    if context is None or context.key_hash != kh:
-        context = _auth_context_for_key(kh)
-    _record_usage_report(kh, UsageReportRequest.model_validate(payload),
-                         auth_context=context, authoritative=True,
-                         tenant_gate_key=tenant_gate_key)
+    # The metering id is minted server-side per request by brevitas.proxy._request_id.
+    # Re-derive it here as well: request_id is the billing dedupe key, so anything
+    # outside the server-minted namespace (a caller header smuggled onto the payload,
+    # an older SDK's collapsed id) must never become one.
+    if not str(payload.get("request_id") or "").startswith(RECEIPT_ID_PREFIX):
+        payload["request_id"] = f"{RECEIPT_ID_PREFIX}{uuid.uuid4().hex}"
+    try:
+        # Inside the try ON PURPOSE. _auth_context_for_key is another store read
+        # and it used to sit outside, so a transient fault resolving the tenant
+        # context dropped the receipt with no log at all. It is NOT degraded to
+        # a None context: that path writes organization_id='' and an
+        # unattributed row is exactly what makes a period un-settleable
+        # (/v1/admin/billing/settlement). Losing the row loudly beats
+        # mis-attributing it silently.
+        context = _proxy_auth_context.get()
+        if context is None or context.key_hash != kh:
+            context = _auth_context_for_key(kh)
+        try:
+            report = UsageReportRequest.model_validate(payload)
+        except ValidationError:
+            # Money must never depend on a cosmetic label passing validation. The
+            # tracking labels are caller-supplied, and every one of them is
+            # length- and control-character-checked; a single bad label used to
+            # raise here, get swallowed below, and silently drop a billable
+            # receipt — metering suppression by way of an HTTP header. Retry once
+            # with the labels cleared so the money is recorded either way.
+            report = UsageReportRequest.model_validate(
+                {key: value for key, value in payload.items() if key not in _RECEIPT_LABEL_FIELDS})
+            logger.warning("hosted proxy receipt metadata coerced reason=label_validation")
+        result = _record_usage_report(kh, report, auth_context=context, authoritative=True,
+                                     tenant_gate_key=tenant_gate_key)
+    except Exception as exc:
+        logger.error("hosted proxy receipt write failed error_type=%s", type(exc).__name__)
+        return
+    if result.get("duplicate"):
+        # Server-minted ids make this unreachable for an ordinary request, so it
+        # means a genuine id collision — i.e. billable savings were just dropped.
+        logger.error("hosted proxy receipt dropped reason=duplicate_request_id")
 
 
 def _hosted_warm_observe(organization_id: str, customer_id: str,
@@ -4989,6 +6072,16 @@ def _hosted_warm_observe(organization_id: str, customer_id: str,
         if (auth_context is None
                 or auth_context.key_type != "organization_service"
                 or auth_context.organization_id != organization_id):
+            # Reason-carrying, never silent: a None context here previously hid a
+            # contextvars-propagation bug that no-opped every hosted observation.
+            # Log the organization id only — the prefix payload is customer content.
+            reason = ("missing_auth_context" if auth_context is None
+                      else "key_type_not_observable"
+                      if auth_context.key_type != "organization_service"
+                      else "organization_mismatch")
+            logger.warning(
+                "warm prefix observation skipped reason=%s organization_id=%s",
+                reason, organization_id)
             return
         payload_ciphertext = _encrypt(
             json.dumps({"recorded_by_key_hash": auth_context.key_hash,
@@ -5037,7 +6130,7 @@ def _hosted_warm_observe(organization_id: str, customer_id: str,
 
 
 # Railway serves the management API and provider-compatible proxy from one process.
-from brevitas.proxy import proxy_app, set_usage_reporter
+from brevitas.proxy import RECEIPT_ID_PREFIX, proxy_app, set_usage_reporter
 set_usage_reporter(_hosted_proxy_receipt)
 set_warm_observer(_hosted_warm_observe)
 app.include_router(company_admin_router)

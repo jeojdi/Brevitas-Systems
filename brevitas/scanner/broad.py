@@ -22,6 +22,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ..security.redaction import redact_text
 from .models import Strategy
 
 # --- what an LLM API call looks like, across languages + transports --------- #
@@ -138,12 +139,26 @@ def _classify(prompt_text: str):
 
 
 def _extract_strings(text: str) -> List[str]:
+    """Quoted literals near a call site, with credentials removed.
+
+    Excerpts end up in ``brevitas analyze`` output that customers attach to threads
+    and CI logs, so every literal goes through the shared redactor — the old
+    five-prefix denylist let `AIza…`, JWTs, `postgres://user:pass@…` and any
+    `SECRET = "…"` through verbatim.
+    """
     parts = []
     for m in _STRINGS.finditer(text):
         s = next(g for g in m.groups() if g is not None)
-        if not s.lower().startswith(("http", "sk-", "bearer ", "application/", "/v1/")):
-            parts.append(s)
+        if s.lower().startswith(("http", "sk-", "bearer ", "application/", "/v1/")):
+            continue
+        cleaned = redact_text(s, maximum=4000)
+        if cleaned:
+            parts.append(cleaned)
     return parts
+
+
+def _is_dotenv(path: str) -> bool:
+    return os.path.basename(path).startswith(".env")
 
 
 def _nearby_prompt(lines: List[str], idx: int, radius: int = 12) -> str:
@@ -157,6 +172,9 @@ def _nearby_prompt(lines: List[str], idx: int, radius: int = 12) -> str:
 
 
 def scan_text(path: str, source: str) -> List[ApiCall]:
+    # Dotenv files are scanned for the provider/endpoint signal only: their
+    # neighbouring "literals" are secrets, never prompts.
+    dotenv = _is_dotenv(path)
     lines = source.splitlines()
     out: List[ApiCall] = []
     for i, line in enumerate(lines):
@@ -168,7 +186,7 @@ def scan_text(path: str, source: str) -> List[ApiCall]:
             provider, transport = gname[3:], "http"
         else:
             provider, transport = _SDK_PROVIDER.get(gname, "any"), "sdk"
-        prompt = _nearby_prompt(lines, i)
+        prompt = "" if dotenv else _nearby_prompt(lines, i)
         task, complexity, strategy = _classify(prompt)
         reason = (f"{complexity} task ({task or 'unclassified'}) -> "
                   f"{'compress prompt' if strategy is Strategy.OPTIMIZE else 'keep full + cache'}"
