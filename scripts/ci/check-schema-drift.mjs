@@ -12,9 +12,23 @@
 //      and MEMORY: "production-schema-drift" — migrations cannot self-repair it).
 //
 // The session is opened with default_transaction_read_only=on and only issues
-// SELECTs, so it can never mutate the target. When DATABASE_URL is absent it
-// no-ops with a clear message so credential-free runs are never blocked; it only
-// exits non-zero on real drift.
+// SELECTs, so it can never mutate the target.
+//
+// It FAILS CLOSED on a missing DATABASE_URL. This used to no-op and exit 0 so
+// credential-free runs were never blocked, which made the gate worthless exactly
+// where it matters: .github/workflows/release.yml supplies the value from
+// `secrets.DATABASE_URL` under `environment: ${{ inputs.target }}`, and a secret
+// absent from that Environment interpolates to the empty string rather than
+// failing. The release chain (operational-readiness -> preflight -> staging-smoke)
+// then went green with the deployed schema never compared to anything. Every
+// sibling gate fails closed on missing evidence (operational-readiness.mjs,
+// staging-smoke.mjs required()); this one no longer is the soft link.
+//
+// A credential-free run is still possible, but only by asking for it explicitly:
+// `node scripts/ci/check-schema-drift.mjs --allow-missing-credentials` skips
+// loudly and exits 0. The flag is deliberately NOT an environment variable, so no
+// CI environment can enable it by accident, and release.yml invokes the script
+// bare -- which is asserted in tests/release_security.test.mjs.
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -171,16 +185,29 @@ function psqlQuery(databaseUrl, sql) {
     .map(line => line.split(FIELD_SEP))
 }
 
+export const ALLOW_MISSING_CREDENTIALS_FLAG = '--allow-missing-credentials'
+
 export function runSchemaDriftCheck({
   env = process.env,
   manifestText = readFileSync(MANIFEST_PATH, 'utf8'),
   query,
   logger = console,
+  allowMissingCredentials = false,
 } = {}) {
   const databaseUrl = String(env.DATABASE_URL || '').trim()
   if (!databaseUrl) {
+    if (!allowMissingCredentials) {
+      throw new Error(
+        'DATABASE_URL is missing or empty, so the deployed schema was never compared to ' +
+          'scripts/ci/migration-fresh-manifest.txt or to the declared money-column types. ' +
+          'Add the DATABASE_URL secret to the target GitHub Environment, or pass ' +
+          `${ALLOW_MISSING_CREDENTIALS_FLAG} for an explicitly credential-free local run.`,
+      )
+    }
     logger.log?.(
-      'schema-drift: DATABASE_URL is not set; skipping the credentialed read-only drift check.',
+      `schema-drift: DATABASE_URL is not set and ${ALLOW_MISSING_CREDENTIALS_FLAG} was passed; ` +
+        'skipping the credentialed read-only drift check. This mode gates nothing and must ' +
+        'never be used on a release path.',
     )
     return { skipped: true }
   }
@@ -210,7 +237,11 @@ export function runSchemaDriftCheck({
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    runSchemaDriftCheck()
+    runSchemaDriftCheck({
+      allowMissingCredentials: process.argv
+        .slice(2)
+        .includes(ALLOW_MISSING_CREDENTIALS_FLAG),
+    })
   } catch (error) {
     console.error(`schema-drift check failed: ${error instanceof Error ? error.message : String(error)}`)
     process.exitCode = 1

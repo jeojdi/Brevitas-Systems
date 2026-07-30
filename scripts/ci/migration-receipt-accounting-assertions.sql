@@ -69,7 +69,7 @@ insert into public.usage_log(
     'release-receipt-accounting','receipt-alignment',200,120,80,
     50,20,40,10,30,true,10,0.002,0.0012,0.0008,
     0.0008,0.0002,true,'priced','release-v1','proxy'
-) on conflict(key_hash,request_id) where request_id<>'' do nothing;
+) on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
 
 do $$
 begin

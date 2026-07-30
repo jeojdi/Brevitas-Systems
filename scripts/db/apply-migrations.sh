@@ -16,11 +16,22 @@
 #   scripts/db/apply-migrations.sh --db-url "$DB_URL" [--dry-run] [--status]
 #                                  [--manifest scripts/ci/migration-fresh-manifest.txt]
 #
-# The connection string is never echoed.
+# The connection string is never echoed, and it never enters psql's argv either.
+# /proc/<pid>/cmdline and `ps auxww` are readable by every local process, so
+# `psql "$DB_URL"` published the production Postgres URI -- password included, RLS
+# bypassed -- on every schema change. Both call sites go through the DR primitive
+# that already exists for exactly this reason (scripts/dr/common.sh
+# dr_database_exec -> scripts/dr/libpq-exec.py), which reads the URI from file
+# descriptor 3 and execs psql with libpq PG* environment variables instead.
+# That path requires python3.
 
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# dr_database_exec resolves libpq-exec.py relative to SCRIPT_DIR.
+SCRIPT_DIR="$ROOT/scripts/dr"
+# shellcheck source=../dr/common.sh
+source "$SCRIPT_DIR/common.sh"
 MANIFEST="scripts/ci/migration-fresh-manifest.txt"
 DB_URL=""
 DRY_RUN=0
@@ -32,7 +43,7 @@ while [[ $# -gt 0 ]]; do
         --manifest) MANIFEST="$2"; shift 2 ;;
         --dry-run)  DRY_RUN=1; shift ;;
         --status)   STATUS_ONLY=1; shift ;;
-        -h|--help)  sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -48,7 +59,16 @@ fi
 cd "$ROOT"
 [[ -f "$MANIFEST" ]] || { echo "error: manifest not found: $MANIFEST" >&2; exit 2; }
 
-psql_q() { psql "$DB_URL" -v ON_ERROR_STOP=1 -qtAX -c "$1"; }
+# The per-migration temp file holds only already-committed SQL plus the ledger
+# insert -- no credential -- but an interrupt mid-run should not leave it behind.
+tmp=""
+trap 'rm -f "${tmp:-}"' EXIT
+
+# libpq-exec.py execs psql in place and prints nothing of its own, so -qtAX tuple
+# output reaches this function's caller unchanged. The drift comparison below
+# depends on that: any banner on stdout would report FATAL drift for every applied
+# migration and block all schema changes.
+psql_q() { dr_database_exec "$DB_URL" psql -v ON_ERROR_STOP=1 -qtAX -c "$1"; }
 
 LEDGER="public.brevitas_schema_migrations"
 
@@ -115,7 +135,7 @@ for path in "${MIGRATIONS[@]}"; do
         { printf 'begin;\n'; cat "$path"; printf '\n%s\ncommit;\n' "$ledger_insert"; } > "$tmp"
     fi
 
-    if ! psql "$DB_URL" -v ON_ERROR_STOP=1 -qX -f "$tmp"; then
+    if ! dr_database_exec "$DB_URL" psql -v ON_ERROR_STOP=1 -qX -f "$tmp"; then
         rm -f "$tmp"
         echo "FAILED at $path -- database left at the last successful migration" >&2
         exit 1

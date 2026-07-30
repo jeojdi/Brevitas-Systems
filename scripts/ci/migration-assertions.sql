@@ -154,7 +154,7 @@ insert into public.usage_log(
     ('release-key-a', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '10000000-0000-4000-8000-000000000001', '2026-02-01 12:00:00+00', 'release-a-2', 'equal-a-2', 10, 5, 5, 'unpriced', 0, 0, true, 'proxy'),
     ('release-key-a', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '10000000-0000-4000-8000-000000000001', '2026-02-01 12:00:00+00', 'release-a-3', 'equal-a-3', 10, 5, 5, 'unpriced', 0, 0, true, 'proxy'),
     ('release-key-b', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '20000000-0000-4000-8000-000000000002', '2026-02-01 12:00:00+00', 'release-b-1', 'tenant-b', 10, 5, 5, 'unpriced', 0, 0, true, 'proxy')
-on conflict (key_hash, request_id) where request_id <> '' do nothing;
+on conflict (key_hash, request_id, authoritative) where request_id <> '' do nothing;
 
 do $$
 declare
@@ -245,18 +245,66 @@ insert into public.usage_log(
     'release-key-a', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     '10000000-0000-4000-8000-000000000001', now() - interval '1 day',
     'release-billing-1', 'billing-release', 100, 50, 50, 'priced', 1.0, 0.25, true, 'proxy'
-) on conflict (key_hash, request_id) where request_id <> '' do nothing;
+) on conflict (key_hash, request_id, authoritative) where request_id <> '' do nothing;
+
+-- 202607280006 retired queue_brevitas_fee_after_usage, so usage no longer
+-- queues a fee. The ledger lifecycle below (retention guards, immutability
+-- guards, lease claim/reclaim) still has to be exercised against a real row,
+-- so the fixture seeds public.billing_ledger directly. billing_ledger carries
+-- only delete/identity guards (202607170004:471-509) and no BEFORE INSERT
+-- trigger, so this is a legal write for the migration role.
+--
+-- The seed deliberately reproduces the retired queue_brevitas_fee() body
+-- (202607200006:192-230) rather than inserting unconditionally: the same
+-- eligibility predicate (authoritative, org-scoped, owned, priced, inside an
+-- active/trialing account's billing window) and the same 25%-of-verified floor
+-- arithmetic. A fixture row therefore still only appears when the usage row is
+-- genuinely fee-eligible, and the assertion below stays load-bearing.
+insert into public.billing_ledger(
+    usage_log_id, organization_id, user_id, occurred_at, fee_microusd
+)
+select usage.id,
+       usage.organization_id,
+       organization.billing_owner_id,
+       usage.ts,
+       floor(
+         least(
+           greatest(coalesce(usage.brevitas_fee_usd, 0), 0),
+           greatest(coalesce(usage.verified_savings_usd, 0), 0) * 0.25
+         ) * 1000000
+       )::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id = usage.organization_id
+  join public.organizations organization
+    on organization.id = account.organization_id
+ where usage.key_hash = 'release-key-a'
+   and usage.request_id = 'release-billing-1'
+   and usage.authoritative
+   and usage.organization_id is not null
+   and usage.owner_id <> ''
+   and usage.pricing_status = 'priced'
+   and account.subscription_status in ('active', 'trialing')
+   and account.billing_started_at is not null
+   and usage.ts >= account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
 
 do $$
 declare
     ledger_id bigint;
+    ledger_fee bigint;
     claimed record;
 begin
-    select ledger.id into ledger_id
+    select ledger.id, ledger.fee_microusd into ledger_id, ledger_fee
       from public.billing_ledger ledger
       join public.usage_log usage on usage.id = ledger.usage_log_id
      where usage.request_id = 'release-billing-1';
-    if ledger_id is null then raise exception 'billing trigger did not create a ledger row'; end if;
+    if ledger_id is null then raise exception 'billing ledger fixture row is missing'; end if;
+    -- 25% of $1.00 verified savings, clamped by the recorded per-row fee.
+    if ledger_fee is distinct from 250000 then
+        raise exception 'billing ledger fixture priced the fee as % micro-USD', ledger_fee;
+    end if;
     -- Keep the upgrade-baseline ledger fixture from consuming the bounded
     -- single-row claim before this test's purpose-built entry. A missing
     -- result must never pass through PL/pgSQL's three-valued NULL comparison.

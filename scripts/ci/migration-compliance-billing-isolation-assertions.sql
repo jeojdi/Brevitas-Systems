@@ -78,7 +78,48 @@ insert into public.usage_log(
     ('compliance-isolation-key-b','fb000000-0000-4000-8000-000000000001',
      'fb200000-0000-4000-8000-000000000002','compliance-isolation-usage-b',
      true,'priced',4,1,'proxy')
-on conflict (key_hash,request_id) where request_id<>'' do nothing;
+on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
+
+-- 202607280006 retired queue_brevitas_fee_after_usage, so the usage rows above
+-- no longer queue a fee. Compliance export/deletion isolation is a property of
+-- the retained ledger table itself, so seed public.billing_ledger directly
+-- (no BEFORE INSERT trigger exists on it: 202607170004:471-509). The predicate
+-- and the 25%-of-verified floor arithmetic reproduce the retired
+-- queue_brevitas_fee() body (202607200006:192-230), including deriving
+-- organization_id from the server-owned usage row and user_id from the
+-- company's billing owner -- which is exactly what the export scoping below
+-- has to keep separated. All of it is rolled back with the enclosing
+-- transaction.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,
+       usage.organization_id,
+       organization.billing_owner_id,
+       usage.ts,
+       floor(
+         least(
+           greatest(coalesce(usage.brevitas_fee_usd,0),0),
+           greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+         )*1000000
+       )::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id in (
+        'compliance-isolation-usage-a','compliance-isolation-usage-b'
+      )
+   and usage.authoritative
+   and usage.organization_id is not null
+   and usage.owner_id<>''
+   and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
 
 do $assert_ledger_fixture$
 begin
@@ -88,6 +129,15 @@ begin
             'fb200000-0000-4000-8000-000000000002'
          )) <> 2 then
         raise exception 'compliance isolation fixture did not create both company ledgers';
+    end if;
+    if (select count(*) from public.billing_ledger ledger
+         where ledger.organization_id in (
+            'fb100000-0000-4000-8000-000000000001',
+            'fb200000-0000-4000-8000-000000000002'
+         )
+           and ledger.user_id='fb000000-0000-4000-8000-000000000001'
+           and ledger.fee_microusd=1000000) <> 2 then
+        raise exception 'compliance isolation ledger fixture priced or attributed the fee wrongly';
     end if;
 end;
 $assert_ledger_fixture$;
