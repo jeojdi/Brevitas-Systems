@@ -873,7 +873,7 @@ function verifyUpgradeHarnessCoverage() {
 // BACKFILL FLOOR below extends enforcement to them explicitly. Everything
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
-const REVERSE_POSTURE_CUTOFF = '202607280028'
+const REVERSE_POSTURE_CUTOFF = '202607280029'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/
