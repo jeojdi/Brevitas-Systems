@@ -12,6 +12,10 @@ import pytest
 import requests
 
 from api.billing_recovery import (
+    ENTRY_KIND_LEDGER,
+    LEDGER_ALERT_NAMES,
+    SETTLEMENT_ALERT_NAMES,
+    ENTRY_KIND_SETTLEMENT,
     STRIPE_API_VERSION,
     BillingEntry,
     BillingHealth,
@@ -25,7 +29,11 @@ from api.billing_recovery import (
     StripeRestBillingGateway,
     StripeRejected,
     StripeUnavailable,
+    SupabaseBillingStore,
+    SupabaseSettlementStore,
     billing_recovery_is_configured,
+    build_billing_recovery_processor_from_env,
+    billing_settlement_recovery_is_enabled,
     billing_worker_owner,
     run_billing_recovery_loop,
 )
@@ -243,7 +251,7 @@ class RecordingTelemetry:
         self.alerts.append((name, severity, dict(fields)))
 
 
-def processor(store, stripe, *, now=lambda: NOW, telemetry=None):
+def processor(store, stripe, *, now=lambda: NOW, telemetry=None, settlement_store=None):
     return BillingRecoveryProcessor(
         store=store,
         stripe=stripe,
@@ -254,6 +262,7 @@ def processor(store, stripe, *, now=lambda: NOW, telemetry=None):
         ),
         telemetry=telemetry or LoggingBillingTelemetry(),
         now=now,
+        settlement_store=settlement_store,
     )
 
 
@@ -1385,3 +1394,932 @@ def test_unsent_release_migration_is_lease_fenced_and_worker_only():
     # The soundness argument must travel with the function.
     assert "429" in migration
     assert "ROLLBACK PROCEDURE" in migration
+
+
+# ---------------------------------------------------------------------------
+# Period-settlement ledger.
+#
+# 202607280006 retired the per-row trigger's only writer, so a promoted
+# settlement is the only thing that can produce NEW money — and until now no RPC
+# read period_settlement_ledger for sending, so a settlement had no path to
+# Stripe at all. The rows below travel the SAME send/reconcile/complete machine
+# as billing_ledger; only the store (RPC names) and the Stripe identity
+# namespace differ.
+# ---------------------------------------------------------------------------
+
+# The caestus dress-rehearsal row: settlement 1000000005 for the closed week,
+# whose window also contains legacy per-row fee billing_ledger#5 for the same
+# Stripe customer. expected_period_microusd must therefore be the SUM of both,
+# or reconcile could never ACCEPT.
+SETTLEMENT_ID = 1_000_000_005
+SETTLEMENT_FEE = 1_235_092
+LEGACY_COMMITTED = 1_235_092
+
+
+class FakeSettlementStore:
+    """public.period_settlement_ledger as the new RPCs expose it.
+
+    Three behaviours differ from FakeStore and each one is load-bearing:
+
+    * claim takes a LEASE and leaves the row 'pending'. 202607280010 refuses any
+      exit from 'sending' unless outbound_started_at survives — even for a row
+      that never had a marker — so a claim that parked the row in 'sending' with
+      a NULL marker would strand it forever.
+    * ``reclaimed`` is derived from the outbound marker, NOT from
+      status == 'sending', because the 429 path returns a marker-carrying row to
+      'pending' and the processor's reconcile-first branch keys on the marker.
+    * release_unsent maps to release_period_settlement_claim and PRESERVES the
+      marker (clearing it is what the CI guardrail and the send latches forbid).
+    """
+
+    ENTRY_KIND = ENTRY_KIND_SETTLEMENT
+
+    def __init__(self, now=NOW, *, status="pending"):
+        self.now = now
+        self.lock = threading.Lock()
+        self.claim_calls = 0
+        self.release_calls = 0
+        self.release_unsent_calls = 0
+        self.health_calls = 0
+        self.completed = []
+        self.legacy_committed_microusd = LEGACY_COMMITTED
+        self.row = {
+            "id": SETTLEMENT_ID,
+            "billing_owner_id": "1827866c-7df6-4816-abd5-a8824b7e2584",
+            "fee_microusd": SETTLEMENT_FEE,
+            "stripe_customer_id": "cus_UywBHVTvSfUPdo",
+            "attempts": 0,
+            "max_attempts": 5,
+            "status": status,
+            "lease_owner": None,
+            "lease_expires_at": None,
+            "outbound_started_at": None,
+            "reported_at": None,
+            "settled_at": None,
+            "superseded_at": None,
+            # A CLOSED prior week, which is the only kind a settlement exists for.
+            "period_start": now - timedelta(days=8),
+            "period_end": now - timedelta(days=1),
+            "last_error": "",
+        }
+
+    def committed_microusd(self):
+        """202607280008:562-568's predicate, plus the legacy per-row term."""
+        with self.lock:
+            return self._committed_microusd()
+
+    def _committed_microusd(self):
+        row = self.row
+        settled = (
+            row["fee_microusd"]
+            if row["status"] in ("sending", "reported")
+            or row["outbound_started_at"] is not None
+            else 0
+        )
+        return settled + self.legacy_committed_microusd
+
+    def claim_one(self, owner, *, lease_seconds, cap_microusd):
+        with self.lock:
+            self.claim_calls += 1
+            row = self.row
+            lease_free = (
+                row["lease_owner"] is None
+                or row["lease_expires_at"] is None
+                or row["lease_expires_at"] < self.now
+            )
+            expired = (
+                row["lease_expires_at"] is not None
+                and row["lease_expires_at"] < self.now
+            )
+            claimable = (
+                row["superseded_at"] is None
+                and row["attempts"] < row["max_attempts"]
+                and (
+                    (row["status"] == "pending" and lease_free)
+                    # A 'sending' row is only reclaimable once its lease expires.
+                    or (row["status"] == "sending" and expired)
+                )
+            )
+            if not claimable:
+                return None
+            reclaimed = row["outbound_started_at"] is not None
+            committed = self._committed_microusd()
+            if not reclaimed and committed + row["fee_microusd"] > cap_microusd:
+                row["status"] = "capped"
+                row["last_error"] = "weekly safety cap reached"
+                return None
+            # The status is deliberately NOT changed here.
+            row["lease_owner"] = owner
+            row["lease_expires_at"] = self.now + timedelta(seconds=lease_seconds)
+            row["attempts"] += 1
+            return BillingEntry(
+                id=row["id"],
+                user_id=row["billing_owner_id"],
+                # period_end itself is provably OUTSIDE reconcile's window once
+                # end_time is floored to the minute; five minutes earlier is
+                # unambiguously inside [period_start, period_end).
+                occurred_at=row["period_end"] - timedelta(minutes=5),
+                fee_microusd=row["fee_microusd"],
+                stripe_customer_id=row["stripe_customer_id"],
+                attempts=row["attempts"],
+                reclaimed=reclaimed,
+                outbound_started_at=row["outbound_started_at"],
+                period_start=row["period_start"],
+                period_end=row["period_end"],
+                expected_period_microusd=(
+                    committed + (0 if reclaimed else row["fee_microusd"])
+                ),
+                kind=ENTRY_KIND_SETTLEMENT,
+            )
+
+    def begin_send(self, entry_id, owner):
+        with self.lock:
+            row = self.row
+            if (
+                row["id"] != entry_id
+                or row["lease_owner"] != owner
+                or row["lease_expires_at"] is None
+                or row["lease_expires_at"] <= self.now
+                or row["status"] not in ("pending", "sending")
+            ):
+                return False
+            # Status and marker are stamped in ONE update, which is the only
+            # transition into 'sending' the send latches permit.
+            row["status"] = "sending"
+            row["outbound_started_at"] = row["outbound_started_at"] or self.now
+            return True
+
+    def renew(self, entry_id, owner, lease_seconds):
+        with self.lock:
+            row = self.row
+            if (
+                row["id"] != entry_id
+                or row["lease_owner"] != owner
+                or row["lease_expires_at"] is None
+                or row["lease_expires_at"] <= self.now
+                # The heartbeat runs BEFORE begin_send, when the row is still
+                # 'pending'. A copied `status = 'sending'` predicate here would
+                # lease_lost every settlement before it could ever send.
+                or row["status"] not in ("pending", "sending")
+            ):
+                return False
+            row["lease_expires_at"] = self.now + timedelta(seconds=lease_seconds)
+            return True
+
+    def complete(self, entry_id, owner, status, error=""):
+        with self.lock:
+            row = self.row
+            if status not in ("reported", "review", "dead"):
+                raise AssertionError(f"illegal settlement status {status!r}")
+            if row["id"] != entry_id or row["lease_owner"] != owner:
+                return False
+            if row["status"] != "sending":
+                return False
+            self.completed.append((status, error))
+            row.update(
+                status=status,
+                last_error=error[:500],
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            if status == "reported":
+                row["reported_at"] = row["reported_at"] or self.now
+                row["settled_at"] = row["settled_at"] or self.now
+            return True
+
+    def release_owner(self, owner):
+        with self.lock:
+            self.release_calls += 1
+            row = self.row
+            if (
+                row["lease_owner"] != owner
+                or row["status"] != "pending"
+                or row["outbound_started_at"] is not None
+            ):
+                return 0
+            row.update(
+                attempts=max(0, row["attempts"] - 1),
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+            return 1
+
+    def release_unsent(self, entry_id, owner):
+        """release_period_settlement_claim: the marker is NOT cleared."""
+        with self.lock:
+            self.release_unsent_calls += 1
+            row = self.row
+            if (
+                row["id"] != entry_id
+                or row["status"] != "sending"
+                or row["lease_owner"] != owner
+            ):
+                return False
+            row.update(
+                status="pending",
+                attempts=max(0, row["attempts"] - 1),
+                lease_owner=None,
+                lease_expires_at=None,
+                last_error=(
+                    "Stripe rate limited the request; the meter event was not processed"
+                ),
+            )
+            return True
+
+    def check_health(self):
+        with self.lock:
+            self.health_calls += 1
+            row = self.row
+            return BillingHealth(
+                pending_count=int(row["status"] == "pending"),
+                review_count=int(row["status"] == "review"),
+                dead_count=int(row["status"] == "dead"),
+                stale_sending_count=int(
+                    row["status"] == "sending"
+                    and row["lease_expires_at"] is not None
+                    and row["lease_expires_at"] < self.now
+                ),
+                # Measured from period_end, so it is a full closed week old the
+                # moment the row exists.
+                oldest_pending_seconds=(
+                    int((self.now - row["period_end"]).total_seconds())
+                    if row["status"] == "pending" else 0
+                ),
+            )
+
+    def expire_lease(self, *, advance=timedelta(minutes=3)):
+        with self.lock:
+            self.now += advance
+            self.row["lease_expires_at"] = self.now - timedelta(seconds=1)
+
+
+class DrainedSettlementStore(FakeSettlementStore):
+    """No promoted settlement is waiting."""
+
+    def claim_one(self, owner, *, lease_seconds, cap_microusd):
+        with self.lock:
+            self.claim_calls += 1
+        return None
+
+
+def settlement_entry(entry_id=SETTLEMENT_ID, fee_microusd=SETTLEMENT_FEE):
+    period_end = NOW - timedelta(days=1)
+    return BillingEntry(
+        id=entry_id,
+        user_id="1827866c-7df6-4816-abd5-a8824b7e2584",
+        occurred_at=period_end - timedelta(minutes=5),
+        fee_microusd=fee_microusd,
+        stripe_customer_id="cus_UywBHVTvSfUPdo",
+        attempts=1,
+        reclaimed=False,
+        outbound_started_at=None,
+        period_start=NOW - timedelta(days=8),
+        period_end=period_end,
+        expected_period_microusd=fee_microusd + LEGACY_COMMITTED,
+        kind=ENTRY_KIND_SETTLEMENT,
+    )
+
+
+# S1: the whole point of the lane — a promoted settlement reaches Stripe and
+# terminalizes, using the same machine the per-row ledger uses.
+def test_settlement_claim_send_reported_happy_path():
+    store = FakeSettlementStore()
+    stripe = FakeStripe()
+    telemetry = RecordingTelemetry()
+    recovery = processor(
+        FakeStore(), stripe, telemetry=telemetry, settlement_store=store,
+    )
+
+    result = recovery.process_once("settlement-worker")
+
+    assert result.claimed == 1
+    assert result.reported == 1
+    assert result.errors == 0
+    assert stripe.send_calls == 1
+    assert stripe.accepted_identifiers == {f"brevitas-settlement-{SETTLEMENT_ID}"}
+    # The lease left the row 'pending'; only begin_send moved it to 'sending',
+    # stamping the marker in the same update.
+    assert store.row["status"] == "reported"
+    assert store.row["outbound_started_at"] is not None
+    assert store.row["reported_at"] is not None
+    assert store.row["settled_at"] is not None
+    assert store.row["lease_owner"] is None
+    assert store.row["attempts"] == 1
+    assert store.completed == [("reported", "")]
+    # Telemetry is tagged so a settlement can never be read as a per-row fee.
+    assert ("billing.entries", 1, {"status": "reported",
+                                   "ledger": "settlement"}) in telemetry.metrics
+
+
+def test_settlement_claim_leases_without_entering_sending_and_heartbeats_while_pending():
+    store = FakeSettlementStore()
+    entry = store.claim_one("owner-1", lease_seconds=120, cap_microusd=10_000_000)
+
+    assert entry is not None
+    assert entry.kind == ENTRY_KIND_SETTLEMENT
+    assert entry.reclaimed is False
+    assert entry.outbound_started_at is None
+    assert entry.attempts == 1
+    # A row parked in 'sending' with a NULL marker could never be released.
+    assert store.row["status"] == "pending"
+    assert store.row["lease_owner"] == "owner-1"
+    # occurred_at is inside [period_start, period_end), not AT period_end, which
+    # reconcile's minute-flooring would put outside the queried window.
+    assert entry.occurred_at == store.row["period_end"] - timedelta(minutes=5)
+    assert store.row["period_start"] <= entry.occurred_at < store.row["period_end"]
+    # expected must carry the legacy per-row fee sharing the window, or a
+    # settlement could never reconcile to ACCEPTED.
+    assert entry.expected_period_microusd == SETTLEMENT_FEE + LEGACY_COMMITTED
+    # The pre-send heartbeat runs while the row is still 'pending'.
+    assert store.renew(entry.id, "owner-1", 120) is True
+    assert store.renew(entry.id, "someone-else", 120) is False
+    assert store.complete(entry.id, "someone-else", "reported") is False
+
+
+# S2: the outbound meter POST is a money instruction. Byte-exact, and its Stripe
+# identity namespace cannot collide with the per-row ledger's.
+def test_settlement_outbound_meter_event_post_is_byte_exact():
+    session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"identifier": f"brevitas-settlement-{SETTLEMENT_ID}"}),
+    ])
+    gateway = send_gateway(session)
+    entry = settlement_entry()
+
+    gateway.send(entry)
+
+    method, url, kwargs = session.requests[-1]
+    assert method == "POST"
+    assert url == "https://api.stripe.com/v1/billing/meter_events"
+    assert kwargs == {
+        "data": {
+            "event_name": "brevitas_fee_microusd",
+            "identifier": "brevitas-settlement-1000000005",
+            "timestamp": str(int(entry.occurred_at.timestamp())),
+            "payload[stripe_customer_id]": "cus_UywBHVTvSfUPdo",
+            "payload[value]": "1235092",
+        },
+        "headers": {
+            "Idempotency-Key": "brevitas-settlement-meter-1000000005",
+            "Stripe-Version": STRIPE_API_VERSION,
+        },
+        "timeout": (3.0, 10.0),
+    }
+    assert entry.user_id not in str(kwargs)
+
+
+def test_settlement_and_ledger_stripe_identities_cannot_collide():
+    ledger = replace(settlement_entry(entry_id=5), kind=ENTRY_KIND_LEDGER)
+    settlement = settlement_entry(entry_id=5)
+
+    # The four literals.
+    assert ledger.stripe_identifier == "brevitas-fee-5"
+    assert ledger.idempotency_key == "brevitas-meter-5"
+    assert settlement.stripe_identifier == "brevitas-settlement-5"
+    assert settlement.idempotency_key == "brevitas-settlement-meter-5"
+
+    # Prefix disjointness, which holds for EVERY id forever: both per-row
+    # templates are a fixed prefix plus decimal digits, so a collision would
+    # need a decimal string equal to "settlement-..." — impossible. This is
+    # deliberately independent of 202607280007's id-space argument (settlement
+    # ids start at 1e9), which is only a one-shot apply-time assertion.
+    for entry_id in (1, 5, 999, SETTLEMENT_ID, 10**12):
+        ledger_id = replace(settlement_entry(entry_id=entry_id), kind=ENTRY_KIND_LEDGER)
+        settled = settlement_entry(entry_id=entry_id)
+        names = {
+            ledger_id.stripe_identifier, ledger_id.idempotency_key,
+            settled.stripe_identifier, settled.idempotency_key,
+        }
+        assert len(names) == 4
+        for left in names:
+            for right in names:
+                assert left == right or not left.startswith(right)
+    # Identity is derived from the row id alone, so it is stable across reclaims
+    # and re-sends — the property Stripe's deduplication relies on.
+    assert replace(settlement, attempts=9, reclaimed=True).stripe_identifier == (
+        settlement.stripe_identifier
+    )
+
+
+def test_unknown_entry_kind_can_never_reach_stripe():
+    with pytest.raises(ValueError, match="known ledger"):
+        replace(settlement_entry(), kind="period")
+
+
+# S3: a 429 after begin_send. The settlement relief KEEPS the outbound marker
+# (202607280010 forbids erasing send evidence, and the CI guardrail forbids a
+# settlement function that clears it) — which is safe precisely because the
+# cumulative ceiling counts committed money on that marker.
+def test_rate_limited_settlement_returns_to_pending_without_burning_an_attempt():
+    store = FakeSettlementStore()
+    session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+    ])
+    telemetry = RecordingTelemetry()
+    recovery = processor(
+        FakeStore(), send_gateway(session), telemetry=telemetry, settlement_store=store,
+    )
+
+    result = recovery.process_once("rate-limited-worker")
+
+    assert result.errors == 1
+    assert result.reported == 0
+    assert result.review == 0
+    assert result.dead == 0
+    assert store.release_unsent_calls == 1
+    assert store.row["status"] == "pending"
+    assert store.row["attempts"] == 0
+    assert store.row["lease_owner"] is None
+    # The marker survives, so the period stays inside the committed sum and can
+    # never be double-billed by a second revision.
+    assert store.row["outbound_started_at"] is not None
+    assert store.committed_microusd() == SETTLEMENT_FEE + LEGACY_COMMITTED
+    assert ("billing.stripe_unavailable", 1,
+            {"ledger": "settlement"}) in telemetry.metrics
+
+    # The next claim therefore reports reclaimed=True and reconciles BEFORE
+    # re-sending, under the same identifier.
+    reclaimed = store.claim_one("retry-worker", lease_seconds=120, cap_microusd=10_000_000)
+    assert reclaimed is not None
+    assert reclaimed.reclaimed is True
+    assert reclaimed.outbound_started_at is not None
+    # Already-committed money is not counted twice.
+    assert reclaimed.expected_period_microusd == SETTLEMENT_FEE + LEGACY_COMMITTED
+
+
+def test_sustained_rate_limiting_never_exhausts_settlement_attempts():
+    store = FakeSettlementStore()
+    # The meter aggregate holds only the legacy per-row fee: the settlement's
+    # own event was never ingested, so every reconcile is UNKNOWN and the row
+    # re-sends under the same identifier.
+    unmatched = {
+        "data": [{"id": "s", "meter": "mtr_test", "aggregated_value": LEGACY_COMMITTED}],
+        "has_more": False,
+    }
+    for cycle in range(8):
+        reclaimed = store.row["outbound_started_at"] is not None
+        session = FakeSession([
+            # From the second cycle on the row carries its marker, so the
+            # processor reconciles BEFORE re-sending — the documented cost of
+            # keeping the send evidence: one wasted reconcile per rate-limited
+            # cycle, in exchange for never being able to double-bill the period.
+            *catalog_responses(*([unmatched] if reclaimed else [])),
+            FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+        ])
+        gateway = StripeRestBillingGateway(
+            "sk_test_mock", "price_mock", "brevitas_fee_microusd",
+            exclusive_meter_writer=True, session=session, now=lambda: NOW,
+        )
+        result = processor(
+            FakeStore(), gateway, settlement_store=store,
+        ).process_once(f"worker-{cycle}")
+        assert result.errors == 1
+        assert result.review == 0
+        assert result.reported == 0
+        # Before the attempt refund this climbed by one every cycle and the DB
+        # sweep at attempts >= max_attempts would park the whole week's money in
+        # `review` around cycle 5.
+        assert store.row["attempts"] == 0
+        assert store.row["status"] == "pending"
+        assert store.row["outbound_started_at"] is not None
+        assert store.committed_microusd() == SETTLEMENT_FEE + LEGACY_COMMITTED
+
+
+# S4: ambiguous outcome. The row stays in 'sending' with its marker and is
+# reconciled; it is never blind-retried and never terminalized this cycle.
+def test_ambiguous_settlement_send_is_reconciled_and_never_double_charged():
+    store = FakeSettlementStore()
+    stripe = FakeStripe("timeout_after_accept")
+
+    result = processor(
+        FakeStore(), stripe, settlement_store=store,
+    ).process_once("worker")
+
+    assert result.reported == 1
+    assert result.reconciled == 1
+    assert result.review == 0
+    assert stripe.send_calls == 1
+    assert stripe.reconcile_calls == 1
+    assert stripe.accepted_identifiers == {f"brevitas-settlement-{SETTLEMENT_ID}"}
+    assert store.row["status"] == "reported"
+
+
+def test_ambiguous_settlement_that_cannot_reconcile_stays_sending_with_its_marker():
+    store = FakeSettlementStore()
+    stripe = FakeStripe("timeout_after_accept")
+    stripe.force_unknown_reconcile = True
+
+    result = processor(
+        FakeStore(), stripe, settlement_store=store,
+    ).process_once("worker")
+
+    assert result.errors == 1
+    assert result.reported == 0
+    assert result.review == 0
+    assert result.dead == 0
+    # Left for lease expiry to drive a later reconcile-then-replay against the
+    # same identifier. Only the DB sweeps may escalate it to review.
+    assert store.row["status"] == "sending"
+    assert store.row["outbound_started_at"] is not None
+    assert store.committed_microusd() == SETTLEMENT_FEE + LEGACY_COMMITTED
+
+    # ...and the reclaim reconciles first rather than sending blind.
+    store.expire_lease()
+    stripe.force_unknown_reconcile = False
+    replacement = processor(
+        FakeStore(), stripe, now=lambda: store.now, settlement_store=store,
+    ).process_once("replacement-worker")
+
+    assert replacement.reconciled == 1
+    assert replacement.reported == 1
+    assert stripe.send_calls == 1
+    assert store.row["status"] == "reported"
+
+
+# S5: lease fencing. A worker that lost its lease may not write a terminal
+# status, and the row keeps its evidence for the winner or the DB sweeps.
+def test_settlement_worker_that_lost_its_lease_cannot_complete():
+    store = FakeSettlementStore()
+
+    class StolenLeaseStore:
+        def __init__(self, inner):
+            self.inner = inner
+            self.stolen = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def complete(self, entry_id, owner, status, error=""):
+            self.stolen += 1
+            with self.inner.lock:
+                self.inner.row["lease_owner"] = "another-replica"
+            return self.inner.complete(entry_id, owner, status, error)
+
+    stripe = FakeStripe()
+    telemetry = RecordingTelemetry()
+    fenced = StolenLeaseStore(store)
+    result = processor(
+        FakeStore(), stripe, telemetry=telemetry, settlement_store=fenced,
+    ).process_once("evicted-worker")
+
+    assert fenced.stolen == 1
+    assert result.lease_lost == 1
+    assert result.errors == 1
+    assert result.reported == 0
+    assert store.completed == []
+    assert store.row["status"] == "sending"
+    assert store.row["outbound_started_at"] is not None
+    assert ("billing.lease_lost", 1, {"ledger": "settlement"}) in telemetry.metrics
+
+
+def test_settlement_send_is_fenced_when_begin_send_loses_the_lease():
+    store = FakeSettlementStore()
+    stripe = FakeStripe()
+
+    class LostLeaseBeforeSend:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def begin_send(self, entry_id, owner):
+            return self.inner.begin_send(entry_id, "another-replica")
+
+    result = processor(
+        FakeStore(), stripe, settlement_store=LostLeaseBeforeSend(store),
+    ).process_once("evicted-worker")
+
+    assert result.lease_lost == 1
+    assert stripe.send_calls == 0
+    assert store.row["status"] == "pending"
+    assert store.row["outbound_started_at"] is None
+
+
+# S6: ordering. Settlements are the only source of NEW money; the per-row ledger
+# is a finite drain-down set, so it must never starve them.
+def test_settlements_are_claimed_before_the_legacy_per_row_ledger():
+    ledger = FakeStore()
+    settlement = FakeSettlementStore()
+    stripe = FakeStripe()
+
+    result = processor(
+        ledger, stripe, settlement_store=settlement,
+    ).process_once("worker")
+
+    assert result.claimed == 1
+    assert settlement.claim_calls == 1
+    assert ledger.claim_calls == 0
+    assert settlement.row["status"] == "reported"
+    assert ledger.row["status"] == "pending"
+    assert ledger.row["attempts"] == 0
+    assert stripe.accepted_identifiers == {f"brevitas-settlement-{SETTLEMENT_ID}"}
+
+
+def test_idle_settlement_queue_falls_through_to_the_per_row_ledger_in_one_cycle():
+    ledger = FakeStore()
+    settlement = DrainedSettlementStore()
+    stripe = FakeStripe()
+
+    result = processor(
+        ledger, stripe, settlement_store=settlement,
+    ).process_once("worker")
+
+    assert settlement.claim_calls == 1
+    assert ledger.claim_calls == 1
+    assert result.claimed == 1
+    assert result.reported == 1
+    # The per-row path is byte-identical to its pre-settlement behaviour.
+    assert ledger.row["status"] == "reported"
+    assert stripe.accepted_identifiers == {"brevitas-fee-41"}
+
+
+def test_settlement_store_is_not_claimed_when_the_processor_is_stopping():
+    ledger = FakeStore()
+    settlement = FakeSettlementStore()
+
+    result = processor(
+        ledger, FakeStripe(), settlement_store=settlement,
+    ).process_once("worker", lambda: True)
+
+    assert result.claimed == 0
+    assert settlement.claim_calls == 0
+    assert ledger.claim_calls == 0
+
+
+# S7: regression — with no settlement store the per-row path is untouched, and
+# its telemetry keeps the exact attributes it emits today.
+def test_per_row_ledger_path_is_unchanged_without_a_settlement_store():
+    ledger = FakeStore()
+    stripe = FakeStripe()
+    telemetry = RecordingTelemetry()
+    recovery = processor(ledger, stripe, telemetry=telemetry)
+
+    result = recovery.process_once("worker")
+
+    assert result.claimed == 1
+    assert result.reported == 1
+    assert ledger.row["status"] == "reported"
+    assert stripe.accepted_identifiers == {"brevitas-fee-41"}
+    assert ("billing.entries", 1, {"status": "reported"}) in telemetry.metrics
+    assert all(
+        "ledger" not in attributes for _, _, attributes in telemetry.metrics
+    )
+
+
+def test_health_is_sampled_and_alerted_independently_per_ledger():
+    ledger = FakeStore()
+    settlement = FakeSettlementStore()
+    telemetry = RecordingTelemetry()
+    recovery = processor(
+        ledger, FakeStripe(), telemetry=telemetry, settlement_store=settlement,
+    )
+
+    health = recovery.check_health()
+
+    # check_health still returns the per-row ledger's health.
+    assert health.pending_count == 1
+    assert ("billing.pending_count", 1.0, {}) in telemetry.metrics
+    assert ("billing.pending_count", 1.0, {"ledger": "settlement"}) in telemetry.metrics
+    assert settlement.health_calls == 1
+    # oldest_pending_seconds is a whole day here (measured from period_end) and
+    # would page continuously against the 300s per-row threshold. It does not.
+    assert settlement.check_health().oldest_pending_seconds == 86_400
+    assert not any(name.endswith("_processing_lag") for name, _, _ in telemetry.alerts)
+
+    # The settlement threshold is a separate knob, and its alert has its own
+    # name so a stuck settlement can never be masked by a clean billing_ledger.
+    recovery.settings = replace(recovery.settings, settlement_lag_alert_seconds=60)
+    telemetry.alerts.clear()
+    recovery.check_health()
+    assert [name for name, _, _ in telemetry.alerts] == ["billing_settlement_processing_lag"]
+
+    settlement.row["status"] = "review"
+    telemetry.alerts.clear()
+    recovery.check_health()
+    assert [name for name, _, _ in telemetry.alerts] == [
+        "billing_settlement_entries_require_review",
+    ]
+
+
+def test_shutdown_releases_never_sent_claims_on_both_ledgers():
+    ledger = FakeStore()
+    settlement = FakeSettlementStore()
+    stripe = FakeStripe()
+    recovery = processor(ledger, stripe, settlement_store=settlement)
+    stop = asyncio.Event()
+    stop.set()
+
+    asyncio.run(run_billing_recovery_loop(recovery, stop, owner="stopping-worker"))
+
+    assert ledger.release_calls == 1
+    assert settlement.release_calls == 1
+    assert stripe.closed is True
+
+
+# S8: the store surface itself — RPC names, the id parameter, and the entry kind
+# the claim stamps. A wrong name here is a silent no-op against Postgres.
+class FakeRpcResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class FakeRpcSession:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
+        self.headers = {}
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url, dict(json or {})))
+        return FakeRpcResponse(self.payloads.pop(0))
+
+    def close(self):
+        pass
+
+
+SETTLEMENT_CLAIM_ROW = {
+    "id": SETTLEMENT_ID,
+    "user_id": "1827866c-7df6-4816-abd5-a8824b7e2584",
+    "occurred_at": "2026-07-30T17:58:53+00:00",
+    "fee_microusd": SETTLEMENT_FEE,
+    "stripe_customer_id": "cus_UywBHVTvSfUPdo",
+    "attempts": 1,
+    "reclaimed": False,
+    "outbound_started_at": None,
+    "period_start": "2026-07-23T18:03:53+00:00",
+    "period_end": "2026-07-30T18:03:53+00:00",
+    "expected_period_microusd": 2_470_184,
+}
+
+
+def test_settlement_store_calls_the_settlement_rpcs_with_the_settlement_id_param():
+    session = FakeRpcSession([[SETTLEMENT_CLAIM_ROW], True, True, True, 1, True,
+                             [{"pending_count": 2}]])
+    store = SupabaseSettlementStore(
+        "https://example.supabase.co", "service-role", session=session,
+    )
+
+    entry = store.claim_one("owner", lease_seconds=120, cap_microusd=10_000_000)
+    assert entry is not None
+    # The claim's column list is byte-identical to the per-row claim, so
+    # BillingEntry.from_row parses it unchanged; only the kind differs.
+    assert entry.kind == ENTRY_KIND_SETTLEMENT
+    assert entry.stripe_identifier == "brevitas-settlement-1000000005"
+    assert entry.idempotency_key == "brevitas-settlement-meter-1000000005"
+    assert entry.expected_period_microusd == 2_470_184
+
+    assert store.begin_send(SETTLEMENT_ID, "owner") is True
+    assert store.renew(SETTLEMENT_ID, "owner", 120) is True
+    assert store.complete(SETTLEMENT_ID, "owner", "reported") is True
+    assert store.release_owner("owner") == 1
+    assert store.release_unsent(SETTLEMENT_ID, "owner") is True
+    assert store.check_health().pending_count == 2
+
+    functions = [url.rsplit("/", 1)[-1] for url, _ in session.calls]
+    assert functions == [
+        "claim_period_settlement_entries",
+        "mark_period_settlement_outbound_started",
+        "renew_period_settlement_lease",
+        "complete_period_settlement_entry",
+        "release_period_settlement_leases",
+        # NOT release_period_settlement_unsent: the CI guardrail fails the build
+        # if a settlement function that clears outbound_started_at exists, and
+        # this one deliberately does not clear it.
+        "release_period_settlement_claim",
+        "period_settlement_recovery_health",
+    ]
+    assert "release_period_settlement_unsent" not in set(
+        SupabaseSettlementStore.RPCS.values()
+    )
+    for _, payload in session.calls:
+        assert "p_entry_id" not in payload
+    assert session.calls[1][1] == {"p_settlement_id": SETTLEMENT_ID, "p_owner": "owner"}
+    assert session.calls[0][1] == {
+        "p_owner": "owner",
+        "p_lease_seconds": 120,
+        "p_limit": 1,
+        "p_cap_microusd": 10_000_000,
+    }
+
+
+def test_per_row_store_rpc_names_and_parameters_are_unchanged():
+    session = FakeRpcSession([
+        [{**SETTLEMENT_CLAIM_ROW, "id": 5, "expected_period_microusd": SETTLEMENT_FEE}],
+        True, True, True, 1, True, [{"pending_count": 1}],
+    ])
+    store = SupabaseBillingStore(
+        "https://example.supabase.co", "service-role", session=session,
+    )
+
+    entry = store.claim_one("owner", lease_seconds=120, cap_microusd=10_000_000)
+    assert entry is not None
+    assert entry.kind == ENTRY_KIND_LEDGER
+    assert entry.stripe_identifier == "brevitas-fee-5"
+    assert entry.idempotency_key == "brevitas-meter-5"
+
+    store.begin_send(5, "owner")
+    store.renew(5, "owner", 120)
+    store.complete(5, "owner", "reported")
+    store.release_owner("owner")
+    store.release_unsent(5, "owner")
+    store.check_health()
+
+    functions = [url.rsplit("/", 1)[-1] for url, _ in session.calls]
+    assert functions == [
+        "claim_billing_ledger_entries",
+        "mark_billing_outbound_started",
+        "renew_billing_ledger_lease",
+        "complete_billing_ledger_entry",
+        "release_billing_ledger_leases",
+        "release_billing_ledger_unsent",
+        "billing_recovery_health",
+    ]
+    assert session.calls[1][1] == {"p_entry_id": 5, "p_owner": "owner"}
+    for _, payload in session.calls:
+        assert "p_settlement_id" not in payload
+
+
+def test_settlement_ledger_is_off_by_default_and_needs_an_explicit_gate(monkeypatch):
+    for value in (None, "", "false", "FALSE", "1", "yes", " true ", "TRUE"):
+        if value is None:
+            monkeypatch.delenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", value)
+        assert billing_settlement_recovery_is_enabled() is False
+    monkeypatch.setenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", "true")
+    assert billing_settlement_recovery_is_enabled() is True
+
+
+def test_env_built_processor_only_wires_the_settlement_store_when_gated_on(monkeypatch):
+    for name, value in {
+        "BREVITAS_BILLING_ENABLED": "true",
+        "STRIPE_SECRET_KEY": "sk_test_mock",
+        "STRIPE_PRICE_ID": "price_weekly",
+        "STRIPE_METER_EVENT_NAME": "brevitas_fee_microusd",
+        "BREVITAS_BILLING_WEEKLY_CAP_USD": "100",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+        "SUPABASE_URL": "https://example.supabase.co",
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in (
+        "BREVITAS_BILLING_LEASE_SECONDS", "BREVITAS_BILLING_POLL_SECONDS",
+        "BREVITAS_BILLING_HTTP_TIMEOUT_SECONDS", "BREVITAS_BILLING_LAG_ALERT_SECONDS",
+        "BREVITAS_BILLING_SETTLEMENT_LAG_ALERT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    # Default OFF: a database that stops short of the settlement migrations must
+    # be a no-op, not a stream of RPC-not-found errors on every cycle.
+    monkeypatch.delenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", raising=False)
+    disabled = build_billing_recovery_processor_from_env()
+    assert disabled.settlement_store is None
+    assert isinstance(disabled.store, SupabaseBillingStore)
+    assert disabled.settings.settlement_lag_alert_seconds == 172_800
+
+    monkeypatch.setenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setenv("BREVITAS_BILLING_SETTLEMENT_LAG_ALERT_SECONDS", "3600")
+    enabled = build_billing_recovery_processor_from_env()
+    assert isinstance(enabled.settlement_store, SupabaseSettlementStore)
+    assert type(enabled.store) is SupabaseBillingStore
+    assert enabled.settings.settlement_lag_alert_seconds == 3600
+    for store in (enabled.store, enabled.settlement_store):
+        store.close()
+    disabled.store.close()
+
+
+def test_ledger_alert_names_are_unchanged_and_the_settlement_names_are_distinct():
+    # The per-row names are load-bearing beyond this module: dashboards and
+    # tests/stripe_billing_config.test.mjs both key on them.
+    assert tuple(LEDGER_ALERT_NAMES) == (
+        "billing_processing_lag",
+        "billing_entries_require_review",
+        "billing_entries_dead",
+        "billing_stale_leases",
+    )
+    assert tuple(SETTLEMENT_ALERT_NAMES) == (
+        "billing_settlement_processing_lag",
+        "billing_settlement_entries_require_review",
+        "billing_settlement_entries_dead",
+        "billing_settlement_stale_leases",
+    )
+    assert not set(LEDGER_ALERT_NAMES) & set(SETTLEMENT_ALERT_NAMES)
+
+    ledger = FakeStore()
+    ledger.row["status"] = "review"
+    telemetry = RecordingTelemetry()
+    processor(
+        ledger, FakeStripe(), telemetry=telemetry,
+        settlement_store=FakeSettlementStore(),
+    ).check_health()
+
+    assert [name for name, _, _ in telemetry.alerts] == [
+        "billing_entries_require_review",
+    ]

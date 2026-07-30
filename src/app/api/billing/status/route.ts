@@ -65,8 +65,44 @@ export const runtime = 'nodejs';
  * `settlement_pending: true`) instead of failing the whole page with a 500.
  * Mirrors api/billing_recovery.py `_release_unsent`, which likewise refuses to
  * crash the cycle when the store has not yet learned an RPC mid-rollout.
+ *
+ * PRIOR PERIODS (the dress-rehearsal defect, docs/STRIPE_BUILD_REPORT.md
+ * "CUSTOMER DRESS REHEARSAL"). Everything above is scoped to ONE period: the
+ * summary is asked only at `billing_accounts.current_period_start`, and
+ * `billing_period_settlement_summary` hard-refuses any other anchor with
+ * `period_anchor_mismatch` (202607280013:1060-1073). So a week that was
+ * genuinely settled, promoted and reported was unreachable through this
+ * endpoint at all — the customer saw `$0` / `accruing`, which is the CORRECT
+ * answer for the live week and a silent omission of the closed one.
+ *
+ * The anchor test is NOT relaxed to fix that (it is fail-closed by design, and
+ * `estimated_fee_usd` is an evidence PROJECTION that is only meaningful for the
+ * open week). Instead a second, additive, anchor-free read —
+ * `public.billing_period_settlement_history` (202607280029) — returns the live
+ * settlement rows for the organization, and two new fields carry them:
+ * `settlement_history` and `prior_settlement`. The history RPC reuses the
+ * summary's own money predicates verbatim (202607280013:1102-1115), so the two
+ * can never disagree about an overlapping period.
+ *
+ * The history read is UNCONDITIONAL — deliberately not gated on
+ * `periodTrackingValid`. A broken current anchor is precisely when a customer
+ * most needs to see what has already been billed, and history does not depend
+ * on the anchor.
+ *
+ * FAIL-CLOSED, SAME RULE, NEW FIELDS: when the history RPC is absent, refuses,
+ * or answers something unrecognised, the two fields are `null` — never `[]`.
+ * An empty array is a positive claim ("this customer has no settlements"),
+ * which is the same confident-wrong-zero FIX-5 exists to prevent. `[]` is
+ * emitted only when the RPC actually answered `ok: true` with no rows.
  */
 const MICRO_USD_PER_USD = 1_000_000;
+
+/**
+ * Weeks of settlement history requested. The RPC clamps to 1..52 server-side;
+ * eight weeks covers the 35-day Stripe reporting window plus a margin, which is
+ * every period that can still legitimately move.
+ */
+const SETTLEMENT_HISTORY_LIMIT = 8;
 
 /**
  * PostgREST/Postgres codes that mean the settlement summary itself is not
@@ -102,6 +138,76 @@ function toCount(value: unknown): number {
 
 function toText(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null;
+}
+
+type SettlementPeriod = {
+  period_start: string | null;
+  period_end: string | null;
+  settlement_id: number | null;
+  settlement_revision: number | null;
+  settlement_status: string | null;
+  settled_fee_usd: number | null;
+  reported_fee_usd: number | null;
+  committed_fee_usd: number | null;
+};
+
+/**
+ * One `periods` element of `billing_period_settlement_history`, in the same
+ * vocabulary the current-period fields use. Every money value goes through
+ * `toUsd`, so an element the RPC returned in an unexpected shape reports `null`
+ * for that amount rather than a number nobody computed. A row that is not an
+ * object at all is `null`, which the caller escalates to "history unknown"
+ * instead of quietly dropping a period that may hold money.
+ */
+function settlementPeriod(row: unknown): SettlementPeriod | null {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const period = row as Record<string, unknown>;
+  return {
+    period_start: toText(period.period_start),
+    period_end: toText(period.period_end),
+    settlement_id: typeof period.settlement_id === 'number' ? period.settlement_id : null,
+    settlement_revision: typeof period.revision === 'number' ? period.revision : null,
+    settlement_status: toText(period.settlement_status),
+    settled_fee_usd: toUsd(period.settled_fee_microusd),
+    reported_fee_usd: toUsd(period.reported_fee_microusd),
+    committed_fee_usd: toUsd(period.committed_fee_microusd),
+  };
+}
+
+/**
+ * The most recent settled period that is not the week in progress.
+ *
+ * With a valid anchor that is "period_start strictly before
+ * current_period_start". With no usable anchor — the state where this endpoint
+ * previously showed nothing at all — the boundary falls back to now and the
+ * test tightens to "period_end at or before now", so a period that is still
+ * open can never be presented as a prior, already-billed one.
+ *
+ * The winner is chosen by comparing period starts rather than by trusting the
+ * RPC's ORDER BY, so a change in the RPC's ordering cannot silently repoint
+ * this field at an older week.
+ */
+function priorSettlement(
+  history: SettlementPeriod[],
+  currentPeriodStartMs: number,
+): SettlementPeriod | null {
+  const anchorKnown = Number.isFinite(currentPeriodStartMs);
+  const boundaryMs = anchorKnown ? currentPeriodStartMs : Date.now();
+  let best: SettlementPeriod | null = null;
+  let bestStartMs = Number.NEGATIVE_INFINITY;
+  for (const period of history) {
+    const startMs = Date.parse(period.period_start || '');
+    if (!Number.isFinite(startMs) || startMs >= boundaryMs) continue;
+    if (!anchorKnown) {
+      const endMs = Date.parse(period.period_end || '');
+      if (!Number.isFinite(endMs) || endMs > boundaryMs) continue;
+    }
+    if (startMs > bestStartMs) {
+      best = period;
+      bestStartMs = startMs;
+    }
+  }
+  return best;
 }
 
 export async function GET(request: NextRequest) {
@@ -151,6 +257,43 @@ export async function GET(request: NextRequest) {
         summary = data as SettlementSummary;
       }
       summaryOk = summary.ok === true;
+    }
+
+    // Closed periods, read without the anchor. Unconditional: a customer whose
+    // current period is desynchronized still has a right to see the weeks that
+    // were already reported to Stripe, and this read does not depend on the
+    // anchor the summary refuses to be asked outside of.
+    let history: SettlementPeriod[] | null = null;
+    {
+      const { data, error } = await billingDatabase().rpc('billing_period_settlement_history', {
+        p_organization_id: authorization.organizationId,
+        p_limit: SETTLEMENT_HISTORY_LIMIT,
+      });
+      if (error) {
+        // Same degrade rule, same code set as the summary: a database that has
+        // not received 202607280029 yet reports no history instead of 500ing
+        // the page. Anything else is still fatal — an unexplained failure must
+        // not be published as "this customer has never been billed".
+        if (!summaryUnavailableError(error)) throw error;
+        console.error(
+          'Billing settlement history unavailable; omitting prior periods',
+          typeof error.code === 'string' ? error.code : 'no-code',
+        );
+      } else if (data && typeof data === 'object' && !Array.isArray(data) &&
+        (data as Record<string, unknown>).ok === true) {
+        const periods = (data as Record<string, unknown>).periods;
+        if (Array.isArray(periods)) {
+          const parsed = periods.map(settlementPeriod);
+          // One unreadable element makes the whole list untrustworthy: the
+          // dropped period could be the one holding the money.
+          history = parsed.some(period => period === null) ? null : (parsed as SettlementPeriod[]);
+        } else if (periods === null || periods === undefined) {
+          // `jsonb_agg` over zero rows is NULL. The RPC answered `ok: true`, so
+          // this is a measured "no settlements", and [] is the honest report.
+          history = [];
+        }
+        // Any other shape stays null: unrecognised is unknown, not empty.
+      }
     }
 
     const config = billingConfig();
@@ -205,6 +348,15 @@ export async function GET(request: NextRequest) {
       evidence: summaryOk && summary.evidence && typeof summary.evidence === 'object'
         ? summary.evidence
         : null,
+      // CLOSED PERIODS. Null means "not known here" (the RPC is absent, refused,
+      // or answered something unrecognised); [] means the RPC answered and this
+      // organization has no settlement rows. The two must stay distinguishable
+      // — collapsing them is how a fully-billed week renders as nothing.
+      settlement_history: history,
+      // The most recent closed, settled week. This is the field the billing card
+      // needs to stop showing $0/'accruing' for a week that was actually
+      // reported to Stripe; `null` here means either no such week or no history.
+      prior_settlement: history ? priorSettlement(history, periodStartMs) : null,
     }, {
       headers: { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' },
     });

@@ -105,6 +105,10 @@ export const expectedFreshMigrationOrder = [
   // it must stay after 20260710 (the index) and 202607170001 (the column).
   'supabase/migrations/202607280026_usage_log_authority_dedupe.sql',
   'supabase/migrations/202607280027_browser_role_truncate_contract.sql',
+  // The outbound claim/send path for period_settlement_ledger. Must stay after
+  // 202607280013 (the writer it sends for) and 202607280010 (whose latches
+  // dictate that the claim leaves status 'pending').
+  'supabase/migrations/202607280029_period_settlement_claim_path.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -873,7 +877,7 @@ function verifyUpgradeHarnessCoverage() {
 // BACKFILL FLOOR below extends enforcement to them explicitly. Everything
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
-const REVERSE_POSTURE_CUTOFF = '202607280029'
+const REVERSE_POSTURE_CUTOFF = '202607280030'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

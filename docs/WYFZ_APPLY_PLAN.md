@@ -2244,3 +2244,223 @@ Then the minimum viable DB set before **any** code deploys is: **Window A + `280
 require `280006`'s freeze). In other words: Window A, then `280006` through `280013`. `280005`,
 `280014` and all of Window C can trail the code deploy safely — but `280005` is fixing a live
 onboarding outage, so trailing it costs you customers.
+
+---
+
+## WINDOW B3 ADDENDUM (2026-07-30) — `202607280029_period_settlement_claim_path.sql`
+
+Appended 2026-07-30. Everything above described the `280005`–`280024` pass, which is **done**:
+wyfz now carries the full `280005`–`280024` chain, applied through Windows A–C, **plus** the
+2026-07-30 function realignment (`scripts/db/wyfz_function_realignment_20260730.sql`), which
+reconciled the two functions that diverged because the chain reached wyfz out of manifest order
+(`280021`'s live `auth.users` trigger broke `280010`/`280012`'s embedded probes; see that file's
+header). wyfz does **not** carry `202607280025`–`202607280028`, and `202607280028` is
+**quarantined** (its review found a blocker + 3 highs) — it must not be applied in this window or
+any other until its owner decision lands.
+
+This addendum covers one future file: **`202607280029_period_settlement_claim_path.sql`**, the
+settlement claim/send path (eight `security definer` functions: `claim_period_settlement_entries`,
+`mark_period_settlement_outbound_started`, `renew_period_settlement_lease`,
+`complete_period_settlement_entry`, `release_period_settlement_leases`,
+`release_period_settlement_claim`, `period_settlement_recovery_health`,
+`billing_period_settlement_history`). Function-only; it must write no rows and grant no table
+privilege on `period_settlement_ledger`.
+
+All Laws (L1–L6) apply unchanged: one file, `supabase db query --linked -f`, never `db push`,
+stop on first non-zero exit, no `brevitas_schema_migrations`, keep the hand-written log.
+
+### B3.0 Blocking gate — the file DOES NOT EXIST yet. Do not open this window.
+
+As of 2026-07-30 the migration has **not been authored**: `supabase/migrations/` ends at
+`202607280028`, and the Phase-4 build's adversarial review verdict is **do-not-ship** (0 of the 8
+functions defined anywhere; see `docs/STRIPE_BUILD_REPORT.md`, "SETTLEMENT SENDER (Phase 4)").
+This addendum is written against the reviewed *design contract*, so its queries pin what the file
+must produce — but every one of the following must be true before you run anything here:
+
+- [ ] `supabase/migrations/202607280029_period_settlement_claim_path.sql` exists, is registered
+      in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt` (same commit — the shared-registrar rule), and
+      has an apply line in `scripts/ci/run-migration-tests.sh`.
+- [ ] It carries a `-- REVERSE:` posture header (`verifyReversePosture` governs everything from
+      `202607280013` on; the `REVERSE_POSTURE_CUTOFF` constant does **not** exempt it).
+- [ ] `node scripts/ci/verify-migrations.mjs` exit 0, `npm test` fully green (including
+      `tests/billing_route_dependency_degradation.test.mjs`, which is red today precisely because
+      this file is missing), and the migration harness exit 0 on **both** paths.
+- [ ] The Phase-4 review's do-not-ship has been re-ruled after the SQL landed, and the caestus
+      acceptance run (claim → begin_send → real TEST-mode meter event → reconcile → `reported`,
+      settlement `1000000005`) has been executed and matches its expected numbers.
+- [ ] `shasum -a 256` of the file matches the frozen checksum line (§3 idiom).
+- [ ] **Dependency check against the quarantine:** confirm the authored file has no precondition
+      on `202607280025`–`202607280028` (wyfz has none of them). In particular it must not assert
+      `202607280028`'s anchored shape of `billing_period_settlement_evidence` — the precondition
+      query below pins wyfz's realigned (pre-0028) md5. If the file requires any of 0025–0028,
+      **stop and re-plan this window**; do not apply 0028 to satisfy it.
+- [ ] **The `280021` probe trap:** if the file carries embedded self-tests that insert
+      `auth.users` probe rows, they MUST set `created_at` (the live legal-acceptance trigger
+      copies it into a NOT NULL column; bare probe inserts are exactly what broke `280010`/
+      `280012` on wyfz). Read the file's probe blocks and verify before applying.
+
+### B3.1 Ordering note — deliberate divergence, recorded
+
+Applying `280029` while skipping `280025`–`280027` diverges wyfz further from manifest order.
+That is acceptable and deliberate: none of the three is a settlement-sender prerequisite
+(waitlist budget, usage-log dedupe, browser TRUNCATE contract), `280028` is quarantined, and wyfz
+already diverges by construction (the realignment file is the precedent and the record). Record
+in `$WYFZ_LOG` that 0025–0028 were intentionally not applied, so the next operator does not
+"helpfully" backfill them — 0028 especially.
+
+### B3.2 · `202607280029_period_settlement_claim_path.sql`
+
+**(a)** Adds the claim/lease/send/complete/release path for `period_settlement_ledger` plus the
+recovery-health and settlement-history reads. All eight functions `security definer`, EXECUTE
+revoked from `public`/`anon`/`authenticated`, granted to `service_role` only. The claim leases
+rows that **stay `status='pending'`** (only `begin_send` enters `'sending'`, stamping
+`outbound_started_at` in the same UPDATE — the `202607280010` latches make any other shape
+permanently stuck). No table privileges change. No rows written.
+
+**(b)** Precondition:
+```bash
+cat > /tmp/wyfz-apply/pre-280029.sql <<'SQL'
+\echo == prerequisites: the 280007-280013 settlement stack must be present ==
+select to_regclass('public.period_settlement_ledger') is not null as psl_table,
+       to_regclass('public.billing_halting_conditions') is not null as bhc_table,
+       to_regprocedure('public.settle_billing_period(uuid,timestamptz,text,boolean)')
+         is not null as f_settle,
+       to_regprocedure('public.promote_billing_period_settlement(bigint,text,text)')
+         is not null as f_promote,
+       to_regprocedure('public.billing_period_settlement_summary(uuid,timestamptz)')
+         is not null as f_summary;
+\echo == wyfz realignment end-state: both md5s must match the canonical (pre-0028) chain ==
+select md5(pg_get_functiondef(to_regprocedure(
+         'public.prevent_period_settlement_identity_change()')))
+         = 'fc6a55f1f773925355d3274f55f6a7c0' as identity_guard_canonical,
+       md5(pg_get_functiondef(to_regprocedure(
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')))
+         = 'ddcb0f6d601e7a29370da6920e63e24e' as evidence_fn_canonical_pre_0028;
+\echo == none of the new functions may exist yet ==
+select to_regprocedure('public.claim_period_settlement_entries(text,integer,integer,bigint)') is null as claim_absent,
+       to_regprocedure('public.mark_period_settlement_outbound_started(bigint,text)')  is null as begin_send_absent,
+       to_regprocedure('public.renew_period_settlement_lease(bigint,text,integer)')    is null as renew_absent,
+       to_regprocedure('public.complete_period_settlement_entry(bigint,text,text,text)') is null as complete_absent,
+       to_regprocedure('public.release_period_settlement_leases(text)')                is null as release_owner_absent,
+       to_regprocedure('public.release_period_settlement_claim(bigint,text)')          is null as release_claim_absent,
+       to_regprocedure('public.period_settlement_recovery_health()')                   is null as health_absent,
+       to_regprocedure('public.billing_period_settlement_history(uuid,integer)')       is null as history_absent,
+       to_regprocedure('public.release_period_settlement_unsent(bigint,text)')         is null as banned_name_absent_REQUIRED;
+\echo == money state: wyfz must still be frozen ==
+select (select count(*) from public.period_settlement_ledger) as settlements_expect_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_expect_0,
+       (select coalesce(max(id),0) from public.billing_ledger) as ledger_max_id_must_be_lt_1e9,
+       (select seqstart from pg_sequence
+         where seqrelid = pg_get_serial_sequence(
+                 'public.period_settlement_ledger','id')::regclass)
+         as psl_seq_start_expect_1e9,
+       (select count(*) from pg_trigger
+         where tgrelid='public.usage_log'::regclass and not tgisinternal)
+         as usage_triggers_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280029.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Every boolean `t`, `settlements_expect_0 = 0` (**if not 0, STOP** — a settlement row on wyfz that
+this runbook did not create is the §10.4 escalation case), `billing_ledger_expect_0 = 0`,
+`psl_seq_start_expect_1e9 = 1000000000` (the Stripe identifier id-space disjointness that
+`202607280007:478-486` asserts at apply time and the new file's own self-check should re-assert).
+
+**(c)**
+```bash
+wyfz_run supabase/migrations/202607280029_period_settlement_claim_path.sql
+```
+
+**(d)** Postcondition:
+```bash
+cat > /tmp/wyfz-apply/post-280029.sql <<'SQL'
+\echo == all eight functions exist ==
+select to_regprocedure('public.claim_period_settlement_entries(text,integer,integer,bigint)') is not null as f_claim,
+       to_regprocedure('public.mark_period_settlement_outbound_started(bigint,text)')  is not null as f_begin_send,
+       to_regprocedure('public.renew_period_settlement_lease(bigint,text,integer)')    is not null as f_renew,
+       to_regprocedure('public.complete_period_settlement_entry(bigint,text,text,text)') is not null as f_complete,
+       to_regprocedure('public.release_period_settlement_leases(text)')                is not null as f_release_owner,
+       to_regprocedure('public.release_period_settlement_claim(bigint,text)')          is not null as f_release_claim,
+       to_regprocedure('public.period_settlement_recovery_health()')                   is not null as f_health,
+       to_regprocedure('public.billing_period_settlement_history(uuid,integer)')       is not null as f_history;
+\echo == privilege posture: service_role only, for every one of the eight ==
+select p.oid::regprocedure as fn,
+       has_function_privilege('service_role', p.oid, 'EXECUTE')      as sr_expect_t,
+       not has_function_privilege('anon', p.oid, 'EXECUTE')          as anon_blocked_expect_t,
+       not has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth_blocked_expect_t
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and p.proname in ('claim_period_settlement_entries','mark_period_settlement_outbound_started',
+                     'renew_period_settlement_lease','complete_period_settlement_entry',
+                     'release_period_settlement_leases','release_period_settlement_claim',
+                     'period_settlement_recovery_health','billing_period_settlement_history')
+ order by 1;
+\echo == the table stays sealed: zero PostgREST table privileges (21 checks, all false) ==
+select count(*) as postgrest_table_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role')) roles(r)
+ cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),
+                    ('TRUNCATE'),('REFERENCES'),('TRIGGER')) privs(p)
+ where has_table_privilege(roles.r, 'public.period_settlement_ledger', privs.p);
+\echo == the banned 429-path name must still not exist, and the replacement must not touch the marker ==
+select to_regprocedure('public.release_period_settlement_unsent(bigint,text)') is null
+         as banned_name_still_absent_REQUIRED,
+       (select prosrc not like '%outbound_started_at%' from pg_proc
+         where oid = to_regprocedure('public.release_period_settlement_claim(bigint,text)'))
+         as release_claim_never_clears_marker_REQUIRED;
+\echo == the migration wrote no rows ==
+select (select count(*) from public.period_settlement_ledger) as settlements_STILL_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_STILL_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280029.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Then two behavioral reads — safe on an empty ledger, and the only exercise wyfz can give this
+path today:
+```bash
+cat > /tmp/wyfz-apply/post-280029-behave.sql <<'SQL'
+\echo == health over an empty ledger: one row, zeros/nulls ==
+select * from public.period_settlement_recovery_health();
+\echo == claim on an empty ledger: zero rows, nothing swept, nothing written ==
+select * from public.claim_period_settlement_entries('wyfz-b3-probe', 60, 1, 1000000);
+select count(*) as settlements_STILL_0_after_claim from public.period_settlement_ledger;
+\echo == history refusal vocabulary for an org with no billing account ==
+select public.billing_period_settlement_history(
+         '00000000-0000-0000-0000-000000000000'::uuid, 1) as expect_ok_false_no_billing_account;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280029-behave.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+The claim call is a real invocation, not read-only — on an empty ledger its sweeps match zero
+rows and it returns zero rows, so its only observable effect is nothing; the follow-up count
+pins that. Expect the history call to return `{"ok": false, "code": "no_billing_account"}`.
+
+**(e)** Single transaction (verify the file: `grep -c '^begin;'` = 1, `grep -c '^commit;'` = 1,
+no `CONCURRENTLY`), functions only, no rows, no locks beyond catalog. A mid-file failure is a
+no-op. If the authored file carries self-test fixtures, they must self-unwind AND respect the
+B3.0 `created_at` trap; re-run `verify-no-probes.sql` after applying regardless. Reverse posture:
+whatever its `-- REVERSE:` header says — expect `DDL:` drop statements for the eight functions,
+since it writes no data.
+
+**(f)** **DB-first, and the code that uses it stays dark.** The deployed worker calls none of
+these RPCs unless `BREVITAS_BILLING_SETTLEMENT_ENABLED` is exactly `"true"` — leave it unset on
+Railway; the review requires the observability fixes (per-row gauge clobber, dead settlement
+alert names) before that flag ever flips. The status route's history read degrades to
+`settlement_history: null` + HTTP 200 when the RPC is absent, so either deploy order is safe;
+DB-first simply makes the settled-weeks UI truthful on the first post-deploy request. **Nothing
+this file installs can move money on wyfz**: zero settlements exist, `billing_ledger` is empty,
+`promote_billing_period_settlement` is granted to nobody, and production traffic is still 100%
+unbillable (the drought) — the apply is inert plumbing, which is exactly why it is safe to land
+DB-first and prove in place.
+
+### B3.3 Window gate
+
+- [ ] B3.0 fully satisfied **before** connecting to wyfz (file exists, registered, frozen,
+      reviewed, caestus acceptance run green, no 0025–0028 dependency, probe trap checked).
+- [ ] `pre-280029.sql` all green, `settlements_expect_0 = 0`.
+- [ ] `280029` exited 0 with an `OK` line in `$WYFZ_LOG`.
+- [ ] `post-280029.sql`: eight functions present; every row of the privilege table
+      `t`/`t`/`t`; `postgrest_table_privs_MUST_BE_0 = 0`; both `REQUIRED` booleans `t`;
+      both row counts still 0.
+- [ ] `post-280029-behave.sql`: health returns, claim returns zero rows and writes nothing,
+      history refuses with `no_billing_account`.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0.
+- [ ] `BREVITAS_BILLING_SETTLEMENT_ENABLED` confirmed **unset** in the Railway service env.
+- [ ] `$WYFZ_LOG` records that `202607280025`–`202607280028` were deliberately not applied.

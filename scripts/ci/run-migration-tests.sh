@@ -317,6 +317,17 @@ run_forward_assertions() {
     --file scripts/ci/migration-halting-conditions-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-settlement-writer-assertions.sql
+  # The outbound claim/send path (202607280029). Runs after the writer file
+  # because it needs promoted settlements to exist as a concept, and it asserts
+  # the ONE property the writer's own suite cannot: that a claim leaves the row
+  # 'pending' so 202607280010's latch can never strand an abandoned claim.
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-settlement-sender-assertions.sql
+  # NOTE: the anchored fee basis (202607280028) and its assertion file are
+  # QUARANTINED pending an owner decision -- their review found a blocker plus
+  # three highs, including a path where a $0.0000000001 payment unlocked $125 of
+  # billing. Neither file is registered or wired here. Restore both together, or
+  # this job fails on a missing file rather than on a real regression.
   # Schema and authorization repairs (202607280014-202607280023). Each file
   # opens its own transaction and ends in ROLLBACK, so they are rerunnable,
   # order-independent, and leave no fixture rows behind. The browser-role file

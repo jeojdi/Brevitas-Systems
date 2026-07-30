@@ -9,6 +9,250 @@ measured).
 
 ---
 
+## SETTLEMENT SENDER (Phase 4) — 2026-07-30
+
+Written 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Five
+lanes ran against the gap the dress rehearsal proved (below, "Phase-4 settlement-claim-path gap"):
+design, SQL, worker, status-route, integrator, plus an adversarial review. Same tagging
+convention as the rest of this report.
+
+### Bottom line — do not ship, and do not mistake the green for done
+
+**The headline gap is still open.** The SQL lane produced nothing: migration
+`202607280029_period_settlement_claim_path.sql` does not exist — `supabase/migrations/` ends at
+`202607280028` `[verified today — directory listed]` — and a catalog probe of a database built
+from the full registered chain found **0 of the 8 sender-side RPCs** the shipped code calls
+(`claim_period_settlement_entries`, `mark_period_settlement_outbound_started`,
+`renew_period_settlement_lease`, `complete_period_settlement_entry`,
+`release_period_settlement_leases`, `release_period_settlement_claim`,
+`period_settlement_recovery_health`, `billing_period_settlement_history`)
+`[verified — integrator ran the probe; grep finds five consumers of those names and zero
+producers]`. Settlement `1000000005` (`pending`, fee `1235092` µUSD) **still has no path to
+Stripe.** The planned caestus acceptance run (real claim → begin_send → meter event → reconcile →
+`reported`) was therefore never executed; no settlement has ever been sent, anywhere
+`[verified — no lane reports it, and the RPCs it needs do not exist]`.
+
+**Review verdict: do-not-ship** (2 blockers / 3 high / 3 medium / 1 low, all listed below).
+
+### What now works — precisely scoped
+
+- **The design is complete and its riskiest claims were proven live, not assumed**
+  `[verified — design lane probed caestus inside begin;…rollback;]`. The full claim/send/complete
+  state machine was executed transition-by-transition against the real `202607280010` latches
+  (results below). The one structural deviation from the per-row path is load-bearing and proven:
+  the claim must lease a row that **stays `status='pending'`** — a row parked in `'sending'` with
+  a NULL `outbound_started_at` can never leave that state (`202607280010:182-186`), so only
+  `begin_send` may enter `'sending'`, stamping status and marker in one UPDATE.
+- **The worker half is built, inert by default, and green against fakes**
+  `[verified — lane pasted real runs]`: `api/billing_recovery.py` gains `BillingEntry.kind`,
+  `SupabaseSettlementStore` (a subclass overriding only RPC names / entry kind / id param),
+  settlements-first fallthrough in one `process_once` cycle, dual-store health, and a
+  `BREVITAS_BILLING_SETTLEMENT_ENABLED` gate (exact-`"true"`, default OFF — a no-op on any DB
+  without the RPCs). `pytest tests/test_billing_recovery.py tests/test_stripe_api_version_pin.py`
+  → **90 passed**; byte-exact payload test pins identifier `brevitas-settlement-1000000005` and
+  Idempotency-Key `brevitas-settlement-meter-1000000005`; per-row path pinned unchanged.
+- **The status-route half is built and closes the customer-visible dress-rehearsal defect —
+  once the RPC exists** `[verified — lane pasted real runs]`: `/api/billing/status` adds an
+  anchor-free `billing_period_settlement_history` read plus `settlement_history` /
+  `prior_settlement` response fields; the anchored summary and its fail-closed
+  `period_anchor_mismatch` contract are untouched; a missing RPC degrades to `null` + 200 (never
+  a confident `[]` or `$0`). `Billing.jsx` renders a "Last billed week" line and settled-weeks
+  table. New suite `tests/billing_status_settlement_history.test.mjs` **17/17**; three owned
+  suites **35/35**; `tsc`/`eslint` clean.
+- **The pre-0029 baseline gate is sound** `[verified — integrator ran all five commands]`:
+  `verify-migrations.mjs` exit 0 · `pytest tests/` **1075 passed** · dashboard checks **132/132**
+  · full migration harness exit 0 both paths · `npm test` **323/324** — the ONE red is
+  `tests/billing_route_dependency_degradation.test.mjs` correctly naming the missing migration
+  ("`route.ts` calls `public.billing_period_settlement_history`, which no migration defines").
+  That red is honest; do not mask it. Baseline only: none of it exercises one line of
+  settlement-sender SQL, because none exists.
+
+**Important caveat on the tests:** the entire settlement worker path runs against
+`FakeSettlementStore`, a Python re-implementation of the *design's* RPC contract written by the
+same lane. The suites prove the consumers are self-consistent with the design; they cannot prove
+a migration that does not exist implements it. When 0029 lands, hand-diff its SQL against
+`api/billing_recovery.py:433-442` and the route's envelope parser, then run the caestus
+acceptance steps — a field-name mismatch fails **quietly** (route renders "Unavailable"; worker
+surfaces it only when the flag flips) `[verified reasoning; the quiet-degrade paths are tested]`.
+
+### The caestus proof numbers (all probes rolled back; nothing committed)
+
+`[verified — design lane pasted real query output from caestus, reconciled here]`
+
+- Settlement `1000000005`: `status='pending'`, `fee_microusd=1235092`, period
+  `[2026-07-23 18:03:53+00, 2026-07-30 18:03:53+00)`, org `f1305475-…2191`, owner
+  `1827866c-…2584`, customer `cus_UywBHVTvSfUPdo`, `attempts=0`, no lease, no outbound marker.
+- Legacy per-row `billing_ledger` row `5`: `status='reported'`, fee `1235092`, `occurred_at`
+  `2026-07-27 18:03:53+00` — **same org, same customer, same window**. The Stripe meter already
+  holds `1235092`; after the settlement sends it must read **`2470184`**. Therefore
+  `expected_period_microusd` must include committed legacy per-row fees sharing the window —
+  `202607280007:73-75`'s "expected collapses to the row itself" is wrong wherever the two ledgers
+  overlap, and reconcile could never ACCEPT under it.
+- Id-space disjointness honoured and verified: `period_settlement_ledger` sequence starts at
+  `1000000000`; `billing_ledger` seqstart `1`, `max(id)=5`. The design adds the
+  `brevitas-settlement-` prefix anyway, making non-collision with `brevitas-fee-{id}` /
+  `brevitas-meter-{id}` lexically unconditional rather than sequence-conditional.
+- `occurred_at` returned by the claim = `period_end − 5 minutes` (`2026-07-30 17:58:53+00`), NOT
+  `period_end`: reconcile floors its window end to the minute
+  (`api/billing_recovery.py:557-560`), so an event stamped at `period_end` falls outside the
+  queried window forever and could never reconcile.
+- Live latch probe, seven transitions against the real `202607280010` guard (observed, not
+  inferred): pending+lease (status unchanged) **ALLOWED** · pending→sending with marker stamped
+  in the same UPDATE **ALLOWED** · sending(marked)→pending, marker preserved **ALLOWED** ·
+  sending→pending clearing the marker **REFUSED** · sending(marked)→reported+stamps **ALLOWED** ·
+  sending(UNMARKED)→pending **REFUSED** · pending→expired and expired→review **ALLOWED**.
+
+### Review findings, in full (verdict: do-not-ship)
+
+| # | Severity | Finding |
+|---|---|---|
+| 1 | **BLOCKER** | The entire settlement money-path SQL does not exist. 0 of 8 sender RPCs defined by any migration; directory ends at `202607280028`; consumers already wired. Both consumers degrade quietly (worker gated OFF; route nulls + 200), so **nothing will page anyone about the missing money path**. |
+| 2 | **BLOCKER** | Every money guard is untested prose. Cap check, double-send invariant, account gate, sweeps, `superseded_at` exclusion exist only in the design and in `FakeSettlementStore` — same-lane re-implementations. "Can one settlement be sent twice" has no implementation to answer it. Gate the feature on the caestus acceptance run against the real latches. |
+| 3 | **HIGH** | Settlement claim starves the per-row ledger on error: `process_once` claims settlements first and only falls through when the claim returns `None`, not when it **raises** — proven by execution (per-row `claim_one` called 0 times across 3 cycles with a raising settlement store). Fix: try/except around the settlement claim, fall through. |
+| 4 | **HIGH** | Settlement health metrics silently overwrite the per-row billing gauges: `brevitas/observability.py:782-803` discards the `ledger` attribute, so settlement values clobber `queue_depth{queue='billing'}` / `billing_queue_lag` / review/dead/stale gauges every cycle — and a settlement's pending age is ≥1 week by construction, pegging `billing_queue_lag` permanently. The four new `billing_settlement_*` alert names fall through `api/observability.py`'s branch to a bare `log.warning` and can never page. **Fix both before the flag ever flips.** |
+| 5 | **HIGH** | This diff registers the quarantined `202607280028` into CI (both manifests, frozen checksums `fa7622…`, `verify-migrations.mjs`, harness apply line) and ships its client half. It applies cleanly and its assertions pass, so the blocker + 3 highs from its own review are invisible to CI. **Silence ships it**; un-shipping later needs a new migration (checksum frozen). Owner decision required before merge. |
+| 6 | **MEDIUM** | `usage_log.savings_anchor_request_id` is written by shipping code (`api/store.py:165,803`) but created by no migration — the app-side anchoring mechanism is inert everywhere while reading as live. Direction is fail-closed (rows stay unanchored, out of the fee basis), never overbilled. |
+| 7 | **MEDIUM** | Billing card headline renders `$0.000000` for a prior week in `status='sending'` (money committed to Stripe, outcome unconfirmed); the committed amount appears only in the table below. Show `committed_fee_usd` for non-terminal statuses or suppress the line. |
+| 8 | **MEDIUM** | The admin/server surface keeps the blind spot the customer route just fixed: `api/store.py:4713-4749` never calls the history RPC, so `/v1/admin/billing/settlement` reports a settled prior week as nothing — operator and customer will disagree about the same ledger. |
+| 9 | **LOW** | `REVERSE_POSTURE_CUTOFF` bumped to `202607280029` for a migration that does not exist, and the constant is nearly vacuous — the governed set is built from `REVERSE_POSTURE_BACKFILL_FLOOR` (`202607280013`) alone. 0029 will be governed automatically and MUST carry a `-- REVERSE:` header; the cutoff bump grants no exemption. |
+
+### Open design questions needing an owner (none resolved by this build)
+
+1. **Stripe invoice attribution of an in-period-but-past meter event** (a settlement's event is
+   stamped inside an already-ended, possibly already-invoiced subscription period). Whether Stripe
+   bills it, back-dates it, or drops it is not answerable from this repo — must be settled by a
+   TEST-mode test that lets an invoice finalize, before live keys. `[unverified by definition]`
+2. **`release_period_settlement_claim` is adjacent to a deliberate CI guardrail**:
+   `scripts/ci/migration-settlement-writer-assertions.sql:158-164` bans
+   `release_period_settlement_unsent(bigint,text)` outright. The replacement does NOT clear
+   `outbound_started_at` (proven ALLOWED on caestus; the committed predicate keeps counting the
+   fee), so it honours the rule's intent — but only an owner can rule it compliance vs evasion.
+   Mitigation specified: a prosrc self-check in 0029 + mirrored CI assertion.
+3. **A settlement stuck in `'review'` has no recovery surface at all** — both operator-resolution
+   RPC idioms clear the marker, which the latch refuses. Superuser SQL only, and even then only
+   via a new revision (= a new Stripe charge). Real operational gap; needs a decision.
+4. Also recorded: legacy-window overlap must be re-checked in any env with both ledgers populated;
+   the per-row path has the same minute-floor reconcile bug (pre-existing, rare, out of scope);
+   the settlement lag alert threshold (48h in code) is a placeholder, not a chosen value.
+
+### Remaining gates before real money — separate from the above, and unconditional
+
+Even with 0029 authored, reviewed, and green, **no customer money moves** until every one of
+these clears. Listed honestly because each one is currently a $0-by-construction stop:
+
+1. **Quarantined `202607280028` / anchored zero-spend savings — owner decision pending.** Its
+   review found a blocker + 3 highs; it is untracked, must stay untracked, and yet is currently
+   registered-and-green in CI (finding 5). Until the anchored-savings design is decided,
+   **cache-only savings still bill $0**: `zero_spend_concentration`
+   (`202607280008:521-543`) halts any period whose savings are 100% zero-spend rows — which is
+   the only organic shape a DeepSeek-class tenant produces `[verified in the dress rehearsal]`.
+2. **The production savings drought.** wyfz has minted **zero** authoritative/priced rows on
+   every day observed (verified savings stopped 2026-07-17); there is nothing to settle and
+   therefore nothing to send, regardless of the sender existing. Requires the cache flags
+   (`BREVITAS_CACHE_ENABLED` on the process AND per-org `organizations.cache_enabled`) plus real
+   traffic through the hosted proxy, per `docs/PRODUCTION_ENABLE_SAVINGS.md` and the drought
+   diagnosis. `[verified as of the 07-30 probe; unverified since]`
+3. **Live Stripe setup.** All of it: roll the leaked `sk_live` (G11), live webhook endpoint +
+   `whsec_` with the endpoint's own `api_version` pinned to `2026-06-24.dahlia` (G14/G9), portal
+   config, production env (`BREVITAS_PUBLIC_URL` before the flip, weekly cap, recovery secret),
+   and the open-question-1 invoice-attribution test. Nothing in this build touched live mode.
+4. **The manual attestation with no product surface.** `organization_billing_arrangement` has no
+   writer function at all (`202607280009`), and `promote_billing_period_settlement` is granted to
+   nobody — both by design. Every org halts at `unattested_billing_arrangement`, and every
+   settlement stays `draft`, until a human performs out-of-band superuser SQL for each. This
+   design gives a *promoted* settlement a path to Stripe; it does not make anything promote
+   itself.
+5. **The observability fixes (findings 3 and 4) land before `BREVITAS_BILLING_SETTLEMENT_ENABLED`
+   is ever set true** — otherwise the flag flip silently corrupts the per-row billing gauges and
+   a stuck settlement cannot page.
+
+Apply path for 0029, when it exists: **WINDOW B3 ADDENDUM** in `docs/WYFZ_APPLY_PLAN.md` (added
+2026-07-30) — same one-file sanctioned path, with wyfz's out-of-manifest-order history and the
+`280021` probe trap accounted for.
+
+---
+
+## CUSTOMER DRESS REHEARSAL (test mode) — 2026-07-30
+
+Full customer journey run end-to-end against the caestus-labs throwaway Supabase (full
+71-migration chain) + Stripe TEST sandbox + real DeepSeek traffic, then independently verified by a
+second lane with fresh DB/Stripe reads and line-level source checks. Verifier's overall ruling:
+**confirmed-with-notes** — every checked claim CONFIRMED, none REFUTED, one PLAUSIBLE (the
+"first time the drought chain has been observed closing" claim — true within this DB, unverifiable
+beyond it). Key ids: org `f1305475-…2191`, customer `cus_UywBHVTvSfUPdo`, sub
+`sub_1TyyJBC7NZKjd1s3uGHwqDeE`, settlement `1000000005`, ledger row `5`.
+
+### The story, step by step
+
+| # | Step | Outcome |
+|---|---|---|
+| 1 | Sign up (GoTrue admin-create confirmed user, JWT password grant, fresh org + `company_owner` membership + `billing_owner_id`) | **pass** `[verified]` |
+| 2 | Boot hosted API on :8000, mint key via `POST /v1/keys` with the JWT | **pass** `[verified]` — Supabase store only mints `dashboard_session` (8h expiry; `api/server.py:2854-2860`) |
+| 3 | Use the product: 4 real DeepSeek completions + 4 exact-cache replays through the hosted proxy | **pass** `[verified]` — 8 organic `usage_log` rows, all `authoritative`+`priced`, 4 with `verified_savings_usd>0` (journey said 5 upstream calls; verifier found 4 miss rows — a 5th call left no receipt) |
+| 4 | Subscribe: `POST /api/billing/checkout` → hosted checkout URL, `pm_card_visa` attach, real active subscription | **pass** `[verified]` |
+| 5 | Webhook sync: hand-signed `customer.subscription.created` → `{"received": true}`, exact-bytes replay → `{"duplicate": true}`, inbox row `processed`/`attempts=1` (first 500 was a fixture bug — `evt_journey_…` fails `stripe-event-diagnostic.mjs:10` regex, not a product fault) | **pass** `[verified]` |
+| 6a | Settle organic evidence only | **fallback** `[verified]` — three gates fired in sequence, see verdict below |
+| 6b | Settle with one labeled SIMULATION spend-carrying row → settle + promote to `pending`, fee = exactly 25% of net verified ($1.235092) | **pass** `[verified]` |
+| 7 | Worker reports to Stripe: real `process_once` cycle, ledger row → `reported`, Stripe meter aggregate = `1235092` µUSD, exact match, and the meter's ONLY non-zero bucket | **fallback** `[verified]` — via per-row `billing_ledger`, because settlements have no claim path (below) |
+| 8 | Customer view: `/api/billing/status` 200 with `subscription_status=active`, real billing-portal session | **pass with defect** `[verified]` — settled/reported/committed fees all read `0` while Stripe holds $1.235092; route only queries the CURRENT period anchor (`status/route.ts:124,134`) and the summary RPC refuses any other (`period_anchor_mismatch`), so a settled week is never readable here |
+| 9 | Cleanup: subscription canceled, both servers killed, `git status` clean | **pass** `[verified]` |
+
+### Savings-path verdict — the headline for the live-billing decision
+
+`[verified]` **The organic path DID mint authoritative, priced, verified savings on real
+traffic** — 4 `exact_cache` rows, `receipt_source=proxy`, sum `$0.00210196` — the first observed
+end-to-end closure of the SAVINGS_DROUGHT_DIAGNOSIS chain (within this DB; verifier: PLAUSIBLE
+beyond it). The unlock was the caching pivot (exact-hash replay → `_BYTE_PRESERVING_STRATEGIES` →
+`quality_status=verified`), NOT the diagnosis doc's H1/H2 fixes, and it needed two config facts
+that both default false and fail silently to zero savings: `BREVITAS_CACHE_ENABLED=true` on the
+process (`brevitas/proxy.py:483`) and per-tenant `organizations.cache_enabled=true`
+(`api/server.py:1705`).
+
+**But the organic money did not flow.** The exact gate, observed verbatim:
+`zero_spend_concentration` (`202607280008_billing_halting_conditions.sql:521-543`) — share
+`1.00000` of net savings from zero-`actual_cost_usd` rows vs a `0.50000` limit. This is
+**structural, not a fixture artifact**: a cache replay never touches an upstream, so every
+`exact_cache` row has `actual_cost_usd=0` by construction (`brevitas/proxy.py:649-651` →
+`receipts.py:381-386`), and the share's denominator is SAVINGS, so cache-miss spend cannot dilute
+it. For a DeepSeek/OpenAI-compatible tenant this is the only organic savings shape (verifier
+caveat: Anthropic native-cache and xAI affinity paths would produce diluting spend-rows —
+the "only shape" claim is correct as scoped to DeepSeek-class tenants,
+`token_efficiency_model/lossless/engine.py:435-437`). Two period gates also fired first, both
+correct-by-design but fatal to any same-day journey: `period_not_closed` (`202607280013:458`) and
+`period_precedes_enrollment` (`:474`). Settling required two labeled fixtures: backdated
+`billing_started_at` and an out-of-band superuser insert into `organization_billing_arrangement`
+— which has **no product surface at all** (read-only even to service_role per `202607280009`;
+verifier confirmed zero writer functions exist), so no org can be billed until that attestation is
+performed manually.
+
+### Phase-4 settlement-claim-path gap — CONFIRMED
+
+`[verified — verifier read the RPC body and probed the live catalog]`
+`claim_billing_ledger_entries` (`202607200006:302-435`) selects from `public.billing_ledger` only;
+no function in `public` both claims and reads `period_settlement_ledger`, and
+`api/billing_recovery.py` calls only the billing_ledger lease RPCs. So a promoted settlement
+(`1000000005`, `pending`, `$1.235092`) has **no code path to Stripe**. The rehearsal bridged it by
+hand-inserting a per-row `billing_ledger` fallback carrying the settled fee, which the real worker
+then reported and the meter matched exactly — proving the outbound leg works, but only for the
+row-shaped ledger the settlement system is supposed to replace.
+
+### What live keys change
+
+`[verified as to test-mode scope; live behavior unverified by definition]` Going live changes
+exactly three things: credentials (sk_live + live price/meter), a real dashboard-registered
+webhook endpoint (whose payload API version is set by dashboard config, not the SDK pin — see G9
+mediums below), and the drought — production currently mints **zero** authoritative/priced rows,
+so there is nothing to settle regardless of gates. What stays untested until real traffic exists:
+the organic settle→promote→report loop with NO simulation fixtures (blocked by
+`zero_spend_concentration` + the missing settlement claim path + the unattestable billing
+arrangement), livemode meter aggregation and the actual invoice/charge Stripe generates from it,
+webhook delivery/retry from Stripe's side rather than hand-signed posts, the
+`X-Brevitas-Customer-ID` requirement for long-lived `organization_service` keys under real
+customer usage (README snippets still omit the header), and any settled week ever becoming
+visible to a customer through `/api/billing/status`.
+
+---
+
 ## SHIP-PREP — 2026-07-30
 
 Appended after the G9 lane, the wyfz apply-runbook lane, the savings-drought lane and the commit

@@ -18,6 +18,21 @@ function fmtMoney(billing, value, decimals = 6) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unavailable'
   return `$${value.toFixed(decimals)}`
 }
+// Money for a CLOSED period (prior_settlement / settlement_history).
+//
+// Deliberately NOT gated on period_tracking_valid or settlement_pending the way
+// fmtMoney is: those two gates describe the CURRENT week's anchored summary,
+// and applying them here would hide already-reported weeks in exactly the state
+// where the customer most needs them -- a desynchronized current anchor. The
+// history read is anchor-free, so its numbers stand on their own.
+//
+// The fail-closed half is identical: anything that is not a finite number --
+// including the null the API returns when it could not state an amount -- is
+// 'Unavailable', never '$0.000000'.
+function fmtPeriodMoney(value, decimals = 6) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unavailable'
+  return `$${value.toFixed(decimals)}`
+}
 function fmtK(n) {
   const v = Number(n || 0)
   if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M'
@@ -161,6 +176,12 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
   const thisWeek       = weeks[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
   const billingActive  = ['active', 'trialing'].includes(billing?.subscription_status)
+  // Closed weeks, read without the current-period anchor. `null` is "the API
+  // could not tell us" and `[]` is "there are none" -- two different sentences,
+  // so they get two different lines rather than both rendering as silence.
+  const priorSettlement = billing?.prior_settlement || null
+  const settlementHistory = Array.isArray(billing?.settlement_history) ? billing.settlement_history : []
+  const settlementHistoryUnknown = billing?.settlement_history === null
   const billingManageable = ['active', 'trialing', 'past_due', 'unpaid', 'paused', 'incomplete'].includes(billing?.subscription_status)
 
   return (
@@ -199,6 +220,33 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
                 {billing.period_tracking_valid && <span>Billing week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtDate(billing.current_period_start)} → {fmtDate(billing.current_period_end)}</strong></span>}
               </div>
             )}
+            {/* The closed week. Until this line existed the card showed only the
+                week in progress, so a period that had been settled, promoted and
+                reported to Stripe rendered as $0 / 'accruing' -- the money was
+                real, charged, and invisible (docs/STRIPE_BUILD_REPORT.md,
+                "CUSTOMER DRESS REHEARSAL"). */}
+            {billing && priorSettlement && (
+              <div className="flex flex-wrap gap-x-8 gap-y-2 mt-3 font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">
+                {/* fmtDate() answers '' for an unparseable boundary. On the
+                    current-period line above that is unreachable, because that
+                    line only renders when period_tracking_valid already proved
+                    both dates parse. Here nothing has proved it: the boundaries
+                    come from the history RPC, and prior_settlement is selected
+                    on period_start alone. An empty string would render "2026-07-23
+                    → " and read as a formatting glitch rather than as a value the
+                    API did not state -- the same silent omission in date form
+                    that fmtPeriodMoney refuses in money form. */}
+                <span>Last billed week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtDate(priorSettlement.period_start) || 'Unavailable'} → {fmtDate(priorSettlement.period_end) || 'Unavailable'}</strong></span>
+                <span>Reported for that week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtPeriodMoney(priorSettlement.reported_fee_usd)}</strong></span>
+                <span>Settlement <strong className="text-brand-navy dark:text-brand-dark-navy">{String(priorSettlement.settlement_status || 'unknown').replaceAll('_', ' ')}</strong></span>
+              </div>
+            )}
+            {/* Null history is "we could not read it", which is not the same
+                sentence as "there are none" -- and only one of the two is safe
+                to render as silence. */}
+            {billing && settlementHistoryUnknown && (
+              <p className="font-mono text-[11px] text-amber-600 mt-3">Previously settled weeks could not be read. This is not a statement that there are none.</p>
+            )}
             {/* Money on screen states its own age. Without this the panel kept
                 re-rendering the last snapshot as the live accrual for as long as
                 /api/billing/status stayed down. */}
@@ -225,6 +273,33 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-4">Billing enrollment is not enabled in this environment.</p>
         )}
       </div>
+
+      {/* Settled weeks. The usage history table further down is derived from
+          /v1/stats and reports verified savings; this one is the billing ledger
+          of record and reports what was settled and sent to Stripe. The two are
+          different quantities and must not be read as one number twice. */}
+      {settlementHistory.length > 0 && (
+        <div>
+          <p className="annotation tracking-widest uppercase mb-4">// settled weeks</p>
+          <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
+            <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
+              {['Week of', 'Settlement', 'Settled', 'Reported to Stripe', 'Committed'].map(h => (
+                <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
+              ))}
+            </div>
+            {settlementHistory.map((period, index) => (
+              <div key={period?.settlement_id ?? `${period?.period_start}-${index}`} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
+                <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{fmtDate(period?.period_start) || 'Unavailable'}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{String(period?.settlement_status || 'unknown').replaceAll('_', ' ')}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtPeriodMoney(period?.settled_fee_usd)}</span>
+                <span className="font-mono text-xs text-brand-teal">{fmtPeriodMoney(period?.reported_fee_usd)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtPeriodMoney(period?.committed_fee_usd)}</span>
+              </div>
+            ))}
+          </div>
+          <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-3">Committed covers amounts Stripe may already hold, including a send whose outcome is still being confirmed. Reported is the amount Stripe accepted.</p>
+        </div>
+      )}
 
       {/* All-time stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

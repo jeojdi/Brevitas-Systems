@@ -240,10 +240,21 @@ test('a synchronized billing week reports the projected estimate, not a zero', {
     assert.equal(body.evidence.eligible_rows, 1)
     assert.equal(body.evidence.warm_spend_days, 1)
 
-    assert.deepEqual(database.calls, [[
-      'billing_period_settlement_summary',
-      { p_organization_id: ORGANIZATION_ID, p_period_start: PERIOD_START },
-    ]])
+    // Two reads now: the anchored summary for the live week, then the
+    // anchor-free history for the closed ones (the dress-rehearsal defect —
+    // a settled prior week was unreachable through this endpoint at all).
+    // tests/billing_status_settlement_history.test.mjs owns the history
+    // contract; this only pins that the summary read is unchanged and first.
+    assert.deepEqual(database.calls, [
+      [
+        'billing_period_settlement_summary',
+        { p_organization_id: ORGANIZATION_ID, p_period_start: PERIOD_START },
+      ],
+      [
+        'billing_period_settlement_history',
+        { p_organization_id: ORGANIZATION_ID, p_limit: 8 },
+      ],
+    ])
   } finally {
     delete globalThis.__brevitasStatusStub
   }
@@ -368,7 +379,13 @@ test('period boundaries one millisecond off a week suppress the RPC entirely', {
       // Never queried, so never reported as a count.
       assert.equal(body.needs_review, null, `drift ${drift}`)
       assert.equal(body.capped_entries, null, `drift ${drift}`)
-      assert.deepEqual(database.calls, [], `drift ${drift}`)
+      // The ANCHORED summary is suppressed entirely — that is the gate. The
+      // anchor-free history read still runs, on purpose: a desynchronized
+      // current period is exactly when a customer most needs to see the weeks
+      // that were already reported to Stripe.
+      assert.deepEqual(database.calls.map(([name]) => name), [
+        'billing_period_settlement_history',
+      ], `drift ${drift}`)
     } finally {
       delete globalThis.__brevitasStatusStub
     }
