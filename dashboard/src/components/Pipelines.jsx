@@ -1,9 +1,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
+import { WITHHELD, moneyOrWithheld, statsRows, sumMoney } from '../lib/spend.js'
 
 function fmt(n, decimals = 2) {
   return Number(n || 0).toFixed(decimals)
 }
+
+// /v1/stats/pipelines|agents|runs now return {"rows": [...], "spend_redacted":
+// bool} (CONTRACT A) so a redacted caller can tell "withheld" from "zero";
+// `statsRows` still accepts the old bare list, since the API and this dashboard
+// deploy separately and in either order. Belt and braces: even without the
+// flag, a row whose *_usd key was stripped reads as "withheld", never zero.
+const money = (value, redacted = false, decimals = 4) =>
+  moneyOrWithheld(value, v => `$${fmt(v, decimals)}`, redacted)
 
 function fmtK(n) {
   const v = Number(n || 0)
@@ -83,13 +92,17 @@ export default function Pipelines({ apiKey }) {
     </div>
   )
 
-  const pipelines = stats || []
+  const { rows: pipelines, redacted: pipelinesRedacted } = statsRows(stats)
 
   // If no pipeline selected, show overview
   if (!selectedPipeline) {
     const totalSaved = pipelines.reduce((sum, p) => sum + (p.provider_input_tokens_avoided || 0), 0)
-    const totalCost = pipelines.reduce((sum, p) => sum + (p.cost_saved_usd || 0), 0)
-    const totalFee = pipelines.reduce((sum, p) => sum + (p.brevitas_fee_usd || 0), 0)
+    const spendWithheld = pipelinesRedacted
+      || (pipelines.length > 0 && pipelines.every(p => p.cost_saved_usd === undefined))
+    // sumMoney returns null the moment a single row is missing its column, so a
+    // partial total is never passed off as the whole. `|| 0` here would print a
+    // confident $0.0000 for spend the API never stated.
+    const totalCost = sumMoney(pipelines, 'cost_saved_usd')
     const avgQuality = pipelines.length > 0 ? pipelines.reduce((sum, p) => sum + (p.avg_quality || 0), 0) / pipelines.length : 0
 
     return (
@@ -113,7 +126,7 @@ export default function Pipelines({ apiKey }) {
           />
           <StatCard
             label="Verified benefit"
-            value={`$${fmt(totalCost, 4)}`}
+            value={spendWithheld || totalCost === null ? WITHHELD : `$${fmt(totalCost, 4)}`}
             sub="provider spend avoided"
             accent
           />
@@ -167,8 +180,8 @@ export default function Pipelines({ apiKey }) {
                   <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(p.calls)}</span>
                   <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(p.provider_input_tokens_avoided)}</span>
                   <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmt(p.avg_quality, 2)}</span>
-                  <span className="font-mono text-xs text-brand-teal">${fmt(p.cost_saved_usd, 4)}</span>
-                  <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(p.brevitas_fee_usd, 4)}</span>
+                  <span className="font-mono text-xs text-brand-teal">{money(p.cost_saved_usd, pipelinesRedacted)}</span>
+                  <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{money(p.brevitas_fee_usd, pipelinesRedacted)}</span>
                 </button>
               ))}
             </div>
@@ -187,8 +200,8 @@ export default function Pipelines({ apiKey }) {
 
   // Pipeline drilldown view
   const pipelineData = pipelines.find(p => p.pipeline === selectedPipeline)
-  const agents = agentStats || []
-  const runs = runStats || []
+  const { rows: agents, redacted: agentsRedacted } = statsRows(agentStats)
+  const { rows: runs, redacted: runsRedacted } = statsRows(runStats)
 
   return (
     <div className="space-y-10">
@@ -219,12 +232,12 @@ export default function Pipelines({ apiKey }) {
         />
         <StatCard
           label="Verified benefit"
-          value={`$${fmt(pipelineData?.cost_saved_usd || 0, 4)}`}
+          value={money(pipelineData?.cost_saved_usd, pipelinesRedacted)}
           accent
         />
         <StatCard
           label="Fee"
-          value={`$${fmt(pipelineData?.brevitas_fee_usd || 0, 4)}`}
+          value={money(pipelineData?.brevitas_fee_usd, pipelinesRedacted)}
         />
       </div>
 
@@ -244,8 +257,8 @@ export default function Pipelines({ apiKey }) {
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(a.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(a.provider_input_tokens_avoided)}</span>
                 <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmt(a.avg_quality, 2)}</span>
-                <span className="font-mono text-xs text-brand-teal">${fmt(a.cost_saved_usd, 4)}</span>
-                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(a.brevitas_fee_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-teal">{money(a.cost_saved_usd, agentsRedacted)}</span>
+                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{money(a.brevitas_fee_usd, agentsRedacted)}</span>
               </div>
             ))}
           </div>
@@ -268,7 +281,7 @@ export default function Pipelines({ apiKey }) {
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(r.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(r.provider_input_tokens_avoided)}</span>
                 <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{fmtK(r.calls_avoided)} calls avoided</span>
-                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">${fmt(r.cost_saved_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-muted dark:text-brand-dark-muted">{money(r.cost_saved_usd, runsRedacted)}</span>
               </div>
             ))}
           </div>

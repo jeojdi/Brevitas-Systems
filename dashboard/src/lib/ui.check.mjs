@@ -75,7 +75,11 @@ test('admin UI combines protected PostHog and financial operations without secre
   assert.match(admin, /\/v1\/admin\/analytics/)
   assert.match(admin, /\/v1\/admin\/stats\/breakdown/)
   assert.match(admin, /\/v1\/admin\/billing/)
-  assert.match(admin, /Billing · Amount owed/)
+  // The billing panel must carry the honest un-netted label, not "Amount owed":
+  // per-row fees are floored at zero and warm spend is never deducted, so the
+  // figure is not an invoiceable settlement amount.
+  assert.match(admin, /Billing · Row fees/)
+  assert.match(admin, /Gross positive row fees \(un-netted\)/)
   assert.match(admin, /data-ph-sensitive/)
   assert.doesNotMatch(admin, /POSTHOG_PERSONAL_API_KEY|X-Brevitas-Admin/)
 })

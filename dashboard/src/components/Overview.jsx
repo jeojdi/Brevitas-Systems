@@ -1,5 +1,6 @@
 import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats, fetchActivity, fetchCacheStats } from '../lib/api.js'
+import { WITHHELD, spendRedacted } from '../lib/spend.js'
 import InstallCommand from './InstallCommand.jsx'
 import {
   AreaChart, Area,
@@ -112,6 +113,16 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 
   if (loading) return <p className="annotation pt-8">// loading…</p>
   if (error && !stats) return <div className="pt-8"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
+  // A re-run of loadStats clears `error` synchronously and never restores `loading`,
+  // so a failed first load followed by the retry button or the 10s refresh tick lands
+  // here with loading=false, error='', stats=null. Both guards above fall through and
+  // the stat reads below would dereference null, unmounting the whole SPA.
+  if (!stats) return <div className="pt-8"><p className="annotation">// stats unavailable</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
+
+  // The API strips *_usd keys and sets spend_redacted for roles without billing
+  // access; those sessions must see "Withheld", never a confident $0.00.
+  const spendWithheld = spendRedacted(stats)
+  const cacheSpendWithheld = spendRedacted(cacheStats)
 
   const recentCalls = [...(stats?.history ?? [])]
     .reverse()
@@ -170,13 +181,13 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 
       {/* ── Big stats row ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-        <BigStat value={stats.total_calls} label="// ai calls" />
-        <BigStat value={fmt(stats.total_provider_input_tokens_avoided || 0)} label="// provider input tokens avoided" valueClass="text-brand-blue" />
-        <BigStat value={fmt(stats.total_calls_avoided || 0)} label="// model calls avoided" valueClass="text-brand-blue" />
-        <BigStat value={`$${Number(stats.total_native_cache_discount_usd || 0).toFixed(2)}`} label="// net native-cache discount" />
-        <BigStat value={`$${Number(stats.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
+        <BigStat value={stats?.total_calls ?? 0} label="// ai calls" />
+        <BigStat value={fmt(stats?.total_provider_input_tokens_avoided || 0)} label="// provider input tokens avoided" valueClass="text-brand-blue" />
+        <BigStat value={fmt(stats?.total_calls_avoided || 0)} label="// model calls avoided" valueClass="text-brand-blue" />
+        <BigStat value={spendWithheld ? WITHHELD : `$${Number(stats?.total_native_cache_discount_usd || 0).toFixed(2)}`} label="// net native-cache discount" />
+        <BigStat value={spendWithheld ? WITHHELD : `$${Number(stats?.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
         <BigStat
-          value={stats.total_brevitas_incremental_savings_usd == null ? 'Not measured' : `$${Number(stats.total_brevitas_incremental_savings_usd).toFixed(2)}`}
+          value={spendWithheld ? WITHHELD : stats?.total_brevitas_incremental_savings_usd == null ? 'Not measured' : `$${Number(stats?.total_brevitas_incremental_savings_usd).toFixed(2)}`}
           label="// Brevitas lift vs paired control"
         />
       </div>
@@ -192,10 +203,10 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
             <BigStat value={fmt(cacheStats.cached_input_tokens || 0)} label="// cached input tokens" valueClass="text-brand-blue" />
             <BigStat value={fmt(cacheStats.fresh_input_tokens || 0)} label="// fresh input tokens" />
             <BigStat value={`${Number(cacheStats.cache_hit_rate_pct || 0).toFixed(2)}%`} label="// cache hit rate" valueClass="text-brand-blue" />
-            <BigStat value={`$${Number(cacheStats.native_cache_discount_usd || 0).toFixed(2)}`} label="// native cache discount" />
-            <BigStat value={`$${Number(cacheStats.attributable_discount_usd || 0).toFixed(2)}`} label="// Brevitas-attributable discount" valueClass="text-brand-blue" />
+            <BigStat value={cacheSpendWithheld ? WITHHELD : `$${Number(cacheStats.native_cache_discount_usd || 0).toFixed(2)}`} label="// native cache discount" />
+            <BigStat value={cacheSpendWithheld ? WITHHELD : `$${Number(cacheStats.attributable_discount_usd || 0).toFixed(2)}`} label="// Brevitas-attributable discount" valueClass="text-brand-blue" />
             <BigStat
-              value={cacheStats.warm_spend_usd == null ? 'Not measured' : `$${Number(cacheStats.warm_spend_usd).toFixed(2)}`}
+              value={cacheSpendWithheld ? WITHHELD : cacheStats.warm_spend_usd == null ? 'Not measured' : `$${Number(cacheStats.warm_spend_usd).toFixed(2)}`}
               label="// cache warming spend"
             />
             <BigStat
@@ -207,7 +218,9 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
               label="// warm cache hits"
             />
           </div>
-          {cacheHistory.length > 0 && (
+          {/* The weekly chart plots dollars; with the *_usd keys stripped it
+              would flatline at zero, so it is hidden rather than misdrawn. */}
+          {!cacheSpendWithheld && cacheHistory.length > 0 && (
             <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-4 sm:p-8 overflow-hidden">
               <div className="mb-6">
                 <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">

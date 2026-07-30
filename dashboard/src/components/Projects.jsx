@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchBreakdown } from '../lib/api.js'
+import { UNAVAILABLE, WITHHELD, spendRedacted, usdOrUnavailable } from '../lib/spend.js'
 
 const number = n => Number(n || 0).toLocaleString()
-const usd = n => n == null ? 'Unpriced' : `$${Number(n).toFixed(4)}`
+// A priced row states a number; a row the pricer could not price states null,
+// which is 'Unpriced'. Anything else (a stripped key, a non-numeric value) is
+// not a dollar figure we can stand behind, so it renders '—' rather than $0.
+const usd = n => n === null ? 'Unpriced' : usdOrUnavailable(n)
 
 export default function Projects({ apiKey, refreshTick }) {
   const [rows, setRows] = useState([])
+  // /v1/stats/breakdown strips *_usd keys and sets spend_redacted for roles
+  // without billing access; withheld money must not render as $0.0000.
+  const [withheld, setWithheld] = useState(false)
   const [selected, setSelected] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -18,7 +25,10 @@ export default function Projects({ apiKey, refreshTick }) {
     setError('')
     try {
       const data = await fetchBreakdown(apiKey, { signal: controller.signal })
-      if (controllerRef.current === controller) setRows(data.rows || [])
+      if (controllerRef.current === controller) {
+        setRows(data.rows || [])
+        setWithheld(spendRedacted(data))
+      }
     } catch (error) {
       if (controllerRef.current === controller && error.name !== 'AbortError') setError(error.message)
     } finally {
@@ -31,14 +41,28 @@ export default function Projects({ apiKey, refreshTick }) {
     return () => controllerRef.current?.abort()
   }, [load, refreshTick])
 
+  // Roll-ups add only terms the API actually stated. A row missing
+  // actual_cost_usd or verified_savings_usd (stripped, or absent on an older
+  // API) would otherwise contribute a silent 0 and the card would present a
+  // short total as the repository's whole spend. `spendKnown`/`verifiedKnown`
+  // go false on the first such row and the card renders '—' instead.
   const projects = useMemo(() => Object.values(rows.reduce((all, row) => {
     const name = row.repo || row.project || 'Unattributed'
-    const project = all[name] ||= { name, calls: 0, inputAvoided: 0, callsAvoided: 0, spend: 0, verified: 0, unpriced: 0, rows: [] }
+    const project = all[name] ||= {
+      name, calls: 0, inputAvoided: 0, callsAvoided: 0, spend: 0, verified: 0,
+      unpriced: 0, spendKnown: true, verifiedKnown: true, rows: [],
+    }
     project.calls += Number(row.calls || 0)
     project.inputAvoided += Number(row.provider_input_tokens_avoided || 0)
     project.callsAvoided += Number(row.calls_avoided || 0)
-    project.spend += Number(row.actual_cost_usd || 0)
-    project.verified += Number(row.verified_savings_usd || 0)
+    // null is an explicitly unpriced row, already surfaced as 'Unpriced'; only
+    // an undefined/garbage value makes the sum unstateable.
+    const spend = row.actual_cost_usd === null ? 0 : Number(row.actual_cost_usd)
+    if (Number.isFinite(spend)) project.spend += spend
+    else project.spendKnown = false
+    const verified = row.verified_savings_usd === null ? 0 : Number(row.verified_savings_usd)
+    if (Number.isFinite(verified)) project.verified += verified
+    else project.verifiedKnown = false
     project.unpriced += Number(row.unpriced_calls || 0)
     project.rows.push(row)
     return all
@@ -64,7 +88,7 @@ export default function Projects({ apiKey, refreshTick }) {
             <td className="font-mono text-xs px-4 py-3">{number(row.calls)}</td>
             <td className="font-mono text-xs px-4 py-3">{number(row.provider_input_tokens_avoided)}</td>
             <td className="font-mono text-xs px-4 py-3">{number(row.calls_avoided)}</td>
-            <td className="font-mono text-xs px-4 py-3 text-brand-navy-mid dark:text-brand-dark-navy-mid">{row.unpriced_calls === row.calls ? 'Unpriced' : usd(row.actual_cost_usd)}</td>
+            <td className="font-mono text-xs px-4 py-3 text-brand-navy-mid dark:text-brand-dark-navy-mid">{withheld ? WITHHELD : row.unpriced_calls === row.calls ? 'Unpriced' : usd(row.actual_cost_usd)}</td>
           </tr>)}</tbody>
         </table>
       </div>
@@ -77,7 +101,7 @@ export default function Projects({ apiKey, refreshTick }) {
     <div className="grid md:grid-cols-2 gap-4">{projects.map(project => <button key={project.name} onClick={() => setSelected(project.name)} className="text-left bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border hover:border-brand-blue rounded-2xl p-6 transition-colors">
       <p className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">{project.name}</p>
       <p className="annotation mt-2">{number(project.calls)} calls · {number(project.inputAvoided)} provider input tokens avoided · {number(project.callsAvoided)} calls avoided</p>
-      <div className="flex flex-wrap gap-6 mt-5"><div><p className="annotation">Provider spend</p><p className="font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid">{project.unpriced === project.calls ? 'Unpriced' : usd(project.spend)}</p></div><div><p className="annotation">Verified savings</p><p className="font-mono text-brand-teal">{usd(project.verified)}</p></div></div>
+      <div className="flex flex-wrap gap-6 mt-5"><div><p className="annotation">Provider spend</p><p className="font-mono text-brand-navy-mid dark:text-brand-dark-navy-mid">{withheld ? WITHHELD : project.unpriced === project.calls ? 'Unpriced' : !project.spendKnown ? UNAVAILABLE : usd(project.spend)}</p></div><div><p className="annotation">Verified savings</p><p className="font-mono text-brand-teal">{withheld ? WITHHELD : !project.verifiedKnown ? UNAVAILABLE : usd(project.verified)}</p></div></div>
     </button>)}</div>
   </div>
 }

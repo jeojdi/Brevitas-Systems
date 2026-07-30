@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
+  AUTH_CLIENT_OPTIONS,
   AUTH_SERVER_ERROR_TTL_MS,
   AUTH_UNKNOWN_ERROR_MESSAGE,
   SESSION_KEY_CACHE_MAX_ENTRIES,
@@ -31,6 +33,30 @@ const jwtForRole = role => {
   const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url')
   return `${encode({ alg: 'none' })}.${encode({ role })}.signature-value`
 }
+
+test('the browser client states its session-storage and flow options', async () => {
+  // auth-js keeps the access AND refresh token in localStorage under
+  // sb-<ref>-auth-token. That cannot be changed here without ending session
+  // persistence, so the requirement is that the choice stays explicit and visible:
+  // a library default flip must never silently relocate the session or change how
+  // it is recovered. flowType has to stay 'implicit' while
+  // public/email-confirmed.html forwards '#access_token=' to /login.
+  assert.deepEqual({ ...AUTH_CLIENT_OPTIONS }, {
+    flowType: 'implicit',
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  })
+
+  const source = await readFile(new URL('./supabase.js', import.meta.url), 'utf8')
+  assert.match(source, /createClient\(url, key, \{[\s\S]{0,80}auth: \{ \.\.\.AUTH_CLIENT_OPTIONS \}/)
+  // Only auth-js may own the session record, and the Brevitas API key stays in the
+  // in-memory Map. Any hand-rolled web-storage write here is a new exfiltration
+  // target -- comments are stripped first because they discuss the storage medium.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+  assert.doesNotMatch(code, /\b(?:localStorage|sessionStorage|indexedDB)\b|document\.cookie/)
+  assert.doesNotMatch(code, /sb-[a-z0-9]+-auth-token/i)
+})
 
 test('signup routes open account creation while login routes stay login', () => {
   assert.equal(authModeForPath('/signup'), 'signup')

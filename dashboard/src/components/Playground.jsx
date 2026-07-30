@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { streamPlaygroundChat, fetchProviders } from '../lib/api.js'
 import { capture } from '../lib/analytics.js'
+import { UNAVAILABLE } from '../lib/spend.js'
 
 // Free zero-config default served by the Brevitas server (no key needed).
 const FREE_LABEL = 'hosted gemma2-9b-it · no key needed'
@@ -17,12 +18,16 @@ const SUGGESTIONS = [
   'What failure modes should we test for?',
 ]
 
-// Compact dollar formatting: cents at 2dp, sub-cent at 4dp, tiny values as a floor.
+// Compact dollar formatting: cents at 2dp, sub-cent at 4dp, tiny values as a
+// floor. A value the server never priced is NOT zero — `if (!v)` used to fold
+// null/undefined/NaN into a confident '$0.00'. Only a real, finite 0 is $0.00.
 const fmtUsd = (v) => {
-  if (!v) return '$0.00'
-  if (v < 0.0001) return '<$0.0001'
-  if (v < 0.01) return `$${v.toFixed(4)}`
-  return `$${v.toFixed(2)}`
+  const value = Number(v)
+  if (v === null || v === undefined || !Number.isFinite(value)) return UNAVAILABLE
+  if (value === 0) return '$0.00'
+  if (Math.abs(value) < 0.0001) return '<$0.0001'
+  if (Math.abs(value) < 0.01) return `$${value.toFixed(4)}`
+  return `$${value.toFixed(2)}`
 }
 
 function TokenBar({ baseline, optimized }) {
@@ -126,16 +131,22 @@ export default function Playground({ apiKey }) {
     setByokModel((catalog[id] ?? [])[0] ?? '')
   }
 
-  // Cumulative session usage effects across all completed turns.
+  // Cumulative session usage effects across all completed turns. The dollar
+  // total counts only turns the server actually priced, and says so: summing
+  // unpriced turns as 0 produced a session total that looked complete and was
+  // silently short.
   const totals = turns.reduce((acc, t) => {
     if (t.meta) {
-      acc.saved += t.meta.tokensSaved ?? (t.meta.baseline - t.meta.optimized)
-      acc.cost  += t.meta.costSaved ?? 0
+      const saved = Number(t.meta.tokensSaved ?? (t.meta.baseline - t.meta.optimized))
+      if (Number.isFinite(saved)) acc.saved += saved
+      const cost = Number(t.meta.costSaved)
+      if (t.meta.costSaved != null && Number.isFinite(cost)) { acc.cost += cost; acc.priced += 1 }
+      else acc.unpriced += 1
       acc.hits  += t.meta.callsAvoided ?? (t.meta.cacheHit ? 1 : 0)
       acc.n     += 1
     }
     return acc
-  }, { saved: 0, cost: 0, hits: 0, n: 0 })
+  }, { saved: 0, cost: 0, priced: 0, unpriced: 0, hits: 0, n: 0 })
 
   const byokReady = mode === 'byok' && byokProvider && byokModel && byokKey
   const canSend = !streaming && input.trim() && (mode === 'free' || byokReady)
@@ -197,7 +208,9 @@ export default function Playground({ apiKey }) {
               ?? r.tokens_saved_total
               ?? (lastMeta ? lastMeta.baseline - lastMeta.optimized : 0),
             callsAvoided: r.calls_avoided ?? (r.cache_hit ? 1 : 0),
-            costSaved: r.estimated_cost_delta_usd ?? r.cost_saved_usd ?? 0,
+            // `?? 0` here defeated the `costSaved != null` guard downstream and
+            // rendered "the server did not price this turn" as a flat $0.00.
+            costSaved: r.estimated_cost_delta_usd ?? r.cost_saved_usd ?? null,
             priceBasis: r.price_basis || 'gpt-4o-mini',
           }
           setTurns(prev => [...prev, {
@@ -317,8 +330,11 @@ export default function Playground({ apiKey }) {
           <p className="annotation mt-1">// provider input tokens avoided</p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
-          <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{fmtUsd(totals.cost)}</p>
-          <p className="annotation mt-1">// estimated cost delta · ≈ gpt-4o</p>
+          <p className="font-mono text-2xl font-medium text-brand-teal tabular-nums">{totals.priced === 0 ? UNAVAILABLE : fmtUsd(totals.cost)}</p>
+          <p className="annotation mt-1">
+            // estimated cost delta · ≈ gpt-4o
+            {totals.unpriced > 0 && ` · ${totals.unpriced} turn${totals.unpriced === 1 ? '' : 's'} not priced`}
+          </p>
         </div>
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-xl p-4">
           <p className="font-mono text-2xl font-medium text-brand-navy dark:text-brand-dark-navy tabular-nums">{totals.hits}<span className="text-base text-brand-muted dark:text-brand-dark-muted"> / {totals.n}</span></p>
