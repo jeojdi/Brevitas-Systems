@@ -48,6 +48,32 @@ def test_contextvar_labels_per_call_override():
         assert labels_override["pipeline"] == "campaign-launch"
 
 
+def test_project_auto_fallback_is_suppressible_without_breaking_attribution(monkeypatch):
+    """The Git-root fallback is customer material, so it must have a real opt-out."""
+    from brevitas.labels import resolve_labels
+
+    for name in ("BREVITAS_PROJECT", "BREVITAS_REPO"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("BREVITAS_PROJECT_AUTO", raising=False)
+    auto = resolve_labels()
+    assert auto["project"] != ""  # the Git-root folder name, on by default
+    assert "/" not in auto["project"] and "\\" not in auto["project"]
+    assert auto["repo"] == auto["project"]
+
+    # An empty BREVITAS_PROJECT is falsy and cannot express "send nothing".
+    monkeypatch.setenv("BREVITAS_PROJECT", "")
+    assert resolve_labels()["project"] == auto["project"]
+
+    monkeypatch.setenv("BREVITAS_PROJECT_AUTO", "0")
+    opted_out = resolve_labels()
+    assert opted_out["project"] == ""
+    assert opted_out["repo"] == ""
+
+    # An explicit project still wins over the opt-out; attribution is not lost.
+    monkeypatch.setenv("BREVITAS_PROJECT", "declared-project")
+    assert resolve_labels()["project"] == "declared-project"
+
+
 def test_store_migration_adds_label_columns():
     """Test that UsageStore._init() adds pipeline/agent/run_id columns."""
     with tempfile.TemporaryDirectory() as tmpdir:

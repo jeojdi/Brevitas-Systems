@@ -333,7 +333,56 @@ insert into public.usage_log(
     ('retention-pending','f0000000-0000-4000-8000-000000000003',
      'f2500000-0000-4000-8000-000000000005','retention-pending',now()-interval '14 months',
      10,5,5,'unpriced',0,0,false)
-on conflict(key_hash,request_id) where request_id<>'' do nothing;
+on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
+-- 202607280006 retired queue_brevitas_fee_after_usage, so priced usage no
+-- longer queues a fee row. Every "financial evidence is preserved" assertion in
+-- this file needs a real public.billing_ledger row referencing the usage it is
+-- protecting, so the fixture seeds the ledger directly. billing_ledger carries
+-- only delete/identity guards and no BEFORE INSERT trigger
+-- (202607170004:471-509), so this is a legal write for the harness role.
+--
+-- The seed reproduces the retired queue_brevitas_fee() body verbatim
+-- (202607200006:192-230): the same eligibility predicate (authoritative,
+-- org-scoped, owned, priced, inside an active/trialing account's billing
+-- window), organization_id taken from the server-derived usage row, user_id
+-- taken from the company's billing owner, and the same
+-- floor(min(recorded fee, 25% of verified savings) * 1e6) arithmetic. A row
+-- therefore still only appears for genuinely fee-eligible usage.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,usage.organization_id,organization.billing_owner_id,usage.ts,
+       floor(least(
+         greatest(coalesce(usage.brevitas_fee_usd,0),0),
+         greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+       )*1000000)::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id='retention-financial'
+   and usage.authoritative and usage.organization_id is not null
+   and usage.owner_id<>'' and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
+do $$
+begin
+    if not exists (
+        select 1 from public.billing_ledger ledger
+          join public.usage_log usage on usage.id=ledger.usage_log_id
+         where usage.request_id='retention-financial'
+           and ledger.organization_id='f1000000-0000-4000-8000-000000000001'
+           and ledger.user_id='f0000000-0000-4000-8000-000000000001'
+           and ledger.fee_microusd=250000
+    ) then
+        raise exception 'seven-year financial ledger fixture for retention was not created';
+    end if;
+end;
+$$;
 insert into public.legal_holds(id,organization_id,scope,reason_code,created_by) values (
     'f3000000-0000-4000-8000-000000000003','f2000000-0000-4000-8000-000000000002',
     'all','retention_test','system:test'
@@ -579,7 +628,48 @@ insert into public.usage_log(
     'member-subject-usage','e0000000-0000-4000-8000-000000000002',
     'e1000000-0000-4000-8000-000000000001','member-subject-billing',now(),
     100,50,50,'priced',1,0.25,true
-) on conflict(key_hash,request_id) where request_id<>'' do nothing;
+) on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
+-- Direct ledger seed, replacing the trigger retired by 202607280006. See the
+-- retention seed above for the full rationale; predicate and arithmetic are the
+-- retired queue_brevitas_fee() body (202607200006:192-230). Note that the fee
+-- is attributed to the company's billing owner, not to the member who produced
+-- the usage -- that is precisely what the subject-deletion assertion below
+-- relies on when it requires the ledger count to survive unchanged.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,usage.organization_id,organization.billing_owner_id,usage.ts,
+       floor(least(
+         greatest(coalesce(usage.brevitas_fee_usd,0),0),
+         greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+       )*1000000)::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id='member-subject-billing'
+   and usage.authoritative and usage.organization_id is not null
+   and usage.owner_id<>'' and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
+do $$
+begin
+    if not exists (
+        select 1 from public.billing_ledger ledger
+          join public.usage_log usage on usage.id=ledger.usage_log_id
+         where usage.request_id='member-subject-billing'
+           and ledger.organization_id='e1000000-0000-4000-8000-000000000001'
+           and ledger.user_id='e0000000-0000-4000-8000-000000000001'
+           and ledger.fee_microusd=250000
+    ) then
+        raise exception 'member-subject financial ledger fixture was not created';
+    end if;
+end;
+$$;
 select public.compliance_submit_subject_request(
     'e1000000-0000-4000-8000-000000000001','ed000000-0000-4000-8000-000000000001',
     'delete','member','e0000000-0000-4000-8000-000000000002',
@@ -628,7 +718,46 @@ insert into public.usage_log(
     'customer-subject-usage','e0000000-0000-4000-8000-000000000001',
     'e1000000-0000-4000-8000-000000000001','ea000000-0000-4000-8000-000000000001',
     'customer-subject-billing',now(),100,50,50,'priced',1,0.25,true
-) on conflict(key_hash,request_id) where request_id<>'' do nothing;
+) on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
+-- Direct ledger seed, replacing the trigger retired by 202607280006. See the
+-- retention seed above for the full rationale; predicate and arithmetic are the
+-- retired queue_brevitas_fee() body (202607200006:192-230). The customer-scoped
+-- deletion assertion below requires this row to survive customer erasure.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,usage.organization_id,organization.billing_owner_id,usage.ts,
+       floor(least(
+         greatest(coalesce(usage.brevitas_fee_usd,0),0),
+         greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+       )*1000000)::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id='customer-subject-billing'
+   and usage.authoritative and usage.organization_id is not null
+   and usage.owner_id<>'' and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
+do $$
+begin
+    if not exists (
+        select 1 from public.billing_ledger ledger
+          join public.usage_log usage on usage.id=ledger.usage_log_id
+         where usage.request_id='customer-subject-billing'
+           and ledger.organization_id='e1000000-0000-4000-8000-000000000001'
+           and ledger.user_id='e0000000-0000-4000-8000-000000000001'
+           and ledger.fee_microusd=250000
+    ) then
+        raise exception 'customer-subject financial ledger fixture was not created';
+    end if;
+end;
+$$;
 insert into public.semantic_cache(
     exact_hash,context_hash,model_id,response_ciphertext,tenant_namespace,created_at,expires_at
 ) values (
@@ -945,7 +1074,46 @@ insert into public.usage_log(
     'compliance-key-a','c0000000-0000-4000-8000-000000000001',
     'c1000000-0000-4000-8000-000000000001','ca000000-0000-4000-8000-000000000001',
     'compliance-billing-usage',now(),100,50,50,'priced',1,0.25,true
-) on conflict (key_hash,request_id) where request_id<>'' do nothing;
+) on conflict (key_hash, request_id, authoritative) where request_id<>'' do nothing;
+-- Direct ledger seed, replacing the trigger retired by 202607280006. See the
+-- retention seed above for the full rationale; predicate and arithmetic are the
+-- retired queue_brevitas_fee() body (202607200006:192-230). The tenant-deletion
+-- assertion below requires this row to survive full tenant erasure.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,usage.organization_id,organization.billing_owner_id,usage.ts,
+       floor(least(
+         greatest(coalesce(usage.brevitas_fee_usd,0),0),
+         greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+       )*1000000)::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id='compliance-billing-usage'
+   and usage.authoritative and usage.organization_id is not null
+   and usage.owner_id<>'' and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
+do $$
+begin
+    if not exists (
+        select 1 from public.billing_ledger ledger
+          join public.usage_log usage on usage.id=ledger.usage_log_id
+         where usage.request_id='compliance-billing-usage'
+           and ledger.organization_id='c1000000-0000-4000-8000-000000000001'
+           and ledger.user_id='c0000000-0000-4000-8000-000000000001'
+           and ledger.fee_microusd=250000
+    ) then
+        raise exception 'tenant-deletion financial ledger fixture was not created';
+    end if;
+end;
+$$;
 
 -- Valid export is tenant scoped, excludes security authenticators, emits an
 -- encrypted provider-credential envelope for managed decryption, and finalizes

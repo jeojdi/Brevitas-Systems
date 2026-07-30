@@ -74,6 +74,26 @@ test('live HTML references only existing static assets', () => {
   }
 })
 
+test('every third-party script on the shared origin is pinned with SRI', () => {
+  // These pages are same-origin with the authenticated SPA (next.config.ts
+  // rewrites /welcome, /pricing, /blog/* and /dashboard onto one host) and the
+  // Supabase session lives in that origin's localStorage, so a tampered CDN
+  // response reads and exfiltrates it. @babel/standalone makes it worse: it is an
+  // eval engine already granted execution on the page. Eight pages had drifted
+  // without `integrity` while their siblings carried it; nothing but this
+  // assertion catches the next one (the root eslint config ignores public/**).
+  const scriptTag = /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi
+  for (const file of readdirSync(resolve(root, 'public')).filter(name => name.endsWith('.html'))) {
+    for (const [tag, source] of read(`public/${file}`).matchAll(scriptTag)) {
+      if (!/^https?:/.test(source)) continue
+      assert.match(tag, /\sintegrity=["']sha(?:256|384|512)-/, `${file}: ${source} needs integrity`)
+      // Without crossorigin the browser cannot verify a cross-origin subresource
+      // and blocks it outright, so the two attributes are one change.
+      assert.match(tag, /\scrossorigin=["']anonymous["']/, `${file}: ${source} needs crossorigin`)
+    }
+  }
+})
+
 test('favicon routes use the Brevitas mark without a stale Next override', () => {
   assert.equal(existsSync(resolve(root, 'src/app/favicon.ico')), false)
   assert.equal(existsSync(resolve(root, 'src/app/icon.ico')), true)
@@ -106,6 +126,28 @@ test('dashboard aliases receive CSP and are excluded from indexing', () => {
   assert.match(config, /source: '\/login\/personal', destination: '\/dashboard\/index\.html'/)
   assert.match(config, /source: '\/login\/enterprise', destination: '\/dashboard\/index\.html'/)
   assert.match(config, /X-Robots-Tag.+noindex, nofollow/)
+})
+
+test('the whole origin carries a script and connect policy, not just the SPA paths', () => {
+  const config = read('next.config.ts')
+  // The SPA's Supabase session is readable by script on ANY path of this origin,
+  // so the marketing pages need their own policy; before this they had none.
+  assert.match(config, /Content-Security-Policy-Report-Only/)
+  assert.match(config, /source: "\/:path\*",\s*headers: \[\s*\.\.\.securityHeaders/)
+  // The directive that blocks token exfiltration even with 'unsafe-inline'
+  // scripts: no arbitrary host may be reached from these pages.
+  assert.match(config, /const marketingCsp[\s\S]+?"connect-src 'self' https:\/\/\*\.supabase\.co wss:\/\/\*\.supabase\.co"/)
+  assert.match(config, /const marketingCsp[\s\S]+?"object-src 'none'"/)
+  assert.match(config, /const marketingCsp[\s\S]+?"base-uri 'self'"/)
+  assert.match(config, /const marketingCsp[\s\S]+?"form-action 'self'"/)
+  // The CDN hosts the static pages actually use, and nothing else.
+  const scriptSrc = config.match(/"script-src 'self'[^"]*"/g) ?? []
+  assert.equal(scriptSrc.length, 2, 'exactly two script-src directives: dashboard + marketing')
+  for (const directive of scriptSrc) {
+    assert.doesNotMatch(directive, /\*/, `wildcard host in ${directive}`)
+  }
+  // The dashboard's own policy must stay strict: no CDN, no eval.
+  assert.match(config, /const dashboardCsp[\s\S]+?"script-src 'self'",/)
 })
 
 test('dashboard API rewrites use the same canonical backend origin as the admin BFF', () => {
@@ -213,7 +255,18 @@ test('production build compiles the dashboard with Supabase public configuration
   const builder = read('scripts/build-dashboard.mjs')
 
   assert.match(pkg.scripts.build, /build:dashboard.*next build/)
-  assert.match(vercel.installCommand, /npm ci --prefix dashboard/)
+  assert.match(vercel.installCommand, /npm ci --ignore-scripts --prefix dashboard/)
+  // The deployed artifact must be installed from the same graph the blocking CI
+  // gates actually exercise: security.yml, migrations.yml, release-preflight.yml
+  // and release.yml all pass --ignore-scripts, so a production install WITH
+  // lifecycle scripts meant `npm audit`, Semgrep and TruffleHog never ran against
+  // the tree that builds the bundle. Both installs, or the parity is gone again.
+  assert.equal(
+    (vercel.installCommand.match(/npm ci --ignore-scripts/g) || []).length,
+    2,
+    'both the root and dashboard installs must disable lifecycle scripts',
+  )
+  assert.doesNotMatch(vercel.installCommand, /npm ci(?! --ignore-scripts)/)
   assert.match(builder, /VITE_SUPABASE_URL/)
   assert.match(builder, /VITE_SUPABASE_ANON_KEY/)
   assert.match(builder, /NEXT_PUBLIC_SUPABASE_URL/)

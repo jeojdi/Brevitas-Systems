@@ -945,10 +945,118 @@ def test_legacy_key_revoke_service_denies_service_account_credentials(tmp_path):
         assert db.execute(
             "SELECT revoked_at FROM api_keys WHERE id=?", (credential["key_id"],)
         ).fetchone()[0] == ""
+        # Prefix mirrors the production dispatcher (202607280019): the denial is
+        # attributed to the surface that was addressed — a service credential.
         assert db.execute(
             "SELECT action,outcome FROM audit_events "
             "WHERE request_id='request-legacy-service-key-denied'"
-        ).fetchone() == ("dashboard_session.revoke.denied", "denied")
+        ).fetchone() == ("service_key.revoke.denied", "denied")
+
+
+def test_sqlite_revoke_key_mirrors_the_tenant_dispatcher_for_device_keys(tmp_path):
+    """Dev/CI parity with company_admin_revoke_tenant_key (202607280019).
+
+    Production lets company_owner/company_admin revoke a departed engineer's
+    device credential; the SQLite twin used to raise for anything that was not
+    a dashboard session, so the /v1/company/keys revoke path had no local
+    coverage of the device rules.
+    """
+    store, service, org_a, _ = _setup(tmp_path)
+    with sqlite3.connect(store.db_path) as db:
+        db.execute(
+            "INSERT INTO api_keys(id,key_hash,name,created,owner_id,organization_id,"
+            "service_account_id,key_type,scopes,environment,key_prefix,expires_at,"
+            "created_by) VALUES('device-key-1',?,?,?,?,?,'','device',"
+            "'proxy:invoke,usage:write','cli','bvt_device_p','','member-a')",
+            (hash_key("bvt_device_parity"), "bvx device",
+             "2026-07-18T00:00:00+00:00", "member-a", org_a["id"]),
+        )
+        db.commit()
+
+    # A member — even the credential's own creator — cannot deprovision it.
+    member = _principal("member-a", org_a["id"], "member")
+    with pytest.raises(CompanyAdminDenied):
+        service.revoke_key(member, "device-key-1", "request-device-member-denied")
+
+    admin = _principal("admin-a", org_a["id"], "company_admin")
+    result = service.revoke_key(admin, "device-key-1", "request-device-admin-revoke")
+    assert result == {"key_id": "device-key-1", "revoked": True,
+                      "already_revoked": False}
+    repeat = service.revoke_key(admin, "device-key-1", "request-device-admin-noop")
+    assert repeat["already_revoked"] is True
+
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT revoked_at!='' FROM api_keys WHERE id='device-key-1'"
+        ).fetchone()[0] == 1
+        actions = dict(db.execute(
+            "SELECT request_id,action FROM audit_events WHERE request_id IN "
+            "('request-device-member-denied','request-device-admin-revoke',"
+            "'request-device-admin-noop')").fetchall())
+    assert actions == {
+        "request-device-member-denied": "device_key.revoke.denied",
+        "request-device-admin-revoke": "device_key.revoked",
+        "request-device-admin-noop": "device_key.revoke.noop",
+    }
+
+
+def test_member_removal_revokes_their_device_and_session_credentials(tmp_path):
+    """Dev/CI parity with company_admin_set_member (202607280022).
+
+    A removed (or disabled) member's own `bvx login` device credential and
+    dashboard sessions are revoked inside the same member transition, because a
+    device key authenticates with no live-membership read and would otherwise
+    survive removal indefinitely. A role-only change must NOT revoke: dashboard
+    authority is resolved from the live role and device scopes are
+    role-independent.
+    """
+    store, service, org_a, _ = _setup(tmp_path)
+    device_hash = hash_key("bvt_device_departed")
+    with sqlite3.connect(store.db_path) as db:
+        for key_id, key_type, owner in (
+            ("departed-device", "device", "member-a"),
+            ("departed-session", "dashboard_session", "member-a"),
+            ("survivor-device", "device", "admin-a"),
+            ("rolechange-device", "device", "billing-a"),
+        ):
+            db.execute(
+                "INSERT INTO api_keys(id,key_hash,name,created,owner_id,"
+                "organization_id,service_account_id,key_type,scopes,environment,"
+                "key_prefix,expires_at,created_by) VALUES(?,?,?,?,?,?,'',?,"
+                "'proxy:invoke,usage:write','cli','bvt_'||?,'',?)",
+                (key_id, hash_key(f"bvt_{key_id}") if key_id != "departed-device"
+                 else device_hash, "bvx device", "2026-07-18T00:00:00+00:00",
+                 owner, org_a["id"], key_type, key_id, owner),
+            )
+        db.commit()
+    assert store.key_context(device_hash) is not None
+
+    owner = _principal("owner-a", org_a["id"], "company_owner")
+    # Role-only change: billing-a keeps their device credential.
+    service.change_member(owner, "billing-a", "member", "active",
+                          "request-role-only-change")
+    # Membership-ending change: member-a loses BOTH credentials atomically.
+    service.change_member(owner, "member-a", "member", "removed",
+                          "request-remove-departed")
+
+    with sqlite3.connect(store.db_path) as db:
+        revoked = dict(db.execute(
+            "SELECT id,revoked_at!='' FROM api_keys WHERE id IN "
+            "('departed-device','departed-session','survivor-device',"
+            "'rolechange-device')").fetchall())
+        actions = [row[0] for row in db.execute(
+            "SELECT action FROM audit_events WHERE request_id='request-remove-departed' "
+            "ORDER BY id").fetchall()]
+        role_only_actions = [row[0] for row in db.execute(
+            "SELECT action FROM audit_events WHERE request_id='request-role-only-change'"
+        ).fetchall()]
+    assert revoked == {"departed-device": 1, "departed-session": 1,
+                       "survivor-device": 0, "rolechange-device": 0}
+    # The departed engineer's device key no longer authenticates at all.
+    assert store.key_context(device_hash) is None
+    assert "member.credentials_revoked" in actions
+    assert "member.changed" in actions
+    assert "member.credentials_revoked" not in role_only_actions
 
 
 def test_atomic_dashboard_key_rolls_back_replacement_when_audit_append_fails(tmp_path):

@@ -22,6 +22,14 @@ test('checkout accepts no client amount and uses the server price', () => {
   assert.match(config, /unit_amount_decimal\?\.toString\(\) !== '0\.0001'/)
   assert.match(config, /usage_type !== 'metered'/)
   assert.match(config, /interval !== 'week'/)
+  // interval_count too, or a {week, interval_count: 2} price passes every
+  // validator: Checkout succeeds, the webhook persists 14-day anchors, and the
+  // 7-day expectation baked into /api/billing/status, the settlement ledger's
+  // CHECK and three billing RPCs then turns into a permanent "period boundaries
+  // have not synchronized" outage instead of a config error. `?? 1` is required —
+  // Stripe omits the field on some legacy price objects and a bare `!== 1` would
+  // reject a valid weekly price.
+  assert.match(config, /\(price\.recurring\?\.interval_count \?\? 1\) !== 1/)
   assert.match(config, /meter\.event_name !== config\.meterEventName/)
 })
 
@@ -52,8 +60,17 @@ test('billing status uses exact half-open Stripe weekly boundaries', () => {
   const config = read('src/lib/billing/config.ts')
   const worker = read('api/billing_recovery.py')
   assert.match(status, /periodEndMs - periodStartMs === 7 \* 24 \* 60 \* 60 \* 1000/)
-  assert.match(status, /\.gte\('occurred_at', new Date\(periodStartMs\)/)
-  assert.match(status, /\.lt\('occurred_at', new Date\(periodEndMs\)/)
+  // The half-open [period_start, period_end) window moved INTO the database with
+  // the settlement repoint (202607280013). These two regexes used to pin
+  // .gte/.lt on billing_ledger.occurred_at — the table that has had no writer
+  // since 202607280006 dropped queue_brevitas_fee_after_usage. The route now
+  // passes only the anchor to public.billing_period_settlement_summary, which
+  // derives period_end from billing_accounts and refuses with
+  // 'period_anchor_mismatch' unless the window is exactly 604800 s, so the
+  // property is still pinned in both places — just at the new seam.
+  assert.match(status, /\.rpc\('billing_period_settlement_summary'/)
+  assert.match(status, /p_period_start: new Date\(periodStartMs\)\.toISOString\(\)/)
+  assert.doesNotMatch(status, /\.from\('billing_ledger'\)/)
   assert.match(status, /weekly_safety_cap_usd/)
   assert.match(config, /BREVITAS_BILLING_WEEKLY_CAP_USD/)
   assert.match(worker, /BREVITAS_BILLING_WEEKLY_CAP_USD/)
@@ -65,8 +82,14 @@ test('billing status uses exact half-open Stripe weekly boundaries', () => {
 
 test('usage accounting charges 25% of verified savings', () => {
   const server = read('api/server.py')
-  assert.match(server, /BREVITAS_FEE_RATE = 0\.25/)
-  assert.match(server, /fee = round\(verified \* BREVITAS_FEE_RATE, 10\)/)
+  assert.match(server, /BREVITAS_FEE_RATE\s*=\s*0\.25\b/)
+  // The fee basis is clamped non-negative on purpose: netting is a
+  // period-level operation, so a losing row (or week) bills $0 rather than
+  // carrying a deficit forward. Tolerate formatting drift; pin the semantics.
+  assert.match(
+    server,
+    /fee\s*=\s*round\(\s*max\(\s*0(?:\.0)?\s*,\s*verified\s*\)\s*\*\s*BREVITAS_FEE_RATE\s*,\s*10\s*\)/,
+  )
 })
 
 test('Vercel sync endpoint is manual recovery only', () => {

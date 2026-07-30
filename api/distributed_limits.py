@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from brevitas.resource_bounds import clamp_int
@@ -43,6 +43,29 @@ class LimiterUnavailable(RuntimeError):
     pass
 
 
+def _default_lease_seconds() -> int:
+    """Concurrency-lease TTL derived from the longest request that can be legitimate.
+
+    Nothing frees a slot before its score expires except an explicit release, and
+    release only runs on the happy path (the response iterator's finally in
+    api/server.py), so a replica killed uncleanly strands every in-flight slot for
+    the whole TTL. A flat 900s was 7.5x the real request deadline, which could burn
+    one tenant's entire concurrency budget for 15 minutes against an idle fleet.
+    Bound it by what a request can actually take: one provider attempt is
+    connect+read+write, there are max_retries+1 attempts, and each gap between them
+    is capped at retry_max_s, plus a margin for our own overhead. Renewal covers
+    streaming responses only (renew_while_open), so a non-streaming call has to fit
+    in this window un-renewed.
+    """
+    from brevitas.provider_reliability import ProviderReliabilityConfig
+
+    config = ProviderReliabilityConfig.from_env()
+    attempts = max(1, int(config.max_retries) + 1)
+    attempt_s = (config.connect_timeout_s + config.read_timeout_s
+                 + config.write_timeout_s)
+    return int(attempt_s * attempts + config.retry_max_s * (attempts - 1) + 60)
+
+
 @dataclass(frozen=True)
 class LimitIdentity:
     organization_id: str
@@ -64,7 +87,7 @@ class LimitPolicy:
     customer_concurrency: int = 20
     key_concurrency: int = 20
     provider_concurrency: int = 500
-    lease_seconds: int = 900
+    lease_seconds: int = field(default_factory=_default_lease_seconds)
 
     def __post_init__(self) -> None:
         ceilings = {
@@ -105,7 +128,8 @@ class LimitPolicy:
             customer_concurrency=value("BREVITAS_CUSTOMER_CONCURRENCY", 20),
             key_concurrency=value("BREVITAS_KEY_CONCURRENCY", 20),
             provider_concurrency=value("BREVITAS_PROVIDER_CONCURRENCY", 500),
-            lease_seconds=value("BREVITAS_LIMIT_LEASE_SECONDS", 900),
+            lease_seconds=value("BREVITAS_LIMIT_LEASE_SECONDS",
+                                _default_lease_seconds()),
         )
 
 

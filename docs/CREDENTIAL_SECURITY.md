@@ -112,6 +112,48 @@ Emergency rotation follows the same workflow but first revokes affected provider
 opens an incident, and blocks new use. Do not perform a real rotation from a developer workstation
 or this repository run.
 
+## Retired and exposed key material
+
+`api/.secret_key` and `api/brevitas.db` were committed at `ea9c6dd` and are still reachable from
+`main` (blobs `ae18fc3b` and `dc674de5`), so every clone and fork holds them permanently. The file
+held a symmetric Fernet data-encryption key that an earlier `api/server.py` used to wrap
+`provider_config.provider_api_key`, and the committed SQLite copy contains one ciphertext that the
+committed key opens. `.gitignore` was tightened afterwards, which stops future commits but does not
+purge history.
+
+Assessed exposure, so a reviewer who finds the blobs has an answer:
+
+- The key was tracked for about two hours on 2026-06-11 (`ea9c6dd` 16:03 UTC to `da590ce` 17:59
+  UTC). `api/` first became Railway-deployable at `400062b` 18:15 UTC and moved to the Dockerfile at
+  `cc3e979`; neither tree contains `api/.secret_key`. No deployment ever ran with the file present,
+  so no customer credential was encrypted under it.
+- The disclosed material is development data: the single decryptable ciphertext is the literal test
+  value `sk-ant-test-...`, the other provider rows are `ollama` with an empty key column, and the
+  ten `api_keys` rows are SHA-256 hashes named `smoke-test`, `default`, and `test`.
+
+Required response, none of which this repository can perform:
+
+1. Treat the committed key as burned. Never set it as `BREVITAS_LOCAL_KMS_KEY`, never inject it
+   through `legacy_keys`, and never restore `api/.secret_key` reading. Current code already reads no
+   secret file.
+2. Run the read-only inventory before concluding no re-encryption is needed: count
+   `provider_config.provider_api_key`, `ai_jobs.payload` and `ai_jobs.result` values whose value does
+   not start with `bvt-envelope:v1:`. The timeline above predicts zero. Only if that count is
+   non-zero does the "Legacy migration and rotation" workflow apply, and in that case also force a
+   customer-side rotation of every affected provider key.
+3. History rewrite (`git filter-repo --invert-paths` plus force-push) is a diligence decision, not
+   containment: it invalidates every clone and open pull request, and it does not remove the blobs
+   from GitHub's fork network without a GitHub Support garbage-collection request. Record the
+   decision either way.
+4. `LegacyFernetDecryptor` and `credential_cipher_from_environment(legacy_keys=...)` stay. They are
+   the documented migration bridge for a future rotation and are unrelated to this key; removing
+   them would delete a capability without reducing any exposure.
+
+The secret scanners cannot catch this class. `.github/workflows/security.yml` runs TruffleHog with
+`--only-verified`, and a raw base64 symmetric key or a SQLite blob is unverifiable by construction,
+so filename/entropy rules are the only gate that would have fired. `tests/secret_material_hygiene.test.mjs`
+enforces the repository-side half.
+
 ## Logging and telemetry
 
 `brevitas.security.redact()` recursively handles mappings, headers, lists/tuples, URLs, bytes, and

@@ -8,6 +8,8 @@ import sys
 
 import click
 
+from .config import DEFAULT_BASE_URL, check_base_url
+
 try:
     from rich.console import Console
     from rich.table import Table
@@ -23,6 +25,13 @@ def _print(msg: str) -> None:
         print(msg)
 
 
+def _mask(value: str) -> str:
+    """Show enough of a secret to recognise it, never enough to use it."""
+    if len(value) <= 8:
+        return "…"
+    return f"{value[:4]}…{value[-4:]}"
+
+
 @click.group()
 def main() -> None:
     """Brevitas — drop compression between your agents."""
@@ -31,13 +40,14 @@ def main() -> None:
 @main.command()
 @click.option("--port",     default=4242,                    show_default=True, help="Proxy listen port")
 @click.option("--api-key",  default="",  envvar="BREVITAS_API_KEY",            help="Your Brevitas API key")
-@click.option("--base-url", default="http://localhost:8000", envvar="BREVITAS_BASE_URL", show_default=True, help="Brevitas API base URL")
+@click.option("--base-url", default=DEFAULT_BASE_URL, envvar="BREVITAS_BASE_URL", show_default=True, help="Brevitas API base URL (bare origin, no /v1)")
 @click.option("--host",     default="127.0.0.1",             show_default=True, help="Bind host")
 def start(port: int, api_key: str, base_url: str, host: str) -> None:
     """Start the local Brevitas proxy server."""
     if api_key:
         os.environ["BREVITAS_API_KEY"]  = api_key
     if base_url:
+        check_base_url(base_url)
         os.environ["BREVITAS_BASE_URL"] = base_url
     # Per-request x-brevitas-source headers still win inside parse_brevitas_headers.
     os.environ.setdefault("BREVITAS_SOURCE", "cli")
@@ -117,29 +127,50 @@ def apply(path: str, write: bool, yes: bool) -> None:
 
     written = write_changes(changes)
     _print(f"[green]✓ Wrapped {total} client(s) in {written} file(s).[/green]")
+    if written < len(changes):
+        _print(f"[yellow]{len(changes) - written} file(s) skipped — changed on disk since the "
+               "scan. Re-run [bold]brevitas apply --write[/bold] for those.[/yellow]")
     _print("[dim]Set BREVITAS_API_KEY so the wrapped calls authenticate.[/dim]")
 
 
 @main.command()
 @click.argument("key")
-@click.argument("value")
-def config(key: str, value: str) -> None:
-    """Set a config value (api-key, base-url)."""
-    cfg_map = {"api-key": "BREVITAS_API_KEY", "base-url": "BREVITAS_BASE_URL"}
-    env_key = cfg_map.get(key.lower())
-    if not env_key:
+@click.argument("value", required=False)
+def config(key: str, value: str | None) -> None:
+    """Show the export needed for a config value (api-key, base-url).
+
+    Brevitas keeps no config file: the SDK reads its settings from the environment
+    at import time, so this command tells you what to export — it does NOT persist
+    anything. Secrets are echoed masked; pass the value on stdin/prompt rather than
+    on the command line to keep it out of your shell history and the process table.
+    """
+    cfg_map = {"api-key": ("BREVITAS_API_KEY", True), "base-url": ("BREVITAS_BASE_URL", False)}
+    entry = cfg_map.get(key.lower())
+    if entry is None:
         _print(f"[red]Unknown config key '{key}'. Valid: {list(cfg_map)}[/red]")
         sys.exit(1)
-    _print(f"[green]Set {env_key}={value}[/green]")
-    _print(f"[dim]Add to your shell profile: export {env_key}={value}[/dim]")
+    env_key, secret = entry
+    if not value:
+        value = click.prompt(env_key, hide_input=secret, default="", show_default=False)
+    if not value:
+        _print(f"[red]No value given for {env_key}.[/red]")
+        sys.exit(1)
+    if not secret:
+        check_base_url(value)
+    shown = _mask(value) if secret else value
+    _print("[yellow]Nothing was written[/yellow] — Brevitas has no config file.")
+    _print("[bold]Add this to your shell profile, then restart your app:[/bold]")
+    _print(f"  export {env_key}={shown}"
+           + ("   [dim](masked — paste the real value)[/dim]" if secret else ""))
 
 
 @main.command()
 @click.option("--api-key",  default="", envvar="BREVITAS_API_KEY")
-@click.option("--base-url", default="http://localhost:8000", envvar="BREVITAS_BASE_URL")
+@click.option("--base-url", default=DEFAULT_BASE_URL, envvar="BREVITAS_BASE_URL")
 def status(api_key: str, base_url: str) -> None:
     """Check connectivity to the Brevitas API."""
     import httpx
+    check_base_url(base_url)
     _print(f"\nChecking [cyan]{base_url}/v1/health[/cyan] …")
     try:
         r = httpx.get(f"{base_url}/v1/health", timeout=5)
@@ -231,7 +262,10 @@ def optimize(prompt: str, path: str, task: str, rate, as_json: bool) -> None:
 @main.command()
 @click.argument("path", default=".", required=False)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
-def analyze(path: str, as_json: bool) -> None:
+@click.option("--include-excerpts", is_flag=True,
+              help="Include the nearby prompt text in --json output. Off by default: excerpts "
+                   "are lifted from your source, so reports are safe to share without them.")
+def analyze(path: str, as_json: bool, include_excerpts: bool) -> None:
     """Scan ANY codebase for LLM API calls (SDK + raw HTTP) and recommend a per-call
     strategy: optimize (compress simple/creative prompts) vs lossless (keep complex ones,
     save via caching)."""
@@ -240,14 +274,25 @@ def analyze(path: str, as_json: bool) -> None:
 
     if as_json:
         import json as _json
+
+        root = path if os.path.isdir(path) else (os.path.dirname(path) or ".")
+
+        def _rel(call) -> str:
+            # These reports get attached to threads and CI logs — no absolute paths.
+            try:
+                return f"{os.path.relpath(call.path, start=root)}:{call.line}"
+            except ValueError:                      # different drive on Windows
+                return f"{os.path.basename(call.path)}:{call.line}"
+
         click.echo(_json.dumps({
             "files_scanned": rep.files_scanned,
             "optimize": len(rep.optimize), "lossless": len(rep.lossless),
             "calls": [{
-                "location": c.location, "provider": c.provider, "transport": c.transport,
+                "location": _rel(c), "provider": c.provider, "transport": c.transport,
                 "call_site_id": c.call_site_id,
                 "task": c.task, "complexity": c.complexity, "strategy": c.strategy.value,
-                "prompt_excerpt": c.prompt_excerpt, "reason": c.reason,
+                **({"prompt_excerpt": c.prompt_excerpt} if include_excerpts else {}),
+                "reason": c.reason,
             } for c in rep.calls],
         }, indent=2))
         return
@@ -291,14 +336,17 @@ _PROVIDER_KEY_ENVS = {
 @click.option("--apply", "do_apply", is_flag=True,
               help="Write the suggested wrap() changes (asks for confirmation).")
 @click.option("--ai", "use_ai", is_flag=True,
-              help="AI-assisted pass over files the static scanner can't classify "
-                   "(uses YOUR local provider key; nothing is sent to Brevitas).")
-def init(path: str, do_apply: bool, use_ai: bool) -> None:
+              help="AI-assisted pass over files the static scanner can't classify. "
+                   "UPLOADS those files' contents (redacted) to YOUR provider — asks first.")
+@click.option("--ai-backend", "ai_backend", type=click.Choice(["deepseek", "openai"]), default=None,
+              help="Pin which of your providers --ai uploads to (default: whichever key is set).")
+def init(path: str, do_apply: bool, use_ai: bool, ai_backend: str | None) -> None:
     """One-command onboarding: find your LLM call sites, wire Brevitas in, start saving.
 
     Scans the workspace (static analysis; add --ai for tricky codebases), reports every
     call site and provider, checks which API keys are configured locally, and shows the
-    two integration paths. Keys never leave your machine.
+    two integration paths. Your API keys never leave your machine; with --ai, the
+    contents of the unclassified files do go to your own provider (with consent).
     """
     from .scanner import plan_changes, scan_path, write_changes
     from .scanner.broad import analyze_path
@@ -317,22 +365,54 @@ def init(path: str, do_apply: bool, use_ai: bool) -> None:
         for c in raw_calls[:10]:
             _print(f"  [cyan]{c.location}[/cyan]  {c.provider}  [dim]{c.reason}[/dim]")
 
-    # 1b) optional AI fallback on unresolved files
+    # 1b) optional AI fallback on unresolved files — this UPLOADS source, so it is
+    # filtered to real project files, redacted downstream, and confirmed first.
     if use_ai:
         from pathlib import Path as _P
-        known = {f.path for f in report.findings} | {c.location.split(":")[0] for c in broad.calls}
-        candidates = [p for p in _P(path).rglob("*.py")
-                      if str(p) not in known and p.stat().st_size > 200][:20]
-        from .scanner.ai_assist import ai_classify_files
-        ai_hits = ai_classify_files(candidates)
+        from .scanner.ai_assist import MAX_FILES, ai_classify_files, backend_host
+        from .scanner.detector import _iter_python_files
+
+        known = {os.path.realpath(f.path) for f in report.findings}
+        known |= {os.path.realpath(c.path) for c in broad.calls}
+        candidates: list = []
+        for fp in _iter_python_files(path):
+            real = os.path.realpath(fp)
+            if real in known or any(part.startswith(".") for part in fp.split(os.sep) if part not in (".", "..")):
+                continue
+            try:
+                if os.path.getsize(fp) <= 200:
+                    continue
+            except OSError:
+                continue
+            candidates.append(_P(fp))
+            if len(candidates) >= MAX_FILES:
+                break
+
+        host = backend_host(ai_backend or "")
+        if host is None:
+            _print("\n[yellow]AI-assisted pass skipped[/yellow] — set OPENAI_API_KEY or "
+                   "DEEPSEEK_API_KEY (your key, your account) to enable it.")
+            candidates = []
+        elif not candidates:
+            _print("\n[dim]AI-assisted pass: no unclassified files to submit.[/dim]")
+        else:
+            _print(f"\n[bold]AI-assisted pass will upload the contents of "
+                   f"{len(candidates)} file(s) to [cyan]{host}[/cyan][/bold] "
+                   "[dim](your provider account; credentials are redacted first)[/dim]:")
+            for p in candidates:
+                _print(f"  [cyan]{p}[/cyan]")
+            if not click.confirm("Upload these files?", default=False):
+                _print("[dim]AI-assisted pass skipped.[/dim]")
+                candidates = []
+
+        ai_hits = ai_classify_files(candidates, prefer=ai_backend or "") if candidates else []
         if ai_hits:
             _print(f"\n[bold]AI-assisted pass[/bold] found {len(ai_hits)} more call site(s):")
             for h in ai_hits:
                 _print(f"  [cyan]{h['file']}:{h['line']}[/cyan]  {h.get('provider','?')} "
                        f"[dim]{h.get('snippet','')}[/dim]")
-        else:
-            _print("\n[dim]AI-assisted pass: nothing additional found "
-                   "(or no local provider key configured).[/dim]")
+        elif candidates:
+            _print("\n[dim]AI-assisted pass: nothing additional found.[/dim]")
 
     # 2) local key checklist — keys stay in YOUR environment
     _print("\n[bold]API keys (read from your local env/.env — never sent to Brevitas):[/bold]")
@@ -368,6 +448,9 @@ def init(path: str, do_apply: bool, use_ai: bool) -> None:
             written = write_changes(changes)
             _print(f"[green]✓ Wrapped {sum(c.wrapped for c in changes)} client(s) "
                    f"in {written} file(s).[/green]")
+            if written < len(changes):
+                _print(f"[yellow]{len(changes) - written} file(s) skipped — changed on disk "
+                       "since the scan.[/yellow]")
         else:
             _print("[dim]Skipped. Re-run with --apply when ready.[/dim]")
 

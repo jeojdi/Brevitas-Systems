@@ -56,12 +56,41 @@ test('open-session recovery is one bounded exact-generation lookup', () => {
     generation: 7,
   }), match)
 
+  // Absent org metadata is tolerated (legacy shape) when the generation matches.
+  const orglessMatch = {
+    ...openSession('cs_orgless_generation_7'),
+    metadata: { brevitas_checkout_generation: '7' },
+  }
+  assert.equal(selectRecoveredOpenCheckoutSession({
+    page: {
+      data: [orglessMatch],
+      has_more: false,
+    },
+    organizationId,
+    customerId,
+    generation: 7,
+  }), orglessMatch)
+
   for (const page of [
     { data: [match], has_more: true },
     { data: [match, openSession('cs_duplicate_generation')], has_more: false },
     { data: [{
       ...openSession('cs_legacy'),
       metadata: { brevitas_organization_id: organizationId },
+    }], has_more: false },
+    // Fully legacy metadata: absent org is tolerated, but the recovery scan
+    // keeps the generation check strict, so a missing generation still throws.
+    { data: [{
+      ...openSession('cs_legacy_user_only'),
+      metadata: { brevitas_user_id: 'u_1' },
+    }], has_more: false },
+    // Present-but-mismatched org metadata always throws.
+    { data: [{
+      ...openSession('cs_other_company'),
+      metadata: {
+        brevitas_organization_id: '40000000-0000-4000-8000-00000000dead',
+        brevitas_checkout_generation: '7',
+      },
     }], has_more: false },
     { data: [match, openSession('cs_other_generation', 6)], has_more: false },
     { data: Array.from({ length: 101 }, (_, index) => openSession(`cs_${index}`, index + 10)), has_more: false },
@@ -82,7 +111,7 @@ test('open-session recovery is one bounded exact-generation lookup', () => {
   )
 })
 
-test('persisted exact-ID inspection allows only legacy missing generation metadata', () => {
+test('persisted exact-ID inspection tolerates absent legacy metadata but rejects mismatches', () => {
   const current = openSession('cs_persisted')
   assert.deepEqual(inspectPersistedCheckoutSession({
     session: current,
@@ -92,13 +121,30 @@ test('persisted exact-ID inspection allows only legacy missing generation metada
     generation: 7,
   }), { status: 'open', url: current.url, legacyGeneration: false })
 
+  // Sessions backfilled by 202607200014 predate reservations and carry only
+  // brevitas_user_id metadata — no org key, no generation key. Inspection must
+  // return the open session, not throw (a throw would strand the reservation
+  // in manual_review forever: nothing writes that state back).
   const legacy = {
+    ...current,
+    metadata: { brevitas_user_id: 'u_1' },
+  }
+  assert.deepEqual(inspectPersistedCheckoutSession({
+    session: legacy,
+    expectedSessionId: legacy.id,
+    organizationId,
+    customerId,
+    generation: 7,
+  }), { status: 'open', url: legacy.url, legacyGeneration: true })
+
+  // Org present without a generation key is equally tolerated.
+  const legacyWithOrganization = {
     ...current,
     metadata: { brevitas_organization_id: organizationId },
   }
   assert.equal(inspectPersistedCheckoutSession({
-    session: legacy,
-    expectedSessionId: legacy.id,
+    session: legacyWithOrganization,
+    expectedSessionId: legacyWithOrganization.id,
     organizationId,
     customerId,
     generation: 7,
@@ -110,6 +156,14 @@ test('persisted exact-ID inspection allows only legacy missing generation metada
     { ...current, mode: 'payment' },
     { ...current, status: 'unexpected' },
     { ...current, url: null },
+    // Present-but-mismatched org metadata still throws.
+    {
+      ...current,
+      metadata: {
+        ...current.metadata,
+        brevitas_organization_id: '40000000-0000-4000-8000-00000000dead',
+      },
+    },
   ]) {
     assert.throws(
       () => inspectPersistedCheckoutSession({

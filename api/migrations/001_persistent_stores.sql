@@ -127,8 +127,37 @@ set measured_savings_usd = cost_saved_usd,
     verified_savings_usd = cost_saved_usd
 where measured_savings_usd is null and cost_saved_usd <> 0;
 
-create unique index if not exists usage_log_request_unique
-    on public.usage_log(key_hash, request_id) where request_id <> '';
+-- Receipt dedupe key. This must stay in step with supabase/migrations/202607280026,
+-- which widened the Supabase chain's index to include the row's AUTHORITY. Both
+-- shapes are produced here because this bootstrap also runs standalone, before
+-- 202607170001 has added usage_log.authoritative:
+--   * authoritative column present -> (key_hash, request_id, authoritative), and
+--     the narrow index is dropped. A billable authoritative receipt must not
+--     collide with a cheap analytics row carrying the same provider-visible
+--     request_id; the narrow index makes that collision silently report
+--     {"duplicate": true} to the caller while the billable row is lost.
+--   * column absent -> the narrow (key_hash, request_id) index, which is the
+--     correct shape when no cross-authority receipts can exist at all.
+-- Written as a guard rather than a plain statement because `create ... if not
+-- exists` re-running after 202607280026 would otherwise RESURRECT the narrow
+-- index on a database that had already been fixed.
+do $usage_log_request_dedupe$
+begin
+    if exists (
+        select 1 from information_schema.columns
+         where table_schema = 'public' and table_name = 'usage_log'
+           and column_name = 'authoritative'
+    ) then
+        create unique index if not exists usage_log_request_authority_unique
+            on public.usage_log(key_hash, request_id, authoritative)
+            where request_id <> '';
+        drop index if exists public.usage_log_request_unique;
+    else
+        create unique index if not exists usage_log_request_unique
+            on public.usage_log(key_hash, request_id) where request_id <> '';
+    end if;
+end
+$usage_log_request_dedupe$;
 create index if not exists usage_log_key_ts_idx on public.usage_log(key_hash, ts desc);
 create index if not exists usage_log_owner_ts_idx on public.usage_log(owner_id, ts desc);
 create index if not exists usage_log_project_idx on public.usage_log(key_hash, project, ts desc);

@@ -55,7 +55,15 @@ to change an existing var (`vercel env rm <NAME> production --yes` first).
 printf 'https://api.brevitassystems.com' | vercel env add BREVITAS_API_URL production
 
 # BREVITAS_PUBLIC_URL — known — Stripe success/cancel + portal return base
-# (src/lib/billing/config.ts; billingIsConfigured() requires https). Status: VERIFY (may be MISSING).
+# (src/lib/billing/config.ts -> src/lib/billing/config-predicate.mjs).
+# billingIsConfigured() requires https whenever the surface is DEPLOYED
+# (NODE_ENV=production or VERCEL_ENV set); plain-http loopback is accepted only in
+# local development. Leaving it UNSET on Vercel is now a HARD FAIL — there is no
+# longer a silent http://localhost:3000 default — so /api/billing/status reports
+# configured:false, the dashboard button greys out, and checkout + webhook answer
+# 503. Set it before flipping BREVITAS_BILLING_ENABLED or the flip does nothing.
+# Code cannot catch a wrong-but-https value; only a missing or non-https one.
+# Status: VERIFY (may be MISSING).
 printf 'https://brevitassystems.com' | vercel env add BREVITAS_PUBLIC_URL production
 ```
 
@@ -136,7 +144,9 @@ vercel env add VITE_SUPABASE_ANON_KEY production
 ```
 
 After correcting A5, rebuild the tracked dashboard bundle so the right project is inlined
-(see `DEPLOYMENT_GUIDE.md` §3): `cd dashboard && npm run build`. Do this only per the ordering
+(see `DEPLOYMENT_GUIDE.md` §3): `npm run build:dashboard` from the repo root. Never
+`cd dashboard && npm run build` — that path silently emits a bundle with no Supabase
+configuration baked in. Do this only per the ordering
 note in (E) — **after** the data migration.
 
 - **platform-injected (do NOT set):** `VERCEL_GIT_COMMIT_SHA` (Vercel System Env Vars must be
@@ -361,8 +371,9 @@ unset CTOKEN
    bundle.** Follow `docs/PROD_DB_RECONCILIATION.md` (backup → ordered `psql` apply, incl. the
    by-design `drop table user_keys` → verify `/v1/health/ready` = 200). Deploying the corrected
    dashboard (A5) at the prod project **before** the schema exists points real users at a
-   schema-incomplete DB (signup/onboarding 500s). Migration first, then `cd dashboard && npm run
-   build`, then deploy.
+   schema-incomplete DB (signup/onboarding 500s). Migration first, then
+   `npm run build:dashboard` from the repo root (never `cd dashboard && npm run build`,
+   which drops the Supabase configuration from the bundle), then deploy.
 3. **Redeploy each Railway service** (API, worker, compressor) only after its env section is
    complete. The API healthcheck (`/v1/health/ready`) will not pass until Supabase (step 2), KMS,
    and Redis are all set and reachable.

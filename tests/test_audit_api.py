@@ -5,6 +5,7 @@ usage rows; anything the rows cannot prove stays "unknown", and a prospect
 that already does an optimization is never told it is an opportunity.
 """
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -404,3 +405,54 @@ def test_audit_metrics_helper_tolerates_hostile_rows():
     # blank provider falls back to model inference, then "unknown"
     assert metrics["providers"] == ["anthropic", "unknown"]
     assert metrics["cache"]["caller_owned_cache_rows"] == 1
+
+
+def _daily_rows(count, session_id, spacing_s):
+    """`count` cache-capable anthropic rows sharing one session_id, spaced
+    `spacing_s` apart, with zero cache reads and no cache writes."""
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    return [dict(provider="anthropic", model="claude-3-5-sonnet",
+                 strategy="passthrough", cached_input_tokens=0,
+                 fresh_input_tokens=4000, session_id=session_id,
+                 ts=(base + timedelta(seconds=i * spacing_s)).isoformat())
+            for i in range(count)]
+
+
+def test_repeat_sessions_are_time_bounded_to_the_provider_cache_ttl():
+    """session_id is a stable per-model bucket hash (brevitas/proxy.py
+    `_stable_session_id`), so it survives proxy restarts and TTL eviction and
+    can collide across weeks. Rows that far apart are NOT evidence of repeat
+    traffic: a cache entry could not have been live, so a 0% hit rate there is
+    structural, not prompt-byte churn. Guards the customer-facing verdict."""
+    import api.server as server
+
+    spread = _audit_metrics(_daily_rows(25, "sess_stable", 86400), None)
+    assert spread["repeat"]["repeat_session_rows"] == 0
+    assert spread["repeat"]["repeat_sessions"] == 0
+    verdict, _evidence, rationale = server._audit_verdict_byte_stability(spread)
+    assert verdict == "unknown"
+    assert "may simply not repeat" in rationale
+
+    # Control: the same 25 rows minutes apart are genuine repeat traffic — a
+    # live cache entry was possible — so the opportunity verdict still fires.
+    tight = _audit_metrics(_daily_rows(25, "sess_stable", 300), None)
+    assert tight["repeat"]["repeat_session_rows"] == 25
+    assert tight["repeat"]["repeat_sessions"] == 1
+    verdict, evidence, _rationale = server._audit_verdict_byte_stability(tight)
+    assert verdict == "opportunity"
+    assert any("inside an hour" in item for item in evidence)
+
+    # A restart in the middle splits one bucket id into two clusters: only the
+    # rows that actually clustered count.
+    mixed = _audit_metrics(
+        _daily_rows(3, "sess_stable", 300)
+        + _daily_rows(1, "sess_stable", 300)[:1]
+        + [dict(provider="anthropic", model="claude-3-5-sonnet",
+                strategy="passthrough", cached_input_tokens=0,
+                fresh_input_tokens=4000, session_id="sess_stable",
+                ts=datetime(2026, 7, 9, tzinfo=timezone.utc).isoformat())],
+        None)
+    assert mixed["repeat"]["repeat_session_rows"] == 4
+    # the lone week-later row is excluded, and the duplicate ts collapses in
+    assert mixed["repeat"]["repeat_sessions"] == 1
+    assert any("within one hour" in a for a in mixed["approximations"])

@@ -13,6 +13,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 
+import {
+  ALLOW_MISSING_CREDENTIALS_FLAG,
+  runSchemaDriftCheck,
+} from '../scripts/ci/check-schema-drift.mjs'
 import { runStagingSmoke, assertStagingTarget } from '../scripts/ci/staging-smoke.mjs'
 import { validateMigrationDsn } from '../scripts/ci/validate-migration-dsn.mjs'
 import {
@@ -184,6 +188,171 @@ test('JavaScript and Python installs are lock-based and reproducible', () => {
     assert.match(lock, /--hash=sha256:[0-9a-f]{64}/)
     assert.doesNotMatch(lock, /^[a-z0-9_.-]+(?:>=|~=|>|<)[^=]/im)
   }
+
+  // The suite CI runs must be the graph the image ships. python-test.in is
+  // `-r python-runtime.in` + pytest, so the test lock is a strict superset of the
+  // runtime lock at identical versions; it had drifted by 15 packages (the whole
+  // supabase/postgrest/realtime/pyjwt stack) plus a websockets major version.
+  const pins = (path) => new Map(
+    read(path)
+      .split(/\r?\n/)
+      .map((line) => line.match(/^([a-z0-9][a-z0-9._-]*)==([^\s\\]+)/i))
+      .filter(Boolean)
+      .map(([, name, version]) => [name.toLowerCase().replace(/_/g, '-'), version]),
+  )
+  const runtimePins = pins('scripts/ci/python-runtime.lock')
+  const testPins = pins('scripts/ci/python-test.lock')
+  assert.deepEqual(
+    [...runtimePins].filter(([name, version]) => testPins.get(name) !== version),
+    [],
+    'scripts/ci/python-test.lock does not contain every python-runtime.lock pin at the same version',
+  )
+  // Only that direction: the test lock legitimately adds pytest and its deps.
+  assert.deepEqual(
+    [...testPins.keys()].filter((name) => !runtimePins.has(name)).sort(),
+    ['iniconfig', 'pluggy', 'pytest'],
+    'the test lock gained or lost a test-only dependency',
+  )
+})
+
+test('release schema-drift gate fails closed without credentials', () => {
+  // A gate that exits 0 when unconfigured gates nothing. release.yml supplies
+  // DATABASE_URL from `secrets.DATABASE_URL` under `environment: inputs.target`,
+  // and a secret absent from that Environment interpolates to the empty string,
+  // so the whole release chain used to go green with the deployed schema never
+  // compared to migration-fresh-manifest.txt or to the money-column types.
+  assert.throws(
+    () => runSchemaDriftCheck({
+      env: {},
+      manifestText: 'supabase/migrations/20260611_create_user_keys.sql\n',
+      query: () => assert.fail('the drift check must not connect without a DATABASE_URL'),
+      logger: { log() {}, warn() {} },
+    }),
+    /DATABASE_URL is missing or empty/,
+  )
+  assert.throws(
+    () => runSchemaDriftCheck({
+      env: { DATABASE_URL: '   ' },
+      manifestText: 'supabase/migrations/20260611_create_user_keys.sql\n',
+      query: () => assert.fail('a whitespace-only DSN must not be treated as configured'),
+      logger: { log() {}, warn() {} },
+    }),
+    /DATABASE_URL is missing or empty/,
+  )
+  // The credential-free local run still exists, but only when asked for.
+  const messages = []
+  assert.deepEqual(
+    runSchemaDriftCheck({
+      env: {},
+      manifestText: 'supabase/migrations/20260611_create_user_keys.sql\n',
+      query: () => assert.fail('the skip path must not connect'),
+      logger: { log: (message) => messages.push(message), warn() {} },
+      allowMissingCredentials: true,
+    }),
+    { skipped: true },
+  )
+  assert.match(messages.join('\n'), /must never be used on a release path/)
+
+  const source = read('scripts/ci/check-schema-drift.mjs')
+  assert.equal(ALLOW_MISSING_CREDENTIALS_FLAG, '--allow-missing-credentials')
+  // The escape hatch is argv-only on purpose: no environment variable can enable
+  // it, so no CI environment can turn the gate off by accident.
+  assert.doesNotMatch(source, /env\.[A-Z_]*ALLOW_MISSING/)
+  assert.doesNotMatch(source, /ALLOW_MISSING[A-Z_]*\]?\s*(?:=|:)\s*(?:env|process\.env)/)
+
+  const workflow = read('.github/workflows/release.yml')
+  const invocation = workflow.match(/node scripts\/ci\/check-schema-drift\.mjs.*/)
+  assert.ok(invocation, 'release.yml no longer runs the schema-drift gate')
+  assert.equal(
+    invocation[0].trim(),
+    'node scripts/ci/check-schema-drift.mjs',
+    'the release path must invoke the drift gate bare, with no credential-free opt-out',
+  )
+})
+
+test('CI reproduces Supabase default grants so revoke assertions can fail', () => {
+  const bootstrap = read('scripts/ci/migration-bootstrap.sql')
+  // Without these, a relation created in public starts with ZERO privileges for
+  // anon/authenticated under test and ALL privileges for them in a real project,
+  // which makes every `revoke all on table ... from public, anon, authenticated`
+  // in the chain a no-op and every revoke assertion in the suite vacuous.
+  assert.match(bootstrap, /grant usage on schema public to anon, authenticated, service_role;/)
+  for (const objects of ['tables', 'sequences', 'functions']) {
+    assert.match(
+      bootstrap,
+      new RegExp(
+        `alter default privileges in schema public\\s*\\n\\s*grant all on ${objects} to anon, authenticated, service_role;`,
+      ),
+      `migration-bootstrap.sql does not grant Supabase's default privileges on ${objects}`,
+    )
+  }
+  // ALTER DEFAULT PRIVILEGES attaches to the executing role; the harness applies
+  // the bootstrap and every migration over one DATABASE_URL, so FOR ROLE would
+  // silently pin the grants to the wrong creator.
+  assert.doesNotMatch(bootstrap, /alter default privileges\s+for role/i)
+
+  const baseline = read('scripts/ci/migration-browser-privilege-baseline-assertions.sql')
+  assert.match(baseline, /create table public\.brevitas_privilege_baseline_probe/)
+  assert.match(baseline, /every revoke assertion in this suite is vacuous/)
+  assert.match(baseline, /browser-reachable inventory of schema public changed/)
+  assert.match(baseline, /^rollback;$/m)
+
+  const runner = read('scripts/ci/run-migration-tests.sh')
+  const forwardStart = runner.indexOf('run_forward_assertions() {')
+  const forwardEnd = runner.indexOf('\n}', forwardStart)
+  assert.ok(forwardStart > 0 && forwardEnd > forwardStart, 'run_forward_assertions is unparseable')
+  const forward = runner.slice(forwardStart, forwardEnd)
+  assert.ok(
+    forward.includes('migration-browser-privilege-baseline-assertions.sql'),
+    'the privilege baseline is not asserted on either migration path',
+  )
+  assert.ok(
+    forward.indexOf('migration-browser-privilege-baseline-assertions.sql') <
+      forward.indexOf('migration-browser-role-isolation-assertions.sql'),
+    'the baseline must be proven before the assertions that depend on it',
+  )
+})
+
+test('the schema is forward-only and the harness says what it actually proves', () => {
+  const runner = read('scripts/ci/run-migration-tests.sh')
+  // The 24 failure-injection probes were named assert_atomic_migration_rollback,
+  // which reads as a reverse-path test. It is not one: it injects `select 1/0;`
+  // before COMMIT and proves a FAILED apply leaves no partial state. No migration
+  // in supabase/migrations/ has a down file and none is required to.
+  assert.doesNotMatch(runner, /assert_atomic_migration_rollback/)
+  assert.match(runner, /^assert_failed_apply_is_atomic\(\) \{$/m)
+  assert.match(runner, /FORWARD-ONLY SCHEMA CHANGE CONTRACT/)
+  assert.match(runner, /PITR to the pre-cutover\n# +checkpoint/)
+  // The three genuine down-then-up legs, each pinned on both sides.
+  for (const reverse of [
+    'api/migrations/004_database_scaling.rollback.sql',
+    'scripts/ci/migration-cache-rollback.sql',
+    'scripts/ci/migration-receipt-accounting-rollback.sql',
+  ]) assert.ok(runner.includes(reverse), `the harness lost its ${reverse} leg`)
+
+  // Every migration from the cutoff onward must DECLARE a reverse posture. The
+  // cutoff is the next unused number: back-dating it would change the frozen
+  // checksum of an already-applied migration, and per MEMORY
+  // "production-schema-drift" production has no ledger to re-baseline against.
+  const verifier = read('scripts/ci/verify-migrations.mjs')
+  const [, cutoff] = verifier.match(/REVERSE_POSTURE_CUTOFF = '(\d+)'/) ?? []
+  assert.ok(cutoff, 'verify-migrations.mjs lost its reverse-posture cutoff')
+  const governed = expectedFreshMigrationOrder.filter(
+    (path) => path.slice('supabase/migrations/'.length, 'supabase/migrations/'.length + cutoff.length) >= cutoff,
+  )
+  for (const path of governed) {
+    const declarations = read(path)
+      .split(/\r?\n/)
+      .filter((line) => /^\s*--\s*REVERSE:/.test(line))
+    assert.equal(declarations.length, 1, `${path} must declare exactly one reverse posture`)
+  }
+  const lastExisting = expectedFreshMigrationOrder
+    .at(-1)
+    .slice('supabase/migrations/'.length, 'supabase/migrations/'.length + cutoff.length)
+  assert.ok(
+    cutoff > lastExisting,
+    `the reverse-posture cutoff ${cutoff} must stay ahead of the applied chain (head ${lastExisting})`,
+  )
 })
 
 test('blocking build covers application, backend, compressor, and core engine suites', () => {
@@ -412,37 +581,46 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
   assert.match(runner, /fresh = baseline \+ upgrade/)
   assert.match(runner, /migration-supabase-advisor-hardening-assertions\.sql/)
   assert.match(runner, /migration-onboarding-local-proxy-assertions\.sql/)
-  assert.equal((runner.match(/apply_migration "\$\{device_migration\}"/g) || []).length, 3)
-  assert.equal((runner.match(/apply_migration "\$\{membership_migration\}"/g) || []).length, 3)
-  assert.equal((runner.match(/apply_migration "\$\{receipt_migration\}"/g) || []).length, 4)
-  assert.equal((runner.match(/apply_migration "\$\{selection_migration\}"/g) || []).length, 3)
-  for (const variable of [
-    'webhook_migration',
-    'waitlist_migration',
-    'billing_owner_migration',
-    'billing_recovery_scope_migration',
-    'provider_cleanup_migration',
-    'multitab_sessions_migration',
-    'shared_limits_migration',
-    'compliance_billing_isolation_migration',
-    'webhook_lease_renewal_migration',
-    'billing_control_limits_migration',
-    'checkout_reservation_migration',
-    'provider_outbound_migration',
-    'durable_onboarding_migration',
-    'billing_customer_owner_migration',
-    'workspace_experiences_migration',
-    'split_savings_migration',
-    'service_role_data_plane_migration',
-    'supabase_advisor_hardening_migration',
-    'onboarding_evidence_migration',
-  ]) {
-    assert.equal(
-      (runner.match(new RegExp(`apply_migration "\\$\\{${variable}\\}"`, 'g')) || []).length,
-      3,
-      `${variable} must be applied twice on upgrade and reapplied on fresh install`,
-    )
-  }
+  // Idempotence used to be pinned as "exactly three literal `apply_migration
+  // "${handle}"` call sites per migration". That counted the hand-written index
+  // list, and it stopped being a coverage statement the moment the harness began
+  // driving the whole manifest: a migration is now applied because it is IN the
+  // manifest, not because someone remembered to write its name three times.
+  // (That is precisely how 202607280005-202607280009 came to be registered and
+  // never applied.) Pin the mechanism the loop uses instead, and let the U5
+  // coverage test below own "every entry is applied".
+  //
+  // Upgrade path: every entry applied once, and twice at or after the idempotence
+  // boundary, which is DERIVED from the manifest so a new migration is in the
+  // double-apply set by default and a non-idempotent addition fails the harness.
+  assert.match(
+    runner,
+    /idempotence_boundary_index="\$\(manifest_index "\$\{membership_migration\}"\)"/,
+  )
+  assert.match(
+    runner,
+    /if \(\(index >= idempotence_boundary_index\)\); then\n\s*apply_migration "\$\{migration\}"/,
+  )
+  // Fresh path: the whole chain, with the frozen 010-013 + 200001-220002 window
+  // replayed in the middle and the remaining tail applied after it, so the replay
+  // cannot land in a post-202607280006 schema and cannot clobber a later body.
+  assert.match(
+    runner,
+    /fresh_replay_start="\$\(fresh_manifest_index 'supabase\/migrations\/202607170010_device_delivery_idempotency\.sql'\)"/,
+  )
+  assert.match(
+    runner,
+    /fresh_replay_end="\$\(fresh_manifest_index 'supabase\/migrations\/202607220002_supabase_advisor_hardening\.sql'\)"/,
+  )
+  assert.match(runner, /Fresh manifest does not order the frozen replay window before a remaining tail/)
+  for (const bounds of [
+    /for \(\(index = 0; index <= fresh_replay_end; index\+\+\)\)/,
+    /for \(\(index = fresh_replay_start; index <= fresh_replay_end; index\+\+\)\)/,
+    /for \(\(index = fresh_replay_end \+ 1; index < \$\{#fresh_migrations\[@\]\}; index\+\+\)\)/,
+  ]) assert.match(runner, bounds)
+  // The three billing-identity migrations must never be applied directly: they
+  // are reachable only through the guarded maintenance procedure that owns their
+  // quiesce and deployed-version preconditions.
   for (const variable of [
     'stripe_ordering_migration',
     'initial_service_key_migration',
@@ -450,8 +628,8 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
   ]) {
     assert.equal(
       (runner.match(new RegExp(`apply_migration "\\$\\{${variable}\\}"`, 'g')) || []).length,
-      1,
-      `${variable} must use the guarded maintenance runner on upgrade and direct apply on fresh install`,
+      0,
+      `${variable} must be applied only by the guarded maintenance runner`,
     )
   }
   const frozenChecksums = read('scripts/ci/migration-frozen-checksums.txt')
@@ -459,9 +637,18 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
     frozenChecksums,
     /a1ec546eed185128b545093a0ea3de6567ca0629bf157995d2012b4a620b3f62  supabase\/migrations\/202607170007_compliance_workflows\.sql/,
   )
+  // Refrozen twice. First when the DR compliance assertions gained direct
+  // billing_ledger fixtures: 202607280006 retired queue_brevitas_fee_after_usage,
+  // so the four ledger rows those subject/customer/tenant erasure suites require
+  // are now seeded explicitly instead of by the per-row trigger. Second for
+  // 202607280026, which replaces the 20260710 usage dedupe index with an
+  // authority-scoped one: an ON CONFLICT arbiter names an index by its exact
+  // column list, so the four usage fixtures in this file had to name
+  // (key_hash, request_id, authoritative) or fail to plan at all. The change is
+  // mechanical and the file's evidence-preservation assertions are untouched.
   assert.match(
     frozenChecksums,
-    /d6a0a37952f3c539da8e1ddbe44133a9fda11a6faab1af843380c05bf4452f8a  scripts\/dr\/compliance-workflow-assertions\.sql/,
+    /90f285f0174c811eab69b35a7fc609987bdd787e377f45491e6b0c8661098b8b  scripts\/dr\/compliance-workflow-assertions\.sql/,
   )
   assert.match(
     frozenChecksums,
@@ -546,6 +733,133 @@ test('migration order, generated drift, idempotence, and rollback contracts pass
     'release-invalid-zero-total-tier', 'release-invalid-negative-total',
     'release-invalid-negative-5m', 'release-invalid-negative-1h',
   ]) assert.match(receiptAssertions, new RegExp(refusal))
+})
+
+// U5. 202607280005-202607280009 sat in BOTH manifests for a whole release while
+// the upgrade path never applied a single one of them: the harness bound a fixed
+// list of `${upgrade_migrations[N]}` indexes that stopped at index 39, so every
+// later entry was skipped by omission and the per-row fee trigger it retires was
+// still attached at the end of the upgrade run. Registering a migration must not
+// be able to leave it unexercised again, so derive the covered index set from the
+// harness source and require it to be the WHOLE manifest. This is deliberately a
+// static check: it fails in CI's cheap tier, before any database exists, and it
+// fails CLOSED — an entry no code path can be shown to apply is a failure, not a
+// migration to skip. The harness carries the runtime twin of this assertion
+// (`Upgrade path never applied ...`), which is required below.
+test('every upgrade manifest entry is applied by the migration harness', () => {
+  const runner = read('scripts/ci/run-migration-tests.sh')
+  const manifest = read('scripts/ci/migration-upgrade-manifest.txt')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+  assert.deepEqual(
+    manifest,
+    expectedUpgradeMigrationOrder,
+    'the upgrade manifest and the release contract disagree',
+  )
+  const indexOfPath = new Map(manifest.map((path, index) => [path, index]))
+
+  // Named handles: `foo_migration="$(manifest_entry 'supabase/migrations/....sql')"`.
+  // These resolve BY FILENAME inside the harness, so a handle is a manifest entry.
+  const pathForHandle = new Map(
+    [...runner.matchAll(/^(\w+)="\$\(manifest_entry '([^']+)'\)"$/gm)]
+      .map(([, handle, path]) => [handle, path]),
+  )
+  for (const [handle, path] of pathForHandle) {
+    assert.ok(
+      indexOfPath.has(path),
+      `harness handle ${handle} resolves ${path}, which is not an upgrade manifest entry`,
+    )
+  }
+
+  const covered = new Set()
+  const cover = (path, why) => {
+    assert.ok(indexOfPath.has(path), `${why} applies ${path}, which is not in the manifest`)
+    covered.add(indexOfPath.get(path))
+  }
+  // (a) literal `apply_migration supabase/migrations/....sql` paths.
+  for (const [, path] of runner.matchAll(
+    /apply_migration\s+"?(supabase\/migrations\/[^"\s]+\.sql)"?/g,
+  )) cover(path, 'a literal apply_migration')
+  // (b) `apply_migration "${handle}"` for a manifest-resolved handle.
+  for (const [, handle] of runner.matchAll(/apply_migration\s+"\$\{(\w+)\}"/g)) {
+    if (pathForHandle.has(handle)) cover(pathForHandle.get(handle), `apply_migration ${handle}`)
+  }
+  // (c) explicit index bindings, the shape that caused the original defect.
+  for (const [, index] of runner.matchAll(/\$\{upgrade_migrations\[(\d+)\]\}/g)) {
+    const position = Number(index)
+    assert.ok(
+      position < manifest.length,
+      `the harness binds upgrade_migrations[${position}], past the end of the manifest`,
+    )
+    covered.add(position)
+  }
+
+  // (d) The whole-array driver loop. Recognised only in its exact shape, so this
+  // cannot become a rubber stamp: it must iterate the entire array, bind the
+  // element to `migration`, and apply that element. Entries diverted by a
+  // non-default arm of its apply switch are NOT credited to the loop.
+  assert.match(
+    runner,
+    /for \(\(index = 0; index < \$\{#upgrade_migrations\[@\]\}; index\+\+\)\); do\n\s*migration="\$\{upgrade_migrations\[\$\{index\}\]\}"/,
+    'the harness must drive the entire upgrade manifest, not a hand-bound index list',
+  )
+  const applyCall = runner.indexOf('apply_migration "${migration}"')
+  assert.ok(applyCall > 0, 'the driver loop never applies the manifest entry it selected')
+  const switchStart = runner.lastIndexOf('case "${migration}" in', applyCall)
+  const switchEnd = runner.indexOf('\n  esac', applyCall)
+  assert.ok(switchStart > 0 && switchEnd > switchStart, 'the apply switch is unparseable')
+  const applySwitch = runner.slice(switchStart, switchEnd)
+  assert.match(
+    applySwitch,
+    /\*\)\n\s*apply_migration "\$\{migration\}"\n\s*record_upgrade_applied "\$\{migration\}"/,
+    'the default arm must apply and record the selected manifest entry',
+  )
+  const divertedHandles = [...applySwitch.matchAll(/^\s*("\$\{\w+\}"(?:\|"\$\{\w+\}")*)\)$/gm)]
+    .flatMap(([, patterns]) => [...patterns.matchAll(/\$\{(\w+)\}/g)].map(([, handle]) => handle))
+  const diverted = new Set()
+  for (const handle of divertedHandles) {
+    assert.ok(pathForHandle.has(handle), `the apply switch diverts unresolved handle ${handle}`)
+    diverted.add(pathForHandle.get(handle))
+  }
+  for (const [path, index] of indexOfPath) {
+    if (!diverted.has(path)) covered.add(index)
+  }
+  // A diverted entry is only covered if something else demonstrably applies it.
+  // Here that is the guarded billing-identity maintenance procedure, which owns
+  // 200004-200006's quiesce and deployed-version preconditions; each one must be
+  // recorded as applied so the harness's runtime coverage guard sees it too.
+  assert.deepEqual(
+    [...diverted].sort(),
+    [...BILLING_IDENTITY_MIGRATIONS].sort(),
+    'only the guarded billing-identity migrations may bypass the driver loop',
+  )
+  assert.match(applySwitch, /run_billing_identity_maintenance/)
+  for (const path of BILLING_IDENTITY_MIGRATIONS) {
+    const handle = [...pathForHandle].find(([, candidate]) => candidate === path)?.[0]
+    assert.ok(handle, `${path} has no manifest-resolved harness handle`)
+    assert.ok(
+      applySwitch.includes(`record_upgrade_applied "\${${handle}}"`),
+      `${path} bypasses the driver loop without being recorded as applied`,
+    )
+    covered.add(indexOfPath.get(path))
+  }
+
+  assert.deepEqual(
+    manifest.filter((_, index) => !covered.has(index)),
+    [],
+    'these upgrade manifest entries are registered but never applied by the harness',
+  )
+  assert.deepEqual(
+    [...covered].sort((left, right) => left - right),
+    manifest.map((_, index) => index),
+    'the covered index set must be exactly {0..len-1}',
+  )
+
+  // The runtime twin: even if the static analysis above is ever fooled, the
+  // harness itself must abort naming any entry the run did not apply.
+  assert.match(runner, /Upgrade path never applied \$\{upgrade_migrations\[\$\{index\}\]\}\./)
+  assert.match(runner, /^\s*record_upgrade_applied\(\) \{$/m)
 })
 
 test('migration DSN validation rejects endpoint bait outside the hostname', () => {
@@ -644,21 +958,137 @@ test('billing identity rollout is disabled, quiesced, target-bound, and per-file
   }
 
   const runner = read('scripts/ci/run-migration-tests.sh')
-  assert.equal(
-    (runner.match(/assert_atomic_migration_rollback "\$\{/g) || []).length,
-    24,
+  // Atomicity probes are no longer a literal list of call sites. The driver loop
+  // asks upgrade_rollback_invariant() for a pre-COMMIT invariant per migration
+  // and probes every migration that declares one, so a raw call-site count now
+  // measures the refactor rather than the coverage. Pin the INVENTORY of probed
+  // migrations by name instead: that is the property the old count of 24 stood
+  // for, it does not go stale when the loop is rewritten, and it fails closed if
+  // a money migration's invariant is deleted.
+  const invariantStart = runner.indexOf('upgrade_rollback_invariant() {')
+  const invariantEnd = runner.indexOf('applied_upgrade_migrations=()')
+  assert.ok(
+    invariantStart > 0 && invariantEnd > invariantStart,
+    'the harness lost upgrade_rollback_invariant()',
+  )
+  const invariantBody = runner.slice(invariantStart, invariantEnd)
+  assert.deepEqual(
+    [...invariantBody.matchAll(/^\s*"\$\{(\w+)\}"\)$/gm)].map(([, name]) => name),
+    [
+      'webhook_migration',
+      'waitlist_migration',
+      'billing_owner_migration',
+      'billing_recovery_scope_migration',
+      'provider_cleanup_migration',
+      'multitab_sessions_migration',
+      'shared_limits_migration',
+      'compliance_billing_isolation_migration',
+      'webhook_lease_renewal_migration',
+      'billing_control_limits_migration',
+      'checkout_reservation_migration',
+      'provider_outbound_migration',
+      'durable_onboarding_migration',
+      'billing_customer_owner_migration',
+      'workspace_experiences_migration',
+      'split_savings_migration',
+      'service_role_data_plane_migration',
+      'supabase_advisor_hardening_migration',
+      'cache_warming_migration',
+      'multi_provider_warming_migration',
+      'onboarding_evidence_migration',
+      // The money path added by the billing-correctness phases. Each of these
+      // must keep a pre-COMMIT invariant: a rolled-back retirement must leave
+      // the per-row fee trigger attached, and a rolled-back settlement schema
+      // must leave no ledger, guard, or writer half-created.
+      'retire_fee_trigger_migration',
+      'period_settlement_migration',
+      'halting_conditions_migration',
+      'billing_attestation_migration',
+      'period_settlement_latch_migration',
+      'unsent_release_migration',
+      'evidence_warm_days_migration',
+      'settlement_writer_migration',
+      // 202607280024 is a privilege migration: a half-applied one would widen
+      // the executable browser-role contract without performing the revokes it
+      // claims, i.e. report a safety it never established. 202607280025-026 are
+      // an admission-control function and a uniqueness swap on the billable
+      // usage table; the dedupe swap in particular must never leave an instant
+      // with no unique index at all.
+      'browser_privilege_completion_migration',
+      'waitlist_network_budget_migration',
+      'usage_dedupe_authority_migration',
+    ],
+    'a migration lost (or silently gained) its pre-COMMIT rollback invariant',
+  )
+  // Every declared invariant must actually be probed, and only through the
+  // generic driver call plus the three guarded billing-identity reruns.
+  assert.match(
+    runner,
+    /upgrade_probe="\$\(upgrade_rollback_invariant "\$\{migration\}"\)"/,
+  )
+  assert.match(
+    runner,
+    /assert_failed_apply_is_atomic "\$\{migration\}" "\$\{upgrade_probe\}"/,
+  )
+  assert.deepEqual(
+    [...new Set(
+      [...runner.matchAll(/assert_failed_apply_is_atomic "\$\{(\w+)\}"/g)]
+        .map(([, name]) => name),
+    )],
+    [
+      'migration',
+      'stripe_ordering_migration',
+      'initial_service_key_migration',
+      'company_billing_migration',
+    ],
+    'atomicity probes must run through the driver loop plus the guarded billing-identity reruns',
   )
   assert.match(runner, /print "select 1\/0;"/)
   assert.match(runner, /Failure-injected migration left partial state/)
   assert.match(runner, /Applying the guarded 200004-200006 billing maintenance procedure immediately after 200003/)
-  assert.equal((runner.match(/^run_billing_identity_maintenance$/gm) || []).length, 2)
-  assert.ok(
-    runner.indexOf('apply_migration "${billing_owner_migration}"') <
-      runner.indexOf("echo 'Applying the guarded 200004-200006 billing maintenance procedure"),
+  // Two invocations (the second proves completed company-scoped state is
+  // validated and skipped), plus the definition. The call sites moved inside the
+  // driver loop's case arm, so they are indented now.
+  assert.equal((runner.match(/^[ \t]+run_billing_identity_maintenance$/gm) || []).length, 2)
+  assert.equal((runner.match(/^run_billing_identity_maintenance\(\) \{$/gm) || []).length, 1)
+  // "Immediately after 200003 and before 200007" used to be checked as the source
+  // order of three literal call sites. Those call sites are gone: the harness
+  // dispatches the guarded procedure from a case arm inside the manifest-driven
+  // loop, so the ordering is now a property of the MANIFEST plus that dispatch.
+  // Restate it that way — the old form silently passed on indexOf(...) === -1
+  // once the call sites disappeared, which is exactly how a stale ordering
+  // assertion becomes vacuous.
+  assert.deepEqual(
+    expectedUpgradeMigrationOrder.slice(
+      expectedUpgradeMigrationOrder.indexOf(
+        'supabase/migrations/202607200003_billing_owner_attribution.sql',
+      ),
+      expectedUpgradeMigrationOrder.indexOf(
+        'supabase/migrations/202607200003_billing_owner_attribution.sql',
+      ) + 5,
+    ),
+    [
+      'supabase/migrations/202607200003_billing_owner_attribution.sql',
+      'supabase/migrations/202607200004_stripe_event_ordering.sql',
+      'supabase/migrations/202607200005_initial_service_key.sql',
+      'supabase/migrations/202607200006_company_billing_authorization.sql',
+      'supabase/migrations/202607200007_billing_recovery_scope.sql',
+    ],
+    'the guarded billing-identity window must sit between 200003 and 200007',
+  )
+  const guardedArm = runner.slice(
+    runner.indexOf('"${stripe_ordering_migration}")'),
+    runner.indexOf('"${initial_service_key_migration}"|"${company_billing_migration}")'),
+  )
+  assert.ok(guardedArm.length > 0, 'the harness lost the guarded billing-identity case arm')
+  assert.match(
+    guardedArm,
+    /Applying the guarded 200004-200006 billing maintenance procedure immediately after 200003/,
   )
   assert.ok(
-    runner.indexOf("echo 'Applying the guarded 200004-200006 billing maintenance procedure") <
-      runner.indexOf('assert_atomic_migration_rollback "${billing_recovery_scope_migration}"'),
+    guardedArm.indexOf("echo 'Applying the guarded 200004-200006") <
+      guardedArm.indexOf('run_billing_identity_maintenance'),
+    'the guarded procedure must be announced before it runs',
   )
 
   const initialKey = read('supabase/migrations/202607200005_initial_service_key.sql')

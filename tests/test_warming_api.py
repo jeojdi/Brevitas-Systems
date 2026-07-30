@@ -187,6 +187,61 @@ def test_warm_enabled_middleware_flag_is_cached_and_best_effort(tmp_path, monkey
     assert "other-org" not in server._warm_enabled_cache
 
 
+def test_deliver_warm_prefix_carries_request_context_into_the_executor(monkeypatch):
+    """The sync-observer dispatch must copy contextvars into the warm executor.
+
+    _hosted_warm_observe reads the request's auth context from a ContextVar as its
+    first act; a bare run_in_executor drops it, turning every hosted predictive-
+    warming observation into a silent no-op (finding 11).
+    """
+    import contextvars
+
+    import brevitas.proxy as proxy
+    from brevitas import warming
+
+    seen = []
+    var = contextvars.ContextVar("test_warm_ctx", default=None)
+
+    def observer(organization_id, customer_id, prefix, cache_read):
+        seen.append((var.get(), organization_id, customer_id, cache_read))
+
+    sentinel_prefix = object()
+    monkeypatch.setattr(proxy, "extract_warm_prefix",
+                        lambda *args, **kwargs: sentinel_prefix)
+    warming.set_warm_observer(observer)
+    try:
+        async def run():
+            var.set("bound-before-dispatch")
+            await proxy._deliver_warm_prefix(
+                "org-ctx", "cust-ctx", {}, "claude-sonnet-4-6", {}, {}, False)
+        asyncio.run(run())
+    finally:
+        warming.set_warm_observer(None)
+    assert seen == [("bound-before-dispatch", "org-ctx", "cust-ctx", False)]
+
+
+def test_hosted_warm_observe_skip_reason_is_logged_without_payload(
+        tmp_path, monkeypatch, caplog):
+    """The guard's early return must say why, naming the org only — never the prefix."""
+    server, store, organization, client = _setup(tmp_path, monkeypatch, "warm-skiplog")
+    prefix = WarmPrefix(provider="anthropic", model="claude-sonnet-4-6",
+                        prefix_hash="c" * 64, prefix_tokens=64,
+                        provider_ttl_seconds=300,
+                        payload={"secret": "PRIVATE-WARM-PREFIX"})
+    monkeypatch.setattr(logging.getLogger("brevitas.api"), "propagate", True)
+    token = server._proxy_auth_context.set(None)
+    try:
+        with caplog.at_level(logging.WARNING, logger="brevitas.api"):
+            server._hosted_warm_observe(
+                organization["id"], "customer-1", prefix, cache_read=False)
+        assert ("warm prefix observation skipped reason=missing_auth_context"
+                in caplog.text)
+        assert organization["id"] in caplog.text
+        assert "PRIVATE-WARM-PREFIX" not in caplog.text
+    finally:
+        server._proxy_auth_context.reset(token)
+
+
 def test_hosted_warm_observe_encrypts_payload_and_swallows_failures(
         tmp_path, monkeypatch, caplog):
     server, store, organization, client = _setup(tmp_path, monkeypatch, "warm-observe")

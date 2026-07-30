@@ -144,6 +144,69 @@
           "annotations": {"summary": "Private compressor error ratio exceeds 5%", "runbook": "docs/OBSERVABILITY.md#dependencies"}
         }
       ]
+    },
+    {
+      "name": "brevitas-detective-controls",
+      "interval": "60s",
+      "rules": [
+        {
+          "record": "brevitas_alerting_armed_telemetry_absence",
+          "expr": "vector(0)",
+          "labels": {"gate": "disarmed"}
+        },
+        {
+          "record": "brevitas_alerting_armed_billing_volume",
+          "expr": "vector(0)",
+          "labels": {"gate": "disarmed"}
+        },
+        {
+          "record": "brevitas_alerting_armed_auth_denial",
+          "expr": "vector(0)",
+          "labels": {"gate": "disarmed"}
+        },
+        {
+          "alert": "ExternalApiTelemetrySilent",
+          "expr": "(absent_over_time(brevitas_api_requests_total[30m]) == 1) and on() (brevitas_alerting_armed_telemetry_absence == 1)",
+          "for": "30m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "No API replica is reporting request metrics, so every availability rule is evaluating absent series", "arming": "Disarmed by default: set brevitas_alerting_armed_telemetry_absence to vector(1) only after BREVITAS_OTEL_ENABLED=true is confirmed on every API replica and a non-zero brevitas_api_requests_total has been observed. Until then this rule would fire permanently instead of detecting a regression.", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "InternalTelemetrySilent",
+          "expr": "(absent_over_time(brevitas_service_operations_total[30m]) == 1) and on() (brevitas_alerting_armed_telemetry_absence == 1)",
+          "for": "30m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "No worker or internal service is reporting operation metrics", "arming": "Shares the brevitas_alerting_armed_telemetry_absence gate with ExternalApiTelemetrySilent; arm both together.", "runbook": "docs/OBSERVABILITY.md#availability-burn"}
+        },
+        {
+          "alert": "BillableSavingsStalledWhileServingTraffic",
+          "expr": "((sum(rate(brevitas_billing_savings_rows_total{billable=\"true\"}[6h])) or vector(0)) == 0) and (sum(rate(brevitas_api_requests_total{surface=\"external\"}[6h])) > 0) and on() (brevitas_alerting_armed_billing_volume == 1)",
+          "for": "30m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "Customers are still sending traffic but no billable verified savings are being produced", "arming": "Disarmed by default because the pipeline currently produces no billable verified savings (none since 2026-07-17), so an armed rule would fire immediately and permanently — the worst possible state for a detective control. Set brevitas_alerting_armed_billing_volume to vector(1) once brevitas_billing_savings_rows_total{billable=\"true\"} has been non-zero for a full settlement period. The traffic clause means it cannot fire during legitimate idleness.", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "VerifiedSavingsDollarsCollapsedWhileRowsContinue",
+          "expr": "(sum(rate(brevitas_billing_verified_savings_usd_total[6h])) == 0) and (sum(rate(brevitas_billing_savings_rows_total{billable=\"true\"}[6h])) > 0) and on() (brevitas_alerting_armed_billing_volume == 1)",
+          "for": "30m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "Billable usage rows are still being written but their verified savings sum to zero dollars", "arming": "Disarmed by default: it shares the brevitas_alerting_armed_billing_volume gate. The producer IS now wired — api/server.py::_record_usage_report passes verified_savings_usd on every persisted row — so every row emits the counter including a zero one and rate()==0 is a real observation rather than an absence. The dollar clause still deliberately omits `or vector(0)`, which now only means the rule stays silent on a replica that has never written a row (fresh process, no traffic) instead of reporting that replica as a revenue stall. Arm it with the same switch as BillableSavingsStalledWhileServingTraffic — after brevitas_billing_verified_savings_usd_total has been non-zero for a full settlement period. This is the magnitude half of the control: the rows rule cannot see a pipeline that keeps writing rows repriced to nothing (2026-07-29).", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "BillingSettlementStale",
+          "expr": "(max(brevitas_billing_last_settlement_age_seconds) > 172800) and on() (brevitas_alerting_armed_billing_volume == 1)",
+          "for": "30m",
+          "labels": {"severity": "page"},
+          "annotations": {"summary": "No billing settlement has been written in two days, sized to the seven-day period cadence", "arming": "Shares the brevitas_alerting_armed_billing_volume gate; also requires the billing loop to export brevitas.billing.last_settlement_age (fail-closed seed) before arming.", "runbook": "docs/OBSERVABILITY.md#billing-recovery"}
+        },
+        {
+          "alert": "ExternalApiAuthDenialSpike",
+          "expr": "(sum(rate(brevitas_api_requests_total{surface=\"external\",outcome=\"auth_denied\"}[30m])) / clamp_min(sum(rate(brevitas_api_requests_total{surface=\"external\"}[30m])), 0.000001) > 0.25) and on() (brevitas_alerting_armed_auth_denial == 1)",
+          "for": "30m",
+          "labels": {"severity": "ticket"},
+          "annotations": {"summary": "More than a quarter of external API traffic is being rejected as unauthenticated or forbidden", "arming": "Disarmed by default: expired dashboard sessions and misconfigured customer SDKs produce a steady 401 baseline, so the 0.25 ratio must be checked against a real week of brevitas_api_requests_total{outcome=\"auth_denied\"} before arming brevitas_alerting_armed_auth_denial. Ticket, never page, so it cannot desensitise on-call to the burn-rate alerts.", "runbook": "docs/OBSERVABILITY.md#api-errors-and-latency"}
+        }
+      ]
     }
   ]
 }

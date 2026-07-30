@@ -16,11 +16,24 @@ security report, DPA, transfer mechanism, retention/deletion, incident terms, an
 | OpenAI | Customer-selected model processing | Transient request/response content and customer/provider credentials as configured | Contract/region dependent | Review/contract required |
 | Anthropic | Customer-selected model processing | Transient request/response content and customer/provider credentials as configured | Contract/region dependent | Review/contract required |
 | Other model provider | Customer-selected model processing | Must be separately approved before enablement | TBD | Not approved by this draft |
+| PostHog | Product analytics and session replay for the website and authenticated dashboard | Pseudonymous account identifier, page/interaction events, approximate location, device/browser, input-masked session recordings; no prompts, responses, or request/response bodies | United States (configured project); verify | In production — review and DPA required |
+| IONOS | Transactional and account email | Recipient address and message content | Verify | In production — review and DPA required |
+| Mailgun | Transactional and account email | Recipient address and message content | Verify | In production — review and DPA required |
+| Google Cloud KMS | Credential-envelope key control (`brevitas.security.google_cloud_kms`) | Wrapped data-encryption keys and content-free encryption context digests; no plaintext keys or customer content | US `global` keyring; verify | In production — review and DPA required |
 | Monitoring provider | OpenTelemetry logs/metrics/traces | Content-free allowlisted telemetry only | TBD | Provider not selected |
-| Backup object store/KMS | Encrypted logical backup and key control | Encrypted database artifact, manifest, content-free evidence | TBD, separate failure domain | Provider not selected |
+| Backup object store | Encrypted logical backup in an independent failure domain | Encrypted database artifact, manifest, content-free evidence | TBD, separate failure domain | Provider not selected |
 
-No names, emails, prompts, or responses enter the monitoring provider. Provider credentials are
-managed secrets/KMS-protected and do not enter backup manifests, audit details, or logs.
+No names, emails, prompts, or responses enter the monitoring provider. PostHog is a separate
+processor and is not content-free: it receives a pseudonymous account identifier (server events send
+an unsalted SHA-256 of the account ID; the browser calls `identify()` with the Supabase user UUID),
+product events, and session recordings with all inputs and designated sensitive elements masked and
+network request/response capture disabled. Provider credentials are managed secrets/KMS-protected
+and do not enter backup manifests, audit details, or logs.
+
+Every row marked "In production" is already enabled and predates its diligence review; that is the
+gap this register exists to close, and no DPA may be executed while it is open. `public/privacy.html`
+is published and effective-dated, so it is the binding public statement: every vendor it names must
+appear above, and any addition here must be reflected there before the vendor is enabled.
 
 ## Change control
 

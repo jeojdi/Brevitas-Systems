@@ -39,6 +39,18 @@ spec:
               value: REPLACE_WITH_COMMIT_SHA
             - name: ALLOWED_ORIGINS
               value: https://brevitas-systems-staging.vercel.app
+            # Cloud Run always injects K_SERVICE, so hosted_runtime() is true and
+            # _validate_runtime_config() refuses to start without this. The single
+            # proxy hop in front of the container is the Cloud Run front end at
+            # 169.254.1.1; naming it (never "*", which api/server.py rejects) keeps
+            # the rate-limit peer address off the client-supplied X-Forwarded-For
+            # chain. Must equal the value on the live revision.
+            - name: FORWARDED_ALLOW_IPS
+              value: 169.254.1.1
+            # Strictly below the startup probe's timeoutSeconds, so /v1/health/ready
+            # answers 503 rather than hanging past the probe deadline.
+            - name: BREVITAS_HEALTH_TIMEOUT_SECONDS
+              value: "2"
             - name: BREVITAS_KMS_REQUIRED
               value: "true"
             - name: BREVITAS_KMS_PROVIDER
@@ -92,13 +104,22 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+          # Cloud Run has no readinessProbe, so startupProbe is the only lever that
+          # can hold a revision back from traffic: it must prove Postgres authority,
+          # Redis coordination and fresh active-KMS evidence, which only
+          # /v1/health/ready does. /v1/health/live answers 200 unconditionally, so a
+          # revision with a stale supabase-url/redis-url secret version used to take
+          # 100% of traffic and 500 every request. ~60s budget, and timeoutSeconds
+          # must be <= periodSeconds on Cloud Run.
           startupProbe:
             httpGet:
-              path: /v1/health/live
+              path: /v1/health/ready
               port: 8080
-            failureThreshold: 30
-            periodSeconds: 2
-            timeoutSeconds: 1
+            failureThreshold: 12
+            periodSeconds: 5
+            timeoutSeconds: 5
+          # Liveness stays on the dependency-free probe: a transient Redis or
+          # Supabase blip must not cause a restart storm.
           livenessProbe:
             httpGet:
               path: /v1/health/live

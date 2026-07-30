@@ -4,10 +4,17 @@ All compression is done by calling the Brevitas REST API so every call is tracke
 """
 from __future__ import annotations
 
+import warnings
+
 import httpx
 
 from .config import get as _cfg
 from .session import BrevitasSession
+
+# Usage reporting is fire-and-forget, so a wrong base_url produces no exception and
+# no signal at all — the pipeline keeps working and the savings simply never bill.
+# Warn once per process (not per call) the first time a report fails to land.
+_usage_report_warned = False
 
 try:
     import tiktoken
@@ -157,6 +164,28 @@ def compress_messages(
     return out_messages, baseline_tokens, compressed_tokens
 
 
+def _warn_usage_report_failed(cfg: dict) -> None:
+    """Warn once per process that usage reports are not landing.
+
+    Deliberately swallows everything: this is called from report_usage's except
+    branch, and a -W error filter turning the warning into an exception must not
+    become the pipeline break that report_usage exists to avoid. The api_key is
+    never included — only the destination the reports are going to.
+    """
+    global _usage_report_warned
+    if _usage_report_warned:
+        return
+    _usage_report_warned = True
+    try:
+        warnings.warn(
+            f"Brevitas usage reporting failed against {cfg.get('base_url')}; "
+            "savings will not be billed or shown",
+            stacklevel=3,
+        )
+    except Exception:
+        pass
+
+
 def report_usage(
     provider: str,
     model: str,
@@ -216,11 +245,16 @@ def report_usage(
                      "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens"):
             if name in labels:
                 payload[name] = labels[name]
-        httpx.post(
+        response = httpx.post(
             f"{cfg['base_url']}/v1/usage",
             headers={"X-Brevitas-Key": cfg["api_key"]},
             json=payload,
             timeout=5,
         )
+        # httpx.post does not raise on 4xx/5xx, so a wrong host that answers 404 is
+        # indistinguishable from success here unless the status is checked.
+        if response.status_code >= 400:
+            _warn_usage_report_failed(cfg)
     except Exception:
-        pass  # billing reporting is best-effort; never break the user's pipeline
+        # billing reporting is best-effort; never break the user's pipeline
+        _warn_usage_report_failed(cfg)

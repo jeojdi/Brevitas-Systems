@@ -39,6 +39,11 @@ AUDIT_ROLES = frozenset({
 ATOMIC_DASHBOARD_KEY_ROLES = frozenset({
     "company_owner", "company_admin", "member", "billing_admin",
 })
+# A `bvx login` device credential is an organization-scoped bearer key with
+# usage:write and customers:import, so only the roles that can administer the
+# company may kill one. Dashboard-session keys keep their own (wider) rule: a
+# member can always revoke their own browser session.
+DEVICE_KEY_REVOKE_ROLES = frozenset({"company_owner", "company_admin"})
 DASHBOARD_SESSION_PER_ACTOR_CAP = 8
 DASHBOARD_SESSION_PER_COMPANY_CAP = 1000
 COMPANY_ROLES = frozenset({
@@ -210,6 +215,132 @@ def _rpc_object(value: Any) -> dict[str, Any]:
     if isinstance(value, list):
         value = value[0] if len(value) == 1 else None
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _postgrest_function_missing(exc: requests.HTTPError) -> bool:
+    """True only for PostgREST's function-not-found signature (PGRST202).
+
+    api/ deploys on push while migrations are hand-applied, so a caller that
+    grew a dependency on a brand-new RPC must be able to recognize "the
+    function does not exist yet" (a deploy-ordering state with a documented
+    fallback) without also swallowing genuine failures.
+    """
+    response = getattr(exc, "response", None)
+    if response is None or int(getattr(response, "status_code", 0) or 0) != 404:
+        return False
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and str(body.get("code") or "") == "PGRST202"
+
+
+# Signatures for "the schema object this call needs has not been applied yet".
+# Deliberately NOT a catch-all: 42501 (permission denied) and every 5xx are real
+# faults with a different operator response, and reporting them as "not deployed"
+# would tell an operator to run a migration that is already applied.
+_POSTGREST_MISSING_OBJECT_CODES = frozenset({
+    "PGRST202",  # function not found in the schema cache
+    "PGRST205",  # table/view not found in the schema cache
+    "42883",     # undefined_function, forwarded from Postgres
+    "42P01",     # undefined_table
+    "42703",     # undefined_column (an older table shape, same deploy-order state)
+})
+
+
+def _postgrest_object_missing(exc: requests.HTTPError) -> bool:
+    """True when PostgREST says the function/relation/column does not exist yet.
+
+    Broader than _postgrest_function_missing (which is PGRST202 only) because a
+    settlement read touches tables, columns AND functions, and every one of them
+    arrives with a hand-applied migration while api/ deploys on push. See
+    SupabaseUsageStore.get_billing_settlement for what the caller does with it.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    if int(getattr(response, "status_code", 0) or 0) not in (400, 404):
+        return False
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    return (isinstance(body, dict)
+            and str(body.get("code") or "") in _POSTGREST_MISSING_OBJECT_CODES)
+
+
+# ── Netted period settlement (/v1/admin/billing/settlement) ───────────────────
+# The honest counterpart to /v1/admin/billing's amount_owed_usd, which is
+# sum(usage_log.brevitas_fee_usd) with every row floored at zero and no
+# warm-spend deduction. The real figure is period-scoped and lives behind
+# public.billing_period_settlement_summary (202607280013), which composes
+# billing_period_settlement_evidence (202607280008, widened by 0012) and
+# period_settlement_fee_microusd (202607280007).
+#
+# None of those are on the production project yet, and migrations there are
+# hand-applied one file at a time with no ledger. So EVERY read below is allowed
+# to come back "not deployed", and the answer to that is an explicit refusal —
+# never a zero. A wrong zero on an invoice screen is the failure this entire
+# workstream exists to prevent, and it is strictly worse than an error, because
+# an error gets investigated.
+SETTLEMENT_ACCOUNT_MAX = 500
+_MICROUSD = 1_000_000
+
+
+def _settlement_refusal(reason: str, **detail: Any) -> dict[str, Any]:
+    """A settlement answer that states a number for NOTHING."""
+    return {"settleable": False, "reason": reason, "organizations": [], **detail}
+
+
+def _microusd_to_usd(value: Any) -> float | None:
+    """Micro-dollars to dollars, or None when the RPC did not state a number.
+
+    None is NOT 0.0. A caller that cannot tell them apart renders "$0.00" for
+    "we do not know", which is the whole bug class.
+    """
+    if value is None:
+        return None
+    try:
+        return round(int(value) / _MICROUSD, 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _settlement_organization(summary: Any) -> dict[str, Any]:
+    """Project one billing_period_settlement_summary jsonb into the API shape.
+
+    The RPC answers {'ok': false, 'code': ...} for the states it refuses to
+    price (no billing account, a period anchor that does not match the account's
+    live week, an unavailable halting-conditions guard). Those are carried
+    through as a per-organization refusal with the RPC's own code, NOT flattened
+    into zeros.
+    """
+    body = _rpc_object(summary)
+    if body.get("ok") is not True:
+        return {"settleable": False,
+                "reason": str(body.get("code") or "settlement_summary_refused")}
+    return {
+        "settleable": True,
+        "reason": "",
+        "period_start": body.get("period_start") or "",
+        "period_end": body.get("period_end") or "",
+        "settlement_status": str(body.get("settlement_status") or "accruing"),
+        "settlement_id": body.get("settlement_id"),
+        "revision": body.get("revision"),
+        "billing_arrangement": str(body.get("billing_arrangement") or ""),
+        "billable": body.get("billable") is True,
+        # Four DIFFERENT numbers that a single "amount owed" would conflate:
+        # what the open week projects, what the ledger has settled, what has
+        # actually been reported to Stripe, and what is committed (queued or
+        # beyond). Each may legitimately be null.
+        "estimated_fee_usd": _microusd_to_usd(body.get("estimated_fee_microusd")),
+        "settled_fee_usd": _microusd_to_usd(body.get("settled_fee_microusd")),
+        "reported_fee_usd": _microusd_to_usd(body.get("reported_fee_microusd")),
+        "committed_fee_usd": _microusd_to_usd(body.get("committed_fee_microusd")),
+        "needs_review_count": int(body.get("needs_review_count") or 0),
+        "attention_count": int(body.get("attention_count") or 0),
+        "evidence": body.get("evidence") if isinstance(body.get("evidence"), dict) else {},
+    }
 
 
 def _validated_onboarding_status(value: Any, organization_id: str) -> dict[str, Any]:
@@ -520,6 +651,36 @@ def _batch_record_row(record: dict[str, Any]) -> dict[str, Any]:
     quality_proxy = values.pop("quality_proxy", None)
     return _usage_row(str(key_hash), int(baseline_tokens), int(optimized_tokens),
                       float(savings_pct or 0), quality_proxy, **values)
+
+
+def _fill_organization_id(row: dict[str, Any], resolve: Any) -> dict[str, Any]:
+    """Attribute a receipt to the tenant that owns its API key.
+
+    `_usage_row` defaults `organization_id` to `""` when a caller omits it, so a
+    caller-side omission used to become an untenanted receipt with no error and
+    no log line. `key_hash` is required on every write path and
+    `api_keys.organization_id` is the authoritative key->tenant binding, so the
+    org is derivable here. A caller-supplied org is never overwritten, and no org
+    is invented: personal/legacy keys with no organization stay untenanted.
+    """
+    if row.get("organization_id"):
+        return row
+    key_hash = str(row.get("key_hash") or "")
+    if key_hash:
+        row["organization_id"] = str(resolve(key_hash) or "")
+    return row
+
+
+def _organization_cache(records: list[Any], lookup: Any) -> dict[str, str]:
+    """Resolve each distinct org-less key_hash once, before any write begins."""
+    cache: dict[str, str] = {}
+    for record in records:
+        if not isinstance(record, dict) or record.get("organization_id"):
+            continue
+        key_hash = str(record.get("key_hash") or "")
+        if key_hash and key_hash not in cache:
+            cache[key_hash] = str(lookup(key_hash) or "")
+    return cache
 
 
 def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
@@ -879,6 +1040,54 @@ def _audit_row_provider(row: dict[str, Any]) -> str:
             or infer_provider(str(row.get("model") or "")) or "unknown")
 
 
+# Longest provider prompt-cache TTL (Anthropic extended cache_control is 1h;
+# OpenAI/DeepSeek automatic caching evicts sooner). Two usage rows sharing a
+# session_id only count as "repeat" traffic when they land within this window.
+_AUDIT_REPEAT_WINDOW_S = 3600.0
+
+
+def _repeat_session_counts(
+        sessions: dict[str, list[datetime | None]]) -> tuple[int, int]:
+    """(repeat_sessions, repeat_session_rows) from time-clustered sessions.
+
+    usage_log.session_id is a BUCKET key, not a conversation id: the proxy
+    derives it as a stable hash of {operation, tenant, provider, model, agent}
+    (brevitas/proxy.py `_stable_session_id`), so rows weeks apart can share
+    one. The audit window is the most recent ACTIVITY_SCAN_MAX rows with no
+    time bound, so counting bare session_id collisions would read "this tenant
+    called this model twice, ever" as repeat traffic.
+
+    That matters because the only consumer (_audit_verdict_byte_stability)
+    reads "repeat traffic yet near-zero cache hits" as evidence of unstable
+    prompt bytes. It is only evidence when the calls were close enough
+    together that a provider cache entry could still have been live; across
+    weeks a 0% hit rate is structural, not churn. So rows in a session are
+    split into clusters whenever consecutive rows are more than
+    `_AUDIT_REPEAT_WINDOW_S` apart, and only clusters of >= 2 rows count.
+
+    Rows with no parseable ts cannot be ordered or separated, so they stay in
+    a single cluster (the untimed legacy behaviour) rather than being dropped.
+    """
+    repeat_sessions = repeat_rows = 0
+    for stamps in sessions.values():
+        timed = sorted(s for s in stamps if s is not None)
+        untimed = len(stamps) - len(timed)
+        clusters: list[int] = [untimed] if untimed else []
+        previous: datetime | None = None
+        for stamp in timed:
+            if (previous is not None
+                    and (stamp - previous).total_seconds() <= _AUDIT_REPEAT_WINDOW_S):
+                clusters[-1] += 1
+            else:
+                clusters.append(1)
+            previous = stamp
+        repeating = [n for n in clusters if n >= 2]
+        if repeating:
+            repeat_sessions += 1
+        repeat_rows += sum(repeating)
+    return repeat_sessions, repeat_rows
+
+
 def _audit_metrics(rows: list[dict[str, Any]],
                    warm_providers: list[dict[str, Any]] | None) -> dict[str, Any]:
     """Traffic-side evidence for the optimization audit (GET /v1/audit).
@@ -909,7 +1118,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
     caller_1h_rows = brevitas_1h_rows = 0
     warm_rows = 0
     discount = attributable = 0.0
-    sessions: dict[str, int] = {}
+    sessions: dict[str, list[datetime | None]] = {}
     for row in rows:
         provider = _audit_row_provider(row)
         strategy = _audit_base_strategy(row)
@@ -964,7 +1173,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
         attributable += _billable_cache_savings(row)
         session = str(row.get("session_id") or "")
         if session:
-            sessions[session] = sessions.get(session, 0) + 1
+            sessions.setdefault(session, []).append(_parse_ts(row.get("ts")))
     for entry in per_provider.values():
         total = entry["cached_input_tokens"] + entry["fresh_input_tokens"]
         if total:
@@ -973,7 +1182,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
     cached_total = sum(e["cached_input_tokens"] for e in per_provider.values())
     fresh_total = sum(e["fresh_input_tokens"] for e in per_provider.values())
     input_total = cached_total + fresh_total
-    repeat_session_rows = sum(n for n in sessions.values() if n >= 2)
+    repeat_sessions, repeat_session_rows = _repeat_session_counts(sessions)
     warm = _warm_totals(warm_providers)
     return {
         "schema": "brevitas.audit-metrics.v1",
@@ -992,7 +1201,7 @@ def _audit_metrics(rows: list[dict[str, Any]],
         "repeat": {
             "exact_cache_rows": exact_cache_rows,
             "calls_avoided": calls_avoided,
-            "repeat_sessions": sum(1 for n in sessions.values() if n >= 2),
+            "repeat_sessions": repeat_sessions,
             "repeat_session_rows": repeat_session_rows,
         },
         "streaming": {
@@ -1022,6 +1231,9 @@ def _audit_metrics(rows: list[dict[str, Any]],
         "approximations": [
             "metrics cover a bounded window of the most recent usage rows, "
             "not all-time history",
+            "repeat-session evidence counts only rows sharing a session_id "
+            "within one hour of each other (the longest provider cache TTL); "
+            "session_id is a per-model bucket key, not a conversation id",
             "cache ownership is inferred from the stored cache_attributable "
             "flag; the original cache_control owner string is not persisted",
         ],
@@ -1426,17 +1638,33 @@ class UsageStore:
         if account_type not in {"individual", "company"}:
             raise ValueError("invalid account type")
         with self._conn() as db:
+            member_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(organization_members)")
+            }
+            # Same active-membership filter as the hosted path: a retained
+            # 'removed' row must not stand in for a live workspace.
+            active_clause = " AND m.status='active'" if "status" in member_columns else ""
             row = db.execute(
-                "SELECT o.id,o.name,o.billing_owner_id,o.account_type FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=? ORDER BY m.created_at LIMIT 1",
+                "SELECT o.id,o.name,o.billing_owner_id,o.account_type FROM organizations o JOIN organization_members m ON m.organization_id=o.id "
+                f"WHERE m.user_id=?{active_clause} ORDER BY m.created_at,m.organization_id LIMIT 1",
                 (user_id,),
             ).fetchone()
             if not row:
-                organization_id = str(uuid.uuid4())
                 now = _now()
-                db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,account_type,created_at,onboarding_started_at) VALUES(?,?,?,?,?,?,?)",
-                           (organization_id, name or "My organization", user_id, user_id,
-                            account_type, now, now))
-                db.execute("INSERT INTO organization_members(organization_id,user_id,role,created_at) VALUES(?,?,?,?)",
+                # Mirrors rpc/ensure_workspace_organization: legacy_owner_id is
+                # UNIQUE, so a user who already created a workspace reuses it, and
+                # the membership insert is a no-op when a row already exists — a
+                # 'removed' membership is NOT silently promoted back to owner.
+                existing = db.execute(
+                    "SELECT id FROM organizations WHERE legacy_owner_id=? LIMIT 1",
+                    (user_id,),
+                ).fetchone()
+                organization_id = str(existing[0]) if existing else str(uuid.uuid4())
+                if not existing:
+                    db.execute("INSERT INTO organizations(id,name,legacy_owner_id,billing_owner_id,account_type,created_at,onboarding_started_at) VALUES(?,?,?,?,?,?,?)",
+                               (organization_id, name or "My organization", user_id, user_id,
+                                account_type, now, now))
+                db.execute("INSERT OR IGNORE INTO organization_members(organization_id,user_id,role,created_at) VALUES(?,?,?,?)",
                            (organization_id, user_id, "owner", now))
                 row = db.execute("SELECT id,name,billing_owner_id,account_type FROM organizations WHERE id=?", (organization_id,)).fetchone()
         return {"id": row[0], "name": row[1], "billing_owner_id": row[2],
@@ -1717,11 +1945,23 @@ class UsageStore:
         return ({"id": row[0], "external_id": row[1], "display_name": row[2], "status": row[3]}
                 if row else None)
 
-    def list_customers(self, organization_id: str) -> list[dict[str, Any]]:
+    def list_customers(self, organization_id: str, *, limit: int = 0,
+                       offset: int = 0) -> list[dict[str, Any]]:
+        sql = ("SELECT id,external_id,display_name,status,created_at,updated_at "
+               "FROM customers WHERE organization_id=? ORDER BY created_at DESC")
+        params: list[Any] = [organization_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
         with self._conn() as db:
-            rows = db.execute("SELECT id,external_id,display_name,status,created_at,updated_at FROM customers WHERE organization_id=? ORDER BY created_at DESC",
-                              (organization_id,)).fetchall()
+            rows = db.execute(sql, tuple(params)).fetchall()
         return [dict(row) for row in rows]
+
+    def customer_count_at_least(self, organization_id: str, threshold: int) -> bool:
+        with self._conn() as db:
+            row = db.execute("SELECT COUNT(*) FROM customers WHERE organization_id=?",
+                             (organization_id,)).fetchone()
+        return int((row or [0])[0] or 0) >= max(1, int(threshold))
 
     def cache_enabled(self, organization_id: str, customer_id: str = "") -> bool:
         if not organization_id:
@@ -2088,13 +2328,19 @@ class UsageStore:
                                                  ) if billing_member else "")
                                 if billing_role in COMPANY_ROLES:
                                     owner_id = str(billing_owner[0])
+                            # created_by is the APPROVING human, not the billing
+                            # owner that owner_id carries for fee attribution:
+                            # deprovisioning has to be able to find the departed
+                            # engineer's own device credentials.
                             db.execute(
                                 "INSERT INTO api_keys(id,key_hash,name,created,owner_id,"
-                                "organization_id,key_type,scopes) VALUES (?,?,?,?,?,?,?,?)",
+                                "organization_id,key_type,scopes,created_by) "
+                                "VALUES (?,?,?,?,?,?,?,?,?)",
                                 (key_id, exchange["key_hash"], "bvx device", now,
                                  owner_id, organization_id, "device",
                                  "proxy:invoke,usage:write,repositories:register,"
-                                 "installations:register,customers:import"),
+                                 "installations:register,customers:import",
+                                 exchange["owner_id"]),
                             )
                             receipt_id = str(uuid.uuid4())
                             db.execute(
@@ -2274,7 +2520,7 @@ class UsageStore:
 
     def key_context(self, key_hash: str) -> dict[str, Any] | None:
         with self._conn() as db:
-            row = db.execute("SELECT key_hash,owner_id,organization_id,service_account_id,key_type,scopes,environment FROM api_keys WHERE key_hash=? AND revoked_at='' AND (expires_at='' OR expires_at>?)",
+            row = db.execute("SELECT key_hash,owner_id,organization_id,service_account_id,key_type,scopes,environment,created FROM api_keys WHERE key_hash=? AND revoked_at='' AND (expires_at='' OR expires_at>?)",
                              (key_hash, _now())).fetchone()
             if row:
                 db.execute("UPDATE api_keys SET last_used_at=? WHERE key_hash=?", (_now(), key_hash))
@@ -2283,6 +2529,18 @@ class UsageStore:
         result = dict(row)
         result["scopes"] = [scope for scope in str(result.get("scopes") or "").split(",") if scope]
         return result
+
+    def key_organization(self, key_hash: str) -> str:
+        """Read-only tenant lookup for usage attribution.
+
+        Unlike `key_context` this does not touch `last_used_at` and does not
+        filter on revoked/expired: attribution of a receipt must not change when
+        the key that produced it is later revoked.
+        """
+        with self._conn() as db:
+            row = db.execute("SELECT organization_id FROM api_keys WHERE key_hash=?",
+                             (key_hash,)).fetchone()
+        return str(row[0] or "") if row else ""
 
     def key_owner(self, key_hash: str) -> str:
         with self._conn() as db:
@@ -2316,12 +2574,27 @@ class UsageStore:
                  "environment": row[6], "prefix": row[7], "last_used_at": row[8],
                  "revoked_at": row[9]} for row in rows]
 
+    def organization_key_type(self, organization_id: str, target_key_id: str) -> str:
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT key_type FROM api_keys WHERE id=? AND organization_id=? LIMIT 1",
+                (target_key_id, organization_id),
+            ).fetchone()
+        return str(row[0] or "") if row else ""
+
     def revoke_organization_key(self, organization_id: str, target_key_id: str,
                                 actor_user_id: str = "", request_id: str = "",
-                                actor_role: str = "legacy") -> bool:
+                                actor_role: str = "legacy",
+                                key_type: str = "") -> bool:
         actor_id, audit_request_id, audit_role = _audit_identity(
             actor_user_id, request_id, actor_role,
         )
+        # Same rule as the hosted device RPC: a `bvx login` credential is an
+        # organization-wide bearer key, so only company owners/admins kill one.
+        if (key_type or self.organization_key_type(
+                organization_id, target_key_id)) == "device":
+            if audit_role not in DEVICE_KEY_REVOKE_ROLES:
+                raise ValueError("actor_role cannot revoke device keys")
         with self._conn() as db:
             cur = db.execute("UPDATE api_keys SET revoked_at=? WHERE id=? AND organization_id=? AND revoked_at=''",
                              (_now(), target_key_id, organization_id))
@@ -2345,6 +2618,34 @@ class UsageStore:
                 (_now(), organization_id, key_type, actor_user_id),
             )
         return int(cur.rowcount or 0)
+
+    def append_audit_event(self, *, action: str, target_type: str, target_id: str,
+                           actor_id: str, actor_role: str, request_id: str = "",
+                           organization_id: str = "",
+                           outcome: str = "committed") -> None:
+        """Append one content-free audit row.
+
+        organization_id is empty for platform-scoped (cross-tenant Brevitas staff)
+        actions, which have no single tenant to attribute.
+        """
+        resolved_actor, audit_request_id, resolved_role = _audit_identity(
+            actor_id, request_id, actor_role,
+        )
+        if outcome not in ("committed", "denied"):
+            raise ValueError("invalid audit outcome")
+        with self._conn() as db:
+            db.execute(
+                "INSERT INTO audit_events(organization_id,actor_user_id,action,"
+                "target_type,target_id,details,occurred_at,request_id,actor_id,"
+                "actor_role,outcome) VALUES(?,?,?,?,?,'{}',?,?,?,?,?)",
+                (organization_id,
+                 # Mirrors append_company_audit: actor_user_id only carries a
+                 # real identity when the actor id is one.
+                 resolved_actor if re.fullmatch(r"[0-9a-fA-F-]{36}", resolved_actor)
+                 else "",
+                 action, target_type, target_id, _now(), audit_request_id,
+                 resolved_actor, resolved_role, outcome),
+            )
 
     def register_installation(self, organization_id: str, service_account_id: str,
                               installation_id: str, repository: str | None, environment: str,
@@ -2439,10 +2740,19 @@ class UsageStore:
                               (organization_id,)).fetchall()
         return [dict(row) for row in rows]
 
-    def organization_inventory(self, organization_id: str) -> dict[str, Any]:
+    def organization_inventory(self, organization_id: str, *,
+                               actor_user_id: str = "", request_id: str = "",
+                               actor_role: str = "legacy") -> dict[str, Any]:
         with self._conn() as db:
+            member_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(organization_members)")
+            }
+            # An access review must not present removed/disabled members as current.
+            status_column = "status" if "status" in member_columns else "'active' AS status"
+            active_clause = " AND status='active'" if "status" in member_columns else ""
             members = [dict(row) for row in db.execute(
-                "SELECT user_id,role,created_at FROM organization_members WHERE organization_id=? ORDER BY created_at",
+                f"SELECT user_id,role,{status_column},created_at FROM organization_members "
+                f"WHERE organization_id=?{active_clause} ORDER BY created_at",
                 (organization_id,),
             ).fetchall()]
             devices = [dict(row) for row in db.execute(
@@ -2457,6 +2767,7 @@ class UsageStore:
                        "keys": len(keys), "devices": len(devices),
                        "installations": len(installations)},
             "members": members, "customers": customers, "keys": keys,
+            "keys_next_cursor": "", "keys_has_more": False,
             "devices": devices, "installations": installations,
         }
 
@@ -2507,16 +2818,31 @@ class UsageStore:
                                  (target_key_hash, current_key_hash))
         return bool(cur.rowcount)
 
-    def has_request(self, key_hash: str, request_id: str) -> bool:
+    def has_request(self, key_hash: str, request_id: str,
+                    authoritative: Optional[bool] = None) -> bool:
+        """Idempotency probe for a reported request id.
+
+        `authoritative` scopes the read to rows of the SAME authority. A
+        non-authoritative analytics row must never suppress the billable
+        authoritative receipt for the same id (nor the mirror image), because
+        request_id is derived from provider-visible material and the two writers
+        are different code paths. None keeps the historical whole-log behaviour.
+        """
         if not request_id:
             return False
+        sql = "SELECT 1 FROM usage_log WHERE key_hash=? AND request_id=?"
+        params: list[Any] = [key_hash, request_id]
+        if authoritative is not None:
+            sql += " AND authoritative=?"
+            params.append(1 if authoritative else 0)
         with self._conn() as db:
-            return db.execute("SELECT 1 FROM usage_log WHERE key_hash=? AND request_id=?", (key_hash, request_id)).fetchone() is not None
+            return db.execute(sql, tuple(params)).fetchone() is not None
 
     def record_usage(self, key_hash: str, baseline_tokens: int, optimized_tokens: int,
                      savings_pct: float = 0, quality_proxy: Optional[float] = None,
                      **values: Any) -> bool:
         row = _usage_row(key_hash, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, **values)
+        _fill_organization_id(row, self.key_organization)
         columns = list(row)
         try:
             with self._conn() as db:
@@ -2532,10 +2858,14 @@ class UsageStore:
             raise ValueError(f"usage batch exceeds maximum of {USAGE_BATCH_MAX}")
         result = {"read": len(records), "inserted": 0, "duplicates": 0, "failed": 0}
         failed_records: list[dict[str, Any]] = []
+        # Resolve tenants before opening the write connection: no nested
+        # connection inside the batch transaction, and one lookup per key.
+        organizations = _organization_cache(records, self.key_organization)
         with self._conn() as db:
             for record in records:
                 try:
                     row = _batch_record_row(record)
+                    _fill_organization_id(row, organizations.get)
                     columns = list(row)
                     db.execute(
                         f"INSERT INTO usage_log ({','.join(columns)}) VALUES "
@@ -2670,6 +3000,19 @@ class UsageStore:
     def get_admin_report(self, filters: dict[str, str]) -> dict[str, Any]:
         rows = _filter_admin_rows(self._all_rows(), filters)
         return {"totals": _stats(rows), "rows": _admin_breakdown(rows)}
+
+    def get_billing_settlement(self) -> dict[str, Any]:
+        """Never settleable on SQLite, and it says so.
+
+        The whole settlement chain (202607280007/0008/0012/0013) is Postgres:
+        period_settlement_ledger, the halting-conditions guard and the summary
+        RPC have no SQLite equivalent, and this backend is the local/dev store.
+        Synthesising a number here from sum(brevitas_fee_usd) would reproduce
+        exactly the un-netted, per-row-floored figure that /v1/admin/billing
+        already labels settlement_pending — a confident wrong number in the one
+        place that exists to stop them.
+        """
+        return _settlement_refusal("settlement_ledger_requires_postgres")
 
     def get_admin_report_page(self, filters: dict[str, str], *,
                               sort: str = "actual_cost_usd", direction: str = "desc",
@@ -3290,8 +3633,16 @@ class SupabaseUsageStore:
                             account_type: str = "company") -> dict[str, Any]:
         if account_type not in {"individual", "company"}:
             raise ValueError("invalid account type")
+        # company_admin_set_member RETAINS removed/disabled rows, so an unfiltered
+        # probe would hand a departed member their ex-employer's organization and
+        # skip workspace creation forever (bootstrap then 503s on every retry).
+        # Order is explicit because `limit 1` over several memberships is otherwise
+        # nondeterministic across replicas.
         member = self._request("GET", "organization_members", params={
-            "select": "organization_id", "user_id": f"eq.{user_id}", "limit": "1",
+            "select": "organization_id", "user_id": f"eq.{user_id}",
+            "status": "eq.active",
+            "role": f"in.({','.join(sorted(COMPANY_ROLES))})",
+            "order": "created_at.asc,organization_id.asc", "limit": "1",
         }) or []
         if member:
             organization_id = member[0]["organization_id"]
@@ -3436,11 +3787,29 @@ class SupabaseUsageStore:
         }) or []
         return rows[0] if rows else None
 
-    def list_customers(self, organization_id: str) -> list[dict[str, Any]]:
-        return self._request("GET", "customers", params={
+    def list_customers(self, organization_id: str, *, limit: int = 0,
+                       offset: int = 0) -> list[dict[str, Any]]:
+        params = {
             "select": "id,external_id,display_name,status,created_at,updated_at",
             "organization_id": f"eq.{organization_id}", "order": "created_at.desc",
+        }
+        if limit > 0:
+            params["limit"] = str(int(limit))
+            params["offset"] = str(max(0, int(offset)))
+        return self._request("GET", "customers", params=params) or []
+
+    def customer_count_at_least(self, organization_id: str, threshold: int) -> bool:
+        """Existence probe instead of a count: _request returns no PostgREST headers.
+
+        One indexed row at the offset answers "is this organization already at the cap"
+        with a constant-size payload, which the auto-provision path needs to stay cheap.
+        """
+        rows = self._request("GET", "customers", params={
+            "select": "id", "organization_id": f"eq.{organization_id}",
+            "order": "created_at.asc", "limit": "1",
+            "offset": str(max(0, int(threshold) - 1)),
         }) or []
+        return bool(rows)
 
     def create_device_request(self, device_hash: str, expires_at: str) -> None:
         self._request("DELETE", "bvx_device_auth", params={"expires_at": f"lt.{_now()}"})
@@ -3455,6 +3824,25 @@ class SupabaseUsageStore:
             data={"p_device_hash": device_hash},
         ))
         return value or None
+
+    def compliance_tenant_authority(self, actor_user_id: str,
+                                    organization_id: str) -> bool:
+        """True only when an immutable platform grant binds this operator to this tenant.
+
+        The DSR tenant cannot come from the operator's own active workspace (a
+        mutable UI preference), and it cannot come from the request body alone
+        either — the RPC is the arbiter, and the submit RPCs re-check the pair.
+        """
+        actor_uuid = _required_uuid(actor_user_id, "actor_user_id")
+        organization_uuid = _required_uuid(organization_id, "organization_id")
+        result = _rpc_object(self._request(
+            "POST", "rpc/compliance_tenant_authority", data={
+                "p_actor_user_id": actor_uuid,
+                "p_organization_id": organization_uuid,
+            },
+        ))
+        return (result.get("ok") is True
+                and str(result.get("organization_id") or "") == organization_uuid)
 
     def resolve_device_approval_organization(
             self, owner_id: str,
@@ -3608,7 +3996,7 @@ class SupabaseUsageStore:
 
     def key_context(self, key_hash: str) -> dict[str, Any] | None:
         rows = self._request("GET", "api_keys", params={
-            "select": "key_hash,owner_id,organization_id,service_account_id,key_type,scopes,environment,expires_at,revoked_at",
+            "select": "key_hash,owner_id,organization_id,service_account_id,key_type,scopes,environment,created,expires_at,revoked_at",
             "key_hash": f"eq.{key_hash}", "revoked_at": "is.null", "limit": "1",
         }) or []
         if not rows:
@@ -3620,6 +4008,13 @@ class SupabaseUsageStore:
         self._request("PATCH", "api_keys", params={"key_hash": f"eq.{key_hash}"},
                       data={"last_used_at": _now()}, prefer="return=minimal")
         return row
+
+    def key_organization(self, key_hash: str) -> str:
+        """Read-only tenant lookup for usage attribution (see UsageStore)."""
+        rows = self._request("GET", "api_keys", params={
+            "select": "organization_id", "key_hash": f"eq.{key_hash}", "limit": "1",
+        }) or []
+        return str(rows[0].get("organization_id") or "") if rows else ""
 
     def key_owner(self, key_hash: str) -> str:
         rows = self._request("GET", "api_keys", params={
@@ -3709,9 +4104,28 @@ class SupabaseUsageStore:
         return {"keys": rows, "next_cursor": next_cursor,
                 "has_more": has_more, "limit": page_limit}
 
+    def organization_key_type(self, organization_id: str, target_key_id: str) -> str:
+        """Read-only type lookup so the route can pick the right audited RPC.
+
+        Kept out of revoke_organization_key on purpose: that method's contract is
+        exactly one rpc/*key* call and no direct api_keys read (tests/release_security
+        .test.mjs, tests/test_database_scaling.py).
+        """
+        try:
+            organization_uuid = _required_uuid(organization_id, "organization_id")
+            key_uuid = _required_uuid(target_key_id, "key_id")
+        except ValueError:
+            return ""
+        rows = self._request("GET", "api_keys", params={
+            "select": "key_type", "id": f"eq.{key_uuid}",
+            "organization_id": f"eq.{organization_uuid}", "limit": "1",
+        }) or []
+        return str(rows[0].get("key_type") or "") if isinstance(rows, list) and rows else ""
+
     def revoke_organization_key(self, organization_id: str, target_key_id: str,
                                 actor_user_id: str = "", request_id: str = "",
-                                actor_role: str = "legacy") -> bool:
+                                actor_role: str = "legacy",
+                                key_type: str = "") -> bool:
         organization_uuid = _required_uuid(organization_id, "organization_id")
         actor_uuid = _required_uuid(actor_user_id, "actor_user_id")
         key_uuid = _required_uuid(target_key_id, "key_id")
@@ -3722,14 +4136,40 @@ class SupabaseUsageStore:
         )
         if resolved_role not in ATOMIC_DASHBOARD_KEY_ROLES:
             raise ValueError("actor_role cannot revoke keys")
-        result = _rpc_object(self._request(
-            "POST", "rpc/company_admin_revoke_dashboard_session_key", data={
-                "p_organization_id": organization_uuid,
-                "p_actor_user_id": actor_uuid,
-                "p_key_id": key_uuid,
-                "p_request_id": audit_request_id,
-            },
-        ))
+        # One security-definer dispatcher (202607280019) locks the target row and
+        # branches on its own key_type, so there is a single round trip, a single
+        # audit event, and no client-side type sniffing. The strict
+        # dashboard-session RPC is deliberately NOT called here: it hard-rejects
+        # every other type, which is what made device credentials unrevokable.
+        # key_type stays a hint only, used for the local role gate below; the RPC
+        # re-reads the type itself, so a wrong hint can only ever narrow the
+        # result to forbidden_or_not_found.
+        if key_type == "device" and resolved_role not in DEVICE_KEY_REVOKE_ROLES:
+            raise ValueError("actor_role cannot revoke device keys")
+        rpc_payload = {
+            "p_organization_id": organization_uuid,
+            "p_actor_user_id": actor_uuid,
+            "p_key_id": key_uuid,
+            "p_request_id": audit_request_id,
+        }
+        try:
+            result = _rpc_object(self._request(
+                "POST", "rpc/company_admin_revoke_tenant_key", data=rpc_payload,
+            ))
+        except requests.HTTPError as exc:
+            # Rolling-deploy fallback: the dispatcher is defined in migration
+            # 202607280019, but api/ deploys on push while migrations are
+            # hand-applied, so a code-first deploy would otherwise 503 EVERY
+            # revocation — including dashboard sessions that work today. When
+            # PostgREST cannot resolve the function (PGRST202), degrade to the
+            # strict already-applied session RPC (202607170009): dashboard
+            # sessions keep revoking exactly as before, and device keys fail
+            # exactly as before, until 0019 is applied. Only the missing-function
+            # signature falls back; every other error stays fatal. Exactly one
+            # audited key RPC ever succeeds per revocation either way.
+            if not _postgrest_function_missing(exc):
+                raise
+            result = self._revoke_key_via_predispatcher_rpc(rpc_payload)
         if result.get("ok") is not True:
             raise RuntimeError(
                 f"atomic key revocation failed: {result.get('code') or 'rejected'}"
@@ -3738,11 +4178,51 @@ class SupabaseUsageStore:
             raise RuntimeError("atomic key revocation returned wrong key")
         return True
 
+    def _revoke_key_via_predispatcher_rpc(self, rpc_payload: dict) -> dict[str, Any]:
+        """Pre-0019 schema only: the strict session revoke RPC (202607170009).
+
+        Reached exclusively when the tenant dispatcher does not exist yet
+        (PGRST202 from revoke_organization_key). Same atomic key+audit boundary,
+        same argument shape; hard-rejects every non-session key type, which is
+        exactly the pre-0019 production behaviour a code-first deploy must not
+        make worse. Delete when 202607280019 is confirmed applied everywhere.
+        """
+        return _rpc_object(self._request(
+            "POST", "rpc/company_admin_revoke_dashboard_session_key",
+            data=rpc_payload,
+        ))
+
     def revoke_keys_by_type(self, organization_id: str, key_type: str,
                             actor_user_id: str = "") -> int:
         raise RuntimeError(
             "Supabase bulk key revocation is disabled; use an atomic audited key RPC"
         )
+
+    def append_audit_event(self, *, action: str, target_type: str, target_id: str,
+                           actor_id: str, actor_role: str, request_id: str = "",
+                           organization_id: str = "",
+                           outcome: str = "committed") -> None:
+        """Append one content-free audit row through the audited RPC boundary.
+
+        organization_id is empty for platform-scoped (cross-tenant Brevitas staff)
+        actions; audit_events.organization_id is nullable for exactly that case.
+        The row is content-free by contract: validate_audit_event_insert rejects any
+        non-empty details, so context has to live in action/target_type/target_id.
+        """
+        resolved_actor, audit_request_id, resolved_role = _audit_identity(
+            actor_id, request_id, actor_role,
+        )
+        self._request("POST", "rpc/append_company_audit", data={
+            "p_organization_id": (_required_uuid(organization_id, "organization_id")
+                                  if organization_id else None),
+            "p_actor_id": resolved_actor,
+            "p_actor_role": resolved_role,
+            "p_request_id": audit_request_id,
+            "p_action": action,
+            "p_target_type": target_type,
+            "p_target_id": target_id,
+            "p_outcome": outcome,
+        })
 
     def register_installation(self, organization_id: str, service_account_id: str,
                               installation_id: str, repository: str | None, environment: str,
@@ -3796,9 +4276,18 @@ class SupabaseUsageStore:
             "organization_id": f"eq.{organization_id}", "order": "last_seen_at.desc",
         }) or []
 
-    def organization_inventory(self, organization_id: str) -> dict[str, Any]:
+    def organization_inventory(self, organization_id: str, *,
+                               actor_user_id: str = "", request_id: str = "",
+                               actor_role: str = "legacy") -> dict[str, Any]:
+        """Access-review snapshot. Members are the CURRENT ones only.
+
+        Keys come from the paginated, role-filtered dashboard listing — the only
+        hosted key reader that exists — so `counts.keys` is a page count and
+        `keys_has_more`/`keys_next_cursor` say whether more exist.
+        """
         members = self._request("GET", "organization_members", params={
-            "select": "user_id,role,created_at", "organization_id": f"eq.{organization_id}",
+            "select": "user_id,role,status,created_at",
+            "organization_id": f"eq.{organization_id}", "status": "eq.active",
             "order": "created_at.asc",
         }) or []
         devices = self._request("GET", "devices", params={
@@ -3806,13 +4295,19 @@ class SupabaseUsageStore:
             "organization_id": f"eq.{organization_id}", "order": "last_seen_at.desc",
         }) or []
         customers = self.list_customers(organization_id)
-        keys = self.list_organization_keys(organization_id)
+        page = self.list_organization_keys_page(
+            organization_id, actor_user_id, request_id=request_id,
+            actor_role=actor_role,
+        )
+        keys = page["keys"]
         installations = self.list_installations(organization_id)
         return {
             "counts": {"members": len(members), "customers": len(customers),
                        "keys": len(keys), "devices": len(devices),
                        "installations": len(installations)},
             "members": members, "customers": customers, "keys": keys,
+            "keys_next_cursor": page["next_cursor"],
+            "keys_has_more": page["has_more"],
             "devices": devices, "installations": installations,
         }
 
@@ -3867,15 +4362,23 @@ class SupabaseUsageStore:
         self._request("DELETE", "api_keys", params={"key_hash": f"eq.{target_key_hash}"})
         return True
 
-    def has_request(self, key_hash: str, request_id: str) -> bool:
+    def has_request(self, key_hash: str, request_id: str,
+                    authoritative: Optional[bool] = None) -> bool:
+        """See UsageStore.has_request: `authoritative` scopes the probe to rows of
+        the same authority so an analytics row cannot suppress a billable receipt."""
         if not request_id:
             return False
-        return bool(self._request("GET", "usage_log", params={"select": "id", "key_hash": f"eq.{key_hash}", "request_id": f"eq.{request_id}", "limit": "1"}))
+        params = {"select": "id", "key_hash": f"eq.{key_hash}",
+                  "request_id": f"eq.{request_id}", "limit": "1"}
+        if authoritative is not None:
+            params["authoritative"] = f"eq.{'true' if authoritative else 'false'}"
+        return bool(self._request("GET", "usage_log", params=params))
 
     def record_usage(self, key_hash: str, baseline_tokens: int, optimized_tokens: int,
                      savings_pct: float = 0, quality_proxy: Optional[float] = None,
                      **values: Any) -> bool:
         row = _usage_row(key_hash, baseline_tokens, optimized_tokens, savings_pct, quality_proxy, **values)
+        _fill_organization_id(row, self.key_organization)
         # Postgres tenant identifiers are nullable UUIDs. Historical/unattributed
         # traffic uses NULL, never the invalid UUID literal ''.
         row["organization_id"] = row.get("organization_id") or None
@@ -3891,9 +4394,11 @@ class SupabaseUsageStore:
         result = {"read": len(records), "inserted": 0, "duplicates": 0, "failed": 0}
         prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
         failed_records: list[dict[str, Any]] = []
+        organizations = _organization_cache(records, self.key_organization)
         for record in records:
             try:
                 row = _batch_record_row(record)
+                _fill_organization_id(row, organizations.get)
                 row["organization_id"] = row.get("organization_id") or None
                 row["customer_id"] = row.get("customer_id") or None
                 prepared.append((dict(record), row))
@@ -4063,6 +4568,105 @@ class SupabaseUsageStore:
     def get_admin_breakdown(self) -> list[dict[str, Any]]:
         report = self.get_admin_report({})
         return report["rows"]
+
+    def _unattributed_authoritative_usage(self) -> bool:
+        """True when ANY authoritative row carries no organization_id.
+
+        usage_log.organization_id is a nullable uuid (202607170001), and every
+        settlement query in the chain is `where usage.organization_id = $1`. A
+        null therefore does not produce a small fee — it produces NO ROW in any
+        organization's evidence, so the row is invisible to settlement while
+        still being real billable traffic. Aggregating the per-organization
+        answers into a platform figure while such rows exist would understate
+        the total by an unknown amount and look exactly like a correct sum.
+        """
+        rows = self._request("GET", "usage_log", params={
+            "select": "id", "authoritative": "is.true",
+            "organization_id": "is.null", "limit": "1",
+        }) or []
+        return bool(rows)
+
+    def get_billing_settlement(self) -> dict[str, Any]:
+        """Netted, period-scoped settlement per organization — or a refusal.
+
+        Reads public.billing_period_settlement_summary (202607280013), which is
+        the ONLY supported read path: 202607280007 revokes every privilege on
+        period_settlement_ledger from service_role and three CI files assert it,
+        so there is no table to select and granting one would dismantle the
+        privilege model.
+
+        DEGRADES, never guesses. 202607280008/0012/0013 are not applied on the
+        production project, api/ deploys on push, and production has no
+        migration ledger — so "the function is not there yet" is the EXPECTED
+        state, not an error. Every such state returns settleable=false with a
+        reason. It never returns 0.
+        """
+        try:
+            unattributed = self._unattributed_authoritative_usage()
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+            return _settlement_refusal("usage_log_shape_unavailable")
+        try:
+            accounts = self._request("GET", "billing_accounts", params={
+                "select": "organization_id,current_period_start",
+                "organization_id": "not.is.null",
+                "order": "organization_id.asc",
+                "limit": str(SETTLEMENT_ACCOUNT_MAX),
+            }) or []
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+            return _settlement_refusal("billing_accounts_unavailable",
+                                       unattributed_authoritative_usage=unattributed)
+        organizations: list[dict[str, Any]] = []
+        for account in accounts:
+            organization_id = str(account.get("organization_id") or "")
+            period_start = account.get("current_period_start")
+            if not organization_id:
+                continue
+            if not period_start:
+                # No anchored week: the account exists but has never had a
+                # subscription period. Not zero owed — nothing to settle yet.
+                organizations.append({"organization_id": organization_id,
+                                      "settleable": False,
+                                      "reason": "no_current_period"})
+                continue
+            try:
+                summary = self._request("POST", "rpc/billing_period_settlement_summary", data={
+                    "p_organization_id": organization_id,
+                    "p_period_start": period_start,
+                })
+            except requests.HTTPError as exc:
+                if not _postgrest_object_missing(exc):
+                    raise
+                # One missing function means the migration is not applied at
+                # all, so stop asking per organization and refuse as a whole.
+                return _settlement_refusal(
+                    "settlement_summary_rpc_not_deployed",
+                    unattributed_authoritative_usage=unattributed)
+            organizations.append({"organization_id": organization_id,
+                                  **_settlement_organization(summary)})
+        # Settleable for the PLATFORM means: the chain is deployed, every
+        # organization priced cleanly, and no billable row is stranded without a
+        # tenant. Any one of those failing makes the platform total unstatable
+        # even though some organizations priced fine — their individual entries
+        # are still returned, so an operator can see which one is the problem.
+        if unattributed:
+            reason = "unattributed_authoritative_usage"
+        elif not organizations:
+            reason = "no_billing_accounts"
+        elif not all(entry.get("settleable") for entry in organizations):
+            reason = "organization_not_settleable"
+        else:
+            reason = ""
+        return {
+            "settleable": not reason,
+            "reason": reason,
+            "unattributed_authoritative_usage": unattributed,
+            "organizations": organizations,
+            "truncated": len(accounts) >= SETTLEMENT_ACCOUNT_MAX,
+        }
 
     def get_admin_report(self, filters: dict[str, str]) -> dict[str, Any]:
         allowed = {field: filters[field] for field in (
@@ -4288,6 +4892,35 @@ class SupabaseUsageStore:
         return _rpc_object(self._request("POST", "rpc/purge_warm_state", data={
             "p_retention_days": int(retention_days),
         }))
+
+    def purge_shared_endpoint_rate_limits(self, limit: int = 5000) -> int:
+        """Drain already-expired fixed-window limiter rows (202607280025).
+
+        Every limiter namespace sweeps its own scope inline, but only while its
+        endpoint is being hit; waitlist.global, waitlist.identity and the
+        billing_* scopes accumulate whenever those endpoints go quiet. The RPC
+        deletes ONLY rows whose window has already expired, so it can never hand
+        anyone back budget and is safe to run concurrently with every limiter.
+
+        Returns 0 — never raises — when 202607280025 has not been applied yet:
+        the worker deploys on push while migrations are hand-applied, and a
+        janitor that has nothing to call is not a fault.
+        """
+        try:
+            deleted = self._request(
+                "POST", "rpc/purge_expired_shared_endpoint_rate_limits",
+                data={"p_max_rows": max(1, min(int(limit), 100000))},
+            )
+        except requests.HTTPError as exc:
+            if _postgrest_object_missing(exc):
+                return 0
+            raise
+        if isinstance(deleted, list):
+            deleted = deleted[0] if len(deleted) == 1 else 0
+        try:
+            return max(0, int(deleted or 0))
+        except (TypeError, ValueError):
+            return 0
 
 
 class BoundedUsageWriter:

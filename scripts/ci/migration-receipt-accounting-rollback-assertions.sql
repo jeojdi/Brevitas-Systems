@@ -26,14 +26,17 @@ begin
            and usage.cache_attributable
     ) or (select count(*) from public.billing_ledger ledger
            join public.usage_log usage on usage.id=ledger.usage_log_id
-          where usage.request_id='release-receipt-accounting')<>1 then
+          where usage.request_id='release-receipt-accounting')<>0 then
         raise exception 'receipt rollback changed usage or billing evidence';
     end if;
-    if not exists (
+    -- Inverted by 202607280006 alongside the forward assertions: rolling back
+    -- receipt accounting must not resurrect per-row fee queueing. The trigger
+    -- stays retired until the period settlement ledger replaces it.
+    if exists (
         select 1 from pg_trigger trigger_state
          where trigger_state.tgrelid='public.usage_log'::regclass
            and trigger_state.tgname='queue_brevitas_fee_after_usage'
-           and trigger_state.tgenabled<>'D'
-    ) then raise exception 'receipt rollback removed the billing trigger'; end if;
+           and not trigger_state.tgisinternal
+    ) then raise exception 'receipt rollback resurrected the billing trigger'; end if;
 end;
 $$;

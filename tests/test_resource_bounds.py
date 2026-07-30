@@ -892,3 +892,38 @@ def test_hosted_serialized_transaction_model_is_deterministic_under_concurrency(
         thread.join()
 
     assert list(sorted(rows, reverse=True)) == ["row-19", "row-18", "row-17"]
+
+
+def test_api_launcher_bounds_asgi_admission_before_bodies_are_buffered(monkeypatch):
+    import api.serve as serve
+
+    class Socket:
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, _address):
+            pass
+
+        def fileno(self):
+            return 7
+
+    captured = {}
+    monkeypatch.setattr(serve.socket, "socket", lambda *_a, **_k: Socket())
+    monkeypatch.setattr(serve.uvicorn, "run",
+                        lambda *_args, **kwargs: captured.update(kwargs))
+
+    monkeypatch.delenv("BREVITAS_MAX_CONCURRENCY", raising=False)
+    monkeypatch.delenv("BREVITAS_LISTEN_BACKLOG", raising=False)
+    serve.main()
+    # Every JSON POST is buffered and parsed before the per-tenant lease is
+    # taken, so a ceiling must exist by default: unbounded acceptance is
+    # unbounded resident memory, and an OOM kill also strands limiter leases.
+    assert captured["limit_concurrency"] > 0
+    assert captured["backlog"] > 0
+
+    captured.clear()
+    monkeypatch.setenv("BREVITAS_MAX_CONCURRENCY", "64")
+    monkeypatch.setenv("BREVITAS_LISTEN_BACKLOG", "128")
+    serve.main()
+    assert captured["limit_concurrency"] == 64
+    assert captured["backlog"] == 128

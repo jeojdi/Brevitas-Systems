@@ -63,6 +63,48 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202607280003_multi_provider_warming.sql',
   'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql',
   'supabase/migrations/202607280005_installation_on_device_activation.sql',
+  'supabase/migrations/202607280006_retire_per_row_fee_trigger.sql',
+  'supabase/migrations/202607280007_period_settlement_ledger.sql',
+  'supabase/migrations/202607280008_billing_halting_conditions.sql',
+  'supabase/migrations/202607280009_billing_arrangement_attestation.sql',
+  'supabase/migrations/202607280010_period_settlement_send_latches.sql',
+  'supabase/migrations/202607280011_billing_ledger_unsent_release.sql',
+  'supabase/migrations/202607280012_settlement_evidence_warm_days.sql',
+  // 202607280013 MUST stay after 202607280012: the writer widens the OUT list of
+  // public.billing_period_settlement_evidence, and 202607280012 recreates that
+  // function with CREATE OR REPLACE, which PostgreSQL refuses once the OUT list
+  // has grown. Any replay path that re-runs 280012 after 280013 aborts loudly
+  // rather than narrowing the function out from under settle_billing_period.
+  'supabase/migrations/202607280013_period_settlement_writer.sql',
+  // Schema and authorization repairs. Each one redefines an object an EARLIER
+  // migration created, so every entry below must stay after the migration it
+  // supersedes: 202607280016 after 202607200011 (the compliance wrappers) and
+  // 202607280001 (the warming tables), 202607280017 after 202607280001,
+  // 202607280018 after 202607280003, 202607280020 after 202607200015,
+  // 202607280021 after 20260715, 202607280022 after 202607170005 and
+  // 202607200005, 202607280023 after 202607170007 and 202607200002. Reordering
+  // any of them behind its source migration silently restores the defect,
+  // because the frozen originals are all CREATE OR REPLACE.
+  'supabase/migrations/202607280014_drop_billing_monthly_view.sql',
+  'supabase/migrations/202607280015_browser_role_privilege_contract.sql',
+  'supabase/migrations/202607280016_compliance_warm_state_erasure.sql',
+  'supabase/migrations/202607280017_warm_evidence_retention_floor.sql',
+  'supabase/migrations/202607280018_warm_claim_lease_fence.sql',
+  'supabase/migrations/202607280019_tenant_device_key_revocation.sql',
+  'supabase/migrations/202607280020_expired_job_reclaim_fence.sql',
+  'supabase/migrations/202607280021_server_authoritative_legal_acceptance.sql',
+  'supabase/migrations/202607280022_audit_read_and_transition_evidence.sql',
+  'supabase/migrations/202607280023_retention_minimization_and_waitlist.sql',
+  // Widens 202607280015's browser-role contract, so it must stay after it.
+  'supabase/migrations/202607280024_browser_role_privilege_completion.sql',
+  // Adds a third waitlist window on top of 202607200010's shared limiter table,
+  // so it must stay after it (and after 202607280023, which owns the waitlist
+  // retention/erasure path this limiter deliberately stores nothing for).
+  'supabase/migrations/202607280025_waitlist_network_budget.sql',
+  // Replaces the 20260710 usage dedupe index with an authority-scoped one, so
+  // it must stay after 20260710 (the index) and 202607170001 (the column).
+  'supabase/migrations/202607280026_usage_log_authority_dedupe.sql',
+  'supabase/migrations/202607280027_browser_role_truncate_contract.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -763,6 +805,125 @@ function verifyReceiptAccountingAlignment() {
   }
 }
 
+// The upgrade rehearsal must be driven BY THE MANIFEST, not by a hand-written
+// list. It used to bind fixed array indexes, the last of which was
+// upgrade_migrations[39] = 202607280004, so 202607280005-202607280009 were listed
+// in both manifests, checksum-pinned, and never applied on the upgrade path at
+// all -- and appending a migration silently widened the gap instead of failing.
+// Production IS the upgrade path (one file at a time onto populated tables), so
+// that is the path with no coverage to lose.
+//
+// tests/release_security.test.mjs proves the full coverage property (every
+// manifest index is applied by some construct in the harness) and the harness
+// itself aborts at runtime naming any entry it did not apply. This is the third
+// leg, and the only one the RELEASE gate runs: release.yml's migrations-check job
+// invokes `npm run release:migrations:check`, i.e. this file and nothing else, so
+// the two structural guarantees the other legs rest on are asserted here too.
+function verifyUpgradeHarnessCoverage() {
+  const runner = read('scripts/ci/run-migration-tests.sh')
+  if (!/for \(\(index = 0; index < \$\{#upgrade_migrations\[@\]\}; index\+\+\)\); do\n\s*migration="\$\{upgrade_migrations\[\$\{index\}\]\}"/
+      .test(runner)) {
+    fail(
+      'scripts/ci/run-migration-tests.sh no longer drives the entire upgrade manifest from a ' +
+        'single loop; a hand-bound index list leaves newly appended migrations unapplied',
+    )
+  }
+  if (!runner.includes('Upgrade path never applied ${upgrade_migrations[${index}]}.') ||
+      !/^record_upgrade_applied\(\) \{$/m.test(runner)) {
+    fail(
+      'scripts/ci/run-migration-tests.sh lost the runtime guard that fails closed on an ' +
+        'upgrade manifest entry the run never applied',
+    )
+  }
+  for (const path of ['scripts/ci/migration-fresh-manifest.txt', 'scripts/ci/migration-upgrade-manifest.txt']) {
+    if (!runner.includes(path)) fail(`scripts/ci/run-migration-tests.sh no longer reads ${path}`)
+  }
+}
+
+// Forward-only schema change contract, made machine-checkable.
+//
+// 56 of the migrations in this chain have no reverse artifact, and that is the
+// declared posture rather than an omission: the files are checksum-pinned, the
+// production project has no migration ledger, and an honest inverse of a
+// data-transforming migration destroys evidence (an inverse of
+// 202607270002_widen_billing_events_money truncates money precision; an inverse
+// of the settlement-evidence migrations deletes settlement evidence, which
+// verifyReceiptAccountingAlignment and verifyDatabaseScalingRollback below
+// already refuse). Requiring a paired down-file would therefore either force
+// authors to write evidence-destroying DDL or red the build until 56 reverse
+// scripts exist.
+//
+// What is required instead is a DECLARATION. Every migration added from the
+// cutoff onward must carry a `-- REVERSE:` header line naming one of three
+// postures, so the rollback story for a change is written down while the author
+// still knows it, and the release gate can no longer be read as if the chain had
+// tested reverse paths.
+//
+// The cutoff is the next unused migration number (tests/release_security.test.mjs
+// pins that it stays ahead of the applied chain): adding the header to an
+// already-applied migration changes its frozen checksum, and per MEMORY
+// "production-schema-drift" the production project has no ledger to re-baseline
+// against.
+//
+// On its own that would leave the control VACUOUS on the day it lands -- the
+// governed set would be empty, and the 202607280013+ block is exactly the set
+// with no recorded rollback posture. Those migrations were authored in this
+// change set and have reached no database beyond ephemeral CI locals, so their
+// headers were added and their digests refrozen in the same commit, and the
+// BACKFILL FLOOR below extends enforcement to them explicitly. Everything
+// before the floor stays ungoverned deliberately (202607280010-202607280012
+// are the repo owner's in-flight work and are off-limits either way).
+const REVERSE_POSTURE_CUTOFF = '202607280029'
+const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
+const REVERSE_POSTURE_PATTERN =
+  /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/
+
+function verifyReversePosture() {
+  if (REVERSE_POSTURE_BACKFILL_FLOOR > REVERSE_POSTURE_CUTOFF) {
+    fail('The reverse-posture backfill floor cannot be past the cutoff')
+  }
+  const governed = expectedFreshMigrationOrder.filter((path) => {
+    const name = path.slice('supabase/migrations/'.length)
+    // Same-day migrations sort lexically by the numeric prefix the manifest uses.
+    return name.slice(0, REVERSE_POSTURE_BACKFILL_FLOOR.length)
+      >= REVERSE_POSTURE_BACKFILL_FLOOR
+  })
+  if (governed.length === 0) {
+    fail('The reverse-posture control governs no migration; it has gone vacuous')
+  }
+  for (const path of governed) {
+    const declarations = read(path)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /^--\s*REVERSE:/.test(line))
+    if (declarations.length !== 1) {
+      fail(
+        `${path} must declare exactly one reverse posture header. Add a single line of the ` +
+          'form "-- REVERSE: PITR-ONLY", "-- REVERSE: DDL: <exact reverse statements>", or ' +
+          '"-- REVERSE: EVIDENCE-PRESERVING-PARTIAL: <path to the reverse file>". The schema ' +
+          'is forward-only (see scripts/ci/run-migration-tests.sh); this records HOW, not ' +
+          'whether, the change can be undone.',
+      )
+    }
+    if (!REVERSE_POSTURE_PATTERN.test(declarations[0])) {
+      fail(`${path} has an unrecognized reverse posture declaration: ${declarations[0]}`)
+    }
+    const [, referenced] = declarations[0].match(
+      /^--\s*REVERSE:\s*EVIDENCE-PRESERVING-PARTIAL:\s*(\S+)/,
+    ) ?? []
+    if (referenced) read(referenced)
+  }
+}
+
+function lockPins(path) {
+  const pins = new Map()
+  for (const line of read(path).split(/\r?\n/)) {
+    const match = line.match(/^([a-z0-9][a-z0-9._-]*)==([^\s\\]+)/i)
+    if (match) pins.set(match[1].toLowerCase().replace(/_/g, '-'), match[2])
+  }
+  return pins
+}
+
 function verifyHashedLocks() {
   for (const path of [
     'scripts/ci/python-runtime.lock',
@@ -779,6 +940,36 @@ function verifyHashedLocks() {
       if (/^[a-z0-9][a-z0-9._-]*[<>=!~]/i.test(trimmed) && !trimmed.includes('==')) {
         fail(`${path} contains an unpinned requirement: ${trimmed}`)
       }
+    }
+  }
+
+  // scripts/ci/python-test.in is `-r python-runtime.in` plus pytest, so the test
+  // lock must be a strict SUPERSET of the runtime lock at identical versions.
+  // It had drifted: 15 packages present in the runtime lock (supabase and its
+  // whole postgrest/realtime/pyjwt/HTTP-2 stack) were absent from the test lock
+  // and websockets differed by a major version, so .github/workflows/security.yml
+  // ran the backend suite against a dependency graph the Dockerfile does not
+  // ship. Only this direction is asserted -- the test lock legitimately carries
+  // pytest and its own dependencies -- and only for these two files:
+  // python-compressor/audit/sast are separately scoped tool images where a
+  // superset assertion would be wrong.
+  const runtimePins = lockPins('scripts/ci/python-runtime.lock')
+  const testPins = lockPins('scripts/ci/python-test.lock')
+  for (const [name, version] of runtimePins) {
+    const testVersion = testPins.get(name)
+    if (testVersion === undefined) {
+      fail(
+        `scripts/ci/python-test.lock is missing ${name}==${version} from python-runtime.lock, ` +
+          'so CI tests a dependency graph the Dockerfile does not ship. Recompile with ' +
+          '`uv pip compile scripts/ci/python-test.in --constraint scripts/ci/python-runtime.lock ' +
+          '--python-version 3.11 --python-platform x86_64-unknown-linux-gnu --generate-hashes`.',
+      )
+    }
+    if (testVersion !== version) {
+      fail(
+        `scripts/ci/python-test.lock pins ${name}==${testVersion} but the shipped ` +
+          `python-runtime.lock pins ${name}==${version}`,
+      )
     }
   }
 }
@@ -802,6 +993,8 @@ export function verifyMigrations() {
   verifyDurableOnboardingContract()
   verifyBillingCustomerOwnerFencingContract()
   verifyReceiptAccountingAlignment()
+  verifyUpgradeHarnessCoverage()
+  verifyReversePosture()
   verifyHashedLocks()
 }
 

@@ -1,9 +1,23 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { usdOrUnavailable } from '../lib/spend.js'
 
 const num = value => Number(value || 0).toLocaleString()
-const usd = value => `$${Number(value || 0).toFixed(4)}`
-const billingUsd = value => `$${Number(value || 0).toFixed(2)}`
+// /v1/admin/* and the dashboard deploy separately, so a field a response does
+// not carry must read as "not stated" rather than a confident $0.0000 — an
+// operator reads these cells as the financial record. `Number(v || 0)` made
+// every absent column an authoritative zero.
+const usd = value => usdOrUnavailable(value, 4)
+const billingUsd = value => usdOrUnavailable(value, 2)
+// The honest headline number for /v1/admin/billing. Every usage row's fee was
+// floored at zero at write time and no warm-cache spend is deducted, so the sum
+// can overstate a cache-heavy week badly; the API now labels it
+// gross_positive_row_fees_usd (basis: gross_positive_row_fees_unnetted) while
+// keeping amount_owed_usd for older dashboards. Prefer the honest field, fall
+// back to the legacy one when this dashboard ships ahead of the API.
+const grossRowFees = record => (
+  record?.gross_positive_row_fees_usd ?? record?.amount_owed_usd
+)
 const duration = seconds => seconds >= 60 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : `${Math.round(seconds)}s`
 const ranges = ['7d', '30d', '90d', 'all']
 const sessionWhen = iso => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -191,7 +205,7 @@ export default function Admin({ accessToken, refreshTick }) {
         <div><p className="annotation tracking-widest uppercase">Financial operations</p><h3 className="font-serif text-2xl mt-1">Customer spend and savings.</h3></div>
         <button type="button" aria-expanded={billingOpen} onClick={() => setBillingOpen(open => !open)}
           className="rounded-xl bg-brand-blue text-white px-4 py-2.5 text-sm font-medium">
-          {billingOpen ? 'Hide billing' : 'Billing · Amount owed'}
+          {billingOpen ? 'Hide billing' : 'Billing · Row fees'}
         </button>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -200,26 +214,32 @@ export default function Admin({ accessToken, refreshTick }) {
         <StatCard label="Verified savings" value={usd(totals.total_verified_savings_usd)} accent="text-brand-teal" />
         <StatCard label="Brevitas fees" value={usd(totals.total_brevitas_fee_usd)} accent="text-brand-blue" />
       </div>
-      <p className="annotation">// usage recorded before Jul 16, 2026 carries its historical 10% fee and pre-alignment savings attribution (provider-native cache discounts were still counted); usage since bills at 25% of receipt-verified savings only</p>
 
       {billingOpen && <div className="rounded-2xl border border-brand-blue/30 bg-brand-blue/5 p-5 space-y-5 ph-no-capture" data-ph-sensitive>
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
             <p className="annotation tracking-widest uppercase">Billing · restricted</p>
-            <h4 className="font-serif text-3xl mt-1 text-brand-navy dark:text-brand-dark-navy">Amount owed to Brevitas</h4>
-            <p className="text-sm text-brand-muted mt-2">Calculated from metered Brevitas fees for the selected period and filters. Payment and collection status are not yet tracked.</p>
+            <h4 className="font-serif text-3xl mt-1 text-brand-navy dark:text-brand-dark-navy">Gross positive row fees (un-netted)</h4>
+            <p className="text-sm text-brand-muted mt-2">Sum of per-row metered Brevitas fees for the selected period and filters. Payment and collection status are not yet tracked.</p>
+            {billing && (billing.settlement_pending === true || billing.netted === false) && (
+              <p className="text-sm text-amber-600 mt-2">
+                Not an invoiceable amount: each row's fee was floored at zero and no warm-cache
+                spend is deducted, so this can overstate a cache-heavy period. The netted
+                settlement figure is still pending.
+              </p>
+            )}
           </div>
-          <p className="font-serif text-4xl text-brand-blue">{billing ? billingUsd(billing.amount_owed_usd) : '—'}</p>
+          <p className="font-serif text-4xl text-brand-blue">{billing ? billingUsd(grossRowFees(billing)) : '—'}</p>
         </div>
         {billingError ? <p className="font-mono text-xs text-red-500">{billingError}</p> : !billing ? <p className="annotation">// loading billing…</p> :
           <div className="overflow-x-auto rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface">
-            <table className="w-full min-w-[720px] text-left"><thead><tr>{['Account', 'Calls', 'Customer spend', 'Verified savings', 'Amount owed'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
-              <tbody>{billing.accounts.length ? billing.accounts.map(account => <tr key={account.account_id} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
+            <table className="w-full min-w-[720px] text-left"><thead><tr>{['Account', 'Calls', 'Customer spend', 'Verified savings', 'Gross row fees'].map(label => <th key={label} className="annotation px-4 py-3 border-b border-brand-border dark:border-brand-dark-border">{label}</th>)}</tr></thead>
+              <tbody>{billing.accounts?.length ? billing.accounts.map(account => <tr key={account.account_id} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
                 <td className="font-mono text-xs px-4 py-3 ph-no-capture" data-ph-sensitive>{account.account_email || 'No email'}<br/><span className="text-brand-muted">{account.account_id}</span></td>
                 <td className="font-mono text-xs px-4 py-3">{num(account.calls)}</td>
                 <td className="font-mono text-xs px-4 py-3">{billingUsd(account.actual_spend_usd)}</td>
                 <td className="font-mono text-xs px-4 py-3 text-brand-teal">{billingUsd(account.verified_savings_usd)}</td>
-                <td className="font-mono text-xs px-4 py-3 text-brand-blue">{billingUsd(account.amount_owed_usd)}</td>
+                <td className="font-mono text-xs px-4 py-3 text-brand-blue">{billingUsd(grossRowFees(account))}</td>
               </tr>) : <tr><td colSpan="5" className="annotation px-4 py-5">No billable usage for these filters.</td></tr>}</tbody></table>
           </div>}
       </div>}

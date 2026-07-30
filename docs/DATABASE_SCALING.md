@@ -74,7 +74,9 @@ sort, direction, or range changes. The browser must never decode or synthesize c
 before returning so the existing Postgres billing trigger runs in the same transaction.
 
 `record_usage_batch()` accepts at most 100 rows. A stable non-empty `request_id` makes a row
-idempotent through the existing partial unique index `(key_hash, request_id)`. Empty request
+idempotent through the existing partial unique index, which since `202607280026` is
+`(key_hash, request_id, authoritative)` — an authoritative receipt and a non-authoritative
+analytics row for the same request are different facts and no longer collide. Empty request
 IDs remain append-only for backward compatibility. A definite HTTP 4xx rejection proves the
 atomic bulk transaction did not commit and may be isolated row-by-row. A timeout/connection
 failure is retried only when every row has a stable request ID. An ambiguous batch containing

@@ -10,6 +10,11 @@ Tracks REAL total prompt tokens per condition (RLM sums tokens across all its mo
 Model: OpenAI or DeepSeek (--model). NO fabricated data; NO self-made benchmark/metric.
 
 Run:  python benchmarks/levers/bench_rlm_e2e.py 15 openai
+
+!! This is the one place that execs REAL model output: condition (C) opts into the RLM's
+unsandboxed REPL (`allow_unsandboxed_exec=True`), in a process that loads ROOT/.env.local.
+The model is fed HotpotQA passages, so treat that text as untrusted and run this only on a
+machine whose credentials you are willing to expose.
 """
 
 import json
@@ -139,7 +144,7 @@ def main():
         rc = "\n\n".join(h[1] for h in r.retrieve(ex["q"], k=5))
         b = short_answer(conds["retrieval"]["model"], rc, ex["q"])
         # C) RLM over P
-        rlm = RLM(conds["rlm"]["model"], max_iters=4)
+        rlm = RLM(conds["rlm"]["model"], max_iters=4, allow_unsandboxed_exec=True)
         c = rlm.run(P, ex["q"]).answer
         for cond, ans in (("full", a), ("retrieval", b), ("rlm", c)):
             conds[cond]["em"].append(em(ans, ex["answer"]))

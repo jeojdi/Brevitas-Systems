@@ -159,6 +159,7 @@ class ResourceBounds:
     job_result_ttl_s: int = ONE_HOUR_S
     job_max_payload_bytes: int = 1024 * 1024
     job_max_result_bytes: int = 2 * 1024 * 1024
+    job_max_active_per_org: int = 2000
     demo_session_ttl_s: int = ONE_HOUR_S
     demo_max_sessions: int = 100
     demo_max_session_bytes: int = 16 * 1024 * 1024
@@ -187,6 +188,7 @@ class ResourceBounds:
             "job_result_ttl_s": (1, MAX_CONTENT_RETENTION_S),
             "job_max_payload_bytes": (1024, 8 * 1024 * 1024),
             "job_max_result_bytes": (1024, 16 * 1024 * 1024),
+            "job_max_active_per_org": (1, 1_000_000),
             "demo_session_ttl_s": (1, MAX_CONTENT_RETENTION_S),
             "demo_max_sessions": (1, 1_000),
             "demo_max_session_bytes": (1024, 64 * 1024 * 1024),
@@ -246,6 +248,8 @@ class ResourceBounds:
                                        1024, 8 * 1024 * 1024),
             job_max_result_bytes=read("BREVITAS_JOB_MAX_RESULT_BYTES", 2 * 1024 * 1024,
                                       1024, 16 * 1024 * 1024),
+            job_max_active_per_org=read("BREVITAS_JOB_MAX_ACTIVE_PER_ORG", 2000,
+                                        1, 1_000_000),
             demo_session_ttl_s=read("BREVITAS_DEMO_SESSION_TTL_SECONDS", ONE_HOUR_S,
                                     1, MAX_CONTENT_RETENTION_S),
             demo_max_sessions=read("BREVITAS_DEMO_MAX_SESSIONS", 100, 1, 1_000),

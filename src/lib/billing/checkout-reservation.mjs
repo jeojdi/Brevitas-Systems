@@ -20,6 +20,15 @@ function generationMetadata(session) {
   return typeof value === 'string' ? value : null
 }
 
+// Sessions persisted before the reservation migration (backfilled by
+// 202607200014) carry only brevitas_user_id metadata. An ABSENT organization
+// key is therefore legal legacy shape; only a PRESENT-but-different value
+// proves the session belongs to another company.
+function organizationMetadataMismatch(session, organizationId) {
+  const value = session?.metadata?.brevitas_organization_id
+  return typeof value === 'string' && value !== organizationId
+}
+
 export function checkoutIdempotencyKey(organizationId, generation) {
   if (typeof organizationId !== 'string' || !organizationId) {
     throw new TypeError('Checkout organization ID is required')
@@ -56,8 +65,10 @@ export function selectRecoveredOpenCheckoutSession({
   if (openSubscriptionSessions.length === 0) return null
 
   const [matching] = openSubscriptionSessions
-  if (matching?.metadata?.brevitas_organization_id !== organizationId
-      || generationMetadata(matching) !== String(generation)) {
+  if (organizationMetadataMismatch(matching, organizationId)) {
+    throw new CheckoutSessionRecoveryError('Open Checkout session belongs to another company')
+  }
+  if (generationMetadata(matching) !== String(generation)) {
     throw new CheckoutSessionRecoveryError('Open Checkout session does not match the reserved generation')
   }
   if (typeof matching.id !== 'string' || !matching.id
@@ -83,7 +94,7 @@ export function inspectPersistedCheckoutSession({
   if (session.mode !== 'subscription') {
     throw new CheckoutSessionRecoveryError('Persisted Checkout session is not a subscription session')
   }
-  if (session?.metadata?.brevitas_organization_id !== organizationId) {
+  if (organizationMetadataMismatch(session, organizationId)) {
     throw new CheckoutSessionRecoveryError('Persisted Checkout session belongs to another company')
   }
   const persistedGeneration = generationMetadata(session)

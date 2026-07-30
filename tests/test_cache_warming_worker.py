@@ -496,3 +496,69 @@ def test_revoked_recording_key_stops_prefix_before_provider_call(monkeypatch):
 
     assert pool.calls == []
     assert store.settles[0][7] == "prefix_invalid"
+
+
+def test_unreadable_2xx_body_books_the_reservation_instead_of_zero(monkeypatch):
+    monkeypatch.setenv("BREVITAS_WARMING", "true")
+    monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    store = Store(rows=[_claim_row()])
+
+    class UnparseableResponse(Response):
+        def json(self):
+            raise ValueError("proxy returned an HTML error page")
+
+    class UnparseablePool(Pool):
+        def request(self, provider, operation, method, url, *, headers=None, json=None):
+            super().request(provider, operation, method, url,
+                            headers=headers, json=json)
+            return UnparseableResponse(200, {})
+
+    recorded = []
+    _install_warm_fakes(monkeypatch, store=store, pool=UnparseablePool(),
+                        limiter=Limiter(), recorded_usage=recorded)
+
+    asyncio.run(_run_one_warming_cycle(store))
+
+    settle = store.settles[0]
+    # Anthropic charged for the cache write, so the ceiling must see the spend.
+    # Booking 0 would release the reservation and free the daily budget.
+    assert settle[7] == "warmed"
+    assert settle[6] == 0.0096
+    assert settle[5] == 0.0096
+
+
+def test_2xx_without_a_usage_block_books_the_reservation(monkeypatch):
+    monkeypatch.setenv("BREVITAS_WARMING", "true")
+    monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    store = Store(rows=[_claim_row()])
+    recorded = []
+    _install_warm_fakes(monkeypatch, store=store, pool=Pool(payload={"id": "msg_1"}),
+                        limiter=Limiter(), recorded_usage=recorded)
+
+    asyncio.run(_run_one_warming_cycle(store))
+
+    settle = store.settles[0]
+    assert settle[7] == "warmed"
+    assert settle[6] == 0.0096
+
+
+def test_failure_after_the_ping_still_books_the_spend(monkeypatch):
+    monkeypatch.setenv("BREVITAS_WARMING", "true")
+    monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    store = Store(rows=[_claim_row()])
+
+    def exploding_record_usage(**_values):
+        raise RuntimeError("usage recording is down")
+
+    recorded = []
+    _install_warm_fakes(monkeypatch, store=store, pool=Pool(), limiter=Limiter(),
+                        recorded_usage=recorded)
+    monkeypatch.setattr(worker, "_safe_record_usage", exploding_record_usage)
+
+    asyncio.run(_run_one_warming_cycle(store))
+
+    settle = store.settles[0]
+    # The provider was already paid; the outcome must not degrade to a free
+    # 'release' just because bookkeeping after the ping failed.
+    assert settle[7] == "warmed"
+    assert settle[6] > 0

@@ -1108,6 +1108,8 @@ def test_supabase_batch_isolates_failed_rows_after_atomic_failure(monkeypatch):
     individual = iter(([{"id": 1}], [], requests.RequestException("invalid row")))
 
     def request(method, path, **kwargs):
+        if path == "api_keys":
+            return []  # tenant lookup: these receipts belong to no organization
         if isinstance(kwargs.get("data"), list):
             raise requests.RequestException("atomic batch rejected")
         answer = next(individual)
@@ -1130,6 +1132,8 @@ def test_ambiguous_bulk_timeout_never_retries_append_only_rows(monkeypatch):
     committed = []
 
     def timeout_after_commit(method, path, **kwargs):
+        if path == "api_keys":
+            return []  # tenant lookup: these receipts belong to no organization
         calls.append(kwargs["data"])
         committed.extend(kwargs["data"])
         raise requests.Timeout("response lost after commit")
@@ -1160,6 +1164,56 @@ def test_historical_import_forces_authoritative_priced_rows_non_billable(tmp_pat
     assert dict(imported) == {
         "authoritative": 0, "receipt_source": "import",
         "pricing_status": "priced", "brevitas_fee_usd": 0,
+    }
+
+
+def test_historical_import_cannot_squat_the_reserved_receipt_namespace(tmp_path):
+    """Metering suppression via an operator import instead of an HTTP header.
+
+    usage_log's unique index is (key_hash, request_id) with NO `authoritative`
+    column, so a non-authoritative row occupies the slot for the authoritative
+    one. A legacy SQLite usage_log can hold `proxy:` ids -- older local proxies
+    minted them, and the SDK still yields one to the client in the first SSE
+    chunk -- so importing verbatim would permanently reserve those slots and
+    every matching hosted receipt afterwards would be silently discarded as a
+    duplicate: full optimization, zero billed. POST /v1/usage already rewrites
+    into `client:`; the import path must apply the same reservation.
+    """
+    from brevitas.proxy import RECEIPT_ID_PREFIX
+
+    source = UsageStore(str(tmp_path / "squat-source.db"))
+    assert source.record_usage(
+        "legacy", 100, 50, request_id=f"{RECEIPT_ID_PREFIX}resp_abc123",
+        authoritative=True, pricing_status="priced", verified_savings_usd=1,
+    )
+    target = UsageStore(str(tmp_path / "squat-target.db"))
+    assert import_sqlite(source.db_path, target) == {
+        "read": 1, "inserted": 1, "duplicates": 0,
+    }
+    with target._conn() as db:
+        ids = [row[0] for row in db.execute(
+            "SELECT request_id FROM usage_log").fetchall()]
+    assert ids == ["client:resp_abc123"]
+    # The billable namespace is left EMPTY, which is the whole point.
+    assert not [value for value in ids if value.startswith(RECEIPT_ID_PREFIX)]
+
+    # Negative control: the authoritative receipt that arrives later still
+    # writes. Before the fix this insert lost to the imported row.
+    assert target.record_usage(
+        "legacy", 100, 50, request_id=f"{RECEIPT_ID_PREFIX}resp_abc123",
+        authoritative=True, pricing_status="priced", verified_savings_usd=1,
+        brevitas_fee_usd=.25,
+    )
+    with target._conn() as db:
+        billable = db.execute(
+            "SELECT brevitas_fee_usd FROM usage_log WHERE request_id=?",
+            (f"{RECEIPT_ID_PREFIX}resp_abc123",)).fetchone()
+    assert billable[0] == .25
+
+    # Re-running an interrupted import is still idempotent: the rewrite is a
+    # deterministic prefix swap, not a fresh id.
+    assert import_sqlite(source.db_path, target) == {
+        "read": 1, "inserted": 0, "duplicates": 1,
     }
 
 
@@ -1319,7 +1373,7 @@ def test_supabase_atomic_key_failure_discards_secret_and_revoke_is_one_rpc(monke
         actor_role="billing_admin",
     ) is True
     assert [(call[0], call[1], call[2]["data"]) for call in calls] == [
-        ("POST", "rpc/company_admin_revoke_dashboard_session_key", {
+        ("POST", "rpc/company_admin_revoke_tenant_key", {
             "p_organization_id": organization_id,
             "p_actor_user_id": actor_id,
             "p_key_id": key_id,
@@ -1358,7 +1412,10 @@ def test_w9_atomic_store_inspection_has_no_split_key_or_audit_writes():
     assert '"POST", "rpc/company_admin_create_dashboard_session_key"' in create_source
     assert '"api_keys"' not in create_source
     assert '"audit_events"' not in create_source
-    assert '"POST", "rpc/company_admin_revoke_dashboard_session_key"' in revoke_source
+    # One dispatcher call for every key type (202607280019); the strict
+    # dashboard-session RPC is no longer reachable from here.
+    assert '"POST", "rpc/company_admin_revoke_tenant_key"' in revoke_source
+    assert revoke_source.count("self._request(") == 1
     assert '"GET"' not in revoke_source and '"PATCH"' not in revoke_source
     assert '"audit_events"' not in revoke_source
     bulk_source = inspect.getsource(SupabaseUsageStore.revoke_keys_by_type)

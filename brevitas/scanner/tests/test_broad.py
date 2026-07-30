@@ -62,6 +62,33 @@ def test_walks_directory_and_skips_node_modules(tmp_path):
     assert not any("node_modules" in p for p in paths)   # skipped
 
 
+def test_prompt_excerpt_redacts_credentials():
+    """Excerpts land in reports customers email or dump in CI logs."""
+    src = (
+        'GOOGLE_API_KEY = "AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345"\n'
+        'DATABASE_URL = "postgres://svc:hunter2@db.internal/app"\n'
+        'BREVITAS = "bvt_live_abcdefghijklmnop"\n'
+        'SYSTEM = "You are a helpful marketing assistant"\n'
+        "client.chat.completions.create(**kwargs)\n"   # no same-line literal -> uses the window
+    )
+    calls = scan_text("app.py", src)
+    excerpts = " ".join(c.prompt_excerpt for c in calls)
+    assert "You are a helpful marketing assistant" in excerpts   # prompt text survives
+    assert "AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in excerpts
+    assert "hunter2" not in excerpts
+    assert "bvt_live_abcdefghijklmnop" not in excerpts
+
+
+def test_dotenv_hits_carry_no_excerpt():
+    src = (
+        "OPENAI_BASE_URL=https://api.openai.com/v1\n"
+        'SECRET_TOKEN="AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ012345"\n'
+    )
+    calls = scan_text("/repo/.env", src)
+    assert calls                                    # still a provider signal
+    assert all(c.prompt_excerpt == "" for c in calls)
+
+
 def test_report_buckets_optimize_vs_lossless():
     src = (
         'fetch("https://api.openai.com/v1/chat/completions", {body:"write a fun instagram caption tagline"})\n'

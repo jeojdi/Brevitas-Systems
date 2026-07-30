@@ -13,6 +13,18 @@ export const STAGING_CANARY_TARGETS = Object.freeze({
   stripeApi: 'https://api.stripe.com',
 })
 
+// The ONE Stripe API version this system speaks. Duplicated as a literal
+// rather than imported because the canonical declaration lives in
+// src/lib/billing/config.ts, which is TypeScript and imports 'server-only' —
+// unloadable from a plain node CI script. The third site is
+// api/billing_recovery.py (STRIPE_API_VERSION, sent as the Stripe-Version
+// header on every REST call). tests/stripe_api_version_pin.test.mjs fails if
+// the three literals disagree, which is what makes the duplication safe.
+//
+// This used to read '2025-06-30.basil' while the app spoke dahlia, so the
+// canary was verifying Stripe response shapes that production never saw.
+export const STRIPE_API_VERSION = '2026-06-24.dahlia'
+
 export const STAGING_CANARY_LIMITATIONS = Object.freeze([
   'public-signup-and-email-delivery',
   'browser-rendering-and-interaction',
@@ -35,7 +47,23 @@ const RESPONSE_MAX_BYTES = 64 * 1024
 const MODEL_OUTPUT_MAX_TOKENS = 64
 const MODEL_OUTPUT_MAX_CHARS = 4096
 const JOB_POLL_ATTEMPTS = 45
+const JOB_POLL_INTERVAL_MS = 1000
+// A hostile or misconfigured Retry-After must never park the canary for hours.
+// GET /v1/jobs/{id} is limited 600/min per credential, so anything past this
+// ceiling is not a bucket we can wait out inside a canary run.
+const JOB_POLL_RETRY_AFTER_MAX_MS = 30_000
 const SAFE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+// Mirrors brevitas/provider_reliability.py::_retry_after_seconds: accepts both
+// delta-seconds and an HTTP-date, floors at 0, returns null when unparseable.
+function retryAfterMs(response, nowMs) {
+  const raw = String(response?.headers?.get?.('retry-after') || '').trim()
+  if (!raw) return null
+  if (/^\d+(\.\d+)?$/.test(raw)) return Math.max(0, Number(raw) * 1000)
+  const parsed = Date.parse(raw)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, parsed - nowMs)
+}
 
 function required(environment, name) {
   const value = String(environment[name] || '').trim()
@@ -300,7 +328,7 @@ async function runBillingCanary({
 
   const stripeHeaders = {
     authorization: `Bearer ${config.stripeSecretKey}`,
-    'stripe-version': '2025-06-30.basil',
+    'stripe-version': STRIPE_API_VERSION,
   }
   onCheckoutSession({ checkoutSessionId, stripeHeaders })
   const session = requireObject((await canaryRequest(
@@ -316,7 +344,10 @@ async function runBillingCanary({
   const event = {
     id: `evt_canary_${runToken}`,
     object: 'event',
-    api_version: '2025-06-30.basil',
+    // The synthetic event must claim the same version the webhook route's SDK
+    // client is pinned to; a mismatched api_version is exactly the drift this
+    // canary exists to catch, not to manufacture.
+    api_version: STRIPE_API_VERSION,
     created: nowSeconds,
     livemode: false,
     pending_webhooks: 1,
@@ -587,12 +618,25 @@ export async function runStagingCanary(
     }
     let completedJob = firstJob
     for (let attempt = 0; attempt < JOB_POLL_ATTEMPTS; attempt += 1) {
-      completedJob = requireObject((await canaryRequest(
+      // 429 is an expected verdict here, not a canary failure: the poll bucket is
+      // keyed on the credential and shared with anything else using this key.
+      const polled = await canaryRequest(
         fetchImpl, `${api}/v1/jobs/${jobId}`, {
-          label: 'durable job completion', headers: keyHeaders(serviceKey, customerId),
-        })).payload, 'durable job completion')
+          label: 'durable job completion', expected: [200, 429],
+          headers: keyHeaders(serviceKey, customerId),
+        })
+      if (polled.response.status === 429) {
+        const advised = retryAfterMs(polled.response, now())
+        // Honour the server's advice, but bounded — never sleep unboundedly on a
+        // header we do not control. Unparseable/absent falls back to the interval.
+        await sleep(advised === null
+          ? JOB_POLL_INTERVAL_MS
+          : Math.min(advised, JOB_POLL_RETRY_AFTER_MAX_MS))
+        continue
+      }
+      completedJob = requireObject(polled.payload, 'durable job completion')
       if (['succeeded', 'failed', 'cancelled', 'dead'].includes(completedJob.status)) break
-      await sleep(1000)
+      await sleep(JOB_POLL_INTERVAL_MS)
     }
     if (completedJob.status !== 'succeeded' || !completedJob.result || completedJob.attempts > 2) {
       throw new Error('Durable worker did not complete the bounded compression job')

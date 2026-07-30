@@ -6,14 +6,48 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from brevitas.proxy import RECEIPT_ID_PREFIX
+
 from .store import USAGE_BATCH_MAX, make_store
+
+# Same reservation the /v1/usage intake applies (api/server.py
+# _CLIENT_REQUEST_ID_PREFIX). Kept as its own constant so this module does not
+# import api.server (which mounts the proxy app and every route).
+_CLIENT_REQUEST_ID_PREFIX = "client:"
+
+
+def _reserved_namespace_safe(request_id: str) -> str:
+    """Keep an imported id out of the server-minted metering namespace.
+
+    RECEIPT_ID_PREFIX is RESERVED, not merely conventional: usage_log carries a
+    unique index on (key_hash, request_id) where request_id <> ''
+    (20260710_cloud_usage.sql:125) and that index does NOT include the
+    `authoritative` column. A legacy SQLite usage_log can contain rows whose
+    request_id is a `proxy:` id — older local proxies minted them, and the SDK
+    still yields one to the client in the first SSE chunk — so importing that
+    file verbatim would permanently occupy those slots with authoritative=False
+    analytics rows. Every matching authoritative receipt written afterwards by
+    the hosted bridge would then be silently swallowed as a duplicate: full
+    optimization, zero billed. That is the same metering-suppression class the
+    audit's critical finding covered, reached through an operator import instead
+    of an HTTP header.
+
+    Rewrite rather than reject, exactly as POST /v1/usage does: the prefix swap
+    is deterministic, so re-running an interrupted import still dedupes against
+    the rows the previous run wrote.
+    """
+    value = str(request_id or "")
+    if value.startswith(RECEIPT_ID_PREFIX):
+        value = _CLIENT_REQUEST_ID_PREFIX + value[len(RECEIPT_ID_PREFIX):]
+    return value[:128]
 
 
 def _import_record(row: dict) -> dict:
     fingerprint = "|".join(str(row.get(name, "")) for name in (
         "key_hash", "id", "ts", "provider", "model", "baseline_tokens", "optimized_tokens"
     ))
-    request_id = row.get("request_id") or "sqlite:" + hashlib.sha256(fingerprint.encode()).hexdigest()
+    request_id = _reserved_namespace_safe(
+        row.get("request_id") or "sqlite:" + hashlib.sha256(fingerprint.encode()).hexdigest())
     return {
         "key_hash": row.get("key_hash") or "",
         "owner_id": row.get("owner_id") or "",

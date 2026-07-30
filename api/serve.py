@@ -32,6 +32,21 @@ def main() -> None:
         forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
         timeout_graceful_shutdown=int(
             os.environ.get("BREVITAS_SHUTDOWN_GRACE_SECONDS", "120")),
+        # ASGI-layer admission ceiling. Every JSON POST is buffered and parsed by
+        # _AggregateRequestBoundsMiddleware before the per-tenant concurrency lease
+        # is taken, so the limits in api/distributed_limits.py bound nothing about
+        # peak memory: with no ceiling here, resident size is bounded only by how
+        # many connections the kernel hands us, and an OOM kill also strands every
+        # limiter lease in Redis. Anchored to organization_concurrency=200 so one
+        # organization at its full policy ceiling can still saturate a replica and
+        # nothing beyond that is admitted; over it uvicorn answers 503 without
+        # reading a body. Worst-case body memory is roughly limit_concurrency x
+        # BREVITAS_REQUEST_MAX_BYTES x 5 (the middleware retains the raw messages,
+        # a byte copy and a parsed graph; the proxy handler re-buffers and
+        # re-parses), so lower this on a container smaller than the 2 GB in
+        # deploy/, or after raising the request-size ceiling.
+        limit_concurrency=int(os.environ.get("BREVITAS_MAX_CONCURRENCY", "200")),
+        backlog=int(os.environ.get("BREVITAS_LISTEN_BACKLOG", "256")),
     )
 
 

@@ -38,6 +38,9 @@ function analyticsContext(overrides = {}) {
     getElementById: () => null,
     querySelector: () => null,
   }
+  // `appHost: true` reproduces the authenticated SPA, which tags its own body
+  // (dashboard/index.html: <body class="dashboard-app">).
+  if (overrides.appHost) document.body.className = 'dashboard-app'
   const storage = new Map()
   if (overrides.preference) storage.set('brevitas_analytics', overrides.preference)
   const localStorage = {
@@ -203,6 +206,47 @@ test('GPC opts a visitor out by default and Do Not Track alone does not', async 
   const off = await bootAnalytics({ preference: 'off' })
   assert.equal(off.window.brevitasAnalytics.isEnabled(), false)
   assert.equal(off.options.opt_out_capturing_by_default, true)
+})
+
+test('the authenticated SPA never arms replay and masks all of its text', async () => {
+  // The finding: /analytics.js is loaded by the SPA as well as the marketing
+  // site, with session_recording on and text masking driven by four element
+  // markers that Audit.jsx, Overview.jsx, Projects.jsx and Pipelines.jsx do not
+  // carry — so rrweb would ship the scanner's evidence strings (file paths and
+  // code excerpts from the customer's own repository) and their spend figures to
+  // PostHog's cloud, for a customer engineer's first visit, before the privacy
+  // banner is touched.
+  const app = await bootAnalytics({ appHost: true })
+  assert.equal(app.options.disable_session_recording, true)
+  assert.equal(app.options.session_recording.maskAllInputs, true)
+  // '*' is the mask-everything selector. `maskAllText` is NOT a posthog-js
+  // option and would be silently ignored, which is why it is not used here.
+  assert.equal(app.options.session_recording.maskTextSelector, '*')
+
+  // Explicit consent must not re-arm the recorder on this host:
+  // startSessionRecording() overrides disable_session_recording.
+  app.window.brevitasAnalytics.setEnabled(true)
+  const methods = app.window.posthog.map(item => item[0])
+  assert.equal(methods.includes('opt_in_capturing'), true)
+  assert.equal(methods.includes('startSessionRecording'), false)
+
+  // An SPA alias reaches the same conclusion from the path alone, because
+  // next.config.ts rewrites all of them onto the same document.
+  for (const pathname of ['/dashboard', '/login/enterprise', '/signup', '/email-confirmed', '/welcome']) {
+    const alias = await bootAnalytics({ pathname })
+    assert.equal(alias.options.disable_session_recording, true, pathname)
+    assert.equal(alias.options.session_recording.maskTextSelector, '*', pathname)
+  }
+
+  // Marketing pages keep counting every visit exactly as before: no host flag,
+  // no behaviour change.
+  const site = await bootAnalytics()
+  assert.equal(site.options.disable_session_recording, false)
+  assert.equal(site.options.session_recording.maskTextSelector,
+    '[data-ph-sensitive],.ph-sensitive,.ph-no-capture,[data-private]')
+  assert.equal(site.options.autocapture, true)
+  site.window.brevitasAnalytics.setEnabled(true)
+  assert.equal(site.window.posthog.map(item => item[0]).includes('startSessionRecording'), true)
 })
 
 test('the published privacy policy describes the signals the bootstrap actually honours', () => {

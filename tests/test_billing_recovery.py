@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import requests
 
 from api.billing_recovery import (
+    STRIPE_API_VERSION,
     BillingEntry,
     BillingHealth,
     BillingLoopHealth,
@@ -22,6 +24,7 @@ from api.billing_recovery import (
     StripeAmbiguous,
     StripeRestBillingGateway,
     StripeRejected,
+    StripeUnavailable,
     billing_recovery_is_configured,
     billing_worker_owner,
     run_billing_recovery_loop,
@@ -40,6 +43,7 @@ class FakeStore:
         self.now = now
         self.lock = threading.Lock()
         self.release_calls = 0
+        self.release_unsent_calls = 0
         self.claim_calls = 0
         self.health_calls = 0
         self.row = {
@@ -132,6 +136,30 @@ class FakeStore:
                 lease_expires_at=None,
             )
             return 1
+
+    def release_unsent(self, entry_id, owner):
+        # Mirrors public.release_billing_ledger_unsent (202607280011): fenced on
+        # the entry id, `sending`, and the lease owner; clears the outbound
+        # marker and refunds the attempt. Legitimate only after an HTTP 429.
+        with self.lock:
+            self.release_unsent_calls += 1
+            if (
+                self.row["id"] != entry_id
+                or self.row["status"] != "sending"
+                or self.row["lease_owner"] != owner
+            ):
+                return False
+            self.row.update(
+                status="pending",
+                attempts=max(0, self.row["attempts"] - 1),
+                outbound_started_at=None,
+                lease_owner=None,
+                lease_expires_at=None,
+                last_error=(
+                    "Stripe rate limited the request; the meter event was not processed"
+                ),
+            )
+            return True
 
     def check_health(self):
         with self.lock:
@@ -717,14 +745,20 @@ class FakeSession:
         pass
 
 
-def catalog_responses(*summary_pages, formula="sum"):
+ABSENT = object()
+
+
+def catalog_responses(*summary_pages, formula="sum", interval_count=ABSENT):
+    recurring = {"meter": "mtr_test", "interval": "week", "usage_type": "metered"}
+    if interval_count is not ABSENT:
+        recurring["interval_count"] = interval_count
     price = {
         "active": True,
         "type": "recurring",
         "currency": "usd",
         "billing_scheme": "per_unit",
         "unit_amount_decimal": "0.0001",
-        "recurring": {"meter": "mtr_test", "interval": "week", "usage_type": "metered"},
+        "recurring": recurring,
     }
     meter = {
         "status": "active",
@@ -1009,3 +1043,345 @@ def test_stripe_keys_are_stable_and_contain_no_customer_data():
     assert entry.idempotency_key == duplicate.idempotency_key == "brevitas-meter-7"
     assert entry.user_id not in entry.stripe_identifier
     assert entry.stripe_customer_id not in entry.idempotency_key
+
+
+class NonJsonResponse(FakeResponse):
+    """A Stripe error page that is not JSON (proxy/CDN 4xx)."""
+
+    def __init__(self, status_code):
+        super().__init__(None, status_code=status_code)
+
+    def json(self):
+        raise ValueError("not JSON")
+
+
+class RaisingSession(FakeSession):
+    def __init__(self, error):
+        super().__init__([])
+        self.error = error
+
+    def request(self, method, url, **kwargs):
+        self.requests.append((method, url, dict(kwargs)))
+        raise self.error
+
+
+def send_gateway(session):
+    return StripeRestBillingGateway(
+        "sk_test_mock", "price_mock", "brevitas_fee_microusd",
+        session=session, now=lambda: NOW,
+    )
+
+
+def outbound_entry(entry_id=41, fee_microusd=250_000, occurred_at=None):
+    occurred = occurred_at or NOW - timedelta(minutes=1)
+    return BillingEntry(
+        id=entry_id,
+        user_id="00000000-0000-0000-0000-000000000041",
+        occurred_at=occurred,
+        fee_microusd=fee_microusd,
+        stripe_customer_id="cus_mock",
+        attempts=1,
+        reclaimed=False,
+        outbound_started_at=None,
+        period_start=NOW - timedelta(days=3),
+        period_end=NOW + timedelta(days=4),
+        expected_period_microusd=fee_microusd,
+    )
+
+
+# U1: the status -> outcome mapping at api/billing_recovery.py:372-388 decides
+# release-and-retry versus leave-in-'sending'-and-reconcile. Every documented
+# class is pinned here because a wrong edge either strands revenue or authorises
+# a duplicate send.
+@pytest.mark.parametrize(("response", "expected"), [
+    (FakeResponse({"error": {"type": "rate_limit_error"}}, 429), StripeUnavailable),
+    (FakeResponse({"error": {"type": "api_error"}}, 500), StripeAmbiguous),
+    (FakeResponse({"error": {"type": "api_error"}}, 503), StripeAmbiguous),
+    (FakeResponse({"error": {"type": "api_error"}}, 408), StripeAmbiguous),
+    (FakeResponse({"error": {"type": "api_error"}}, 409), StripeAmbiguous),
+    (FakeResponse({"error": {"type": "idempotency_error"}}, 400), StripeAmbiguous),
+    # A version rejection is a configuration failure, not a fact about the fee:
+    # StripeRejected would terminalize the row as 'dead' (silent revenue loss),
+    # so it must park for retry instead. Both surfaces Stripe uses are covered.
+    (FakeResponse({"error": {"type": "invalid_request_error",
+                             "code": "invalid_api_version"}}, 400), StripeUnavailable),
+    (FakeResponse({"error": {"type": "invalid_request_error",
+                             "message": "Invalid Stripe API version: 2026-06-24.dahlia"}},
+                  400), StripeUnavailable),
+    (FakeResponse({"error": {"type": "card_error"}}, 402), StripeRejected),
+    (FakeResponse({"error": {"type": "invalid_request_error"}}, 400), StripeRejected),
+    (FakeResponse({"error": {"type": "invalid_request_error"}}, 401), StripeRejected),
+    (FakeResponse({"error": {"type": "invalid_request_error"}}, 403), StripeRejected),
+    (FakeResponse({"error": {"type": "invalid_request_error"}}, 404), StripeRejected),
+    (NonJsonResponse(400), StripeRejected),
+    (FakeResponse([], 400), StripeRejected),
+])
+def test_stripe_send_status_maps_to_the_documented_outcome(response, expected):
+    session = FakeSession([*catalog_responses(), response])
+    gateway = send_gateway(session)
+
+    with pytest.raises(expected) as raised:
+        gateway.send(outbound_entry())
+
+    # Definitive non-ingestion is exactly two cases: a 429, and a 400 that
+    # rejects the pinned Stripe-Version header (the request never reached the
+    # meter, so parking for retry cannot double-bill). Every other failure is
+    # either ambiguous (reconcile) or a terminal judgment about the event.
+    def _is_version_rejection(resp):
+        try:
+            err = resp.json().get("error", {})
+        except Exception:
+            return False
+        return (err.get("code") == "invalid_api_version"
+                or "api version" in str(err.get("message", "")).lower())
+    expected_unavailable = (response.status_code == 429
+                            or (response.status_code == 400
+                                and _is_version_rejection(response)))
+    assert (type(raised.value) is StripeUnavailable) == expected_unavailable
+    assert session.requests[-1][1].endswith("/v1/billing/meter_events")
+
+
+@pytest.mark.parametrize("error", [
+    requests.Timeout("mock read timeout"),
+    requests.ConnectionError("mock connection reset"),
+])
+def test_transport_failures_are_ambiguous_never_unavailable(error):
+    gateway = send_gateway(RaisingSession(error))
+
+    with pytest.raises(StripeAmbiguous):
+        gateway.validate_contract()
+
+
+def test_status_2xx_and_3xx_are_not_errors():
+    session = FakeSession([*catalog_responses(), FakeResponse({"ok": True}, 200)])
+    send_gateway(session).send(outbound_entry())
+    assert len(session.requests) == 3
+
+
+# U2: the outbound meter POST is a money instruction. Byte-exact.
+def test_outbound_meter_event_post_is_byte_exact():
+    session = FakeSession([*catalog_responses(), FakeResponse({"identifier": "brevitas-fee-41"})])
+    gateway = send_gateway(session)
+    # Fractional seconds must truncate to an integer unix timestamp.
+    entry = outbound_entry(occurred_at=NOW - timedelta(seconds=90, microseconds=750_000))
+
+    gateway.send(entry)
+
+    method, url, kwargs = session.requests[-1]
+    assert method == "POST"
+    assert url == "https://api.stripe.com/v1/billing/meter_events"
+    assert kwargs == {
+        "data": {
+            "event_name": "brevitas_fee_microusd",
+            "identifier": "brevitas-fee-41",
+            "timestamp": str(int(entry.occurred_at.timestamp())),
+            "payload[stripe_customer_id]": "cus_mock",
+            "payload[value]": "250000",
+        },
+        # G9: the pinned Stripe-Version is part of the money instruction now.
+        # Every outbound call goes through _request, which merges the pin into
+        # whatever headers the caller passed — so this byte-exact expectation
+        # gains exactly one key and keeps the Idempotency-Key untouched.
+        "headers": {
+            "Idempotency-Key": "brevitas-meter-41",
+            "Stripe-Version": STRIPE_API_VERSION,
+        },
+        "timeout": (3.0, 10.0),
+    }
+    assert kwargs["data"]["timestamp"] == "1784375909"
+    assert entry.occurred_at.timestamp() == 1784375909.25
+    # The event body carries no customer identity beyond the Stripe customer id.
+    assert entry.user_id not in str(kwargs)
+
+
+# U6 (FIX-9): interval_count is absent from the whole tree today, so a
+# `week` / `interval_count: 2` price validates, anchors every subscription to
+# 14 days, and then fails closed on every single fee row.
+@pytest.mark.parametrize("interval_count", [1, ABSENT, None])
+def test_weekly_price_with_a_single_interval_is_accepted(interval_count):
+    session = FakeSession(catalog_responses(interval_count=interval_count))
+    gateway = send_gateway(session)
+
+    assert gateway.validate_contract() == "mtr_test"
+
+
+@pytest.mark.parametrize("interval_count", [0, 2, 3, 4, 52])
+def test_multi_week_price_interval_is_rejected_as_a_catalog_contract_error(interval_count):
+    session = FakeSession(catalog_responses(interval_count=interval_count))
+    gateway = send_gateway(session)
+
+    with pytest.raises(CatalogContractError, match="violates the billing meter contract"):
+        gateway.validate_contract()
+    # Rejected on the Price alone; the meter is never even fetched.
+    assert len(session.requests) == 1
+
+
+# FIX-10: a 429 after begin_send must give the attempt back, not burn it.
+def test_rate_limited_send_returns_the_row_to_pending_without_burning_an_attempt():
+    store = FakeStore()
+    session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+    ])
+    telemetry = RecordingTelemetry()
+    recovery = processor(store, send_gateway(session), telemetry=telemetry)
+
+    result = recovery.process_once("rate-limited-worker")
+
+    assert result.errors == 1
+    assert result.review == 0
+    assert result.dead == 0
+    assert result.reported == 0
+    assert store.release_unsent_calls == 1
+    # The row is provably unsent: back to pending, marker cleared, and the
+    # attempt the claim consumed is refunded (0 -> 1 -> 0).
+    assert store.row["status"] == "pending"
+    assert store.row["attempts"] == 0
+    assert store.row["outbound_started_at"] is None
+    assert store.row["lease_owner"] is None
+    assert ("billing.stripe_unavailable", 1, {}) in telemetry.metrics
+
+    # ...and it is immediately claimable again, with the same identifier.
+    retry_session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"identifier": "brevitas-fee-41"}),
+    ])
+    retry = processor(store, send_gateway(retry_session))
+    assert retry.process_once("retry-worker").reported == 1
+    assert store.row["status"] == "reported"
+    assert retry_session.requests[-1][2]["data"]["identifier"] == "brevitas-fee-41"
+
+
+def test_sustained_rate_limiting_never_exhausts_attempts_into_review():
+    store = FakeStore()
+    store.row["max_attempts"] = 5
+
+    for cycle in range(8):
+        session = FakeSession([
+            *catalog_responses(),
+            FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+        ])
+        result = processor(store, send_gateway(session)).process_once(f"worker-{cycle}")
+        assert result.errors == 1
+        # Before FIX-10 this climbed by one every cycle and the DB sweep at
+        # attempts >= max_attempts (202607200006:349-353) parked the fee in
+        # `review` around cycle 5.
+        assert store.row["attempts"] == 0
+        assert store.row["status"] == "pending"
+        assert store.row["outbound_started_at"] is None
+
+
+def test_fenced_out_unsent_release_leaves_the_row_untouched():
+    store = FakeStore()
+    session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+    ])
+
+    class LostLeaseStore:
+        """The lease was reclaimed by another worker before the 429 came back."""
+
+        def __init__(self, inner):
+            self.inner = inner
+            self.fenced = 0
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def release_unsent(self, entry_id, owner):
+            self.fenced += 1
+            return self.inner.release_unsent(entry_id, "someone-else")
+
+    fenced = LostLeaseStore(store)
+    result = processor(fenced, send_gateway(session)).process_once("worker")
+
+    assert fenced.fenced == 1
+    assert result.errors == 1
+    # No lease, no write: the row keeps the pre-FIX-10 fate and waits for the
+    # database sweeps rather than being rewritten by a worker that lost it.
+    assert store.row["status"] == "sending"
+    assert store.row["outbound_started_at"] is not None
+
+
+def test_unavailable_release_rpc_cannot_kill_the_cycle():
+    store = FakeStore()
+    session = FakeSession([
+        *catalog_responses(),
+        FakeResponse({"error": {"type": "rate_limit_error"}}, 429),
+    ])
+
+    class UnmigratedStore:
+        """A store deployed ahead of migration 202607280011."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def release_unsent(self, entry_id, owner):
+            raise requests.HTTPError("404 rpc/release_billing_ledger_unsent")
+
+    telemetry = RecordingTelemetry()
+    recovery = processor(UnmigratedStore(store), send_gateway(session), telemetry=telemetry)
+    result = recovery.process_once("worker")
+
+    assert result.errors == 1
+    assert store.row["status"] == "sending"
+    assert ("billing.stripe_unavailable", 1, {}) in telemetry.metrics
+
+
+def test_rate_limited_catalog_validation_still_releases_the_never_sent_claim():
+    store = FakeStore()
+    session = FakeSession([FakeResponse({"error": {"type": "rate_limit_error"}}, 429)])
+    telemetry = RecordingTelemetry()
+
+    result = processor(store, send_gateway(session), telemetry=telemetry).process_once("worker")
+
+    assert result.errors == 1
+    assert store.release_calls == 1
+    assert store.release_unsent_calls == 0
+    assert store.row["status"] == "pending"
+    assert store.row["attempts"] == 0
+    assert store.row["outbound_started_at"] is None
+    assert all(not url.endswith("/v1/billing/meter_events") for _, url, _ in session.requests)
+
+
+def test_unsent_release_migration_is_lease_fenced_and_worker_only():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "supabase/migrations/202607280011_billing_ledger_unsent_release.sql"
+    ).read_text()
+
+    assert "create or replace function public.release_billing_ledger_unsent(" in migration
+    assert "security definer" in migration
+    # The hardened form, matching the sibling money migrations (202607280008,
+    # 202607280010, 202607280013). A bare `= public` leaves pg_temp implicitly
+    # searched FIRST, letting a caller who can create a temp relation shadow a
+    # name this SECURITY DEFINER body resolves. Pin the strict path so it cannot
+    # silently regress to the weaker form.
+    assert "set search_path = pg_catalog, public, pg_temp" in migration
+    assert "where id = p_entry_id" in migration
+    assert "and status = 'sending'" in migration
+    assert "and lease_owner = p_owner" in migration
+    assert "attempts = greatest(0, attempts - 1)" in migration
+    assert "outbound_started_at = null" in migration
+    assert (
+        "revoke all on function public.release_billing_ledger_unsent(bigint, text)"
+        in migration
+    )
+    assert (
+        "grant execute on function public.release_billing_ledger_unsent(bigint, text)\n"
+        "    to service_role;" in migration
+    )
+    # Nothing but the worker role may execute it, and no table grant is widened.
+    grants = [line for line in migration.splitlines() if line.startswith("grant ")]
+    assert grants == [
+        "grant execute on function public.release_billing_ledger_unsent(bigint, text)",
+    ]
+    assert "to service_role;" in migration
+    assert "grant select" not in migration
+    assert " to anon" not in migration and " to authenticated" not in migration
+    # The soundness argument must travel with the function.
+    assert "429" in migration
+    assert "ROLLBACK PROCEDURE" in migration

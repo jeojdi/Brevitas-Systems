@@ -1,8 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats, fetchCacheStats, fetchBillingStatus, openBillingPortal, startBillingCheckout } from '../lib/api.js'
+import { WITHHELD, spendRedacted } from '../lib/spend.js'
 
 function fmt(n, decimals = 2) {
   return Number(n || 0).toFixed(decimals)
+}
+// Money that the API declined to state must never render as a number. `fmt`
+// coerces null/undefined to 0, so `fmt(null, 6)` is the string "0.000000" -- a
+// confident wrong $0 on a billing page, which is exactly the failure the
+// settlement repoint (docs/STRIPE_FIX_PLAN.md FIX-5) exists to prevent. The API
+// now returns null, never 0, whenever the Stripe period boundaries are not
+// exactly one week or the settlement summary fails closed (no_billing_account,
+// period_anchor_mismatch, guard_unavailable), and it sets settlement_pending
+// while the money of record has no writer.
+function fmtMoney(billing, value, decimals = 6) {
+  if (!billing?.period_tracking_valid || billing?.settlement_pending) return 'Unavailable'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Unavailable'
+  return `$${value.toFixed(decimals)}`
 }
 function fmtK(n) {
   const v = Number(n || 0)
@@ -32,7 +46,15 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
   const [billing, setBilling] = useState(previewBilling || null)
   const [loading, setLoading] = useState(!previewStats)
   const [error, setError]   = useState('')
-  const [billingError, setBillingError] = useState('')
+  // Two independent failures, two independent lines. The 10s poll owns
+  // `billingLoadError`; `goToStripe` owns `billingActionError`. Sharing one slot
+  // meant the poll erased a "Stripe checkout failed" message seconds after the
+  // user saw it, and one failed poll pinned its own red line for the rest of the
+  // session even after every later poll succeeded.
+  const [billingLoadError, setBillingLoadError] = useState('')
+  const [billingActionError, setBillingActionError] = useState('')
+  const [billingCheckedAt, setBillingCheckedAt] = useState('')
+  const [billingStale, setBillingStale] = useState(false)
   const [billingAction, setBillingAction] = useState('')
   const controllerRef = useRef(null)
 
@@ -70,8 +92,16 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
     if (!accessToken) return
     try {
       setBilling(await fetchBillingStatus(accessToken))
+      setBillingCheckedAt(new Date().toLocaleTimeString())
+      setBillingStale(false)
+      // Cleared on success only, so a failing poll never wipes its own explanation.
+      setBillingLoadError('')
     } catch (e) {
-      setBillingError(e.message)
+      // The previous snapshot keeps rendering because a blank money panel is worse
+      // than a labelled one -- but it has to be labelled as last-known, never passed
+      // off as the current accrual.
+      setBillingStale(true)
+      setBillingLoadError(e.message)
     }
   }, [accessToken, previewBilling])
 
@@ -79,7 +109,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
 
   const goToStripe = async kind => {
     setBillingAction(kind)
-    setBillingError('')
+    setBillingActionError('')
     try {
       const action = kind === 'checkout' ? startBillingCheckout : openBillingPortal
       const { url } = await action(accessToken)
@@ -91,10 +121,10 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           window.location.assign(url)
           return
         } catch (portalError) {
-          setBillingError(portalError.message)
+          setBillingActionError(portalError.message)
         }
       } else {
-        setBillingError(e.message)
+        setBillingActionError(e.message)
       }
     } finally {
       setBillingAction('')
@@ -120,6 +150,11 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
     </div>
   )
 
+  // /v1/stats and /v1/stats/cache strip every *_usd key and set spend_redacted
+  // for roles without billing access. Withheld money renders as "Withheld";
+  // coercing the stripped keys with `|| 0` would show a confident wrong $0.00.
+  const spendWithheld  = spendRedacted(stats)
+  const cacheSpendWithheld = spendRedacted(cacheStats)
   const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
   const providerSpend  = Number(stats?.total_actual_cost_usd || 0)
   const weeks          = stats?.billing_by_week || []
@@ -149,7 +184,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
               <p className="annotation tracking-widest uppercase">// secure billing</p>
               {billing && (
                 <span className={`font-mono text-[10px] px-2 py-1 rounded-full ${billingActive ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600' : 'bg-brand-bg dark:bg-brand-dark-bg text-brand-muted'}`}>
-                  {billingActive ? 'active' : billing.subscription_status.replaceAll('_', ' ')}
+                  {billingActive ? 'active' : String(billing.subscription_status || 'unknown').replaceAll('_', ' ')}
                 </span>
               )}
             </div>
@@ -159,13 +194,22 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
             </p>
             {billing && (
               <div className="flex flex-wrap gap-x-8 gap-y-2 mt-4 font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">
-                <span>Current estimate <strong className="text-brand-navy dark:text-brand-dark-navy">{billing.period_tracking_valid ? `$${fmt(billing.estimated_fee_usd, 6)}` : 'Unavailable'}</strong></span>
-                <span>Reported to Stripe <strong className="text-brand-navy dark:text-brand-dark-navy">{billing.period_tracking_valid ? `$${fmt(billing.reported_fee_usd, 6)}` : 'Unavailable'}</strong></span>
+                <span>Accruing this week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtMoney(billing, billing.estimated_fee_usd)}</strong></span>
+                <span>Reported to Stripe <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtMoney(billing, billing.reported_fee_usd)}</strong></span>
                 {billing.period_tracking_valid && <span>Billing week <strong className="text-brand-navy dark:text-brand-dark-navy">{fmtDate(billing.current_period_start)} → {fmtDate(billing.current_period_end)}</strong></span>}
               </div>
             )}
-            {billingError && <p className="font-mono text-xs text-red-500 mt-4">{billingError}</p>}
+            {/* Money on screen states its own age. Without this the panel kept
+                re-rendering the last snapshot as the live accrual for as long as
+                /api/billing/status stayed down. */}
+            {billing && billingCheckedAt && (billingStale
+              ? <p className="font-mono text-[11px] text-amber-600 mt-2">Last updated {billingCheckedAt} — the latest refresh failed, so these amounts may be out of date.</p>
+              : <p className="font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted mt-2">Last updated {billingCheckedAt}.</p>)}
+            {billingLoadError && <p className="font-mono text-xs text-red-500 mt-4">{billingLoadError}</p>}
+            {billingActionError && <p className="font-mono text-xs text-red-500 mt-4">{billingActionError}</p>}
             {billingActive && billing && !billing.period_tracking_valid && <p className="font-mono text-xs text-red-500 mt-4">Weekly billing totals are unavailable because Stripe period boundaries have not synchronized. Charging is fail-closed for these entries.</p>}
+            {billingActive && billing?.period_tracking_valid && billing.settlement_pending && <p className="font-mono text-xs text-amber-600 mt-4">Weekly totals are pending settlement. No amount is shown until the period of record is computed.</p>}
+            {billingActive && billing?.period_tracking_valid && !billing.settlement_pending && billing.billable === false && <p className="font-mono text-xs text-amber-600 mt-4">This period is not billable pending a signed billing arrangement, so no fee will be charged for it.</p>}
             {billing?.needs_review > 0 && <p className="font-mono text-xs text-amber-600 mt-4">A billing event is paused for manual review and will not be retried automatically.</p>}
           </div>
           <button
@@ -196,7 +240,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
         />
         <StatCard
           label="Provider spend"
-          value={allUnpriced ? 'Unpriced' : `$${fmt(providerSpend, 4)}`}
+          value={spendWithheld ? WITHHELD : allUnpriced ? 'Unpriced' : `$${fmt(providerSpend, 4)}`}
           sub="from provider receipts"
         />
         <StatCard
@@ -219,18 +263,18 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
             />
             <StatCard
               label="Native cache discount"
-              value={`$${fmt(cacheStats.native_cache_discount_usd, 4)}`}
+              value={cacheSpendWithheld ? WITHHELD : `$${fmt(cacheStats.native_cache_discount_usd, 4)}`}
               sub="measured across all cache reads"
             />
             <StatCard
               label="Billable cache savings"
-              value={`$${fmt(cacheStats.attributable_discount_usd, 4)}`}
+              value={cacheSpendWithheld ? WITHHELD : `$${fmt(cacheStats.attributable_discount_usd, 4)}`}
               sub="Brevitas-attributable, byte-identical"
               accent
             />
             <StatCard
               label="Warming spend"
-              value={cacheStats.warm_spend_usd == null ? 'Not measured' : `$${fmt(cacheStats.warm_spend_usd, 4)}`}
+              value={cacheSpendWithheld ? WITHHELD : cacheStats.warm_spend_usd == null ? 'Not measured' : `$${fmt(cacheStats.warm_spend_usd, 4)}`}
               sub={cacheStats.warm_hits == null ? 'no warming data yet' : `${fmtK(cacheStats.warm_hits)} warm hits · ${fmtK(cacheStats.warm_pings)} pings`}
             />
           </div>
@@ -244,8 +288,8 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Calls"         value={fmtK(thisWeek.calls)} />
             <StatCard label="Input tokens avoided" value={fmtK(thisWeek.provider_input_tokens_avoided)} />
-            <StatCard label="Provider spend" value={`$${fmt(thisWeek.actual_cost_usd, 4)}`} />
-            <StatCard label="Verified savings" value={`$${fmt(thisWeek.verified_savings_usd ?? thisWeek.cost_saved_usd, 4)}`} accent />
+            <StatCard label="Provider spend" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.actual_cost_usd, 4)}`} />
+            <StatCard label="Verified savings" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.verified_savings_usd ?? thisWeek.cost_saved_usd, 4)}`} accent />
           </div>
         </div>
       )}
@@ -265,8 +309,8 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
                 <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.week_start}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.provider_input_tokens_avoided)}</span>
-                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">${fmt(m.actual_cost_usd, 4)}</span>
-                <span className="font-mono text-xs text-brand-teal">${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{spendWithheld ? WITHHELD : `$${fmt(m.actual_cost_usd, 4)}`}</span>
+                <span className="font-mono text-xs text-brand-teal">{spendWithheld ? WITHHELD : `$${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}`}</span>
               </div>
             ))}
           </div>

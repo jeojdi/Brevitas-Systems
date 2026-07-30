@@ -53,71 +53,119 @@ if [[ "${#fresh_migrations[@]}" -lt "${#upgrade_migrations[@]}" ]]; then
   exit 1
 fi
 baseline_count=$((${#fresh_migrations[@]} - ${#upgrade_migrations[@]}))
-device_migration="${upgrade_migrations[9]}"
-membership_migration="${upgrade_migrations[10]}"
-receipt_migration="${upgrade_migrations[11]}"
-selection_migration="${upgrade_migrations[12]}"
-webhook_migration="${upgrade_migrations[13]}"
-waitlist_migration="${upgrade_migrations[14]}"
-billing_owner_migration="${upgrade_migrations[15]}"
-stripe_ordering_migration="${upgrade_migrations[16]}"
-initial_service_key_migration="${upgrade_migrations[17]}"
-company_billing_migration="${upgrade_migrations[18]}"
-billing_recovery_scope_migration="${upgrade_migrations[19]}"
-provider_cleanup_migration="${upgrade_migrations[20]}"
-multitab_sessions_migration="${upgrade_migrations[21]}"
-shared_limits_migration="${upgrade_migrations[22]}"
-compliance_billing_isolation_migration="${upgrade_migrations[23]}"
-webhook_lease_renewal_migration="${upgrade_migrations[24]}"
-billing_control_limits_migration="${upgrade_migrations[25]}"
-checkout_reservation_migration="${upgrade_migrations[26]}"
-provider_outbound_migration="${upgrade_migrations[27]}"
-durable_onboarding_migration="${upgrade_migrations[28]}"
-billing_customer_owner_migration="${upgrade_migrations[29]}"
-workspace_experiences_migration="${upgrade_migrations[30]}"
-split_savings_migration="${upgrade_migrations[31]}"
-service_role_data_plane_migration="${upgrade_migrations[32]}"
-supabase_advisor_hardening_migration="${upgrade_migrations[33]}"
-device_expiry_migration="${upgrade_migrations[34]}"
-billing_events_money_migration="${upgrade_migrations[35]}"
-cache_warming_migration="${upgrade_migrations[36]}"
-usage_stats_cache_migration="${upgrade_migrations[37]}"
-multi_provider_warming_migration="${upgrade_migrations[38]}"
-onboarding_evidence_migration="${upgrade_migrations[39]}"
-if [[ "${device_migration}" != 'supabase/migrations/202607170010_device_delivery_idempotency.sql' \
-   || "${membership_migration}" != 'supabase/migrations/202607170011_active_memberships.sql' \
-   || "${receipt_migration}" != 'supabase/migrations/202607170012_receipt_accounting_alignment.sql' \
-   || "${selection_migration}" != 'supabase/migrations/202607170013_active_company_selection.sql' \
-   || "${webhook_migration}" != 'supabase/migrations/202607200001_stripe_webhook_durability.sql' \
-   || "${waitlist_migration}" != 'supabase/migrations/202607200002_waitlist_security.sql' \
-   || "${billing_owner_migration}" != 'supabase/migrations/202607200003_billing_owner_attribution.sql' \
-   || "${stripe_ordering_migration}" != 'supabase/migrations/202607200004_stripe_event_ordering.sql' \
-   || "${initial_service_key_migration}" != 'supabase/migrations/202607200005_initial_service_key.sql' \
-   || "${company_billing_migration}" != 'supabase/migrations/202607200006_company_billing_authorization.sql' \
-   || "${billing_recovery_scope_migration}" != 'supabase/migrations/202607200007_billing_recovery_scope.sql' \
-   || "${provider_cleanup_migration}" != 'supabase/migrations/202607200008_provider_credential_cleanup.sql' \
-   || "${multitab_sessions_migration}" != 'supabase/migrations/202607200009_multitab_dashboard_sessions.sql' \
-   || "${shared_limits_migration}" != 'supabase/migrations/202607200010_shared_endpoint_rate_limits.sql' \
-   || "${compliance_billing_isolation_migration}" != 'supabase/migrations/202607200011_compliance_billing_isolation.sql' \
-   || "${webhook_lease_renewal_migration}" != 'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql' \
-   || "${billing_control_limits_migration}" != 'supabase/migrations/202607200013_billing_control_rate_limits.sql' \
-   || "${checkout_reservation_migration}" != 'supabase/migrations/202607200014_billing_checkout_session_reservations.sql' \
-   || "${provider_outbound_migration}" != 'supabase/migrations/202607200015_provider_outbound_ambiguity.sql' \
-   || "${durable_onboarding_migration}" != 'supabase/migrations/202607200016_durable_onboarding.sql' \
-   || "${billing_customer_owner_migration}" != 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql' \
-   || "${workspace_experiences_migration}" != 'supabase/migrations/202607200018_workspace_experiences.sql' \
-   || "${split_savings_migration}" != 'supabase/migrations/20260720_split_savings_metrics.sql' \
-   || "${service_role_data_plane_migration}" != 'supabase/migrations/202607220001_service_role_data_plane.sql' \
-   || "${supabase_advisor_hardening_migration}" != 'supabase/migrations/202607220002_supabase_advisor_hardening.sql' \
-   || "${device_expiry_migration}" != 'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql' \
-   || "${billing_events_money_migration}" != 'supabase/migrations/202607270002_widen_billing_events_money.sql' \
-   || "${cache_warming_migration}" != 'supabase/migrations/202607280001_cache_warming.sql' \
-   || "${usage_stats_cache_migration}" != 'supabase/migrations/202607280002_usage_stats_cache_metrics.sql' \
-   || "${multi_provider_warming_migration}" != 'supabase/migrations/202607280003_multi_provider_warming.sql' \
-   || "${onboarding_evidence_migration}" != 'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql' ]]; then
-  echo 'Frozen migrations 010-013 or the 20260720-20260728 forward suffix are out of order.' >&2
+
+# The upgrade chain must be exactly the tail of the fresh chain. Comparing the
+# WHOLE upgrade array against that tail (rather than hand-binding a fixed number
+# of array indexes, which is how 202607280005-202607280009 came to be listed in
+# both manifests yet never applied by the upgrade path) is what makes a newly
+# added migration fail closed: it has to appear in both manifests at the same
+# offset, and the driver loop below then applies every entry unconditionally.
+for ((index = 0; index < ${#upgrade_migrations[@]}; index++)); do
+  fresh_index=$((baseline_count + index))
+  if [[ "${upgrade_migrations[${index}]}" != "${fresh_migrations[${fresh_index}]}" ]]; then
+    echo "Upgrade manifest entry $((index + 1)) (${upgrade_migrations[${index}]}) is not the corresponding fresh-manifest tail entry (${fresh_migrations[${fresh_index}]}); the two manifests disagree." >&2
+    exit 1
+  fi
+done
+# Anchor both ends of the known production baseline so the suffix comparison
+# above cannot be satisfied by a wholesale re-slice of both manifests.
+if [[ "${fresh_migrations[$((baseline_count - 1))]}" != 'supabase/migrations/20260716_stripe_billing_rate_25pct.sql' \
+   || "${upgrade_migrations[0]}" != 'supabase/migrations/202607170001_enterprise_tenancy.sql' ]]; then
+  echo 'The production baseline must end at 20260716_stripe_billing_rate_25pct and the upgrade suffix must start at 202607170001.' >&2
   exit 1
 fi
+
+# Named handles for the migrations whose harness handling is special: an extra
+# fixture, a hand-written pre-COMMIT rollback invariant, an out-of-band applier,
+# or a later re-apply. They are resolved BY FILENAME, never by array index, so
+# inserting a migration cannot silently re-point them, and a migration that
+# disappears from the manifest fails the run instead of quietly losing its
+# fixtures. Every handle below is also the `case` pattern used by the driver
+# loop, so the two can never drift apart.
+manifest_entry() {
+  local wanted="$1" candidate
+  for candidate in "${upgrade_migrations[@]}"; do
+    if [[ "${candidate}" == "${wanted}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  echo "Upgrade manifest is missing ${wanted}, which the harness has special handling for." >&2
+  return 1
+}
+manifest_index() {
+  local wanted="$1" candidate_index
+  for ((candidate_index = 0; candidate_index < ${#upgrade_migrations[@]}; candidate_index++)); do
+    if [[ "${upgrade_migrations[${candidate_index}]}" == "${wanted}" ]]; then
+      printf '%s' "${candidate_index}"
+      return 0
+    fi
+  done
+  echo "Upgrade manifest is missing ${wanted}." >&2
+  return 1
+}
+fresh_manifest_index() {
+  local wanted="$1" candidate_index
+  for ((candidate_index = 0; candidate_index < ${#fresh_migrations[@]}; candidate_index++)); do
+    if [[ "${fresh_migrations[${candidate_index}]}" == "${wanted}" ]]; then
+      printf '%s' "${candidate_index}"
+      return 0
+    fi
+  done
+  echo "Fresh manifest is missing ${wanted}." >&2
+  return 1
+}
+
+tenancy_migration="$(manifest_entry 'supabase/migrations/202607170001_enterprise_tenancy.sql')"
+cache_security_migration="$(manifest_entry 'supabase/migrations/202607170002_cache_security.sql')"
+billing_recovery_migration="$(manifest_entry 'supabase/migrations/202607170004_billing_recovery.sql')"
+scaling_migration="$(manifest_entry 'supabase/migrations/202607170006_database_scaling.sql')"
+device_migration="$(manifest_entry 'supabase/migrations/202607170010_device_delivery_idempotency.sql')"
+membership_migration="$(manifest_entry 'supabase/migrations/202607170011_active_memberships.sql')"
+receipt_migration="$(manifest_entry 'supabase/migrations/202607170012_receipt_accounting_alignment.sql')"
+webhook_migration="$(manifest_entry 'supabase/migrations/202607200001_stripe_webhook_durability.sql')"
+waitlist_migration="$(manifest_entry 'supabase/migrations/202607200002_waitlist_security.sql')"
+billing_owner_migration="$(manifest_entry 'supabase/migrations/202607200003_billing_owner_attribution.sql')"
+stripe_ordering_migration="$(manifest_entry 'supabase/migrations/202607200004_stripe_event_ordering.sql')"
+initial_service_key_migration="$(manifest_entry 'supabase/migrations/202607200005_initial_service_key.sql')"
+company_billing_migration="$(manifest_entry 'supabase/migrations/202607200006_company_billing_authorization.sql')"
+billing_recovery_scope_migration="$(manifest_entry 'supabase/migrations/202607200007_billing_recovery_scope.sql')"
+provider_cleanup_migration="$(manifest_entry 'supabase/migrations/202607200008_provider_credential_cleanup.sql')"
+multitab_sessions_migration="$(manifest_entry 'supabase/migrations/202607200009_multitab_dashboard_sessions.sql')"
+shared_limits_migration="$(manifest_entry 'supabase/migrations/202607200010_shared_endpoint_rate_limits.sql')"
+compliance_billing_isolation_migration="$(manifest_entry 'supabase/migrations/202607200011_compliance_billing_isolation.sql')"
+webhook_lease_renewal_migration="$(manifest_entry 'supabase/migrations/202607200012_stripe_webhook_lease_renewal.sql')"
+billing_control_limits_migration="$(manifest_entry 'supabase/migrations/202607200013_billing_control_rate_limits.sql')"
+checkout_reservation_migration="$(manifest_entry 'supabase/migrations/202607200014_billing_checkout_session_reservations.sql')"
+provider_outbound_migration="$(manifest_entry 'supabase/migrations/202607200015_provider_outbound_ambiguity.sql')"
+durable_onboarding_migration="$(manifest_entry 'supabase/migrations/202607200016_durable_onboarding.sql')"
+billing_customer_owner_migration="$(manifest_entry 'supabase/migrations/202607200017_billing_customer_owner_fencing.sql')"
+workspace_experiences_migration="$(manifest_entry 'supabase/migrations/202607200018_workspace_experiences.sql')"
+split_savings_migration="$(manifest_entry 'supabase/migrations/20260720_split_savings_metrics.sql')"
+service_role_data_plane_migration="$(manifest_entry 'supabase/migrations/202607220001_service_role_data_plane.sql')"
+supabase_advisor_hardening_migration="$(manifest_entry 'supabase/migrations/202607220002_supabase_advisor_hardening.sql')"
+device_expiry_migration="$(manifest_entry 'supabase/migrations/202607270001_bvx_device_auth_expiry_index.sql')"
+cache_warming_migration="$(manifest_entry 'supabase/migrations/202607280001_cache_warming.sql')"
+multi_provider_warming_migration="$(manifest_entry 'supabase/migrations/202607280003_multi_provider_warming.sql')"
+onboarding_evidence_migration="$(manifest_entry 'supabase/migrations/202607280004_onboarding_local_proxy_evidence.sql')"
+installation_activation_migration="$(manifest_entry 'supabase/migrations/202607280005_installation_on_device_activation.sql')"
+retire_fee_trigger_migration="$(manifest_entry 'supabase/migrations/202607280006_retire_per_row_fee_trigger.sql')"
+period_settlement_migration="$(manifest_entry 'supabase/migrations/202607280007_period_settlement_ledger.sql')"
+halting_conditions_migration="$(manifest_entry 'supabase/migrations/202607280008_billing_halting_conditions.sql')"
+billing_attestation_migration="$(manifest_entry 'supabase/migrations/202607280009_billing_arrangement_attestation.sql')"
+period_settlement_latch_migration="$(manifest_entry 'supabase/migrations/202607280010_period_settlement_send_latches.sql')"
+unsent_release_migration="$(manifest_entry 'supabase/migrations/202607280011_billing_ledger_unsent_release.sql')"
+evidence_warm_days_migration="$(manifest_entry 'supabase/migrations/202607280012_settlement_evidence_warm_days.sql')"
+settlement_writer_migration="$(manifest_entry 'supabase/migrations/202607280013_period_settlement_writer.sql')"
+browser_privilege_completion_migration="$(manifest_entry 'supabase/migrations/202607280024_browser_role_privilege_completion.sql')"
+waitlist_network_budget_migration="$(manifest_entry 'supabase/migrations/202607280025_waitlist_network_budget.sql')"
+usage_dedupe_authority_migration="$(manifest_entry 'supabase/migrations/202607280026_usage_log_authority_dedupe.sql')"
+
+# Migrations at or after 202607170011 are applied twice to prove idempotence.
+# Deriving the boundary from the manifest (instead of listing the earlier
+# migrations) keeps a newly added migration in the double-apply set by default:
+# a non-idempotent addition then fails the harness rather than slipping through.
+idempotence_boundary_index="$(manifest_index "${membership_migration}")"
 
 apply_migration() {
   local migration="$1"
@@ -125,7 +173,40 @@ apply_migration() {
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file "${migration}"
 }
 
-assert_atomic_migration_rollback() {
+# FORWARD-ONLY SCHEMA CHANGE CONTRACT
+#
+# Read this before looking for a down-migration: there are none, and that is the
+# declared posture, not an oversight.
+#
+#   * The schema is FORWARD-ONLY. A defect in an applied migration is corrected
+#     by a NEW forward migration, never by editing or reversing the original.
+#     supabase/migrations/*.sql are SHA-256 pinned in
+#     scripts/ci/migration-frozen-checksums.txt, and the production project has
+#     no migration ledger of its own, so an edited or un-applied file
+#     desynchronizes the repository from reality with no way to detect it.
+#   * The sanctioned SCHEMA rollback of last resort is PITR to the pre-cutover
+#     checkpoint (docs/GO_LIVE_RUNBOOK.md, Phase 8), not a reverse script. For
+#     every data-transforming migration in this chain that is the only honest
+#     answer: an inverse of 202607270002_widen_billing_events_money would
+#     truncate real money precision, and an inverse of the settlement-evidence
+#     migrations would delete settlement evidence -- which
+#     scripts/ci/verify-migrations.mjs refuses by design.
+#   * Every migration added from the cutoff in verify-migrations.mjs onward must
+#     therefore DECLARE its reverse posture in a `-- REVERSE:` header line, and
+#     verifyReversePosture() fails the build if it does not. The declaration is
+#     the deliverable; a reverse file is optional and only exists for the three
+#     schema-only layers reversed below.
+#
+# This function is NOT a reverse-path test, and it is named accordingly. It
+# rewrites the migration with `select 1/0;` injected immediately before COMMIT,
+# requires psql to fail with 'division by zero', and then requires the supplied
+# invariant to hold in a read-only session -- i.e. it proves the ATOMICITY OF A
+# FAILED APPLY (no partial state committed), nothing about reversibility. The
+# genuine down-then-up legs in this harness are the three further down: the
+# encrypted-cache layer, api/migrations/004_database_scaling.rollback.sql, and
+# the receipt-accounting validation layer, each pinned by
+# assert_authoritative_counts on both sides.
+assert_failed_apply_is_atomic() {
   local migration="$1"
   local rollback_query="$2"
   local failure_file failure_log rollback_state
@@ -213,7 +294,225 @@ run_forward_assertions() {
     --file scripts/ci/migration-billing-customer-owner-fencing-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc \
     --file scripts/ci/migration-cache-warming-assertions.sql
+  # Live behaviour of the money path. Each of these files opens its own
+  # transaction and ends in ROLLBACK, so they are rerunnable, they leave no
+  # financial rows behind, and they are order-independent with respect to each
+  # other and to every suite above. They seed public.billing_ledger with direct
+  # INSERTs because 202607280006 retired queue_brevitas_fee_after_usage.
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-billing-claim-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-billing-sweeps-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-billing-anchor-assertions.sql
+  # Period settlement. Order matters here: the period-settlement structure file
+  # must precede the halting-condition file (which drives the guard through a
+  # settlement it promotes to 'reported'), and the writer file must come last
+  # because it exercises settle_billing_period against both of them. These
+  # three require 202607280007-202607280013 to be applied, which in turn
+  # requires 202607280010-202607280013 to be registered in both manifests.
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-period-settlement-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-halting-conditions-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-settlement-writer-assertions.sql
+  # Schema and authorization repairs (202607280014-202607280023). Each file
+  # opens its own transaction and ends in ROLLBACK, so they are rerunnable,
+  # order-independent, and leave no fixture rows behind. The browser-role file
+  # is the only place in the suite that switches to anon/authenticated and sets
+  # request.jwt.*, so it is the only non-vacuous RLS and view-invoker coverage.
+  # Must run before the browser-role file below: it is what proves the bootstrap
+  # still installs Supabase's default anon/authenticated grants, i.e. that every
+  # revoke assertion in this function can actually fail.
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-browser-privilege-baseline-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-browser-role-isolation-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-warming-lease-retention-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-company-admin-evidence-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-durable-job-expiry-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-compliance-evidence-assertions.sql
+  # 202607280025-202607280026. Both open their own transaction and end in
+  # ROLLBACK, so they are rerunnable and order-independent. The network-budget
+  # file is the only live coverage of the third waitlist window and of the
+  # limiter's retention story; the dedupe file is the only place the widened
+  # usage uniqueness is executed in both directions (same-authority repeat still
+  # rejected, cross-authority pair now admitted).
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/waitlist-network-budget-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc \
+    --file scripts/ci/migration-usage-dedupe-authority-assertions.sql
 }
+
+# Pre-COMMIT rollback invariant for the migrations whose atomicity is probed by
+# assert_failed_apply_is_atomic. Empty output means "no probe for this
+# migration"; the driver loop applies it either way. The case patterns are the
+# manifest-resolved handles, so a manifest rename cannot orphan an invariant.
+upgrade_rollback_invariant() {
+  case "$1" in
+    "${webhook_migration}")
+      printf '%s' "to_regprocedure('public.claim_stripe_webhook_event(text,text,uuid,integer)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='stripe_webhook_events' and column_name='status')"
+      ;;
+    "${waitlist_migration}")
+      printf '%s' "to_regprocedure('public.submit_waitlist_signup(text,text,text,text,text,text,text,text,boolean)') is null"
+      ;;
+    "${billing_owner_migration}")
+      printf '%s' "to_regprocedure('public.enforce_service_key_billing_owner()') is null"
+      ;;
+    "${billing_recovery_scope_migration}")
+      printf '%s' "to_regprocedure('public.manually_resolve_billing_ledger_entry(bigint,text,text)') is not null and to_regprocedure('public.manually_resolve_billing_ledger_entry(uuid,uuid,bigint,text,text,text)') is null and to_regclass('public.billing_recovery_audit') is null"
+      ;;
+    "${provider_cleanup_migration}")
+      printf '%s' "to_regprocedure('public.purge_expired_provider_configs(integer)') is null and not exists (select 1 from pg_constraint where conrelid='public.provider_config'::regclass and conname='provider_config_key_hash_fkey')"
+      ;;
+    "${multitab_sessions_migration}")
+      printf '%s' "position('rotated_count' in pg_get_functiondef(to_regprocedure('public.company_admin_create_dashboard_session_key(uuid,uuid,text,text,timestamptz,text)')))=0"
+      ;;
+    "${shared_limits_migration}")
+      printf '%s' "to_regclass('public.shared_endpoint_rate_limits') is null and to_regprocedure('public.consume_billing_recovery_attempt(uuid,uuid)') is null and pg_get_function_result(to_regprocedure('public.submit_waitlist_signup(text,text,text,text,text,text,text,text,boolean)'))='boolean'"
+      ;;
+    "${compliance_billing_isolation_migration}")
+      printf '%s' "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='billing_events' and column_name='organization_id') and to_regprocedure('public.compliance_export_tenant_pre_company_identity(uuid,uuid,text)') is null and to_regprocedure('public.compliance_export_subject_pre_company_identity(uuid,uuid,text)') is null"
+      ;;
+    "${webhook_lease_renewal_migration}")
+      printf '%s' "to_regprocedure('public.renew_stripe_webhook_event_lease(text,uuid,integer)') is null and position('lease_expires_at >' in pg_get_functiondef(to_regprocedure('public.mark_stripe_webhook_event_processed(text,uuid)')))=0"
+      ;;
+    "${billing_control_limits_migration}")
+      printf '%s' "to_regprocedure('public.consume_billing_control_attempt(uuid,uuid,text)') is null"
+      ;;
+    "${checkout_reservation_migration}")
+      printf '%s' "to_regclass('public.billing_checkout_reservations') is null and to_regprocedure('public.reserve_billing_checkout_generation(uuid,text,uuid,integer)') is null and to_regprocedure('public.persist_billing_checkout_session(uuid,bigint,uuid,text)') is null"
+      ;;
+    "${provider_outbound_migration}")
+      printf '%s' "to_regprocedure('public.mark_ai_job_provider_outbound_started(uuid,text)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='ai_jobs' and column_name='provider_outbound_started_at')"
+      ;;
+    "${durable_onboarding_migration}")
+      printf '%s' "to_regprocedure('public.organization_onboarding_status(uuid,uuid)') is null and to_regprocedure('public.register_bvx_installation(uuid,text,uuid,text,text,text,text,text,text,text,text)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='organizations' and column_name='onboarding_completed_at') and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='installations' and column_name='registration_key_hash')"
+      ;;
+    "${billing_customer_owner_migration}")
+      printf '%s' "to_regprocedure('public.save_billing_customer_identity(uuid,text)') is null"
+      ;;
+    "${workspace_experiences_migration}")
+      printf '%s' "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='organizations' and column_name='account_type') and to_regprocedure('public.ensure_workspace_organization(uuid,text,text)') is null"
+      ;;
+    "${split_savings_migration}")
+      printf '%s' "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='usage_log' and column_name='provider_input_tokens_avoided')"
+      ;;
+    "${service_role_data_plane_migration}")
+      # This invariant used to read "not has_table_privilege(service_role,
+      # organizations, SELECT)", which was vacuous: migration-bootstrap.sql did
+      # not reproduce Supabase's default GRANT ALL, so service_role held nothing
+      # on any table until this migration granted it. Now that the bootstrap
+      # installs the production privilege baseline, state the invariant in the
+      # direction that actually distinguishes the two schemas: rolled back, the
+      # project defaults are still intact, so service_role retains privileges
+      # this migration revokes and never re-grants (INSERT/DELETE on
+      # organizations, INSERT/UPDATE/DELETE on organization_members).
+      printf '%s' "has_table_privilege('service_role','public.organizations','INSERT') and has_table_privilege('service_role','public.organizations','DELETE') and has_table_privilege('service_role','public.organization_members','UPDATE')"
+      ;;
+    "${supabase_advisor_hardening_migration}")
+      printf '%s' "(select proconfig is null from pg_proc where oid='public.company_role_permissions(text)'::regprocedure) and has_function_privilege('anon','public.handle_new_user()','EXECUTE')"
+      ;;
+    "${cache_warming_migration}")
+      printf '%s' "to_regclass('public.warm_credentials') is null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is null"
+      ;;
+    "${multi_provider_warming_migration}")
+      printf '%s' "to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is not null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is null"
+      ;;
+    "${onboarding_evidence_migration}")
+      printf '%s' "position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.organization_onboarding_status(uuid,uuid)'))) > 0 and position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.complete_organization_onboarding(uuid,uuid,text)'))) > 0"
+      ;;
+    "${retire_fee_trigger_migration}")
+      # A rolled-back retirement must leave the per-row trigger attached: the
+      # drop is the entire money-relevant effect of 202607280006.
+      printf '%s' "exists (select 1 from pg_trigger trigger_state where trigger_state.tgrelid='public.usage_log'::regclass and trigger_state.tgname='queue_brevitas_fee_after_usage' and not trigger_state.tgisinternal)"
+      ;;
+    "${period_settlement_migration}")
+      printf '%s' "to_regclass('public.period_settlement_ledger') is null and to_regprocedure('public.prevent_period_settlement_identity_change()') is null and to_regprocedure('public.period_settlement_fee_microusd(bigint,bigint)') is null"
+      ;;
+    "${halting_conditions_migration}")
+      printf '%s' "to_regclass('public.billing_halting_conditions') is null and to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)') is null and to_regprocedure('public.assert_billing_period_halting_conditions(uuid,timestamptz,timestamptz,bigint)') is null"
+      ;;
+    "${billing_attestation_migration}")
+      printf '%s' "to_regclass('public.organization_billing_arrangement') is null and to_regprocedure('public.organization_billing_arrangement_state(uuid)') is null and to_regprocedure('public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)') is null"
+      ;;
+    "${period_settlement_latch_migration}")
+      # A rolled-back latch migration must leave the identity guard WITHOUT the
+      # one-way send latches: that text is the whole money-relevant effect of
+      # 202607280010, and a half-applied guard would let a reported period be
+      # voided with its send evidence erased and then re-billed at full rate.
+      printf '%s' "not exists (select 1 from pg_proc trigger_function where trigger_function.oid=to_regprocedure('public.prevent_period_settlement_identity_change()') and trigger_function.prosrc like '%old.outbound_started_at is not null%')"
+      ;;
+    "${unsent_release_migration}")
+      printf '%s' "to_regprocedure('public.release_billing_ledger_unsent(bigint,text)') is null"
+      ;;
+    "${evidence_warm_days_migration}")
+      # Rolled back, the evidence function must still be 202607280008's version,
+      # i.e. counting (provider, day) rows rather than distinct days.
+      printf '%s' "not exists (select 1 from pg_proc evidence_function where evidence_function.oid=to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)') and evidence_function.prosrc like '%count(distinct warm.day)%')"
+      ;;
+    "${settlement_writer_migration}")
+      # The writer DROPs and recreates the evidence function to widen its OUT
+      # list, so a rolled-back apply must leave BOTH the un-widened evidence
+      # function (still present, without the watermark) and no writer, promoter,
+      # summary, or sweep function behind.
+      printf '%s' "to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)') is not null and position('usage_log_watermark_id' in pg_get_function_result(to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')))=0 and to_regprocedure('public.settle_billing_period(uuid,timestamptz,text,boolean)') is null and to_regprocedure('public.promote_billing_period_settlement(bigint,text,text)') is null and to_regprocedure('public.billing_period_settlement_summary(uuid,timestamptz)') is null and to_regprocedure('public.billing_periods_awaiting_settlement(integer)') is null"
+      ;;
+    "${browser_privilege_completion_migration}")
+      # 202607280024 is a privilege migration, so a half-applied one is the
+      # dangerous shape: the widened assertion function committed while the four
+      # REVOKEs did not would make the contract report a safety it never
+      # established. Rolled back, both halves must still be at their 202607280015
+      # state -- the browser roles keep Supabase's project-default privileges on
+      # audit_events/organization_invitations (which the bootstrap installs and
+      # migration-browser-privilege-baseline-assertions.sql proves are really
+      # there, so this is not vacuous), and the contract function has not yet
+      # heard of audit_events.
+      printf '%s' "has_table_privilege('anon','public.audit_events','TRUNCATE') and has_table_privilege('authenticated','public.organization_invitations','SELECT') and position('audit_events' in pg_get_functiondef(to_regprocedure('public.assert_browser_role_table_privileges()')))=0"
+      ;;
+    "${waitlist_network_budget_migration}")
+      printf '%s' "to_regprocedure('public.consume_waitlist_network_budget(text,integer,integer)') is null and to_regprocedure('public.purge_expired_shared_endpoint_rate_limits(integer)') is null"
+      ;;
+    "${usage_dedupe_authority_migration}")
+      # The index swap must be all-or-nothing. A rolled-back apply must leave the
+      # 20260710 index in place: an instant with NEITHER index is an instant in
+      # which a billable receipt can be written twice.
+      printf '%s' "to_regclass('public.usage_log_request_authority_unique') is null and to_regclass('public.usage_log_request_unique') is not null"
+      ;;
+    *)
+      :
+      ;;
+  esac
+}
+
+applied_upgrade_migrations=()
+record_upgrade_applied() {
+  applied_upgrade_migrations+=("$1")
+}
+
+billing_migration_expected_host="$(node --input-type=module -e \
+  "import { validateMigrationDsn } from './scripts/ci/validate-migration-dsn.mjs'; console.log(validateMigrationDsn(process.env.DATABASE_URL).hostname)")"
+billing_migration_expected_database="$(node --input-type=module -e \
+  "import { validateMigrationDsn } from './scripts/ci/validate-migration-dsn.mjs'; console.log(validateMigrationDsn(process.env.DATABASE_URL).database)")"
+billing_version_fixture="${PWD}/scripts/ci/billing-maintenance-version-fetch-fixture.mjs"
+run_billing_identity_maintenance() {
+  NODE_OPTIONS="--import=${billing_version_fixture}" \
+  BREVITAS_BILLING_ENABLED=false \
+  BREVITAS_BILLING_MIGRATION_PHASE=api-worker-quiesced \
+  BREVITAS_BILLING_MAINTENANCE_SHA=0000000000000000000000000000000000000000 \
+  BREVITAS_BILLING_MAINTENANCE_DASHBOARD_VERSION_URL=https://dashboard.example.invalid/api/version \
+  BREVITAS_BILLING_MAINTENANCE_WORKER_VERSION_URL=http://127.0.0.1:43119/version \
+  BREVITAS_BILLING_MAINTENANCE_OFFLINE_LOOPBACK_TEST=true \
+  BREVITAS_BILLING_MIGRATION_EXPECTED_HOST="${billing_migration_expected_host}" \
+  BREVITAS_BILLING_MIGRATION_EXPECTED_DATABASE="${billing_migration_expected_database}" \
+    bash scripts/ci/apply-billing-identity-migrations.sh
+}
+billing_identity_complete_query="to_regprocedure('public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],timestamptz,text)') is not null and to_regprocedure('public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],text,text,timestamptz,text)') is not null and to_regprocedure('public.company_billing_authorize_actor(uuid)') is not null and (select procedure_state.proargnames[1] from pg_proc procedure_state where procedure_state.oid=to_regprocedure('public.compare_and_set_stripe_subscription_snapshot(uuid,bigint,bigint,text,text,text,text,timestamptz,timestamptz,timestamptz)'))='p_organization_id' and (select procedure_state.proargnames[1] from pg_proc procedure_state where procedure_state.oid=to_regprocedure('public.compare_and_set_stripe_invoice_snapshot(uuid,bigint,bigint,text,text,text,text)'))='p_organization_id' and exists (select 1 from pg_constraint constraint_state where constraint_state.conrelid='public.billing_accounts'::regclass and constraint_state.contype='p' and pg_get_constraintdef(constraint_state.oid)='PRIMARY KEY (organization_id)')"
 
 echo 'Testing the known production-baseline upgrade through migration 017.'
 bootstrap_database
@@ -235,156 +534,110 @@ if ! grep -q 'requires Supabase migrations through 202607170003 first' "${prereq
   exit 1
 fi
 
-apply_migration "${upgrade_migrations[0]}"
-apply_migration scripts/ci/migration-cache-legacy-fixture.sql
-echo 'Testing the retired API cache compatibility guard outside the forward manifests.'
-apply_migration api/migrations/002_semantic_cache.sql
-psql "${DATABASE_URL}" --no-psqlrc \
-  --file scripts/ci/migration-cache-guard-assertions.sql
-apply_migration "${upgrade_migrations[1]}"
-apply_migration "${upgrade_migrations[2]}"
+# Drive the ENTIRE upgrade manifest. Every entry is applied here; the case arms
+# only add work (a banner, a staged index build, a fixture, a rollback probe, an
+# out-of-band applier). Nothing is skipped by omission, which is the whole point:
+# the previous hand-bound index list stopped at 202607280004 and left the Phase
+# 0-4 billing schema (202607280005-202607280009) unapplied on this path.
+for ((index = 0; index < ${#upgrade_migrations[@]}; index++)); do
+  migration="${upgrade_migrations[${index}]}"
 
-echo 'Pre-staging upgrade indexes outside a transaction before migration 006.'
-apply_migration api/migrations/004_database_scaling.concurrent_indexes.sql
-for ((index = 3; index < 9; index++)); do
-  apply_migration "${upgrade_migrations[${index}]}"
+  case "${migration}" in
+    "${membership_migration}")
+      echo 'Applying migrations 011-013 twice to prove idempotence.'
+      ;;
+    "${webhook_migration}")
+      echo 'Applying migrations 202607200001-200002 twice to prove idempotence.'
+      ;;
+    "${billing_owner_migration}")
+      echo 'Applying migrations 202607200003 through the complete release suffix in order.'
+      ;;
+    "${device_expiry_migration}")
+      echo 'Applying the 20260727-20260728 release tail twice to prove idempotence.'
+      ;;
+    "${installation_activation_migration}")
+      echo 'Applying the 202607280005-202607280009 billing-correctness suffix (retires the per-row fee trigger).'
+      ;;
+  esac
+
+  case "${migration}" in
+    "${billing_recovery_migration}")
+      echo 'Pre-staging upgrade indexes outside a transaction before migration 006.'
+      apply_migration api/migrations/004_database_scaling.concurrent_indexes.sql
+      ;;
+  esac
+
+  upgrade_probe="$(upgrade_rollback_invariant "${migration}")"
+  if [[ -n "${upgrade_probe}" ]]; then
+    assert_failed_apply_is_atomic "${migration}" "${upgrade_probe}"
+  fi
+
+  case "${migration}" in
+    "${stripe_ordering_migration}")
+      # 200004-200006 are applied only through the guarded maintenance procedure,
+      # which owns their quiesce/version preconditions.
+      echo 'Applying the guarded 200004-200006 billing maintenance procedure immediately after 200003.'
+      run_billing_identity_maintenance
+      echo 'Rerunning the guarded procedure to prove completed company-scoped state is validated and skipped.'
+      run_billing_identity_maintenance
+      record_upgrade_applied "${stripe_ordering_migration}"
+      record_upgrade_applied "${initial_service_key_migration}"
+      record_upgrade_applied "${company_billing_migration}"
+      ;;
+    "${initial_service_key_migration}"|"${company_billing_migration}")
+      :
+      ;;
+    *)
+      apply_migration "${migration}"
+      record_upgrade_applied "${migration}"
+      if ((index >= idempotence_boundary_index)); then
+        apply_migration "${migration}"
+      fi
+      ;;
+  esac
+
+  case "${migration}" in
+    "${tenancy_migration}")
+      apply_migration scripts/ci/migration-cache-legacy-fixture.sql
+      echo 'Testing the retired API cache compatibility guard outside the forward manifests.'
+      apply_migration api/migrations/002_semantic_cache.sql
+      psql "${DATABASE_URL}" --no-psqlrc \
+        --file scripts/ci/migration-cache-guard-assertions.sql
+      ;;
+    "${device_migration}")
+      apply_migration scripts/ci/migration-device-null-upgrade-fixture.sql
+      echo 'Reapplying migration 010 to erase pre-constraint quarantined ciphertext.'
+      apply_migration "${device_migration}"
+      psql "${DATABASE_URL}" --no-psqlrc \
+        --file scripts/ci/migration-device-null-upgrade-assertions.sql
+      ;;
+    "${company_billing_migration}")
+      echo 'Failure-injecting reruns of 200004-200006 and requiring the completed company identity to roll back intact.'
+      assert_failed_apply_is_atomic "${stripe_ordering_migration}" \
+        "${billing_identity_complete_query}"
+      assert_failed_apply_is_atomic "${initial_service_key_migration}" \
+        "${billing_identity_complete_query}"
+      assert_failed_apply_is_atomic "${company_billing_migration}" \
+        "${billing_identity_complete_query}"
+      ;;
+  esac
 done
-apply_migration "${device_migration}"
-apply_migration scripts/ci/migration-device-null-upgrade-fixture.sql
-echo 'Reapplying migration 010 to erase pre-constraint quarantined ciphertext.'
-apply_migration "${device_migration}"
-psql "${DATABASE_URL}" --no-psqlrc \
-  --file scripts/ci/migration-device-null-upgrade-assertions.sql
-echo 'Applying migrations 011-013 twice to prove idempotence.'
-apply_migration "${membership_migration}"
-apply_migration "${membership_migration}"
-apply_migration "${receipt_migration}"
-apply_migration "${receipt_migration}"
-apply_migration "${selection_migration}"
-apply_migration "${selection_migration}"
-echo 'Applying migrations 202607200001-200002 twice to prove idempotence.'
-assert_atomic_migration_rollback "${webhook_migration}" \
-  "to_regprocedure('public.claim_stripe_webhook_event(text,text,uuid,integer)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='stripe_webhook_events' and column_name='status')"
-apply_migration "${webhook_migration}"
-apply_migration "${webhook_migration}"
-assert_atomic_migration_rollback "${waitlist_migration}" \
-  "to_regprocedure('public.submit_waitlist_signup(text,text,text,text,text,text,text,text,boolean)') is null"
-apply_migration "${waitlist_migration}"
-apply_migration "${waitlist_migration}"
-echo 'Applying migrations 202607200003 through the complete release suffix in order.'
-assert_atomic_migration_rollback "${billing_owner_migration}" \
-  "to_regprocedure('public.enforce_service_key_billing_owner()') is null"
-apply_migration "${billing_owner_migration}"
-apply_migration "${billing_owner_migration}"
-billing_migration_expected_host="$(node --input-type=module -e \
-  "import { validateMigrationDsn } from './scripts/ci/validate-migration-dsn.mjs'; console.log(validateMigrationDsn(process.env.DATABASE_URL).hostname)")"
-billing_migration_expected_database="$(node --input-type=module -e \
-  "import { validateMigrationDsn } from './scripts/ci/validate-migration-dsn.mjs'; console.log(validateMigrationDsn(process.env.DATABASE_URL).database)")"
-billing_version_fixture="${PWD}/scripts/ci/billing-maintenance-version-fetch-fixture.mjs"
-run_billing_identity_maintenance() {
-  NODE_OPTIONS="--import=${billing_version_fixture}" \
-  BREVITAS_BILLING_ENABLED=false \
-  BREVITAS_BILLING_MIGRATION_PHASE=api-worker-quiesced \
-  BREVITAS_BILLING_MAINTENANCE_SHA=0000000000000000000000000000000000000000 \
-  BREVITAS_BILLING_MAINTENANCE_DASHBOARD_VERSION_URL=https://dashboard.example.invalid/api/version \
-  BREVITAS_BILLING_MAINTENANCE_WORKER_VERSION_URL=http://127.0.0.1:43119/version \
-  BREVITAS_BILLING_MAINTENANCE_OFFLINE_LOOPBACK_TEST=true \
-  BREVITAS_BILLING_MIGRATION_EXPECTED_HOST="${billing_migration_expected_host}" \
-  BREVITAS_BILLING_MIGRATION_EXPECTED_DATABASE="${billing_migration_expected_database}" \
-    bash scripts/ci/apply-billing-identity-migrations.sh
-}
-echo 'Applying the guarded 200004-200006 billing maintenance procedure immediately after 200003.'
-run_billing_identity_maintenance
-echo 'Rerunning the guarded procedure to prove completed company-scoped state is validated and skipped.'
-run_billing_identity_maintenance
 
-billing_identity_complete_query="to_regprocedure('public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],timestamptz,text)') is not null and to_regprocedure('public.company_admin_create_service_account(uuid,uuid,uuid,text,text,text[],text,text,timestamptz,text)') is not null and to_regprocedure('public.company_billing_authorize_actor(uuid)') is not null and (select procedure_state.proargnames[1] from pg_proc procedure_state where procedure_state.oid=to_regprocedure('public.compare_and_set_stripe_subscription_snapshot(uuid,bigint,bigint,text,text,text,text,timestamptz,timestamptz,timestamptz)'))='p_organization_id' and (select procedure_state.proargnames[1] from pg_proc procedure_state where procedure_state.oid=to_regprocedure('public.compare_and_set_stripe_invoice_snapshot(uuid,bigint,bigint,text,text,text,text)'))='p_organization_id' and exists (select 1 from pg_constraint constraint_state where constraint_state.conrelid='public.billing_accounts'::regclass and constraint_state.contype='p' and pg_get_constraintdef(constraint_state.oid)='PRIMARY KEY (organization_id)')"
-echo 'Failure-injecting reruns of 200004-200006 and requiring the completed company identity to roll back intact.'
-assert_atomic_migration_rollback "${stripe_ordering_migration}" \
-  "${billing_identity_complete_query}"
-assert_atomic_migration_rollback "${initial_service_key_migration}" \
-  "${billing_identity_complete_query}"
-assert_atomic_migration_rollback "${company_billing_migration}" \
-  "${billing_identity_complete_query}"
-assert_atomic_migration_rollback "${billing_recovery_scope_migration}" \
-  "to_regprocedure('public.manually_resolve_billing_ledger_entry(bigint,text,text)') is not null and to_regprocedure('public.manually_resolve_billing_ledger_entry(uuid,uuid,bigint,text,text,text)') is null and to_regclass('public.billing_recovery_audit') is null"
-apply_migration "${billing_recovery_scope_migration}"
-apply_migration "${billing_recovery_scope_migration}"
-assert_atomic_migration_rollback "${provider_cleanup_migration}" \
-  "to_regprocedure('public.purge_expired_provider_configs(integer)') is null and not exists (select 1 from pg_constraint where conrelid='public.provider_config'::regclass and conname='provider_config_key_hash_fkey')"
-apply_migration "${provider_cleanup_migration}"
-apply_migration "${provider_cleanup_migration}"
-assert_atomic_migration_rollback "${multitab_sessions_migration}" \
-  "position('rotated_count' in pg_get_functiondef(to_regprocedure('public.company_admin_create_dashboard_session_key(uuid,uuid,text,text,timestamptz,text)')))=0"
-apply_migration "${multitab_sessions_migration}"
-apply_migration "${multitab_sessions_migration}"
-assert_atomic_migration_rollback "${shared_limits_migration}" \
-  "to_regclass('public.shared_endpoint_rate_limits') is null and to_regprocedure('public.consume_billing_recovery_attempt(uuid,uuid)') is null and pg_get_function_result(to_regprocedure('public.submit_waitlist_signup(text,text,text,text,text,text,text,text,boolean)'))='boolean'"
-apply_migration "${shared_limits_migration}"
-apply_migration "${shared_limits_migration}"
-assert_atomic_migration_rollback "${compliance_billing_isolation_migration}" \
-  "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='billing_events' and column_name='organization_id') and to_regprocedure('public.compliance_export_tenant_pre_company_identity(uuid,uuid,text)') is null and to_regprocedure('public.compliance_export_subject_pre_company_identity(uuid,uuid,text)') is null"
-apply_migration "${compliance_billing_isolation_migration}"
-apply_migration "${compliance_billing_isolation_migration}"
-assert_atomic_migration_rollback "${webhook_lease_renewal_migration}" \
-  "to_regprocedure('public.renew_stripe_webhook_event_lease(text,uuid,integer)') is null and position('lease_expires_at >' in pg_get_functiondef(to_regprocedure('public.mark_stripe_webhook_event_processed(text,uuid)')))=0"
-apply_migration "${webhook_lease_renewal_migration}"
-apply_migration "${webhook_lease_renewal_migration}"
-assert_atomic_migration_rollback "${billing_control_limits_migration}" \
-  "to_regprocedure('public.consume_billing_control_attempt(uuid,uuid,text)') is null"
-apply_migration "${billing_control_limits_migration}"
-apply_migration "${billing_control_limits_migration}"
-assert_atomic_migration_rollback "${checkout_reservation_migration}" \
-  "to_regclass('public.billing_checkout_reservations') is null and to_regprocedure('public.reserve_billing_checkout_generation(uuid,text,uuid,integer)') is null and to_regprocedure('public.persist_billing_checkout_session(uuid,bigint,uuid,text)') is null"
-apply_migration "${checkout_reservation_migration}"
-apply_migration "${checkout_reservation_migration}"
-assert_atomic_migration_rollback "${provider_outbound_migration}" \
-  "to_regprocedure('public.mark_ai_job_provider_outbound_started(uuid,text)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='ai_jobs' and column_name='provider_outbound_started_at')"
-apply_migration "${provider_outbound_migration}"
-apply_migration "${provider_outbound_migration}"
-assert_atomic_migration_rollback "${durable_onboarding_migration}" \
-  "to_regprocedure('public.organization_onboarding_status(uuid,uuid)') is null and to_regprocedure('public.register_bvx_installation(uuid,text,uuid,text,text,text,text,text,text,text,text)') is null and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='organizations' and column_name='onboarding_completed_at') and not exists (select 1 from information_schema.columns where table_schema='public' and table_name='installations' and column_name='registration_key_hash')"
-apply_migration "${durable_onboarding_migration}"
-apply_migration "${durable_onboarding_migration}"
-assert_atomic_migration_rollback "${billing_customer_owner_migration}" \
-  "to_regprocedure('public.save_billing_customer_identity(uuid,text)') is null"
-apply_migration "${billing_customer_owner_migration}"
-apply_migration "${billing_customer_owner_migration}"
-assert_atomic_migration_rollback "${workspace_experiences_migration}" \
-  "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='organizations' and column_name='account_type') and to_regprocedure('public.ensure_workspace_organization(uuid,text,text)') is null"
-apply_migration "${workspace_experiences_migration}"
-apply_migration "${workspace_experiences_migration}"
-assert_atomic_migration_rollback "${split_savings_migration}" \
-  "not exists (select 1 from information_schema.columns where table_schema='public' and table_name='usage_log' and column_name='provider_input_tokens_avoided')"
-apply_migration "${split_savings_migration}"
-apply_migration "${split_savings_migration}"
-assert_atomic_migration_rollback "${service_role_data_plane_migration}" \
-  "not has_table_privilege('service_role','public.organizations','SELECT')"
-apply_migration "${service_role_data_plane_migration}"
-apply_migration "${service_role_data_plane_migration}"
-assert_atomic_migration_rollback "${supabase_advisor_hardening_migration}" \
-  "(select proconfig is null from pg_proc where oid='public.company_role_permissions(text)'::regprocedure) and has_function_privilege('anon','public.handle_new_user()','EXECUTE')"
-apply_migration "${supabase_advisor_hardening_migration}"
-apply_migration "${supabase_advisor_hardening_migration}"
-echo 'Applying the 20260727-20260728 release tail twice to prove idempotence.'
-apply_migration "${device_expiry_migration}"
-apply_migration "${device_expiry_migration}"
-apply_migration "${billing_events_money_migration}"
-apply_migration "${billing_events_money_migration}"
-assert_atomic_migration_rollback "${cache_warming_migration}" \
-  "to_regclass('public.warm_credentials') is null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is null"
-apply_migration "${cache_warming_migration}"
-apply_migration "${cache_warming_migration}"
-apply_migration "${usage_stats_cache_migration}"
-apply_migration "${usage_stats_cache_migration}"
-assert_atomic_migration_rollback "${multi_provider_warming_migration}" \
-  "to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is not null and to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is null"
-apply_migration "${multi_provider_warming_migration}"
-apply_migration "${multi_provider_warming_migration}"
-assert_atomic_migration_rollback "${onboarding_evidence_migration}" \
-  "position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.organization_onboarding_status(uuid,uuid)'))) > 0 and position('usage.authoritative is true' in pg_get_functiondef(to_regprocedure('public.complete_organization_onboarding(uuid,uuid,text)'))) > 0"
-apply_migration "${onboarding_evidence_migration}"
-apply_migration "${onboarding_evidence_migration}"
+# Fail closed rather than open: a manifest entry the loop above never applied is
+# a harness defect, not a migration to be quietly skipped.
+for ((index = 0; index < ${#upgrade_migrations[@]}; index++)); do
+  upgrade_applied=0
+  for ((applied_index = 0; applied_index < ${#applied_upgrade_migrations[@]}; applied_index++)); do
+    if [[ "${applied_upgrade_migrations[${applied_index}]}" == "${upgrade_migrations[${index}]}" ]]; then
+      upgrade_applied=1
+      break
+    fi
+  done
+  if [[ "${upgrade_applied}" -ne 1 ]]; then
+    echo "Upgrade path never applied ${upgrade_migrations[${index}]}." >&2
+    exit 1
+  fi
+done
 
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-upgrade-assertions.sql
 run_forward_assertions
@@ -422,7 +675,7 @@ if [[ "${cache_after}" != "${cache_before}" ]]; then
   echo 'Cache rollback changed encrypted cache row count.' >&2
   exit 1
 fi
-apply_migration "${upgrade_migrations[1]}"
+apply_migration "${cache_security_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-reapply-assertions.sql
 cache_after="$(psql "${DATABASE_URL}" --no-psqlrc --tuples-only --no-align --command 'select count(*) from public.semantic_cache')"
@@ -453,7 +706,7 @@ psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-rollback-assertio
 assert_authoritative_counts rollback
 
 echo 'Reapplying the generated database-scaling migration.'
-apply_migration "${upgrade_migrations[5]}"
+apply_migration "${scaling_migration}"
 psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-reapply-assertions.sql
 assert_authoritative_counts reapply
 
@@ -462,8 +715,21 @@ apply_migration scripts/ci/migration-receipt-accounting-rollback.sql
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-receipt-accounting-rollback-assertions.sql
 assert_authoritative_counts receipt-rollback
-echo 'Reapplying the receipt-accounting alignment migration.'
+echo 'Reapplying the receipt-accounting alignment migration across the retired trigger.'
+# 202607170012 refuses to apply unless queue_brevitas_fee_after_usage is attached
+# (202607170012:5-25) and 202607280006 has already retired it, so the frozen
+# migration cannot be replayed as-is at this point in the chain. 202607280006
+# deliberately RETAINS public.queue_brevitas_fee() (:18-21) precisely so that a
+# re-attach is one statement; re-attach it for the duration of the replay only,
+# then re-run 202607280006 to retire it again and assert it is gone. Nothing
+# inserts into public.usage_log between the two, so no fee can be queued -- which
+# assert_authoritative_counts below re-proves against the pre-rollback counts.
+# 202607170012 itself is frozen (checksum-pinned, and already applied to a
+# production database with no migration ledger) and is not edited here.
+psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --command \
+  'create trigger queue_brevitas_fee_after_usage after insert on public.usage_log for each row execute function public.queue_brevitas_fee();'
 apply_migration "${receipt_migration}"
+apply_migration "${retire_fee_trigger_migration}"
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-receipt-accounting-assertions.sql
 assert_authoritative_counts receipt-reapply
@@ -474,37 +740,35 @@ psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
 bootstrap_database
 
 echo 'Testing the complete fresh Supabase migration chain.'
-for migration in "${fresh_migrations[@]}"; do
-  apply_migration "${migration}"
+# The fresh chain is applied in two segments with the frozen 010-013 +
+# 202607200001-202607220002 replay in between, rather than replaying it into a
+# fully-applied schema. Two reasons, both ordering:
+#   1. 202607170012 raises unless queue_brevitas_fee_after_usage is attached
+#      (202607170012:5-25), and 202607280006 retires it. Replaying after the full
+#      chain therefore failed with '202607170012 requires the canonical usage and
+#      billing trigger chain'.
+#   2. The frozen replay clobbers later definitions: 202607200016 overwrites the
+#      202607280004 onboarding functions, and 202607170010 overwrites the
+#      202607280005 body of consume_bvx_device_idempotent. Applying the
+#      202607270001+ tail after the replay restores both by construction, instead
+#      of hand-patching 202607280004 back afterwards.
+fresh_replay_start="$(fresh_manifest_index 'supabase/migrations/202607170010_device_delivery_idempotency.sql')"
+fresh_replay_end="$(fresh_manifest_index 'supabase/migrations/202607220002_supabase_advisor_hardening.sql')"
+if ((fresh_replay_start >= fresh_replay_end || fresh_replay_end + 1 >= ${#fresh_migrations[@]})); then
+  echo 'Fresh manifest does not order the frozen replay window before a remaining tail.' >&2
+  exit 1
+fi
+for ((index = 0; index <= fresh_replay_end; index++)); do
+  apply_migration "${fresh_migrations[${index}]}"
 done
-echo 'Reapplying frozen migrations 010-013 and the 20260720 forward suffix on the isolated fresh install.'
-apply_migration "${device_migration}"
-apply_migration "${membership_migration}"
-apply_migration "${receipt_migration}"
-apply_migration "${selection_migration}"
-apply_migration "${webhook_migration}"
-apply_migration "${waitlist_migration}"
-apply_migration "${billing_owner_migration}"
-apply_migration "${stripe_ordering_migration}"
-apply_migration "${initial_service_key_migration}"
-apply_migration "${company_billing_migration}"
-apply_migration "${billing_recovery_scope_migration}"
-apply_migration "${provider_cleanup_migration}"
-apply_migration "${multitab_sessions_migration}"
-apply_migration "${shared_limits_migration}"
-apply_migration "${compliance_billing_isolation_migration}"
-apply_migration "${webhook_lease_renewal_migration}"
-apply_migration "${billing_control_limits_migration}"
-apply_migration "${checkout_reservation_migration}"
-apply_migration "${provider_outbound_migration}"
-apply_migration "${durable_onboarding_migration}"
-apply_migration "${billing_customer_owner_migration}"
-apply_migration "${workspace_experiences_migration}"
-apply_migration "${split_savings_migration}"
-apply_migration "${service_role_data_plane_migration}"
-apply_migration "${supabase_advisor_hardening_migration}"
-echo 'Restoring the 202607280004 onboarding functions clobbered by the frozen 016 reapply.'
-apply_migration "${onboarding_evidence_migration}"
+echo 'Reapplying frozen migrations 010-013 and the 202607200001-202607220002 suffix on the isolated fresh install.'
+for ((index = fresh_replay_start; index <= fresh_replay_end; index++)); do
+  apply_migration "${fresh_migrations[${index}]}"
+done
+echo 'Applying the remaining fresh chain (202607270001 onward) after the frozen replay.'
+for ((index = fresh_replay_end + 1; index < ${#fresh_migrations[@]}; index++)); do
+  apply_migration "${fresh_migrations[${index}]}"
+done
 psql "${DATABASE_URL}" --no-psqlrc \
   --file scripts/ci/migration-cache-fresh-assertions.sql
 run_forward_assertions

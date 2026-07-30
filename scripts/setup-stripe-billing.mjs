@@ -53,9 +53,22 @@ if (!price) {
   }, { idempotencyKey: 'brevitas-billing-price-weekly-v2' })
 }
 
+// This guard is the only thing standing between a hand-edited or legacy
+// lookup-key price and a catalog both runtime validators will reject
+// (src/lib/billing/config.ts validateStripeCatalog, api/billing_recovery.py
+// StripeRestBillingGateway.validate_contract). It must therefore assert the
+// same contract they do — every field, in the same direction. `interval_count`
+// is the subtle one: it defaults to 1, so a 2-week price still satisfies
+// `interval === 'week'` while anchoring subscriptions to a 14-day period, which
+// billing_period_for_occurrence then rejects on every single fee row.
 if (
+  price.active !== true ||
+  price.type !== 'recurring' ||
+  price.currency !== 'usd' ||
+  price.billing_scheme !== 'per_unit' ||
   price.recurring?.meter !== meter.id ||
   price.recurring?.interval !== 'week' ||
+  (price.recurring?.interval_count ?? 1) !== 1 ||
   price.recurring?.usage_type !== 'metered' ||
   price.unit_amount_decimal?.toString() !== '0.0001'
 ) {

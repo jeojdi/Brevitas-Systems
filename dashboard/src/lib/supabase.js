@@ -87,9 +87,41 @@ export function authErrorMessage(error, now = Date.now()) {
   return AUTH_UNKNOWN_ERROR_MESSAGE
 }
 
+/**
+ * Session storage for the browser client, stated rather than inherited.
+ *
+ * auth-js persists the access token AND the long-lived refresh token in
+ * `localStorage` under `sb-<ref>-auth-token`. That is origin-scoped, so any script
+ * that executes anywhere on brevitassystems.com can read it — which is why the
+ * Brevitas API key is kept in the in-memory Map below instead, and why the real
+ * mitigation for this credential is an origin-wide script-src CSP plus SRI on the
+ * marketing pages' CDN scripts (next.config.ts applies a CSP to /dashboard and the
+ * auth routes only). There is no httpOnly option here: `storage` accepts a
+ * synchronous key/value adapter, and every alternative (sessionStorage, in-memory)
+ * ends session persistence across tab close, which is a functional regression, not
+ * a fix.
+ *
+ * These options are all the current auth-js defaults, pinned deliberately so a
+ * library default flip cannot silently move where the session lives or how it is
+ * recovered. `flowType` in particular must stay 'implicit': public/email-confirmed.html
+ * forwards GoTrue's `#access_token=` fragment to /login for `detectSessionInUrl` to
+ * consume, and a pkce client ignores that fragment (it wants `?code=` plus a stored
+ * verifier), so flipping it without repointing the Supabase email templates lands
+ * every newly confirmed user back on the login screen.
+ */
+export const AUTH_CLIENT_OPTIONS = Object.freeze({
+  flowType: 'implicit',
+  persistSession: true,
+  autoRefreshToken: true,
+  detectSessionInUrl: true,
+})
+
 export const supabase = supabaseMisconfigured
   ? null
-  : createClient(url, key, { global: { fetch: createAuthErrorCapturingFetch() } })
+  : createClient(url, key, {
+      auth: { ...AUTH_CLIENT_OPTIONS },
+      global: { fetch: createAuthErrorCapturingFetch() },
+    })
 
 export const authModeForPath = pathname => /^\/(signup|waitlist)\/?$/.test(pathname) ? 'signup' : 'login'
 

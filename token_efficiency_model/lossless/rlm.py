@@ -19,15 +19,32 @@ Key design choices from the paper, preserved here:
      of P (here exposed as the `sub_llm(prompt)` function), and only constant-size metadata
      of each stdout re-enters the root model's history.
 
-This module is model-agnostic: pass any `llm(prompt:str)->str` callable. A restricted REPL
-executes the model's emitted Python with only the prompt variable + sub_llm + safe builtins
-in scope, so the root context stays tiny regardless of |P|.
+This module is model-agnostic: pass any `llm(prompt:str)->str` callable.
+
+!! SECURITY: the REPL runs `exec()` on whatever code the model emits. It is NOT a
+sandbox and cannot be made one in-process: every builtin exposed to the code carries
+`__self__ is builtins`, and `().__class__.__mro__[1].__subclasses__()` works even with
+`__builtins__ = {}`. Anything that can put text into `P` (an end user's prompt, a
+retrieved document) can therefore reach arbitrary code execution in this process, with
+its environment and credentials. Execution is off unless the caller explicitly opts in
+with `RLM(..., allow_unsandboxed_exec=True)` (or `BREVITAS_RLM_ALLOW_EXEC=1`), and it
+must only ever be enabled over input the operator fully controls — never a customer
+request path.
 """
 
 from __future__ import annotations
 
+import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
+
+_EXEC_ENV_FLAG = "BREVITAS_RLM_ALLOW_EXEC"
+_EXEC_DISABLED_NOTE = (
+    "unsandboxed REPL execution is disabled; construct "
+    "RLM(..., allow_unsandboxed_exec=True) or set BREVITAS_RLM_ALLOW_EXEC=1 to run "
+    "model-emitted code in this process"
+)
 
 
 @dataclass
@@ -52,10 +69,21 @@ class RLM:
     """Recursive Language Model scaffold around a base LLM callable."""
 
     def __init__(self, llm: Callable[[str], str], max_iters: int = 8,
-                 stdout_head: int = 240):
+                 stdout_head: int = 240, allow_unsandboxed_exec: bool | None = None):
         self.llm = llm
         self.max_iters = max_iters
         self.stdout_head = stdout_head
+        if allow_unsandboxed_exec is None:
+            allow_unsandboxed_exec = os.getenv(_EXEC_ENV_FLAG, "").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self.allow_unsandboxed_exec = bool(allow_unsandboxed_exec)
+        if self.allow_unsandboxed_exec:
+            warnings.warn(
+                "RLM will exec() model-emitted code in this process with no sandbox; "
+                "only do this over input you fully control",
+                stacklevel=2,
+            )
 
     # -- the recursive sub-call exposed *inside* the REPL ------------------- #
     def _sub_llm(self, prompt: str) -> str:
@@ -66,12 +94,19 @@ class RLM:
 
     def _repl(self, state: REPLState, code: str) -> str:
         """Execute model-emitted code with P, sub_llm, and the persistent env in scope.
-        Returns captured stdout. Restricted namespace keeps this a tool, not arbitrary exec."""
+
+        Returns captured stdout. The namespace below is a convenience surface, NOT a
+        sandbox — see the module docstring — so this refuses to run unless the caller
+        opted in. The refusal is reported back to the model like any other REPL error.
+        """
+        if not self.allow_unsandboxed_exec:
+            return f"<error: RuntimeError: {_EXEC_DISABLED_NOTE}>"
+
         import io
         import contextlib
         import re as re_module
 
-        safe_builtins = {
+        exposed_builtins = {
             "len": len, "range": range, "min": min, "max": max, "sum": sum,
             "sorted": sorted, "enumerate": enumerate, "list": list, "dict": dict,
             "str": str, "int": int, "float": float, "print": print, "abs": abs,
@@ -123,13 +158,17 @@ class RLM:
             "set_final": set_final,
             "grep": grep,
             "peek": peek,
-            "__builtins__": safe_builtins,
+            "__builtins__": exposed_builtins,
         })
         buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(buf):
-                exec(code, ns)  # noqa: S102 - restricted namespace; this is the REPL tool
-        except Exception as e:  # surface errors back to the model like a real REPL
+                exec(code, ns)  # noqa: S102 - UNSANDBOXED, opt-in only (see module docstring)
+        # Exception + SystemExit, NOT BaseException: a SystemExit in emitted code must
+        # not take the host process down, but KeyboardInterrupt/CancelledError must
+        # propagate — swallowing them turns Ctrl-C during a live benchmark into a
+        # captured "REPL error" and the loop keeps making paid provider calls.
+        except (Exception, SystemExit) as e:  # surface errors back to the model like a real REPL
             buf.write(f"\n<error: {type(e).__name__}: {e}>")
         # persist intermediate variables (excluding the injected handles)
         for k, v in ns.items():

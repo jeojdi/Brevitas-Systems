@@ -18,6 +18,11 @@ const eslintConfig = defineConfig([
     "public/**",
     // Archived prototypes are retained for reference, not shipped or maintained.
     "archive/**",
+    // Local Python virtualenv (gitignored). It vendors third-party JavaScript
+    // -- e.g. .venv/lib/python3.12/site-packages/torch/utils/model_dump/code.js
+    // -- which made `npm run lint` exit 1 for anyone who has a local .venv,
+    // while CI (which installs Python deps outside the tree) saw nothing.
+    ".venv/**",
   ]),
 ]);
 

@@ -119,3 +119,26 @@ def test_job_kms_outage_returns_retryable_dependency_503(tmp_path, monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"detail": "Credential security dependency unavailable"}
     assert response.headers["retry-after"] == "1"
+
+
+def test_job_poll_rate_limit_buckets_on_credential_not_peer_ip():
+    """GET /v1/jobs/{id} is a documented 202-poll API: many processes behind one
+    NAT egress must not share one IP bucket (finding: healthy polls got 429s).
+    The poll key follows the credential, holds no raw key material, and falls
+    back to the peer for unauthenticated requests (which 401 before the
+    limiter anyway)."""
+    import api.server as server
+
+    class Req:
+        def __init__(self, headers, host="203.0.113.9"):
+            self.headers = headers
+            self.client = type("Client", (), {"host": host})()
+
+    a = server._job_poll_rate_key(Req({"x-brevitas-key": "bvt_company_a"}))
+    b = server._job_poll_rate_key(Req({"x-brevitas-key": "bvt_company_b"}))
+    a_other_ip = server._job_poll_rate_key(
+        Req({"x-brevitas-key": "bvt_company_a"}, host="198.51.100.7"))
+    assert a != b                      # two tenants behind one NAT: separate buckets
+    assert a == a_other_ip             # one tenant's budget follows the credential
+    assert "bvt_company_a" not in a    # digest only; limiter storage never sees keys
+    assert server._job_poll_rate_key(Req({})) == "203.0.113.9"

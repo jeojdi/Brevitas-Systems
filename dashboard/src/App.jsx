@@ -19,6 +19,7 @@ import InstallCommand from './components/InstallCommand.jsx'
 import InvitationAcceptance, { hasPendingCompanyInvitation } from './components/InvitationAcceptance.jsx'
 import EmailVerificationBanner from './components/EmailVerificationBanner.jsx'
 import SetupBanner from './components/SetupBanner.jsx'
+import PanelErrorBoundary from './components/PanelErrorBoundary.jsx'
 import {
   isEmailVerificationReturn,
   markEmailVerified,
@@ -76,6 +77,25 @@ const PREVIEW_BILLING = {
   last_invoice_status: 'paid',
   estimated_fee_usd: 7.92,
   reported_fee_usd: 7.92,
+  // Fields added by the settlement repoint (202607280013). settlement_pending
+  // must be false and billable true here, or the ?preview=billing card renders
+  // 'Unavailable' instead of the numbers it exists to demonstrate.
+  settled_fee_usd: 7.92,
+  committed_fee_usd: 7.92,
+  settlement_pending: false,
+  settlement_status: 'accruing',
+  settlement_revision: null,
+  billing_arrangement: 'marginal_per_call',
+  billable: true,
+  evidence: {
+    eligible_rows: 128,
+    net_verified_savings_usd: 31.68,
+    warm_spend_usd: 0,
+    warm_spend_days: 0,
+    actual_spend_usd: 12.4,
+    zero_spend_share: 0,
+    fee_ceiling_microusd: 7920000,
+  },
   weekly_safety_cap_usd: 100,
   has_customer: true,
   needs_review: 0,
@@ -857,6 +877,10 @@ export default function App() {
           <span>{companySwitchError}</span>
           <button type="button" onClick={() => setCompanySwitchError('')} className="font-mono uppercase tracking-wider">Dismiss</button>
         </div>}
+        {/* Keyed on the tab so a crashed panel resets when the user navigates away,
+            and so one throwing panel degrades to a message instead of unmounting
+            the whole SPA to a blank page. */}
+        <PanelErrorBoundary key={activeTab}>
         {activeTab === 'Overview'   && <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>}
         {(activeTab === 'Repositories' || activeTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
         {activeTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
@@ -868,6 +892,7 @@ export default function App() {
         {activeTab === 'Docs'       && <Docs />}
         {activeTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}
         {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
+        </PanelErrorBoundary>
       </main>
       <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">
         <a href="/privacy" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Privacy</a>

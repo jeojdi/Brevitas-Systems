@@ -4,6 +4,43 @@
 -- checks exercise cross-company denial, canonical roles, safe retry semantics,
 -- and append-only evidence against real PostgreSQL functions and triggers.
 
+-- 202607280006 retired queue_brevitas_fee_after_usage. The two ledger rows this
+-- file resolves are normally already seeded by
+-- migration-company-billing-assertions.sql (which runs immediately before it);
+-- this idempotent re-seed keeps the `into strict` lookups below from degrading
+-- into no_data_found if that ordering ever changes. The predicate and the
+-- 25%-of-verified floor arithmetic reproduce the retired queue_brevitas_fee()
+-- (202607200006:192-230); billing_ledger has no BEFORE INSERT trigger
+-- (202607170004:471-509), only delete/identity guards.
+insert into public.billing_ledger(
+    usage_log_id,organization_id,user_id,occurred_at,fee_microusd
+)
+select usage.id,
+       usage.organization_id,
+       organization.billing_owner_id,
+       usage.ts,
+       floor(
+         least(
+           greatest(coalesce(usage.brevitas_fee_usd,0),0),
+           greatest(coalesce(usage.verified_savings_usd,0),0)*0.25
+         )*1000000
+       )::bigint
+  from public.usage_log usage
+  join public.billing_accounts account
+    on account.organization_id=usage.organization_id
+  join public.organizations organization
+    on organization.id=account.organization_id
+ where usage.request_id in ('company-billing-usage-a','company-billing-usage-b')
+   and usage.authoritative
+   and usage.organization_id is not null
+   and usage.owner_id<>''
+   and usage.pricing_status='priced'
+   and account.subscription_status in ('active','trialing')
+   and account.billing_started_at is not null
+   and usage.ts>=account.billing_started_at
+   and organization.billing_owner_id is not null
+on conflict (usage_log_id) do nothing;
+
 do $$
 declare
     v_ledger_a bigint;

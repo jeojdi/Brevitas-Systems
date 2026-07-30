@@ -12,13 +12,24 @@ from __future__ import annotations
 import ast
 import contextlib
 import difflib
+import hashlib
 import os
+import stat
 import tempfile
+import warnings
 from dataclasses import dataclass
 
 from .models import Finding, Recommendation, ScanReport
 
 _IMPORT_LINE = b"import brevitas\n"
+
+
+class CodemodError(RuntimeError):
+    """A rewrite that would have produced source we refuse to write."""
+
+
+def _digest(source: str) -> str:
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -27,6 +38,15 @@ class FileChange:
     original: str
     modified: str
     wrapped: int  # number of clients wrapped in this file
+
+    @property
+    def read_digest(self) -> str:
+        """Fingerprint of the content this change was computed from.
+
+        ``write_changes`` re-reads the file and compares, so an edit made between
+        the plan and the confirmation prompt is never silently overwritten.
+        """
+        return _digest(self.original)
 
     @property
     def diff(self) -> str:
@@ -50,11 +70,22 @@ def _offset(starts: list[int], line: int, col: int) -> int:
 
 
 def _has_brevitas_import(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import) and any(a.name == "brevitas" for a in node.names):
-            return True
-        if isinstance(node, ast.ImportFrom) and node.module == "brevitas":
-            return True
+    """Is the *name* ``brevitas`` bound at module scope at runtime?
+
+    That is the only question that matters, because we always splice the
+    fully-qualified ``brevitas.wrap(...)``. ``from brevitas import wrap`` and
+    ``import brevitas as bv`` both mention brevitas without binding the name, and
+    a function-local ``import brevitas`` does not bind it at module scope — so we
+    look at ``tree.body`` only and honour aliases. A spurious extra
+    ``import brevitas`` is idempotent; a missing one is a NameError in the
+    customer's source.
+    """
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]   # `import brevitas.wrappers` binds `brevitas`
+                if root == "brevitas" and (alias.asname or root) == "brevitas":
+                    return True
     return False
 
 
@@ -113,6 +144,11 @@ def rewrite_source(path: str, source: str, findings: list[Finding]) -> FileChang
     modified = buf.decode("utf-8")
     if modified == source:
         return None
+    # Findings carry scan-time offsets; if the source moved under us the splice
+    # lands mid-expression. Fail here rather than write corrupt customer source.
+    modified_tree = ast.parse(modified)
+    if not _has_brevitas_import(modified_tree):
+        raise CodemodError(f"{path}: rewrite would call brevitas.wrap() without importing brevitas")
     return FileChange(path=path, original=source, modified=modified, wrapped=len(targets))
 
 
@@ -127,24 +163,55 @@ def plan_changes(report: ScanReport) -> list[FileChange]:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 source = fh.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
-        change = rewrite_source(path, source, findings)
+        try:
+            change = rewrite_source(path, source, findings)
+        except (SyntaxError, CodemodError) as exc:
+            # The file changed since the scan, or the splice would not parse.
+            warnings.warn(f"skipping {path}: {exc}", stacklevel=2)
+            continue
         if change is not None:
             changes.append(change)
     return changes
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def write_changes(changes: list[FileChange]) -> int:
     """Persist changes to disk atomically. Returns the number of files written.
 
     Each file is written to a temp file on the same filesystem and then renamed
-    over the original via ``os.replace`` — so a crash or error mid-write can
-    never leave a user's source truncated or half-written.
+    over the original via ``os.replace``, with the temp file flushed and fsynced
+    first — so neither a crash nor an error mid-write can leave a user's source
+    truncated or half-written.
+
+    Two properties matter as much as atomicity, because these are the customer's
+    own files: a file whose content changed since ``plan_changes`` read it is
+    skipped rather than clobbered with the stale plan, and the target's mode,
+    owner/group and symlink identity survive the replace. ACLs and xattrs do not
+    survive a rename-based write; that is the accepted limit of this approach.
     """
     written = 0
     for change in changes:
-        target = os.path.abspath(change.path)
+        # Resolve first: a symlink must keep pointing at its target (and the temp
+        # file has to land on the target's filesystem or os.replace hits EXDEV).
+        target = os.path.realpath(change.path)
+        current = _read_text(target)
+        if current is None or _digest(current) != change.read_digest:
+            warnings.warn(
+                f"skipping {change.path}: changed on disk since it was scanned — "
+                "re-run brevitas apply",
+                stacklevel=2,
+            )
+            continue
+        original_stat = os.stat(target)
         tmp_path = ""
         try:
             with tempfile.NamedTemporaryFile(
@@ -153,8 +220,20 @@ def write_changes(changes: list[FileChange]) -> int:
             ) as tmp:
                 tmp.write(change.modified)
                 tmp_path = tmp.name
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            # NamedTemporaryFile is 0o600 owned by us; carry the original's identity over.
+            os.chmod(tmp_path, stat.S_IMODE(original_stat.st_mode))
+            with contextlib.suppress(OSError):
+                os.chown(tmp_path, original_stat.st_uid, original_stat.st_gid)
             os.replace(tmp_path, target)
             written += 1
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(os.path.dirname(target) or ".", os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
         except OSError:
             if tmp_path:
                 with contextlib.suppress(OSError):

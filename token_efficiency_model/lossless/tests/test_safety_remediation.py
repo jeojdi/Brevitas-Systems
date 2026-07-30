@@ -207,7 +207,9 @@ def test_task_router_lossless_is_byte_identical(text):
 
 def test_rlm_repl_exposes_question():
     from token_efficiency_model.lossless.rlm import RLM, REPLState
-    r = RLM(llm=lambda p: "")
+    # the REPL execs model-emitted code and is default-off; opt in so the namespace
+    # this test is about is actually built (the code below is test-controlled)
+    r = RLM(llm=lambda p: "", allow_unsandboxed_exec=True)
     state = REPLState(P="the long document", question="who won?")
     # Emitted code that references `question` (as the RLM's own instructions demand)
     # must run without a NameError and see the real question string.

@@ -7,16 +7,19 @@ when translating the returned HTTP response or a transport exception.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import os
 import random
 import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 import httpx
 
@@ -38,6 +41,49 @@ _METRIC_PROVIDERS = frozenset({
 _METRIC_OPERATIONS = frozenset({
     "chat", "embeddings", "generate", "messages", "responses", "unknown",
 })
+
+
+# Circuit fairness scope. Bound by the caller (the hosted API's authenticated
+# tenant), never by anything a client can choose, and stored only as an opaque
+# digest so no tenant identifier lives in circuit state or in an exception.
+_scope_var: ContextVar[str] = ContextVar("brevitas_provider_scope", default="")
+_MAX_STREAK_SCOPES = 8
+
+
+def circuit_scope_token(value: object) -> str:
+    """Collapse a tenant identifier to a bounded, opaque circuit-scope key."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def current_circuit_scope() -> str:
+    return _scope_var.get()
+
+
+@contextmanager
+def provider_circuit_scope(value: object) -> Iterator[str]:
+    """Attribute provider failures inside the block to one tenant's own circuit."""
+    token = _scope_var.set(circuit_scope_token(value))
+    try:
+        yield _scope_var.get()
+    finally:
+        _scope_var.reset(token)
+
+
+def bind_circuit_scope(value: object) -> str:
+    """Bind the current request context's circuit scope without a reset.
+
+    For request-scoped contexts (the hosted API's auth middleware), where the
+    ContextVar dies with the request context and the provider call may happen
+    while the response body is still streaming — after a ``with`` block in the
+    middleware would already have unwound. Mirrors how the hosted API binds its
+    auth context. An empty/falsy value clears the scope (shared circuit).
+    """
+    token = circuit_scope_token(value)
+    _scope_var.set(token)
+    return token
 
 
 def _metric_provider(provider: object) -> str:
@@ -122,6 +168,7 @@ class ProviderReliabilityConfig:
     circuit_open_s: float = 30.0
     circuit_state_ttl_s: float = 900.0
     max_provider_states: int = 32
+    max_scope_states: int = 512
 
     @classmethod
     def from_env(cls) -> "ProviderReliabilityConfig":
@@ -153,6 +200,10 @@ class ProviderReliabilityConfig:
                 "BREVITAS_PROVIDER_CIRCUIT_TTL_S", 900.0, 30.0, 86400.0),
             max_provider_states=_env_int(
                 "BREVITAS_PROVIDER_MAX_STATES", 32, 1, 128),
+            # Tenants x providers, not providers: sized well above peak because
+            # exhaustion here degrades to the shared circuit rather than failing.
+            max_scope_states=_env_int(
+                "BREVITAS_PROVIDER_MAX_SCOPE_STATES", 512, 1, 8192),
         )
 
     def timeout(self) -> httpx.Timeout:
@@ -188,6 +239,16 @@ class _CircuitState:
     half_open_token: int | None = None
     in_flight: int = 0
     last_seen: float = 0.0
+    streak_scopes: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _ScopeState:
+    """One tenant's own failure counter for one provider; no half-open bookkeeping."""
+
+    failures: int = 0
+    opened_until: float = 0.0
+    last_seen: float = 0.0
 
 
 @dataclass
@@ -198,6 +259,7 @@ class ProviderCircuitPermit:
     token: int
     generation: int
     half_open: bool
+    scope: str = ""
     _resolved: bool = field(default=False, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -210,10 +272,18 @@ class ProviderCircuitPermit:
 
 
 class ProviderCircuitBreaker:
-    """Thread-safe, TTL/LRU-bounded circuit state keyed only by provider name.
+    """Thread-safe, TTL/LRU-bounded circuit state per provider and per tenant scope.
 
     ``before_request`` acquires one logical permit. Exactly one of ``record_success``,
     ``record_failure``, or ``abandon`` must resolve it. Active permits are never evicted.
+
+    When callers bind a scope (``provider_circuit_scope``), each tenant gets its own
+    failure counter for that provider, and the shared provider circuit opens only
+    once two tenants have independently tripped. Without that, a handful of
+    engineered timeouts from one low-value account opens the shared circuit and
+    503s every other tenant's traffic to that provider for ``circuit_open_s``.
+    Unscoped callers (worker, playground, the self-hosted SDK) are unchanged: their
+    failures still count directly against the shared threshold.
     """
 
     def __init__(self, config: ProviderReliabilityConfig,
@@ -221,6 +291,7 @@ class ProviderCircuitBreaker:
         self._config = config
         self._clock = clock
         self._states: OrderedDict[str, _CircuitState] = OrderedDict()
+        self._scopes: OrderedDict[str, _ScopeState] = OrderedDict()
         self._lock = threading.Lock()
         self._next_token = 0
 
@@ -228,6 +299,20 @@ class ProviderCircuitBreaker:
     def _protected(state: _CircuitState, now: float) -> bool:
         return state.in_flight > 0 or state.half_open_token is not None \
             or state.opened_until > now
+
+    @staticmethod
+    def _scope_key(provider: str, scope: str) -> str:
+        return f"{provider}\x1f{scope}"
+
+    @staticmethod
+    def _provider_wide_locked(state: _CircuitState) -> bool:
+        """Two tenants must independently trip before the shared circuit opens.
+
+        Counting raw scoped failures here would let one account prime the shared
+        counter to the threshold and then turn any single unrelated tenant failure
+        into a fleet-wide 503 window.
+        """
+        return len(state.streak_scopes) >= 2
 
     def _cleanup_locked(self, now: float) -> None:
         stale = [
@@ -237,6 +322,52 @@ class ProviderCircuitBreaker:
         ]
         for provider in stale:
             self._states.pop(provider, None)
+        expired = [
+            key for key, scoped in self._scopes.items()
+            if scoped.opened_until <= now
+            and now - scoped.last_seen >= self._config.circuit_state_ttl_s
+        ]
+        for key in expired:
+            self._scopes.pop(key, None)
+
+    def _scope_state_locked(
+        self, provider: str, scope: str, now: float,
+    ) -> _ScopeState | None:
+        """Return this tenant's state, or None when the bounded map cannot hold it.
+
+        Exhaustion degrades to the shared provider circuit instead of rejecting a
+        healthy request: per-tenant state is a fairness control, not a safety one.
+        """
+        key = self._scope_key(provider, scope)
+        scoped = self._scopes.get(key)
+        if scoped is not None:
+            scoped.last_seen = now
+            self._scopes.move_to_end(key)
+            return scoped
+        if len(self._scopes) >= self._config.max_scope_states:
+            evictable = next((
+                name for name, candidate in self._scopes.items()
+                if candidate.opened_until <= now
+            ), None)
+            if evictable is None:
+                return None
+            self._scopes.pop(evictable, None)
+        scoped = _ScopeState(last_seen=now)
+        self._scopes[key] = scoped
+        return scoped
+
+    def _resolve_scope_locked(
+        self, permit: ProviderCircuitPermit, now: float,
+    ) -> _ScopeState | None:
+        if not permit.scope:
+            return None
+        key = self._scope_key(permit.provider, permit.scope)
+        scoped = self._scopes.get(key)
+        if scoped is None:
+            return None
+        scoped.last_seen = now
+        self._scopes.move_to_end(key)
+        return scoped
 
     def _state_locked(self, provider: str, now: float) -> _CircuitState:
         self._cleanup_locked(now)
@@ -260,11 +391,26 @@ class ProviderCircuitBreaker:
         self._states[provider] = state
         return state
 
-    def before_request(self, provider: str) -> ProviderCircuitPermit:
+    def before_request(
+        self, provider: str, *, scope: str | None = None,
+    ) -> ProviderCircuitPermit:
         """Acquire a logical request permit, including its circuit generation."""
         now = self._clock()
+        scope_key = current_circuit_scope() if scope is None else circuit_scope_token(scope)
+        reopened = False
         with self._lock:
+            if scope_key:
+                scoped = self._scope_state_locked(provider, scope_key, now)
+                if scoped is not None and scoped.opened_until:
+                    if scoped.opened_until > now:
+                        raise ProviderCircuitOpen(scoped.opened_until - now)
+                    scoped.opened_until = 0.0
+                    scoped.failures = 0
+                    reopened = True
             state = self._state_locked(provider, now)
+            if reopened:
+                # This tenant is no longer evidence of a provider-wide failure.
+                state.streak_scopes.discard(scope_key)
             if state.opened_until > now:
                 raise ProviderCircuitOpen(state.opened_until - now)
             half_open = False
@@ -275,7 +421,7 @@ class ProviderCircuitBreaker:
             self._next_token += 1
             permit = ProviderCircuitPermit(
                 provider=provider, token=self._next_token,
-                generation=state.generation, half_open=half_open,
+                generation=state.generation, half_open=half_open, scope=scope_key,
             )
             state.in_flight += 1
             if half_open:
@@ -299,12 +445,20 @@ class ProviderCircuitBreaker:
             state = self._take_permit_locked(permit)
             if state is None:
                 return
+            scoped = self._resolve_scope_locked(permit, now)
+            if scoped is not None and not scoped.opened_until:
+                scoped.failures = 0
             if permit.half_open and state.half_open_token == permit.token:
                 state.half_open_token = None
                 state.failures = 0
                 state.opened_until = 0.0
+                state.streak_scopes.clear()
             elif permit.generation == state.generation and not state.opened_until:
                 state.failures = 0
+                if not permit.scope:
+                    # One tenant succeeding is not evidence that another tenant's
+                    # tripped circuit has recovered; that expires on its own window.
+                    state.streak_scopes.clear()
             state.last_seen = now
             self._states.move_to_end(permit.provider)
 
@@ -315,16 +469,32 @@ class ProviderCircuitBreaker:
             if state is None:
                 return
             state.last_seen = now
+            scoped = self._resolve_scope_locked(permit, now)
+            tripped = False
+            if scoped is not None and not scoped.opened_until:
+                scoped.failures += 1
+                if scoped.failures >= self._config.circuit_failure_threshold:
+                    scoped.opened_until = now + self._config.circuit_open_s
+                    tripped = True
             if permit.half_open and state.half_open_token == permit.token:
                 state.half_open_token = None
                 state.failures += 1
                 state.generation += 1
                 state.opened_until = now + self._config.circuit_open_s
+                state.streak_scopes.clear()
             elif permit.generation == state.generation and not state.opened_until:
-                state.failures += 1
-                if state.failures >= self._config.circuit_failure_threshold:
-                    state.generation += 1
-                    state.opened_until = now + self._config.circuit_open_s
+                if permit.scope:
+                    if tripped and len(state.streak_scopes) < _MAX_STREAK_SCOPES:
+                        state.streak_scopes.add(permit.scope)
+                    if self._provider_wide_locked(state):
+                        state.generation += 1
+                        state.opened_until = now + self._config.circuit_open_s
+                        state.streak_scopes.clear()
+                else:
+                    state.failures += 1
+                    if state.failures >= self._config.circuit_failure_threshold:
+                        state.generation += 1
+                        state.opened_until = now + self._config.circuit_open_s
             self._states.move_to_end(permit.provider)
 
     def abandon(self, permit: ProviderCircuitPermit) -> None:
@@ -334,6 +504,7 @@ class ProviderCircuitBreaker:
             state = self._take_permit_locked(permit)
             if state is None:
                 return
+            self._resolve_scope_locked(permit, now)
             if state.half_open_token == permit.token:
                 state.half_open_token = None
             state.last_seen = now
@@ -343,6 +514,11 @@ class ProviderCircuitBreaker:
         with self._lock:
             self._cleanup_locked(self._clock())
             return len(self._states)
+
+    def scope_state_count(self) -> int:
+        with self._lock:
+            self._cleanup_locked(self._clock())
+            return len(self._scopes)
 
 
 def _header(headers: Mapping[str, str] | None, name: str) -> str:

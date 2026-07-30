@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import requests
+import yaml
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -105,6 +106,59 @@ def test_cloud_run_staging_uses_keyless_service_identity_and_worker_pool():
     assert "name: gcr.io/cloud-builders/docker" in cloud_build
     assert "BREVITAS_BUILD_SHA=${_BREVITAS_BUILD_SHA}" in cloud_build
     assert "api:${_BREVITAS_BUILD_SHA}" in cloud_build
+
+
+def _manifest_container(path: str) -> dict:
+    manifest = yaml.safe_load((ROOT / path).read_text())
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    assert len(containers) == 1, path
+    return containers[0]
+
+
+def test_api_manifests_declare_every_env_var_hosted_startup_requires():
+    """A tracked manifest must be applyable as-is, or it is not a recovery artifact.
+
+    Cloud Run injects K_SERVICE, so api.server._validate_runtime_config() runs during
+    the lifespan before traffic is accepted and raises on any of these. A manifest
+    missing one produces a revision that never serves. WorkerPool manifests override
+    the entrypoint to `python -m api.worker`, which never runs the FastAPI lifespan,
+    so they are deliberately out of scope.
+    """
+    required = {"BREVITAS_PROXY_AUTH", "ALLOWED_ORIGINS", "FORWARDED_ALLOW_IPS",
+                "BREVITAS_BUILD_SHA", "COMPANY_ADMIN_CURSOR_SECRET"}
+    worker = _manifest_container("deploy/cloud-run-worker-staging.yaml")
+    assert worker["command"] == ["python"] and worker["args"] == ["-m", "api.worker"]
+
+    api = _manifest_container("deploy/cloud-run-api-staging.yaml")
+    assert "command" not in api
+    declared = {entry["name"] for entry in api["env"]}
+    assert required <= declared, sorted(required - declared)
+    values = {entry["name"]: entry.get("value") for entry in api["env"]}
+    assert values["BREVITAS_PROXY_AUTH"] == "true"
+    # "*" re-opens the X-Forwarded-For rate-limit bypass and startup rejects it.
+    assert values["FORWARDED_ALLOW_IPS"] not in {None, "", "*"}
+    assert "*" not in {hop.strip() for hop in values["FORWARDED_ALLOW_IPS"].split(",")}
+
+
+def test_cloud_run_api_startup_probe_gates_traffic_on_dependency_readiness():
+    api = _manifest_container("deploy/cloud-run-api-staging.yaml")
+    startup = api["startupProbe"]
+    liveness = api["livenessProbe"]
+
+    # Cloud Run has no readinessProbe, so startupProbe is the only lever that can
+    # hold a revision back from traffic; /v1/health/live answers 200 unconditionally.
+    assert startup["httpGet"]["path"] == "/v1/health/ready"
+    # Liveness must stay dependency-free so a Redis/Supabase blip cannot restart-storm.
+    assert liveness["httpGet"]["path"] == "/v1/health/live"
+
+    # Cloud Run requires timeoutSeconds <= periodSeconds, and /v1/health/ready spends
+    # up to BREVITAS_HEALTH_TIMEOUT_SECONDS on Postgres/Redis plus a KMS probe, so the
+    # endpoint's own deadline must be strictly inside the probe deadline.
+    assert startup["timeoutSeconds"] <= startup["periodSeconds"]
+    assert startup["failureThreshold"] * startup["periodSeconds"] >= 60
+    health_timeout = {entry["name"]: entry.get("value") for entry in api["env"]}[
+        "BREVITAS_HEALTH_TIMEOUT_SECONDS"]
+    assert float(health_timeout) < startup["timeoutSeconds"]
 
 
 def test_shared_dependencies_are_same_region_tls_and_non_authoritative():

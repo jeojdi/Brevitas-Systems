@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiKeyId, createKey, fetchKeys, revokeKey } from '../lib/api.js'
+import { isActiveKeyRow } from '../lib/keys.js'
 import { capture } from '../lib/analytics.js'
 
 function CopyButton({ text, small = false }) {
@@ -72,12 +73,19 @@ export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
     }
   }
 
-  const revoke = async (id) => {
-    if (!activeId || id === activeId) return
+  // The active session key must never revoke itself. The hosted listing RPC
+  // returns `key_prefix as prefix` (raw key[:12]) and no fingerprint; the
+  // SQLite listing carries both `prefix` and `fingerprint` (sha256(key)[:16],
+  // which apiKeyId() reproduces). Every other row — device keys included —
+  // must stay revocable.
+  const isActiveKey = row => isActiveKeyRow(row, { apiKey, apiKeyHash: activeId || '' })
+
+  const revoke = async (row) => {
+    if (isActiveKey(row)) return
     if (!window.confirm('Revoke this API key? Calls using it will stop within 30 seconds.')) return
     setError('')
     try {
-      await revokeKey(accessToken, id)
+      await revokeKey(accessToken, row.id)
       capture('api_key_revoked')
       await loadKeys()
     } catch (e) {
@@ -157,11 +165,11 @@ export default function ApiKeys({ apiKey, accessToken, onApiKeyChange }) {
                   </p>
                 </div>
                 <button
-                  onClick={() => revoke(k.id)}
-                  disabled={!activeId || activeId.startsWith(k.fingerprint || '')}
+                  onClick={() => revoke(k)}
+                  disabled={isActiveKey(k)}
                   className="font-mono text-[10px] uppercase tracking-widest text-red-500 hover:underline disabled:text-brand-muted disabled:no-underline"
                 >
-                  {activeId?.startsWith(k.fingerprint || '') ? 'Active' : 'Revoke'}
+                  {isActiveKey(k) ? 'Active' : 'Revoke'}
                 </button>
               </div>
             ))}

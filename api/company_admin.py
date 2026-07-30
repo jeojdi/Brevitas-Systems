@@ -674,6 +674,25 @@ class SQLiteCompanyAdminService:
             db.execute("UPDATE organization_members SET role=?,status=?,updated_at=?,disabled_at=?,removed_at=? WHERE organization_id=? AND user_id=?",
                        (role, status, now, now if status == "disabled" else "",
                         now if status == "removed" else "", principal.company_id, member_id))
+            # Mirror of production's company_admin_set_member (202607280022): a
+            # membership-ending transition revokes the target's own session and
+            # device credentials in the same transaction. Device keys otherwise
+            # authenticate with no live-membership read and survive removal
+            # indefinitely. Role-only changes deliberately do not revoke —
+            # dashboard authority is resolved from the live role and device
+            # scopes are role-independent. SQLite always records created_by
+            # (the activating human), so no audit-trail fallback is needed here.
+            if status in ("disabled", "removed"):
+                revoked = db.execute(
+                    "UPDATE api_keys SET revoked_at=? WHERE organization_id=? "
+                    "AND revoked_at='' AND key_type IN ('dashboard_session','device') "
+                    "AND created_by=?",
+                    (now, principal.company_id, member_id),
+                ).rowcount
+                if revoked:
+                    self._audit(db, principal, actor_role, request_id,
+                                "member.credentials_revoked", "member",
+                                member_id, "committed")
             self._audit(db, principal, actor_role, request_id, "member.changed",
                         "member", member_id, "committed")
         return {"id": member_id, "role": role, "status": status}
@@ -934,7 +953,14 @@ class SQLiteCompanyAdminService:
                 self._audit(db, principal, actor_role, request_id,
                             "dashboard_session.rotated", "api_key", row["id"],
                             "committed")
+            # Mirror of api/server.py::_dashboard_session_scopes — this is the second
+            # minting site for the same credential type, so a scope granted in only
+            # one of them is granted inconsistently depending on which path issued
+            # the session key. quality:manage clears a deliberately-held quality
+            # trip, so only the roles allowed to mutate company state get it.
             scopes = ["proxy:invoke", "usage:read_own", "provider:read", "provider:manage"]
+            if actor_role in ("company_owner", "company_admin"):
+                scopes.append("quality:manage")
             db.execute(
                 "INSERT INTO api_keys(id,key_hash,name,created,owner_id,organization_id,"
                 "service_account_id,key_type,scopes,environment,key_prefix,expires_at,created_by) "
@@ -952,6 +978,14 @@ class SQLiteCompanyAdminService:
 
     def revoke_key(self, principal: CompanyPrincipal, key_id: str,
                    request_id: str) -> dict[str, Any]:
+        # Mirror of production's company_admin_revoke_tenant_key dispatcher
+        # (202607280019): any company role revokes a session key it may address
+        # (member/billing_admin only their own), deprovisioning a device
+        # credential is an administrative act, and long-lived service
+        # credentials stay under the service-account lifecycle RPCs. The audit
+        # action namespace is chosen from the key type BEFORE authorization so
+        # a denial is attributable to the surface that was addressed; an
+        # unknown or missing key reports under the session namespace.
         with self._conn() as db:
             self._begin(db)
             actor_role = self._actor_role(db, principal)
@@ -960,23 +994,30 @@ class SQLiteCompanyAdminService:
                 "WHERE organization_id=? AND id=?",
                 (principal.company_id, key_id),
             ).fetchone()
-            allowed = bool(
-                row and row["key_type"] == "dashboard_session"
-                and (
+            key_type = row["key_type"] if row else ""
+            audit_prefix = {
+                "device": "device_key",
+                "organization_service": "service_key",
+            }.get(key_type, "dashboard_session")
+            if key_type == "dashboard_session":
+                allowed = bool(
                     actor_role in ("company_owner", "company_admin")
                     or (actor_role in ("member", "billing_admin")
                         and row["created_by"] == principal.actor_id)
                 )
-            )
+            elif key_type == "device":
+                allowed = actor_role in ("company_owner", "company_admin")
+            else:
+                allowed = False
             if not row or not allowed:
                 self._audit(db, principal, actor_role, request_id,
-                            "dashboard_session.revoke.denied", "api_key",
+                            f"{audit_prefix}.revoke.denied", "api_key",
                             key_id, "denied")
                 db.commit()
                 raise CompanyAdminDenied
             if row["revoked_at"]:
                 self._audit(db, principal, actor_role, request_id,
-                            "dashboard_session.revoke.noop", "api_key",
+                            f"{audit_prefix}.revoke.noop", "api_key",
                             key_id, "committed")
                 return {"key_id": key_id, "revoked": False, "already_revoked": True}
             db.execute(
@@ -984,7 +1025,7 @@ class SQLiteCompanyAdminService:
                 (_now(), principal.company_id, key_id),
             )
             self._audit(db, principal, actor_role, request_id,
-                        "dashboard_session.revoked", "api_key", key_id, "committed")
+                        f"{audit_prefix}.revoked", "api_key", key_id, "committed")
         return {"key_id": key_id, "revoked": True, "already_revoked": False}
 
 
