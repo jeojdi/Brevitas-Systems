@@ -355,19 +355,48 @@ async function applyInvoice(
 }
 
 export async function POST(request: Request) {
-  if (!billingIsConfigured()) {
-    return Response.json(
-      { error: 'Billing is temporarily unavailable' },
-      {
-        status: 503,
-        headers: { 'Cache-Control': 'no-store', 'Retry-After': '30' },
-      },
-    );
-  }
   const config = billingConfig();
+  if (!billingIsConfigured()) {
+    // The whole-product predicate is a SIGNAL here, not the gate. It also
+    // requires the price, the meter, the weekly cap, BREVITAS_PUBLIC_URL and the
+    // BILLING_RECOVERY_SECRET strength heuristic — none of which this route
+    // touches (the recovery secret is read only by /api/billing/sync). Refusing
+    // every delivery on those dropped real money events: the 503 below precedes
+    // constructEvent and the inbox claim, so nothing lands in
+    // stripe_webhook_events, and no replay worker exists — durability was
+    // Stripe's ~3-day retry schedule and then permanent loss. One rotated
+    // BILLING_RECOVERY_SECRET could therefore lose an
+    // `invoice.payment_failed`/`customer.subscription.deleted` for a paying
+    // tenant.
+    //
+    // So the gate is narrowed to the three values this route cannot work
+    // without: `enabled`, `secretKey` (constructEvent goes through getStripe(),
+    // which throws 'Stripe billing is not configured' without it, turning the
+    // 503 into an unhandled 500) and `webhookSecret`. Everything else is logged
+    // and the event is still verified and persisted. The 5xx stays retryable
+    // rather than acknowledging: with no reclaim worker, a 200 here would
+    // convert a transient misconfiguration into silent permanent loss.
+    if (!config.enabled || !config.secretKey || !config.webhookSecret) {
+      return Response.json(
+        { error: 'Billing is temporarily unavailable' },
+        {
+          status: 503,
+          headers: { 'Cache-Control': 'no-store', 'Retry-After': '30' },
+        },
+      );
+    }
+    // No secret material, no event body: just the fact, so an operator can see
+    // that deliveries are being ingested under an incomplete billing config.
+    console.error('Stripe webhook ingesting under an incomplete billing configuration');
+  }
   const signature = request.headers.get('stripe-signature');
   if (!config.webhookSecret || !signature) {
-    return Response.json({ error: 'Webhook signature is missing' }, { status: 400 });
+    // I13: every non-2xx from this route carries no-store. These two 400s were
+    // the only bare ones.
+    return Response.json(
+      { error: 'Webhook signature is missing' },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
   }
 
   let event: Stripe.Event;
@@ -376,7 +405,10 @@ export async function POST(request: Request) {
     event = getStripe().webhooks.constructEvent(await request.text(), signature, config.webhookSecret);
   } catch (error) {
     console.warn('Stripe webhook signature rejected', error instanceof Error ? error.message : 'unknown error');
-    return Response.json({ error: 'Invalid webhook signature' }, { status: 400 });
+    return Response.json(
+      { error: 'Invalid webhook signature' },
+      { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
   }
 
   const leaseOwner = randomUUID();

@@ -67,8 +67,14 @@ test('checkout portal and status authorize and query the active company identity
   assert.match(checkout, /client_reference_id: organizationId/)
   assert.doesNotMatch(checkout, /brevitas_user_id|client_reference_id: user\.id/)
   assert.match(portal, /getBillingAccount\(authorization\.organizationId\)/)
-  assert.match(status, /\.eq\('organization_id', authorization\.organizationId\)/)
+  // Company scoping on the status route is now the settlement summary RPC's
+  // first argument rather than a PostgREST .eq() filter (the repoint in
+  // 202607280013): period_settlement_ledger grants service_role nothing, so the
+  // read cannot be a table select. The property under test is unchanged — the
+  // route scopes by the SERVER-derived active organization, never by user.id.
+  assert.match(status, /p_organization_id: authorization\.organizationId/)
   assert.doesNotMatch(status, /\.eq\('user_id', user\.id\)/)
+  assert.doesNotMatch(status, /organizationId: user\.id/)
 })
 
 test('Stripe webhooks validate organization metadata and mutate by company', () => {

@@ -5,6 +5,36 @@
   var SENSITIVE_SELECTOR = '[data-ph-sensitive],.ph-sensitive,.ph-no-capture,[data-private]';
   var pending = [];
 
+  // This one file is loaded by BOTH the marketing pages and the authenticated
+  // SPA, and the two need opposite replay defaults. A marketing visit is
+  // anonymous and must keep being counted; an authenticated view renders the
+  // customer's own content — Audit shows scanner evidence taken from their
+  // repository, Overview/Projects/Pipelines show their spend — and replaying that
+  // into a subprocessor is a data export, not analytics.
+  //
+  // The discriminator is the SPA's own <body class="dashboard-app">
+  // (dashboard/index.html, and the built public/dashboard/index.html), which no
+  // static page carries. NOT the data-brevitas-analytics attribute: every public
+  // page carries that too, so it identifies the bootstrap, not the host. The
+  // path list is the second half of the same test, because next.config.ts rewrites
+  // all of those aliases onto the SPA — plus /email-confirmed and /welcome, which
+  // are static but receive GoTrue's access token in the URL and so must never be
+  // recorded either.
+  var APP_ROUTE = /^\/(?:dashboard|login|signup|waitlist|invite|email-confirmed|welcome)(?:\/|$)/;
+  var hostIsApp = null;
+  function hostIsApplication() {
+    if (hostIsApp === null) {
+      try {
+        hostIsApp = /\bdashboard-app\b/.test((document.body && document.body.className) || '') ||
+          APP_ROUTE.test(location.pathname);
+      } catch (_) {
+        // Fail closed: an unrecognised host is treated as the authenticated one.
+        hostIsApp = true;
+      }
+    }
+    return hostIsApp;
+  }
+
   function privacySignalEnabled() {
     // GPC only. It is legally binding under CCPA/CPRA (California) and the Colorado and
     // Connecticut privacy acts, so it must be honoured. Do Not Track is deliberately NOT
@@ -112,7 +142,11 @@
     try { localStorage.setItem(PREFERENCE_KEY, enabled ? 'on' : 'off'); } catch (_) {}
     if (enabled && !privacySignalEnabled()) {
       call('opt_in_capturing', []);
-      call('startSessionRecording', []);
+      // startSessionRecording() overrides disable_session_recording, so on the
+      // authenticated SPA it would re-arm exactly what the init below declines.
+      // Consenting to analytics is not consenting to replay of another company's
+      // data.
+      if (!hostIsApplication()) call('startSessionRecording', []);
       capture('analytics_preference_changed', { enabled: true });
     } else {
       call('stopSessionRecording', []);
@@ -242,9 +276,24 @@
         person_profiles: 'identified_only',
         opt_out_capturing_by_default: !analyticsEnabled(),
         sanitize_properties: sanitizeProperties,
+        // Session replay is never armed on the authenticated SPA. rrweb
+        // serialises the rendered DOM, and on those views the DOM IS customer
+        // content (Audit renders capability.detail / capability.evidence[], which
+        // the repository scanner fills with file paths and code excerpts from the
+        // customer's own codebase). Whether the recorder runs otherwise depends
+        // on a toggle inside the PostHog project, so declining it here is the only
+        // control the product itself has. Marketing pages are unchanged.
+        disable_session_recording: hostIsApplication(),
         session_recording: {
           maskAllInputs: true,
-          maskTextSelector: SENSITIVE_SELECTOR,
+          // Default-DENY text on the SPA: element-level markers are applied
+          // inconsistently across dashboard/src/components (Audit, Overview,
+          // Projects and Pipelines carry none), so an opt-in policy leaks by
+          // omission every time a component is added. '*' is posthog-js's
+          // mask-everything selector — there is no `maskAllText` option, it would
+          // be silently ignored. Belt and braces with the flag above, which a
+          // stray startSessionRecording() call could otherwise defeat.
+          maskTextSelector: hostIsApplication() ? '*' : SENSITIVE_SELECTOR,
           recordCrossOriginIframes: false,
           maskCapturedNetworkRequestFn: function (request) {
             request.name = cleanUrl(request.name || '');

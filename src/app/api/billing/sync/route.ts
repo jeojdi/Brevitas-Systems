@@ -17,10 +17,73 @@ export const maxDuration = 10;
 
 const REQUEST_ID = /^[A-Za-z0-9._:-]{8,128}$/;
 
+/**
+ * PostgREST/Postgres codes that mean a dependency of this handler is not
+ * reachable in THIS database (absent function or table, or a missing execute
+ * grant) rather than that a request was bad. Same set, same reasoning, as
+ * src/app/api/billing/status/route.ts:76-88 — production Postgres has no
+ * migration ledger and migrations are hand-applied one file at a time while
+ * Vercel deploys on push, so schema drift is a normal transient state of a
+ * rollout, not a fault.
+ */
+const DEPENDENCY_UNAVAILABLE_CODES = new Set([
+  'PGRST202', // function absent from the PostgREST schema cache
+  '42883', // undefined_function
+  '42P01', // undefined_table
+  '42501', // insufficient_privilege (execute grant not applied)
+]);
+
+function dependencyUnavailable(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | null;
+  if (typeof candidate?.code === 'string' && DEPENDENCY_UNAVAILABLE_CODES.has(candidate.code)) {
+    return true;
+  }
+  // Older PostgREST schema-cache misses surface without a stable code.
+  return typeof candidate?.message === 'string' &&
+    /could not find the function|does not exist|permission denied/i.test(candidate.message);
+}
+
+/**
+ * The retryable degrade, byte-identical to the admission branch below.
+ *
+ * The handler had NO outer catch: `authorizeActiveBillingCompany` and
+ * `manuallyResolveBillingLedgerEntry` both rethrow the raw PostgREST error, so
+ * a missing RPC or a missing grant escaped the route entirely and the framework
+ * served an uncontrolled 500 — with no `Cache-Control: no-store` (I13 requires
+ * it on every non-2xx here) and no `Retry-After`, so an operator working a
+ * stuck ledger row mid-rollout could not tell "retry in a moment" from "this
+ * entry is unresolvable".
+ *
+ * There is deliberately no logging: this route must not write to the console at
+ * all — an operator-supplied note and a request id pass through it.
+ */
+function recoveryUnavailableResponse(): Response {
+  return Response.json(
+    { error: 'Billing recovery is temporarily unavailable' },
+    {
+      status: 503,
+      headers: { 'Cache-Control': 'no-store', 'Retry-After': '5' },
+    },
+  );
+}
+
 export async function POST(request: Request) {
   const maintenanceResponse = billingMaintenanceResponse();
   if (maintenanceResponse) return maintenanceResponse;
+  try {
+    return await handleManualRecovery(request);
+  } catch (error) {
+    // ONLY schema drift degrades, exactly as in
+    // src/app/api/billing/status/route.ts:143. Every other error still
+    // propagates unchanged so a genuine fault stays loud and visible instead of
+    // being masked as a retryable 503 — a property
+    // tests/billing_sync_input_ladder.test.mjs:268-272 pins deliberately.
+    if (!dependencyUnavailable(error)) throw error;
+    return recoveryUnavailableResponse();
+  }
+}
 
+async function handleManualRecovery(request: Request): Promise<Response> {
   const user = await authenticatedBillingUser(request);
   if (!user) return Response.json({ error: 'Authentication required' }, { status: 401 });
   const authorization = await authorizeActiveBillingCompany(user.id);

@@ -6,6 +6,7 @@ import {
   WaitlistConfigurationError,
   WaitlistUnavailableError,
 } from '@/lib/waitlist-server';
+import { waitlistNetworkKey } from '@/lib/waitlist-network.mjs';
 
 interface WaitlistPayload {
   email?: string;
@@ -84,6 +85,17 @@ export async function POST(request: NextRequest) {
       design_partner: body.design_partner ?? false,
     };
 
+    // An opaque, salted per-network bucket key. This route learns nothing about
+    // the caller's address: derivation lives in @/lib/waitlist-network.mjs, and
+    // a null key simply means "charge the shared global window only". Deriving
+    // it must never be able to fail a signup, hence the catch.
+    let networkKey: string | null = null;
+    try {
+      networkKey = waitlistNetworkKey(request.headers);
+    } catch {
+      networkKey = null;
+    }
+
     const admission = await submitWaitlistSignup({
       email: row.email,
       name: row.name,
@@ -94,7 +106,7 @@ export async function POST(request: NextRequest) {
       orchestrator: row.orchestrator,
       notes: row.notes,
       designPartner: row.design_partner,
-    });
+    }, networkKey);
 
     if (admission.status === 'rate_limited') {
       return NextResponse.json(

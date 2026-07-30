@@ -21,6 +21,42 @@ const dashboardCsp = [
   "upgrade-insecure-requests",
 ].join("; ");
 
+// The rest of the origin had NO Content-Security-Policy at all: `/`, `/product`,
+// `/pricing`, `/docs`, `/blog/*`, `/orchestration`, `/benchmarks`, `/welcome` and
+// `/email-confirmed` shipped with an unrestricted script-src and connect-src.
+// CSP is origin-scoped in effect, not path-scoped: the SPA's Supabase session
+// lives in localStorage on this same origin, so script running on any of those
+// paths reads it and the dashboard's own policy above never applies.
+//
+// This is the marketing pages' real resource contract, and it is deliberately
+// looser than dashboardCsp — those pages compile JSX in the browser, so they need
+// their CDN hosts, inline <script type="text/babel"> and eval. `connect-src` is
+// the directive that matters for the session-theft path: it stays 'self' plus
+// Supabase, so a foothold cannot POST the token to an arbitrary host.
+//
+// ROLLOUT: shipped Report-Only first, on purpose. Enforcing it in the same change
+// as writing it would risk taking the public site down for a directive nobody
+// verified in a browser (posthog-js's replay worker is the known unknown). Step
+// three is to promote the key below to "Content-Security-Policy" once one release
+// has gone out with no unexpected violations reported by the browser console —
+// prioritising /welcome and /email-confirmed, which parse location.hash/search
+// and hand GoTrue's access token to the SPA.
+const marketingCsp = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "media-src 'self'",
+  "worker-src 'self' blob:",
+  "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "upgrade-insecure-requests",
+].join("; ");
+
 const dashboardHeaders = [
   { key: "Content-Security-Policy", value: dashboardCsp },
   { key: "X-Robots-Tag", value: "noindex, nofollow" },
@@ -76,7 +112,17 @@ const nextConfig: NextConfig = {
   skipTrailingSlashRedirect: true,
   async headers() {
     return [
-      { source: "/:path*", headers: securityHeaders },
+      {
+        source: "/:path*",
+        headers: [
+          ...securityHeaders,
+          // Different header KEY from the dashboard's enforced policy, so the two
+          // coexist on /dashboard/* rather than one overriding the other
+          // (node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/headers.md:
+          // same key, last wins).
+          { key: "Content-Security-Policy-Report-Only", value: marketingCsp },
+        ],
+      },
       ...["/dashboard/:path*", "/login", "/login/personal", "/login/enterprise", "/signup", "/waitlist", "/invite"]
         .map((source) => ({ source, headers: dashboardHeaders })),
       ...["/email-confirmed", "/welcome"]
