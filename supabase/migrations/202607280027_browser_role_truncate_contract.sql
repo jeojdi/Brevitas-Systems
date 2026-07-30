@@ -143,7 +143,16 @@ begin
                privilege
           from pg_class relation
          cross join (select unnest(array['anon', 'authenticated']) as rolname) grantee
-         cross join (select unnest(array['TRUNCATE', 'TRIGGER', 'REFERENCES', 'MAINTAIN']) as privilege) privileges
+         -- MAINTAIN only exists on PG17+; has_table_privilege() raises
+         -- 'unrecognized privilege type' on PG16 rather than returning false,
+         -- so the list is built from the server version for the same reason the
+         -- revoke loops above are. On PG16 the privilege cannot be held, so
+         -- omitting it checks strictly everything that can exist there.
+         cross join (select unnest(
+                       case when current_setting('server_version_num')::int >= 170000
+                            then array['TRUNCATE', 'TRIGGER', 'REFERENCES', 'MAINTAIN']
+                            else array['TRUNCATE', 'TRIGGER', 'REFERENCES']
+                       end) as privilege) privileges
          where relation.relnamespace = 'public'::regnamespace
            and relation.relkind in ('r', 'p')
            and has_table_privilege(grantee.rolname, relation.oid, privileges.privilege)
