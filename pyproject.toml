@@ -10,6 +10,11 @@ readme = "README.md"
 license = { text = "Proprietary" }
 requires-python = ">=3.10"
 dependencies = [
+    # Imported at module scope by brevitas/security/envelope.py, brevitas/security/kms.py
+    # and brevitas/semantic_cache.py. It reached the server image only through
+    # api/requirements.txt, so a customer `pip install brevitas-systems` could resolve
+    # without it and silently lose the local cache to a swallowed ImportError.
+    "cryptography>=42.0.0",
     "httpx>=0.27.0",
     "requests>=2.31.0",
     "tiktoken>=0.7.0",

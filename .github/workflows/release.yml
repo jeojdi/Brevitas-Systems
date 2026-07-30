@@ -12,6 +12,12 @@ name: Release orchestrator
 #
 # Nothing here mutates a target: the schema-drift check opens a read-only session
 # and the preflight/smoke stages are non-mutating by contract.
+#
+# This workflow does NOT block a deployment on its own. Vercel and Railway both
+# deploy from a push to main, and neither platform consults a GitHub check, so a
+# red run here stops nothing until the external configuration in
+# docs/enterprise/OPERATIONAL_READINESS_GATE.md ("Making this gate mandatory") is
+# in place. Treat that configuration as part of the control, not as optional.
 
 on:
   workflow_dispatch:
@@ -35,17 +41,25 @@ concurrency:
 jobs:
   guard:
     name: Refuse untrusted or ambiguous release invocation
-    if: >-
-      github.event.repository.fork == false &&
-      github.repository == 'jeojdi/Brevitas-Systems' &&
-      github.ref == 'refs/heads/main'
+    # Asserted inside the job, never as a job-level `if:`. An unmet job-level
+    # condition SKIPS the job, and every stage below is needs:-chained to this one,
+    # so the entire release chain used to skip and GitHub reported the run as a
+    # success. Mirrors operational-readiness.yml: an untrusted or ambiguous
+    # invocation must fail the run, not quietly produce a green badge.
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     env:
       TARGET: ${{ inputs.target }}
+      REPOSITORY: ${{ github.repository }}
+      IS_FORK: ${{ github.event.repository.fork }}
+      REF_NAME: ${{ github.ref }}
     steps:
-      - name: Require a fixed release target
-        run: test "$TARGET" = "staging" || test "$TARGET" = "production"
+      - name: Require canonical main and a fixed release target
+        run: |
+          test "$IS_FORK" = "false"
+          test "$REPOSITORY" = "jeojdi/Brevitas-Systems"
+          test "$REF_NAME" = "refs/heads/main"
+          test "$TARGET" = "staging" || test "$TARGET" = "production"
 
   migrations-check:
     name: Migration release contracts

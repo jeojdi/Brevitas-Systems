@@ -71,9 +71,17 @@ dist/
 __pycache__/
 *.pyc
 
-# secrets & local databases - NEVER commit these
+# secrets & local databases - NEVER commit these.
+# api/.secret_key and api/brevitas.db were committed once (blobs ae18fc3b and
+# dc674de5, still reachable from main) before these rules existed; the key is burned
+# and must never be reused. See "Retired and exposed key material" in
+# docs/CREDENTIAL_SECURITY.md. The patterns are broadened past the two exact paths so
+# a renamed key file or a local SQLite copy cannot repeat it.
 .secret_key
+*.secret_key
 *.db
+*.sqlite
+*.sqlite3
 
 # token_efficiency_model runtime cache
 token_efficiency_model/experiments/.delta_memory_store.json

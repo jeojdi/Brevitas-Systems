@@ -8,6 +8,34 @@ Legend:  ✅ done & verified   🟡 staged on branch `audit-fixes-2026-07-27` (n
 
 ---
 
+## ADDENDUM 2026-07-30 — apply-before-deploy precondition for the current tree
+
+The working tree adds migrations `202607280006`–`202607280024`. Production (`wyfz`) has the
+chain applied **through `202607280005` only** and has **no migration ledger**, so:
+
+- 🔴 **Before (or immediately after) the next Railway `api/` push and Vercel deploy**, hand-apply
+  `202607280006`–`202607280024` to `wyfz`, one file at a time, in lexical order, via
+  `supabase db query --linked -f supabase/migrations/<file>.sql` — never `db push`, never a blind
+  chain replay (see memory: *Supabase prod migration apply* / *Production schema drift*).
+- The two code paths that depend on the new RPCs both **degrade gracefully** on a code-first deploy,
+  so ordering is a short-window UX cost, not an outage:
+  - `DELETE /v1/keys/{id}` falls back to the pre-`202607280019` dashboard-session RPC when
+    `company_admin_revoke_tenant_key` is missing (PGRST202). Device-key revocation (the new
+    kill switch) only works once `202607280019` is applied. Remove
+    `SupabaseUsageStore._revoke_key_via_predispatcher_rpc` in `api/store.py` once 0019 is
+    confirmed on wyfz.
+  - `/api/billing/status` renders every money field as `null` behind `settlement_pending: true`
+    ("Unavailable" in the dashboard) until `202607280013` is applied.
+- `202607280022` also closes a security gap on apply: removing/disabling a member now revokes
+  their device + session credentials, and it backfills `api_keys.created_by` for device keys from
+  the `device_key.activated` audit trail. Until it is applied, a departed engineer's `bvx login`
+  key keeps working — apply it promptly.
+- Digests for `202607280013`–`202607280023` were refrozen during review on the premise that those
+  files have reached **no database beyond ephemeral CI**. Confirm none of them was ever
+  hand-applied to wyfz before replaying (wyfz has no ledger to detect drift).
+
+---
+
 ## Current state (2026-07-27)
 
 | Area | State |
@@ -57,6 +85,8 @@ The single biggest architectural gap. Follow `docs/DATA_MIGRATION_amjcc_to_wyfz.
     apply the rest of the chain so every table matches: run `scripts/db/reconcile-production-prelude.sql`
     then `scripts/db/apply-migrations.sh --db-url "$WYFZ_DSN"` (dry-run/status first). Confirm the
     `brevitas_schema_migrations` ledger before applying edited dated migrations, or the checksum guard fires.
+    The applier keeps the DSN out of `psql`'s argv by routing it through `scripts/dr/libpq-exec.py`,
+    so `python3` must be on PATH.
 
 1.3 🔴 **Rehearse on a staging copy** of `wyfz` before touching prod. Take a PITR checkpoint / backup.
 
@@ -136,8 +166,11 @@ matches the deployed SHA.
 
 ## Phase 6 — Release gates & operational readiness
 
-6.1 🔴 Add a `DATABASE_URL` secret to the GitHub **staging** and **production** Environments so the new
-    `scripts/ci/check-schema-drift.mjs` gate actually verifies (it no-ops safely without it).
+6.1 🔴 Add a `DATABASE_URL` secret to the GitHub **staging** and **production** Environments. This secret is
+    now **REQUIRED for any release run**: `scripts/ci/check-schema-drift.mjs` fails closed and exits 1
+    without it, which blocks the rest of the release chain — it does **not** no-op. `--allow-missing-credentials`
+    is a local-only escape and is deliberately absent from the `release.yml` invocation (pinned by
+    `tests/release_security.test.mjs`), so do not add it to CI to work around a missing secret.
 6.2 🔴 Populate `OPERATIONAL_READINESS_EVIDENCE_JSON` (backups/PITR/restore/telemetry/alerts/on-call/rollback)
     and run the new `release.yml` orchestrator: migrations check → schema-drift → operational-readiness →
     preflight → staging smoke → canary.

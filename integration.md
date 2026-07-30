@@ -20,6 +20,10 @@ Set your API key as an environment variable (recommended) or pass it directly:
 
 ```bash
 export BREVITAS_API_KEY=bvt_your_key_here
+# Optional. Defaults to https://api.brevitassystems.com — set this ONLY when you run
+# your own Brevitas API (self-hosted or local). No /v1 suffix: the SDK appends /v1
+# itself, so a /v1 base yields /v1/v1.
+export BREVITAS_BASE_URL=http://localhost:8000
 ```
 
 ```python

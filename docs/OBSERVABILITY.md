@@ -265,7 +265,8 @@ adds `_total` to counters, and adds `_seconds` to second-based instruments.
 | Providers | `brevitas.provider.requests`, `.request.duration`, `.retries`, `.circuit` | provider, operation, outcome/state |
 | Jobs/queue | `brevitas.jobs`, `.job.duration`, `.queue.depth`, `.queue.lag` | operation/status or queue |
 | Cache | `brevitas.cache.operations` | cache, outcome |
-| Billing | `brevitas.billing.entries`, `.recovery`, `.batch.duration`, `.queue.lag`, `.review`, `.dead`, `.stale`, `.catalog.contract` | status/outcome only; catalog gauge has no label |
+| Billing | `brevitas.billing.entries`, `.recovery`, `.batch.duration`, `.queue.lag`, `.review`, `.dead`, `.stale`, `.catalog.contract`, `.last_settlement_age` | status/outcome only; catalog gauge has no label |
+| Billing volume | `brevitas.billing.savings_rows`, `brevitas.billing.verified_savings_usd` | `authoritative` (both) and `billable` (rows only); no org, customer or key |
 | Dependencies | `brevitas.dependency.operations`, `.dependency.duration` | postgres/redis/compressor/provider/stripe, outcome |
 
 Request IDs, job IDs, tenants, customers, service accounts, API keys, raw paths, model
@@ -343,6 +344,26 @@ worker's reconciliation flow. Review/dead/stale alerts must not be cleared by di
 edits. A catalog alert from `min(...)` identifies at least one invalid replica; an
 `absent(...)` alert means the authoritative loop is not reporting at all. Manual recovery
 remains authenticated and auditable.
+
+**Billing-volume alerts and how to arm them.** `BillableSavingsStalledWhileServingTraffic`
+(page) and `VerifiedSavingsDollarsCollapsedWhileRowsContinue` (ticket) are the only two
+"too little good" rules — every other billing alert is a "too much bad" rule and reads
+green when the money path produces nothing at all, which is exactly the 2026-07-17 stall.
+The rows rule watches `brevitas_billing_savings_rows_total{billable="true"}` against live
+external traffic; the dollars rule watches `brevitas_billing_verified_savings_usd_total`
+against those same rows, because a pipeline that keeps writing rows repriced to nothing
+(2026-07-29) leaves the rows rule green.
+
+Both are **disarmed** and cannot fire today. Arming is a one-line change in
+`observability/prometheus/alerts.yml`: change the recorded gate's `expr` from `vector(0)`
+to `vector(1)` and flip its `labels.gate` from `"disarmed"` to `"armed"` so the label stays
+accurate. The three gates and their preconditions:
+
+| Recorded gate | Arm only after |
+| --- | --- |
+| `brevitas_alerting_armed_billing_volume` | the corresponding series has been non-zero for a full settlement period — otherwise the rule fires immediately and permanently, the worst state for a detective control |
+| `brevitas_alerting_armed_telemetry_absence` | `BREVITAS_OTEL_ENABLED=true` is confirmed on every API replica and a non-zero `brevitas_api_requests_total` has been observed |
+| `brevitas_alerting_armed_auth_denial` | the 0.25 denial ratio has been checked against a real week of `brevitas_api_requests_total{outcome="auth_denied"}` |
 
 ### Dependencies
 

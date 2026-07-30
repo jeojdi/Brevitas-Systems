@@ -117,6 +117,17 @@ export BREVITAS_ENVIRONMENT=production
 export BREVITAS_SOURCE=api-worker
 ```
 
+`BREVITAS_BASE_URL` selects the control plane receipts are sent to and defaults to
+`https://api.brevitassystems.com`. Set it **only** if you run your own API (self-hosted or
+local development) — otherwise a self-hosted deployment reports its usage to the hosted
+service. Do not give it a `/v1` suffix: the SDK appends `/v1` itself, so a `/v1` base
+produces `/v1/v1` and silently 404s. (`https://brevitassystems.com/v1` is the value for
+gateway integrations such as `ANTHROPIC_BASE_URL`, not for `BREVITAS_BASE_URL`.)
+
+When `BREVITAS_PROJECT` is unset the SDK falls back to your local Git-root folder name so
+the dashboard has a project dimension. That folder name is your own material, so
+`BREVITAS_PROJECT_AUTO=0` suppresses the fallback and sends nothing.
+
 The hosted gateway accepts `X-Brevitas-Key` plus the equivalent `X-Brevitas-*` metadata
 headers. Provider keys use their normal `Authorization` or `X-Api-Key` header. Unknown
 models retain token totals and are shown as **Unpriced** rather than receiving a guessed

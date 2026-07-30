@@ -76,13 +76,46 @@ into a provider receipt.
 6. Run **Operational readiness evidence gate** from `main` for the target environment. The workflow
    supplies `github.sha`; an envelope for any other build fails. Preserve the workflow run ID and
    conclusion in the change record.
-7. Make the reusable workflow job a required release/deployment check in the external deployment
-   pipeline. The manual workflow alone does not block a deployment. Keep production environment
-   reviewers enabled and require the separate infrastructure preflight and authenticated staging
-   smoke gates as well.
+7. Complete "Making this gate mandatory" below. The manual workflow alone does not block a
+   deployment. Keep production environment reviewers enabled and require the separate
+   infrastructure preflight and authenticated staging smoke gates as well.
 
 The CLI may instead read a named environment variable with `--evidence-env NAME`. It accepts exactly
 one evidence source, rejects symlinks, limits documents to 256 KiB, and never prints the document.
+
+## Making this gate mandatory
+
+**OPEN CONTROL GAP.** As configured today nothing in this repository blocks a deployment. Both
+deploy targets are push-driven and consult no GitHub check: `vercel.json` declares only
+`installCommand`/`buildCommand`, and `railway.json`/`railway.toml` declare only builder, replicas
+and healthcheck. A push to `main` therefore ships the Next.js app, the dashboard and the API with
+`.github/workflows/release.yml` — the credentialed schema-drift check, this readiness gate, the
+network preflight and the staging smoke — never having run for that commit, and with nothing
+consulting the result even if it had. `migrations.yml` and `security.yml` are push-triggered, so
+migration-contract and security scanning do run; they are also advisory unless step 4 below is done.
+Do not describe the release gate as enforced until every step is done and evidenced.
+
+`.github/workflows/release.yml` refuses an untrusted or ambiguous invocation by failing rather than
+skipping, so a run that does not satisfy the repository/branch/target contract is red instead of a
+green skipped chain. That closes the false-pass, not the enforcement gap.
+
+Required external configuration, in this order:
+
+1. Disable Vercel Git auto-deploy for the Production environment of the `Brevitas-Systems` project
+   and keep preview deploys on, because the staging project promotes from a preview build.
+2. Disable Railway's deploy-on-push trigger for the API, worker and compressor services on `main`.
+3. Drive both platforms from a deployment job added to `release.yml` with `needs: preflight` (and
+   `needs: staging-smoke` for the staging target), using a scoped deploy token held in the matching
+   protected GitHub environment. Until that job exists, deploys are manual promotions performed
+   only after a green release run for the exact commit, recorded in the change record.
+4. Require **Release orchestrator** and **Operational readiness evidence gate** as deployment
+   protection checks on the `staging` and `production` GitHub environments, and require the
+   push-triggered **Migration safety** and **Release security** checks in the `main` branch ruleset.
+5. Re-verify by pushing a no-op commit to `main` and confirming no platform deployment starts.
+
+This repository cannot perform steps 1, 2, 4 or 5, and cannot verify that they were performed.
+Record the platform screenshots/API responses as change-management evidence in the restricted
+evidence system, not here.
 
 ## External actions still required
 
@@ -107,8 +140,9 @@ Repository changes cannot complete or truthfully claim any of these actions:
 - Deploy the exact candidate to staging, roll back to a distinct known-good build, verify service,
   redeploy or close the rehearsal under the approved change, and retain platform receipts.
 - Obtain distinct operations and security approvals after all control evidence is collected.
-- Configure the workflow as an actual required deployment check. This repository cannot change
-  GitHub environment protection, branch rules, Railway/Vercel deployment policy, or on-call policy.
+- Configure the workflow as an actual required deployment check and remove platform auto-deploy, per
+  "Making this gate mandatory" above. This repository cannot change GitHub environment protection,
+  branch rules, Railway/Vercel deployment policy, or on-call policy.
 
 If any evidence is unavailable, failed, stale, or unverifiable, the release remains blocked. An
 exception document is not accepted by this validator; emergency change authority belongs in the
