@@ -13,8 +13,12 @@
 --      that had never been granted, i.e. assertions that could not fail. That is
 --      how public.billing_monthly shipped anon-SELECTable past all of them.
 --      Section 1 creates a throwaway relation and requires the browser roles to
---      hold ALL on it. If anyone removes the ALTER DEFAULT PRIVILEGES from the
---      bootstrap, this raises here instead of silently re-vacuuming the suite.
+--      hold the DML defaults on it. If anyone removes the ALTER DEFAULT
+--      PRIVILEGES from the bootstrap, this raises here instead of silently
+--      re-vacuuming the suite. It no longer demands ALL, because 202607280027
+--      revokes TRUNCATE/REFERENCES/TRIGGER from the browser roles' defaults --
+--      those are asserted ABSENT in the same block, so coverage moved rather
+--      than shrank.
 --
 --   2. PIN THE INVENTORY. Section 2 enumerates every relation and sequence in
 --      public that a browser role can reach at the end of the chain and compares
@@ -47,11 +51,13 @@ declare
     v_grantee text;
     v_privilege text;
 begin
+    -- Non-vacuity, the original purpose of this block: the bootstrap must still
+    -- reproduce Supabase's default DML grants, or every revoke assertion in this
+    -- suite passes without proving anything. 202607280027 deliberately removes
+    -- TRUNCATE/REFERENCES/TRIGGER from the browser roles' defaults, so those are
+    -- asserted separately below rather than dropped from coverage.
     foreach v_grantee in array array['anon', 'authenticated', 'service_role'] loop
-        foreach v_privilege in array array[
-            'SELECT','INSERT','UPDATE','DELETE',
-            'TRUNCATE','REFERENCES','TRIGGER'
-        ] loop
+        foreach v_privilege in array array['SELECT','INSERT','UPDATE','DELETE'] loop
             if not has_table_privilege(
                 v_grantee, 'public.brevitas_privilege_baseline_probe', v_privilege
             ) then
@@ -59,6 +65,34 @@ begin
                     'migration-bootstrap.sql no longer reproduces Supabase default privileges: % lacks % on a newly created public relation, so every revoke assertion in this suite is vacuous',
                     v_grantee, v_privilege
                     using errcode = '55000';
+            end if;
+        end loop;
+    end loop;
+    -- service_role is the data plane and keeps the full default set.
+    foreach v_privilege in array array['TRUNCATE','REFERENCES','TRIGGER'] loop
+        if not has_table_privilege(
+            'service_role', 'public.brevitas_privilege_baseline_probe', v_privilege
+        ) then
+            raise exception
+                'migration-bootstrap.sql no longer reproduces Supabase default privileges: service_role lacks % on a newly created public relation',
+                v_privilege
+                using errcode = '55000';
+        end if;
+    end loop;
+    -- 202607280027's contract, asserted on a table created AFTER the whole chain:
+    -- a new public relation must never hand a browser role a privilege RLS does
+    -- not gate. TRUNCATE is the load-bearing one -- it is not subject to
+    -- row-level security at all, so the public anon key could otherwise empty
+    -- the audit trail, the compliance evidence or the webhook inbox.
+    foreach v_grantee in array array['anon', 'authenticated'] loop
+        foreach v_privilege in array array['TRUNCATE','REFERENCES','TRIGGER'] loop
+            if has_table_privilege(
+                v_grantee, 'public.brevitas_privilege_baseline_probe', v_privilege
+            ) then
+                raise exception
+                    '202607280027 default-privilege contract broken: % gained % on a newly created public relation',
+                    v_grantee, v_privilege
+                    using errcode = '42501';
             end if;
         end loop;
     end loop;
@@ -121,14 +155,14 @@ begin
     -- organization_invitations and audit_events_id_seq were revoked to zero by
     -- 202607280024.
     v_expected := concat_ws(E'\n',
-        'relation billing_events anon: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE',
-        'relation billing_events authenticated: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE',
+        'relation billing_events anon: DELETE,INSERT,SELECT,UPDATE',
+        'relation billing_events authenticated: DELETE,INSERT,SELECT,UPDATE',
         'relation legal_acceptances anon: SELECT',
         'relation legal_acceptances authenticated: SELECT',
         'relation profiles anon: SELECT',
         'relation profiles authenticated: SELECT',
-        'relation stripe_webhook_events anon: REFERENCES,SELECT,TRIGGER',
-        'relation stripe_webhook_events authenticated: REFERENCES,SELECT,TRIGGER',
+        'relation stripe_webhook_events anon: SELECT',
+        'relation stripe_webhook_events authenticated: SELECT',
         'sequence billing_ledger_id_seq anon: SELECT,UPDATE,USAGE',
         'sequence billing_ledger_id_seq authenticated: SELECT,UPDATE,USAGE',
         'sequence billing_recovery_audit_id_seq anon: SELECT,UPDATE,USAGE',

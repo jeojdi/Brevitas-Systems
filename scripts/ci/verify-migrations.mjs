@@ -104,6 +104,7 @@ export const expectedFreshMigrationOrder = [
   // Replaces the 20260710 usage dedupe index with an authority-scoped one, so
   // it must stay after 20260710 (the index) and 202607170001 (the column).
   'supabase/migrations/202607280026_usage_log_authority_dedupe.sql',
+  'supabase/migrations/202607280027_browser_role_truncate_contract.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
