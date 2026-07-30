@@ -133,8 +133,21 @@ def test_deeply_nested_json_is_not_a_pre_auth_500(tmp_path, monkeypatch):
         )
         assert response.status_code < 500, (depth, response.status_code)
 
-    assert server._request_collection_exceeds(
-        json.loads("[" * 2000 + "]" * 2000), 100) is False
+    # Build the 2000-deep fixture ITERATIVELY. json.loads() recurses in C, one
+    # level per nesting level, so parsing 2000 deep raises RecursionError inside
+    # the test itself on Python 3.11 (CI) while surviving on 3.12 (which raised
+    # the limits) — a green local run and a red CI run for a reason that has
+    # nothing to do with the code under test. The point here is that
+    # _request_collection_exceeds is ITERATIVE (api/server.py:1049-1068) and so
+    # has no depth ceiling of its own; constructing the value without a parser
+    # tests exactly that and nothing else.
+    deep_value: list = []
+    cursor = deep_value
+    for _ in range(1999):
+        nested: list = []
+        cursor.append(nested)
+        cursor = nested
+    assert server._request_collection_exceeds(deep_value, 100) is False
     assert server._request_collection_exceeds([[1, 2, 3]], 2) is True
 
 

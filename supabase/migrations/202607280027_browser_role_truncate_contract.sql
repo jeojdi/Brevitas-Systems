@@ -44,9 +44,23 @@ $migration_precondition$;
 
 -- Existing tables. Written as a loop rather than a name list precisely because a
 -- name list is what let this recur twice.
+--
+-- MAINTAIN is a PostgreSQL 17 privilege. Naming it unconditionally makes the
+-- whole statement fail on PG16 with 'unrecognized privilege type "maintain"' --
+-- which is where CI runs (pgvector/pgvector:pg16-bookworm, .github/workflows/
+-- migrations.yml:86), so this migration could never pass the ephemeral
+-- integration job even though it applies fine on wyfz (17.6). Build the
+-- privilege list from the server version instead: on PG17+ the behaviour is
+-- unchanged, and on PG16 MAINTAIN does not exist, so there is nothing to revoke
+-- and no exposure to leave behind.
 do $revoke_existing$
 declare
     target record;
+    privileges constant text := case
+        when current_setting('server_version_num')::int >= 170000
+            then 'truncate, trigger, references, maintain'
+        else 'truncate, trigger, references'
+    end;
 begin
     for target in
         select relation.oid::regclass::text as qualified_name
@@ -56,8 +70,8 @@ begin
          order by 1
     loop
         execute format(
-            'revoke truncate, trigger, references, maintain on table %s from anon, authenticated',
-            target.qualified_name);
+            'revoke %s on table %s from anon, authenticated',
+            privileges, target.qualified_name);
     end loop;
 end;
 $revoke_existing$;
@@ -78,6 +92,12 @@ $revoke_existing$;
 do $revoke_defaults$
 declare
     granting_role text;
+    -- Same PG16/PG17 split as the loop above; see the note there.
+    privileges constant text := case
+        when current_setting('server_version_num')::int >= 170000
+            then 'truncate, trigger, references, maintain'
+        else 'truncate, trigger, references'
+    end;
 begin
     for granting_role in
         select distinct pg_get_userbyid(defaults.defaclrole)
@@ -91,8 +111,8 @@ begin
         begin
             execute format(
                 'alter default privileges for role %I in schema public '
-                'revoke truncate, trigger, references, maintain on tables from anon, authenticated',
-                granting_role);
+                'revoke %s on tables from anon, authenticated',
+                granting_role, privileges);
         exception
             when insufficient_privilege then
                 raise notice
