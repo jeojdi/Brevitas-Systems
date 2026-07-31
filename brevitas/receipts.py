@@ -344,8 +344,28 @@ def canonical_provider(provider: str, model: str) -> str:
 
 
 def model_price(provider: str, model: str) -> dict[str, float] | None:
-    """Resolve exact aliases and their dated snapshots without guessing families."""
+    """Resolve exact aliases and their dated snapshots without guessing families.
+
+    THE ROUTE IS TRIED BEFORE THE CANONICAL FAMILY, and that order is
+    load-bearing. canonical_provider collapses a model to the family that
+    ORIGINATED it -- `claude*` becomes `anthropic` before the provider argument
+    is ever consulted -- so resolving canonically first makes any route-specific
+    row unreachable: ("bedrock", "claude-opus-5"), ("vertex", …) and
+    ("azure_openai", …) would all silently answer with the Anthropic or OpenAI
+    FIRST-PARTY price. The same model genuinely costs different amounts on
+    Bedrock, Vertex, Azure and the resellers, and pricing follows the bytes, so
+    a route that publishes its own price must be able to state it.
+
+    This is a no-op for every row that exists today: MODEL_PRICES currently holds
+    only canonical providers (anthropic, deepseek, mistral, openai, xai), for
+    which the raw and canonical keys are identical. tests pin that no row is
+    unreachable, so a future route-specific row cannot be added as dead code.
+    """
     normalized_model = (model or "").strip().lower()
+    raw_provider = (provider or "").strip().lower()
+    exact_route = MODEL_PRICES.get((raw_provider, normalized_model))
+    if exact_route:
+        return exact_route
     normalized_provider = canonical_provider(provider, normalized_model)
     exact = MODEL_PRICES.get((normalized_provider, normalized_model))
     if exact:
