@@ -88,6 +88,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .billing_recovery import SupabaseRpcClient, _bounded_float, _bounded_int
@@ -113,6 +114,42 @@ ALLOW_REVISION = False
 #: to the process that produced it.
 COMPUTED_BY_PREFIX = "sweep"
 _COMPUTED_BY_MAX = 200
+
+#: BLOCKER A GUARD. A settlement whose fee is zero sends NOTHING to Stripe, so
+#: drafting one has no upside -- and it has a documented, reproduced downside:
+#: it permanently forecloses that week.
+#:
+#: 202607280009's attestation gate is fee-CONDITIONAL by design (":276-277",
+#: `if p_fee_microusd > 0 and v_arrangement <> 'marginal_per_call'`), as is every
+#: 202607280008 halting condition, because settling zero moves no money. So a
+#: week with no priced authoritative usage yields fee 0 and passes the ENTIRE
+#: guard -- even for an unattested org. The resulting draft is a one-way seal:
+#: billing_periods_awaiting_settlement requires `not exists (live settlement)`
+#: (202607280013:1238-1245) so the period is never offered again, and
+#: ALLOW_REVISION is False so a later pass returns period_already_settled.
+#: Reproduced: a week that should have billed $25 was sealed at $0.
+#:
+#: So the sweep READS before it writes, and skips a zero-fee period instead of
+#: sealing it. Skipping is safe in the direction that matters: the period stays
+#: enumerable, so the moment it has real evidence it settles normally.
+SKIP_ZERO_FEE = True
+
+#: BLOCKER B GUARD, in seconds. warm_spend_usd is the only evidence term on UTC
+#: DAY granularity (202607280031:1140-1143 sums every warm_budget_ledger day whose
+#: [day, day+1) span OVERLAPS the period), while a period is an arbitrary-offset
+#: Stripe week -- production's period_end is 06:15:13. The enumerator offers a
+#: period the instant window_end <= now() with zero grace (202607280013:1237), so
+#: the UTC day containing period_end is STILL ACCRUING when the fee is computed.
+#: Fee is 0.25 * (basis - warm), so an understated warm term is a straight
+#: overcharge; reproduced at 23,500,000 uUSD recorded against 16,000,000 correct.
+#: promote_billing_period_settlement's ceiling re-check does not catch it because
+#: it recomputes the ceiling from the same understated basis.
+#:
+#: So a period is not settled until the UTC day CONTAINING its period_end has
+#: fully closed. Waiting cannot overcharge; settling early provably can. The
+#: extra margin below is added ON TOP of that boundary, for clock skew between
+#: this process and the database.
+WARM_SPEND_BOUNDARY_MARGIN_SECONDS = 300
 
 #: The writer's own vocabulary, mirrored so a code the caller has never seen is
 #: loud rather than silently bucketed. tests/test_billing_settlement_sweep.py
@@ -141,6 +178,9 @@ class SettlementSweepResult:
 
     enumerated: int = 0
     drafted: int = 0
+    #: Declined BEFORE the writer was called, so nothing was written. A skip is
+    #: healthy: the period stays enumerable and settles once it is ready.
+    skipped: int = 0
     unchanged: int = 0
     blocked: int = 0
     halted: int = 0
@@ -153,6 +193,10 @@ class SettlementSweepResult:
 
 class SettlementSweepStore(Protocol):
     def awaiting_periods(self, limit: int) -> Sequence[Mapping[str, Any]]: ...
+
+    def period_summary(
+        self, organization_id: str, period_anchor: str,
+    ) -> Mapping[str, Any]: ...
 
     def settle(
         self, organization_id: str, period_anchor: str, computed_by: str,
@@ -172,7 +216,24 @@ class SupabaseSettlementSweepStore(SupabaseRpcClient):
     RPCS: Mapping[str, str] = {
         "awaiting": "billing_periods_awaiting_settlement",
         "settle": "settle_billing_period",
+        # READ-ONLY. Needed so the sweep can decline to seal a zero-fee period
+        # rather than discovering the fee only after the writer has already
+        # created the row. Adds no write surface.
+        "summary": "billing_period_settlement_summary",
     }
+
+    def period_summary(
+        self, organization_id: str, period_anchor: str,
+    ) -> Mapping[str, Any]:
+        body = self._rpc(self.RPCS["summary"], {
+            "p_organization_id": organization_id,
+            "p_period_start": period_anchor,
+        })
+        if isinstance(body, list):
+            body = body[0] if len(body) == 1 else None
+        if not isinstance(body, Mapping):
+            raise RuntimeError("settlement summary returned an invalid response")
+        return body
 
     def awaiting_periods(self, limit: int) -> Sequence[Mapping[str, Any]]:
         rows = self._rpc(self.RPCS["awaiting"], {"p_limit": int(limit)})
@@ -209,6 +270,8 @@ class BillingSettlementSweep:
         owner: str,
         limit: int = 50,
         interval_seconds: float = 3600.0,
+        now: Callable[[], datetime] | None = None,
+        pre_write_guards: bool = True,
     ):
         if not owner:
             raise ValueError("the settlement sweep needs a non-blank owner")
@@ -216,6 +279,16 @@ class BillingSettlementSweep:
         self.owner = owner
         self.limit = max(1, min(int(limit), 500))
         self.interval_seconds = interval_seconds
+        # Injectable so the warm-spend boundary guard is testable at all. The
+        # same shape StripeRestBillingGateway already uses.
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        #: Constructor-only, never read from the environment, default ON. The
+        #: ONLY intended caller of False is a test that exercises a WRITER-side
+        #: contract the guards would otherwise stop it from reaching -- an open
+        #: period refused by the writer, a writer that raises. Production must
+        #: never pass it: without these guards a zero-fee draft permanently
+        #: forecloses the week (see SKIP_ZERO_FEE).
+        self.pre_write_guards = pre_write_guards
         self.computed_by = f"{COMPUTED_BY_PREFIX}:{owner}"[:_COMPUTED_BY_MAX]
 
     # -- logging ---------------------------------------------------------
@@ -225,6 +298,60 @@ class BillingSettlementSweep:
             {"event": event, **fields}, separators=(",", ":"), sort_keys=True,
             default=str,
         ))
+
+    # -- pre-write guards ------------------------------------------------
+    def _warm_evidence_is_final(self, period_end: str) -> bool:
+        """Has the UTC day CONTAINING period_end fully closed?
+
+        See WARM_SPEND_BOUNDARY_MARGIN_SECONDS. Unparseable is treated as NOT
+        final: refusing to settle costs a cycle, settling on evidence we cannot
+        date can overcharge.
+        """
+        try:
+            end = datetime.fromisoformat(period_end.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return False
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        boundary = datetime.combine(
+            end.astimezone(timezone.utc).date() + timedelta(days=1),
+            time.min, tzinfo=timezone.utc,
+        ) + timedelta(seconds=WARM_SPEND_BOUNDARY_MARGIN_SECONDS)
+        return self._now() >= boundary
+
+    def _skip_reason(
+        self, organization_id: str, period_start: str, period_end: str,
+    ) -> str | None:
+        """Why this period must NOT be sealed yet, or None to proceed."""
+        if not self.pre_write_guards:
+            return None
+        if not self._warm_evidence_is_final(period_end):
+            return "warm_spend_day_still_open"
+
+        if not SKIP_ZERO_FEE:
+            return None
+        try:
+            summary = self.store.period_summary(organization_id, period_start)
+        except Exception as exc:
+            # Fail CLOSED. A period we could not price is a period we must not
+            # seal; it stays enumerable and the next cycle tries again.
+            self._log(
+                logging.WARNING, "billing_settlement_sweep_summary_failed",
+                organization_id=organization_id, period_start=period_start,
+                error_type=type(exc).__name__,
+            )
+            return "summary_unavailable"
+
+        if summary.get("ok") is not True:
+            return f"summary_not_ok:{str(summary.get('code') or 'unknown')[:60]}"
+        # `billable` is the writer's own vocabulary for an attested arrangement.
+        # An unattested org drafting at fee 0 is exactly the foreclosure case.
+        if summary.get("billable") is not True:
+            return "not_billable"
+        estimated = summary.get("estimated_fee_microusd")
+        if not isinstance(estimated, (int, float)) or estimated <= 0:
+            return "zero_estimated_fee"
+        return None
 
     # -- one candidate ---------------------------------------------------
     def _settle_one(
@@ -236,6 +363,17 @@ class BillingSettlementSweep:
         if not organization_id or not period_start:
             result.errors += 1
             self._log(logging.ERROR, "billing_settlement_sweep_bad_candidate")
+            return
+
+        # ---- PRE-WRITE GUARDS. Both exist because the writer's row is a SEAL.
+        skip = self._skip_reason(organization_id, period_start, period_end)
+        if skip is not None:
+            result.skipped += 1
+            self._log(
+                logging.INFO, "billing_settlement_sweep_skipped",
+                organization_id=organization_id, period_start=period_start,
+                period_end=period_end, reason=skip,
+            )
             return
 
         try:

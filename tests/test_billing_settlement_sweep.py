@@ -96,6 +96,7 @@ class FakeSettlementDatabase:
         self._org_locks: dict[str, threading.Lock] = {}
         self.settle_calls: list[dict] = []
         self.enumerate_calls = 0
+        self.summary_calls = 0
         # Two hooks that together force the exact two-replica interleaving in
         # which a missing fence WOULD double-draft. The barrier (taken BEFORE
         # the advisory lock, as PostgREST would) puts both replicas at the
@@ -144,6 +145,30 @@ class FakeSettlementDatabase:
 
     def drafts(self) -> list[dict]:
         return [row for row in self.ledger if row["status"] == "draft"]
+
+    # -- public.billing_period_settlement_summary(uuid, timestamptz) ----
+    def period_summary(self, organization_id: str, period_anchor: str) -> dict:
+        """Mirrors 202607280031's summary: ok / billable / estimated fee.
+
+        `billable` is `v_arrangement = 'marginal_per_call'` in the real RPC, so
+        an unattested org reports billable=False here too. The sweep uses this
+        to decline to SEAL a period it cannot bill, instead of discovering the
+        zero fee only after the writer has already written the row.
+        """
+        self.summary_calls += 1
+        account = self.accounts.get(organization_id)
+        if account is None:
+            return {"ok": False, "code": "no_billing_account"}
+        # Same projection the writer would compute, per 202607280031's promise
+        # that estimated_fee_microusd converges EXACTLY to the settled fee.
+        return {
+            "ok": True,
+            "billable": account.attested,
+            "estimated_fee_microusd": int(
+                max(account.verified_savings_usd - account.warm_spend_usd, 0)
+                * 0.25 * 1_000_000
+            ),
+        }
 
     # -- public.billing_periods_awaiting_settlement(integer) -------------
     def awaiting_periods(self, limit: int) -> list[dict]:
@@ -241,7 +266,19 @@ class FakeSettlementDatabase:
             # the attestation check first (202607280009:281) and every
             # 202607280008 condition after it; the writer converts the raise
             # into outcome='halted' with the halting_condition= tag.
-            if not account.attested:
+            #
+            # FEE-CONDITIONAL, exactly like the real gate. 202607280009:276-277
+            # reads `if p_fee_microusd > 0 and v_arrangement <> 'marginal_per_call'`
+            # -- settling zero is always allowed because it moves no money -- and
+            # every 202607280008 halting condition is gated the same way.
+            #
+            # This fake used to halt on `not account.attested` UNCONDITIONALLY.
+            # That single missing `fee > 0` made the suite green over a real
+            # defect: an unattested org with no priced usage drafts a $0
+            # settlement, which permanently forecloses the week. Eleven-mutant
+            # mutation testing could not reach it, because the defect lived in
+            # the simulator rather than in the code under test.
+            if fee > 0 and not account.attested:
                 return {
                     "ok": False, "outcome": "halted",
                     "code": "unattested_billing_arrangement",
@@ -290,6 +327,9 @@ class FakeSweepStore:
             return list(self.candidates)
         return self.database.awaiting_periods(limit)
 
+    def period_summary(self, organization_id, period_anchor):
+        return self.database.period_summary(organization_id, period_anchor)
+
     def settle(self, organization_id, period_anchor, computed_by):
         return self.database.settle(
             organization_id, period_anchor, computed_by,
@@ -300,9 +340,24 @@ class FakeSweepStore:
         self.closed = True
 
 
-def sweep(database, *, owner="replica-a", candidates=None):
+#: The fixtures close a period at 05:15:13 and set "now" one hour later -- the
+#: SAME UTC day. That is precisely the shape WARM_SPEND_BOUNDARY_MARGIN_SECONDS
+#: refuses, because warm_budget_ledger is day-granular and that day is still
+#: accruing. Every test that is not ABOUT the boundary therefore runs the sweep a
+#: day later, so it exercises what it means to. The database keeps its own clock,
+#: so enumeration and period-closure are unchanged.
+SWEEP_CLOCK_SKEW = timedelta(days=1)
+
+
+def sweep(database, *, owner="replica-a", candidates=None, now=None, guards=True):
+    # guards=False is for tests about the WRITER's contract -- an open period it
+    # must refuse, a writer that raises -- which the pre-write guards would
+    # otherwise stop the sweep from ever reaching. The guards themselves are
+    # pinned by their own tests below.
     return BillingSettlementSweep(
         FakeSweepStore(database, candidates), owner=owner, interval_seconds=1.0,
+        now=now or (lambda: database._now + SWEEP_CLOCK_SKEW),
+        pre_write_guards=guards,
     )
 
 
@@ -371,7 +426,7 @@ def test_a_converged_sweep_reports_nothing_to_do_on_the_next_cycle():
 # ---------------------------------------------------------------------------
 # 2. It does NOT draft for an unattested organization, and the halt is logged.
 # ---------------------------------------------------------------------------
-def test_unattested_org_halts_and_writes_nothing(caplog):
+def test_unattested_org_is_skipped_before_the_writer_is_ever_called(caplog):
     database = FakeSettlementDatabase()
     database.add(FakeAccount(
         "22222222-0000-4000-8000-000000000002", attested=False,
@@ -382,25 +437,55 @@ def test_unattested_org_halts_and_writes_nothing(caplog):
 
     assert result.drafted == 0
     assert database.ledger == [], "an unattested organization must not be drafted"
-    assert result.halted == 4
-    # A halt is a normal outcome. It must not poison the cycle's health, or an
-    # unattested customer would make the worker look broken forever.
+    # DECLINED BEFORE THE WRITE, not halted after it. The writer is never even
+    # asked, so there is no row to seal the period with.
+    assert result.skipped == 4
+    assert database.settle_calls == [], (
+        "the sweep called the writer for an org it cannot bill; at fee 0 the "
+        "writer does not halt, it DRAFTS -- see the regression test below"
+    )
     assert result.errors == 0
     assert result.healthy
 
-    halts = [e for e in logged_events(caplog)
-             if e["event"] == "billing_settlement_sweep_halted"]
-    assert len(halts) == 4
-    assert {e["halting_condition"] for e in halts} == {"unattested_billing_arrangement"}
-    assert all("halting_condition=" in e["message"] for e in halts)
-    assert all(
-        record.levelno >= logging.WARNING
-        for record in caplog.records
-        if "billing_settlement_sweep_halted" in record.getMessage()
+    skips = [e for e in logged_events(caplog)
+             if e["event"] == "billing_settlement_sweep_skipped"]
+    assert len(skips) == 4
+    assert {e["reason"] for e in skips} == {"not_billable"}
+
+
+def test_without_the_guard_a_zero_fee_unattested_org_gets_a_sealing_draft():
+    """THE REGRESSION TEST. This is the defect the guard exists to prevent.
+
+    202607280009's attestation gate is fee-CONDITIONAL (:276-277,
+    ``if p_fee_microusd > 0 and v_arrangement <> 'marginal_per_call'``) because
+    settling zero moves no money, and every 202607280008 halting condition is
+    gated the same way. So a week with no priced usage passes the ENTIRE guard
+    even unattested -- and the resulting $0 draft permanently forecloses the
+    week, because billing_periods_awaiting_settlement requires
+    ``not exists (live settlement)`` and ALLOW_REVISION is False.
+
+    Running with the guard disabled reproduces exactly that. If this test ever
+    starts failing with drafted == 0, the fake has drifted back to halting
+    unconditionally and the suite has stopped being able to see this class of
+    bug -- which is how it was missed the first time.
+    """
+    database = FakeSettlementDatabase()
+    org = "22222222-0000-4000-8000-000000000002"
+    database.add(FakeAccount(org, attested=False))
+    # No savings anywhere in the period => fee 0 => the gate does not fire.
+    database.accounts[org].verified_savings_usd = 0.0
+    database.accounts[org].warm_spend_usd = 0.0
+
+    result = sweep(database, guards=False).run_once()
+
+    assert result.drafted > 0, (
+        "the writer refused a zero-fee unattested draft. If that is genuinely "
+        "true of the real SQL now, this test and SKIP_ZERO_FEE can both go."
     )
+    assert all(row["fee_microusd"] == 0 for row in database.ledger)
 
 
-def test_a_halt_is_not_retried_within_the_cycle():
+def test_a_skip_is_not_retried_within_the_cycle():
     database = FakeSettlementDatabase()
     database.add(FakeAccount(
         "22222222-0000-4000-8000-000000000002", attested=False,
@@ -408,10 +493,24 @@ def test_a_halt_is_not_retried_within_the_cycle():
 
     result = sweep(database).run_once()
 
-    assert result.halted == 4
-    assert len(database.settle_calls) == 4, (
-        "a halt is deterministic; re-calling the same guard is pure noise"
+    assert result.skipped == 4
+    assert database.settle_calls == [], (
+        "a skip is decided from a read; it must never reach the writer"
     )
+
+
+def test_the_writer_still_halts_an_unattested_org_that_does_owe_money():
+    """The writer-side contract, still pinned. guards=False to reach it."""
+    database = FakeSettlementDatabase()
+    database.add(FakeAccount(
+        "22222222-0000-4000-8000-000000000002", attested=False,
+    ))
+
+    result = sweep(database, guards=False).run_once()
+
+    assert result.halted == 4
+    assert result.drafted == 0
+    assert database.ledger == []
 
 
 def test_the_sweep_keeps_going_after_one_org_halts():
@@ -422,7 +521,13 @@ def test_the_sweep_keeps_going_after_one_org_halts():
 
     result = sweep(database).run_once()
 
-    assert result.halted == 4
+    # SKIPPED, not halted, since the zero-fee guard landed. The unattested org is
+    # now declined BEFORE the writer is called rather than after -- a strictly
+    # better outcome, because a halt still costs a round trip and, at fee 0, the
+    # real writer would not have halted at all: 202607280009's gate is
+    # fee-conditional, so it would have drafted a $0 row and sealed the week.
+    assert result.skipped == 4
+    assert result.halted == 0
     assert result.drafted == 4
     assert {row["organization_id"] for row in database.ledger} == {
         "33333333-0000-4000-8000-000000000003",
@@ -530,12 +635,79 @@ def test_an_open_period_forced_at_the_writer_is_refused_and_writes_nothing():
         "period_end": ANCHOR_END.isoformat(),
     }
 
-    result = sweep(database, candidates=[open_candidate]).run_once()
+    # guards=False on purpose: the warm-spend boundary guard would skip an open
+    # period first (its trailing UTC day cannot have closed), which would make
+    # this assert the guard instead of the writer. Both layers refuse it; this
+    # test owns the inner one.
+    result = sweep(database, candidates=[open_candidate], guards=False).run_once()
 
     assert result.drafted == 0
     assert result.blocked == 1
     assert result.errors == 0
     assert database.ledger == [], "the still-open week was drafted"
+
+
+# ---------------------------------------------------------------------------
+# 4b. It does NOT settle before the trailing UTC day has closed. (BLOCKER B)
+# ---------------------------------------------------------------------------
+def test_a_period_whose_utc_day_is_still_open_is_skipped(caplog):
+    """warm_spend_usd is day-granular; the period is an arbitrary-offset week.
+
+    202607280031:1140-1143 sums every warm_budget_ledger day whose [day, day+1)
+    span OVERLAPS the period, so the day containing period_end is STILL ACCRUING
+    when a period is offered the instant window_end <= now(). Fee is
+    0.25 * (basis - warm), so an understated warm term is a straight overcharge --
+    and ALLOW_REVISION is False, so that first reading is permanent.
+    """
+    database = FakeSettlementDatabase()
+    org = "55555555-0000-4000-8000-000000000005"
+    database.add(FakeAccount(org, billing_started_at=ANCHOR_START - WEEK))
+    caplog.set_level(logging.INFO, logger="brevitas.billing_settlement_sweep")
+    candidate = {
+        "organization_id": org,
+        "period_start": (ANCHOR_START - WEEK).isoformat(),
+        "period_end": ANCHOR_START.isoformat(),
+    }
+
+    # One hour after the week closed -- the SAME UTC day, which is exactly the
+    # shape the fixtures used to settle in, and exactly the overcharge.
+    early = sweep(
+        database, candidates=[candidate],
+        now=lambda: ANCHOR_START + timedelta(hours=1),
+    ).run_once()
+
+    assert early.skipped == 1 and early.drafted == 0
+    assert database.settle_calls == []
+    assert {e["reason"] for e in logged_events(caplog)
+            if e["event"] == "billing_settlement_sweep_skipped"} == {
+        "warm_spend_day_still_open"}
+
+    # Once that UTC day has closed, the same period settles normally.
+    late = sweep(
+        database, candidates=[candidate],
+        now=lambda: ANCHOR_START + timedelta(days=1, hours=1),
+    ).run_once()
+
+    assert late.drafted == 1 and late.skipped == 0
+
+
+def test_the_boundary_is_the_utc_day_containing_period_end_not_period_end():
+    database = FakeSettlementDatabase()
+    worker = sweep(database)
+    end = ANCHOR_START.isoformat()  # 2026-08-14 05:15:13+00
+
+    # A second after the week closes: same UTC day, still accruing.
+    worker._now = lambda: ANCHOR_START + timedelta(seconds=1)
+    assert worker._warm_evidence_is_final(end) is False
+    # Just before midnight UTC: still the same day.
+    worker._now = lambda: ANCHOR_START.replace(hour=23, minute=59, second=0)
+    assert worker._warm_evidence_is_final(end) is False
+    # After midnight plus the skew margin: final.
+    worker._now = lambda: ANCHOR_START + timedelta(days=1)
+    assert worker._warm_evidence_is_final(end) is True
+    # Unparseable dates fail CLOSED -- refusing costs a cycle, settling on
+    # evidence we cannot date can overcharge.
+    assert worker._warm_evidence_is_final("not-a-timestamp") is False
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +720,9 @@ def test_enumeration_failure_is_one_error_and_no_settle_call(caplog):
 
     database = FakeSettlementDatabase()
     caplog.set_level(logging.INFO, logger="brevitas.billing_settlement_sweep")
-    worker = BillingSettlementSweep(Broken(database), owner="replica-a")
+    worker = BillingSettlementSweep(
+        Broken(database), owner="replica-a",
+        now=lambda: database._now + SWEEP_CLOCK_SKEW)
 
     result = worker.run_once()
 
@@ -579,8 +753,11 @@ def test_one_failing_candidate_does_not_stop_the_rest():
         {"organization_id": good, "period_start": start.isoformat(),
          "period_end": ANCHOR_START.isoformat()},
     ]
+    # guards=False: this test is about the SWEEP surviving a writer that raises,
+    # which it can only observe by actually reaching the writer.
     worker = BillingSettlementSweep(
         FlakyStore(database, candidates), owner="replica-a",
+        now=lambda: database._now + SWEEP_CLOCK_SKEW, pre_write_guards=False,
     )
 
     result = worker.run_once()
@@ -603,8 +780,11 @@ def test_an_unexpected_outcome_is_an_error_not_a_silent_draft(caplog):
         "period_start": (ANCHOR_START - WEEK).isoformat(),
         "period_end": ANCHOR_START.isoformat(),
     }]
+    # guards=False: the point is what the sweep does with an outcome the writer
+    # returned, so the writer has to be reached.
     worker = BillingSettlementSweep(
         RevisingStore(database, candidates), owner="replica-a",
+        now=lambda: database._now + SWEEP_CLOCK_SKEW, pre_write_guards=False,
     )
 
     result = worker.run_once()
