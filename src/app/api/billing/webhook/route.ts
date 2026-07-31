@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { billingConfig, billingIsConfigured, getStripe } from '@/lib/billing/config';
 import {
   billingDatabase,
+  openBillingArrangementRequest,
   getBillingAccount,
   type BillingAccount,
 } from '@/lib/billing/supabase';
@@ -292,6 +293,48 @@ async function applyCheckout(
   );
 }
 
+/**
+ * Open the billing-arrangement request for a completed Checkout.
+ *
+ * The actor recorded is the organization's billing owner rather than whoever
+ * happened to click: Stripe's session carries no Brevitas user id, and the
+ * billing owner is the identity that the arrangement actually binds. The
+ * agreement reference names the Stripe objects, so the record points at the
+ * commercial act instead of merely asserting it happened.
+ */
+async function recordArrangementRequest(
+  session: Stripe.Checkout.Session,
+  organizationId: string,
+): Promise<void> {
+  const { data, error } = await billingDatabase()
+    .from('organizations')
+    .select('billing_owner_id')
+    .eq('id', organizationId)
+    .maybeSingle();
+  if (error) throw error;
+  const ownerId = (data as { billing_owner_id?: string } | null)?.billing_owner_id;
+  if (!ownerId) {
+    // No owner means nothing to bind the arrangement to. Say so rather than
+    // inventing an actor for a record whose whole purpose is attribution.
+    throw new Error('Organization has no billing owner to attribute the arrangement to');
+  }
+  const customerId = stripeId(session.customer);
+  await openBillingArrangementRequest({
+    organizationId,
+    actorUserId: ownerId,
+    arrangement: 'marginal_per_call',
+    agreementReference: `stripe:checkout_session=${session.id}` +
+      (customerId ? ` customer=${customerId}` : ''),
+    // Presented rate, not the configured one: this field records what the
+    // customer was shown, and 202607280008's max_fee_share_of_verified_savings
+    // is the separate thing that enforces it.
+    ratePresented: '25% of verified savings',
+    termsVersion: 'v1',
+    // Stripe's own idempotency: at-least-once delivery collapses to one row.
+    requestId: session.id,
+  });
+}
+
 async function applyInvoice(
   eventObject: Stripe.Invoice,
   diagnostic: StripeEventDiagnostic,
@@ -431,6 +474,29 @@ export async function POST(request: Request) {
             const applied = await applyCheckout(event.data.object, diagnostic, lease);
             if (applied) {
               lease.assertOwned();
+              // The customer has now accepted commercial terms in the strongest
+              // form available: they completed live Checkout for this price.
+              // Record the arrangement REQUEST so an operator can attest it.
+              //
+              // Deliberately NOT an attestation. attest_billing_arrangement is
+              // executable by no PostgREST role, and that is what guarantees a
+              // web process can never mark a customer billable. This only opens
+              // the request that a human then answers out of band.
+              //
+              // Non-fatal on purpose. The subscription state above is already
+              // persisted; throwing here would 5xx a delivery Stripe has only a
+              // ~3-day retry window for, and losing a subscription event to
+              // protect an enrolment record is the wrong trade. A missing
+              // request surfaces as an un-attestable customer, which is visible
+              // and fixable; a lost checkout.session.completed is neither.
+              try {
+                await recordArrangementRequest(event.data.object, applied.organizationId);
+              } catch (requestError) {
+                console.error(
+                  'Billing arrangement request could not be opened after checkout',
+                  requestError instanceof Error ? requestError.message : 'unknown error',
+                );
+              }
               await captureServerEvent({
                 distinctId: `organization:${applied.organizationId}`,
                 event: 'billing_checkout_completed',

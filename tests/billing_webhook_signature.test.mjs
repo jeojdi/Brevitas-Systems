@@ -171,6 +171,12 @@ if (loaderUnavailable === false) {
     validateStripeCatalog: async () => {},
   })
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     billingDatabase: () => currentScenario().database.client,
     getBillingAccount: async () => currentScenario().account,
   })

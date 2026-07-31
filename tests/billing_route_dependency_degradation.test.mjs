@@ -70,12 +70,17 @@ const DEGRADE_GUARDS = {
   'src/app/api/billing/status/route.ts': /if \(!summaryUnavailableError\(error\)\) throw error;/,
   'src/app/api/billing/sync/route.ts': /if \(!dependencyUnavailable\(error\)\) throw error;/,
   'src/lib/waitlist-server.ts': /logNetworkBudgetDegradeOnce\(/,
+  // The arrangement request opened from the Stripe webhook. Degrades so a
+  // database without 202607280030 leaves the customer un-attestable rather
+  // than 5xx-ing a checkout.session.completed Stripe only retries for ~3 days.
+  'src/lib/billing/supabase.ts': /if \(!arrangementRequestUnavailable\(error\)\) throw error;/,
 }
 
 /** The pairs the scanner must still be finding; a guard against a dead scan. */
 const KNOWN_POST_CUTOFF_CALLS = [
   ['src/app/api/billing/status/route.ts', 'billing_period_settlement_summary'],
   ['src/lib/waitlist-server.ts', 'consume_waitlist_network_budget'],
+  ['src/lib/billing/supabase.ts', 'open_billing_arrangement_request'],
 ]
 
 /** rpc name -> the earliest migration file that defines it. */
@@ -194,6 +199,12 @@ if (loaderUnavailable === false) {
     billingConfig: () => ({ recoverySecret: STRONG_SECRET }),
   })
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     BillingRecoveryAdmissionError,
     authenticatedBillingUser: async () => ({ id: USER_ID }),
     authorizeActiveBillingCompany: async () => {
