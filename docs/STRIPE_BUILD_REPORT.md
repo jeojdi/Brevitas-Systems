@@ -9,6 +9,649 @@ measured).
 
 ---
 
+## ANCHORED SAVINGS v2 — 2026-07-30
+
+Appended 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. This
+is the redesign that replaces quarantined `202607280028`. Migration number used:
+**`202607280031_observed_price_cache_fee_basis.sql`** (`202607280030` = attestation writer is the
+last shipped number below it; `REVERSE_POSTURE_CUTOFF` advanced to `202607280032` in the same
+change set `[verified — verify-migrations.mjs:922 read today; checksum
+`2ce9da13…da424` matches `migration-frozen-checksums.txt` and both manifests]`). Five lanes ran:
+design, SQL, Python, verifier, adversarial review. wyfz apply steps: `docs/WYFZ_APPLY_PLAN.md`,
+**WINDOW B5 ADDENDUM**. Same tagging convention as the rest of this report; "lane pasted real
+output" claims were reconciled against the lane transcripts, not re-executed by this section's
+author unless said so.
+
+### The problem this closes
+
+A Brevitas exact-cache replay serves the customer from our cache and never calls the provider, so
+the replay row has `actual_cost_usd = 0` **by construction**. `202607280008`'s
+`zero_spend_concentration` therefore halts every period whose savings are mostly cache replays —
+and for a DeepSeek/OpenAI-compatible tenant that is *every* period, permanently, at share
+`1.00000`, settling $0 (observed verbatim on caestus, dress-rehearsal section below). The
+quarantined first attempt fixed this with an existence gate ("has this org ever paid for this
+provider+model?") and was rejected with four reproduced defects. v2 makes the paid ancestor the
+**price source**, not a gate.
+
+### What now bills — and what does not
+
+**Bills (all five conditions required, per replay row):**
+
+1. The replay is **forward-linked**: `usage_log.savings_anchor_request_id` names the exact paid
+   request whose provider response filled the cache entry it replayed. The id is minted by the
+   proxy on the cache miss, stored on the cache entry, read back on the hit, and **decided
+   server-side** — a caller-supplied claim over `POST /v1/usage` is discarded twice (API decide +
+   storage floor) `[verified — python lane mutation-proved both layers independently; 18 targeted
+   tests + 1110 full pytest green]`.
+2. The named ancestor really exists: authoritative, priced, `receipt_source='proxy'`,
+   `actual_cost_usd > 0`, same org, within the lookback, **and at-or-below the settlement's
+   watermark id** — so a row inserted after settlement can never change a settled basis
+   `[verified — SQL lane reproduced the quarantine's exact retroactivity attack and it now fails;
+   re-running the evidence with a settled watermark returns byte-identical numbers
+   (`except all` both ways = 0 rows)]`.
+3. The org paid **≥ the materiality floor** for that provider+model in the window+lookback.
+4. The row is `cache_attributable` (Brevitas-caused). Provider-native cache discounts (e.g.
+   DeepSeek's own `prompt_cache_hit_tokens`) carry no anchor and never bill — proven as an
+   isolation test: byte-identical fixture, one boolean flipped, settle vs verbatim halt
+   `[verified — executed on caestus inside a rolled-back transaction]`.
+5. The per-row amount is `least(list-price saving, tokens_saved × the org's own observed
+   $/token)`, floored at 0 — so the fee can never exceed 25% of what they demonstrably would have
+   paid. The period total is additionally capped at `ratio × that period's real provider spend`.
+
+**Does not bill:**
+
+- **Every replay written before this ships.** The `ALTER` backfills history with an empty anchor,
+  and empty = unanchored = $0, with **no fallback** to "same org+provider+model" — that fallback
+  is deleted, not weakened. Concretely: org `f1305475`'s week's recomputed fee **falls** from
+  1,235,092 → 1,234,567 µUSD, because the four organic replays that contributed 525 µUSD under the
+  old arithmetic now contribute nothing `[verified — executed on caestus, rolled back]`. This is a
+  small permanent revenue regression across every tenant's pre-ship replays, and it is the
+  intended direction (under-bill, never over-bill).
+- Unanchored zero-spend savings of any shape — they land in the concentration guard's numerator,
+  so a period with **no price source at all still halts** exactly as today (`share 1.00000`,
+  recomputed fee 0) `[verified on caestus — the pure-replay clone org halts verbatim]`.
+- Provider-native cache discounts (`cache_attributable=false`), telemetry-only rows
+  (`authoritative=false`), batch imports (the anchor column is dropped outright on that path).
+
+Every degradation in the chain fails **closed** to $0: missing cache column, tripped process
+latch, PGRST204 retry, hostile upstream id, forged claim `[verified — python lane negative tests
++ SQL-side argument negatives run at apply time]`.
+
+### The three configured numbers, and how to change them
+
+All three are columns on `public.billing_halting_conditions` (the singleton thresholds row), CHECK-
+bounded so an operator can **tighten with a one-line UPDATE** but can only **loosen via a new,
+reviewed migration** — same posture as the existing 0.25/0.50 thresholds `[verified — apply-time
+self-check proves each loosening UPDATE raises `check_violation`]`:
+
+| Column | Default | Tighten means | Bound |
+|---|---|---|---|
+| `cache_anchor_materiality_floor_usd` | `0.3000` | **raise** it | `[0.30, 1000.00]` |
+| `cache_anchor_lookback_days` | `30` | **shorten** it | `[1, 30]` |
+| `max_cache_savings_per_spend_ratio` | `3.000` | **lower** it | `[0, 3.000]` |
+
+- **Floor $0.30, per provider+model, per window** (not per request — a single request is
+  ~$0.0005): asserts the org is a real paying customer of the model whose price we are about to
+  use. Kills the quarantine's `$0.0000000001-ancestor-anchors-$125` shape outright.
+- **Lookback 30 days**: the link itself only ever needs 24h (cache TTL is CHECK-bounded at 24h),
+  so 30 days is slack for the *price set* — roughly four billing periods of price evidence.
+- **Ratio 3.000**: caps billable cache savings at 3× the period's real provider spend. Two
+  independent derivations agree: it is a 75% cache-hit-rate ceiling (`R/(1+R)`), and it caps the
+  cache-derived fee at 75% of the customer's own provider bill (4.0 would be the point where our
+  fee could equal their entire provider bill). **This is reasoned, not measured** — the one
+  observed real workload sits at ratio ~1.0. Re-derive it after a few real billing periods; that
+  is precisely why it is a column `[unverified as a value; verified as a mechanism]`.
+
+### The acceptance arithmetic (predicted before execution, then observed exactly)
+
+Fixture matching the acceptance brief's traffic shape — 40 deepseek-chat misses at 60,000 input +
+1,000 output tokens, then 40 forward-linked exact-cache replays `[verified — executed on caestus
+inside a rolled-back transaction; the fee was written down in the brief before any of this code
+ran]`:
+
+```
+40 misses:   $0.00868 each  → real spend $0.34720, paid tokens 2,440,000
+observed $/token = 0.34720 / 2,440,000            = $0.000000142295…
+per replay:  least(list $0.00868, 60,000 × observed = $0.0085377) = $0.0085377
+basis        = 40 × 0.0085377                      = $0.34150820   (ratio 0.9836 ≤ 3.000, floor $0.3472 ≥ $0.30)
+fee          = floor(0.34150820 × 25% × 1e6)       = 85,377 µUSD   (predicted 85,377; observed 85,377)
+gross ceiling                                       = 86,800 µUSD
+```
+
+The 1,423 µUSD gap (1.64%) is deliberate under-billing: `usage_log` has no
+`baseline_output_tokens` column, so the avoided *completion* leg of a replay is unrecoverable and
+the observed-price term reconstructs the input leg only; the `least()` makes that cost us revenue,
+never the customer money. Output-heavy workloads under-bill more `[verified — hard limit read from
+schema; not designable around without a new column]`.
+
+**What was NOT executed**: real DeepSeek traffic through a hosted proxy (steps 3–5 of the brief —
+the "expect 40 anchored rows" count). The hosted proxy for caestus does not exist
+(api.brevitassystems.com is production), and closing the gap would have required forging an
+api-key credential, which the verifier declined and flagged rather than doing quietly. **The SQL
+is proven; the live plumbing that feeds it is not.** Step 5 remains the first thing to run — and
+the first thing to disbelieve — when this reaches real traffic `[verified as absent]`.
+
+### Attacker's maximum extractable fee per real dollar
+
+**$0.75 of fee per $1.00 of real provider spend, and the ceiling is exact**: it is
+`3.000 (ratio) × 0.25 (fee share)`. The adversarial lane could not exceed it by any combination of
+cache-path vectors — the worst executed shape claimed **$5,000,000** of list-price "savings"
+against $1.00 of real spend and settled for 750,000 µUSD ($0.75); the cap discarded 99.99994% of
+the claim `[verified — attack lane executed four independent max-extraction shapes on the full
+local chain; all four converged on 0.750000]`.
+
+**Caveat the owner must hear plainly**: $0.75/dollar is the ceiling for the *cache* path only. Any
+row carrying even a dust cost (`actual_cost_usd = $0.0000000001`) lands in `spend_backed_savings`,
+which 0031 leaves **uncapped** (unchanged from `202607280013`) — the attack lane manufactured
+$2,500 of fee against $0.0000001 of spend that way (finding 4 below). Not reachable from any
+current proxy path (`_report_cache_hit` always emits actual = 0 exactly), but "3× spend" is a
+property of the cache term, not of the invoice `[verified by execution on synthetic rows]`.
+
+### Verdict and every open finding
+
+**Adversarial review verdict: ship-with-fixes.** All findings reproduced by execution unless noted.
+
+1. **HIGH — quarantine defect 4 (dilution) is NOT closed, and the migration header claims it
+   is.** The concentration guard divides by *gross* net savings, which includes anchored
+   list-price savings, while the ratio cap bounds only the *basis*. Executed: 400 fabricated
+   unanchored rows ($40,000) halt alone at share 1.00000, but adding 5,000 anchored replays of a
+   single $1.00 ancestor drops the share to 0.44444 and the period **settles**. $1 of real spend
+   bought $50,000 of denominator. No money moves today (unanchored savings never enter the basis;
+   the fee stayed at the $0.75/dollar ceiling) — what is lost is the **only alarm** that a
+   tenant's savings have no price source, i.e. requirement 7's alarm survives only for 100%-
+   unanchored periods. Fix is one line in the evidence function's final select (bound the
+   reported gross by the same cap) plus a paired assertion. **Do this in a follow-up migration
+   before relying on the guard as an alarm** `[verified]`.
+2. **MEDIUM — the ratio cap's spend denominator does not require `receipt_source='proxy'`**,
+   while the price set in the same function does. An operator CSV import
+   (`record_usage_batch` passes `authoritative`/`receipt_source` through) can inflate the cap
+   100× with a priced `sdk` row. Not reachable from any HTTP route `[verified]`.
+3. **MEDIUM — one token-light paid call defeats the observed price.** A single $0.30 payment over
+   one billed token yields $0.30/token observed, so the list-price term binds on every replay and
+   a genuinely discounted (PTU/aggregator) tenant reprices at list — the exact direction that
+   costs the customer money. Fix: a second materiality dimension, a minimum paid-token floor
+   column in the same tighten-only shape `[verified]`.
+4. **MEDIUM — every new guard is conditioned on `actual_cost_usd <= 0`**, so a future path that
+   attributes any dust cost to a replay silently relocates it into the uncapped spend-backed
+   term ($2,500 fee on $0.0000001 spend, executed). Fix: classify replay rows by shape
+   (strategy + attribution + source), not by cost `[verified; not reachable today]`.
+5. **MEDIUM — nothing in CI pins the widened cache objects.** Re-applying
+   `202607170002_cache_security.sql` silently drops `origin_request_id` from
+   `semantic_cache_lookup` — anchoring stops, every replay settles $0, no error anywhere
+   (measured by execution; the harness's green is order-dependent). Fix: two assertions in the
+   existing cache-reapply suite `[verified]`.
+6. **LOW — the per-row `least()` fails open if the null-price conjunct is ever dropped**
+   (Postgres `least()` ignores NULLs). One `coalesce()` makes it structurally fail-closed
+   `[verified]`.
+7. **LOW — the anchor equijoin is not scoped by provider/model**: a replay can be *linked* by a
+   paid row for a different model (priced still from its own model, so damage is bounded), which
+   is closer to the quarantined existence gate than the header admits. Fix: two `and` clauses
+   `[verified]`.
+8. **LOW — an out-of-lane CI edit weakened the settlement-writer assertion** from pinning *how*
+   the watermark is derived to merely that the OUT column exists. Behaviour is still covered by
+   the new suite's sections 4/4b; restore a derivation pin `[verified]`.
+9. **LOW — the three new `usage_log` indexes build non-CONCURRENTLY inside the transaction**,
+   blocking inserts (dropped billable receipts) for the build duration on a large table. Not
+   fixable in-file (the repo's atomicity contract forbids CONCURRENTLY); it is a **runbook
+   constraint** — see Window B5 `[verified reasoning]`.
+
+**Operational opens beyond the review:**
+
+- **Process restart is mandatory and its absence is silent.** `SemanticCache._anchor_supported`
+  and `store._anchor_column_warned` are process-lifetime latches; any process that ever saw the
+  un-migrated schema has anchoring off for its whole life, one log line total. The latches are
+  now armed on caestus (migration committed there, nothing restarted). If an acceptance run shows
+  0 anchored rows, check this before the billing SQL `[verified — code read]`.
+- **The repo's Supabase CLI link points at production.** `supabase/.temp/project-ref` = wyfz, so
+  the acceptance brief's own `supabase db query --linked -f` apply line targets prod. The verifier
+  caught this and applied to caestus over an explicitly-addressed connection instead. The trap is
+  still armed `[verified — same trap already documented in the 0030 section]`.
+- **"Observed price" is honest in the mix dimension only.** `actual_cost_usd` is static list
+  price re-weighted by the org's own token mix, not a contracted rate — a PTU customer is handled
+  solely by the `202607280009` attestation. The arithmetic needs no change once provider-reported
+  cost lands in that column `[verified — 202607280008's own comment says so]`.
+- **Pre-existing watermark race** (identity ids commit out of order; seconds-wide window),
+  inherited from `202607280013`, mitigated by settling only closed periods. Flagged, not fixed
+  `[verified reasoning]`.
+- **Two orphan fixture orgs remain committed on caestus** from the quarantined 0028 run
+  (`a1105475-…0001/0002`, ledger rows `1000000007` pending / `1000000008` draft). Deliberately
+  left — they are the negative control's evidence — but a "clean caestus" assumption will trip on
+  them, and `1000000007` sits in a state the claim path would pick up if that queue ever drained
+  `[verified — final-state probe]`.
+- `docs/CROSS_SESSION_STATE.md` and `docs/ENTERPRISE_SIMULATION.md` appeared untracked during the
+  run; no lane claims them `[unverified — provenance unknown; do not fold into this change set
+  unread]`.
+
+**Gates, all green at time of writing** `[verified — re-run by the verifier after the final
+edit]`: `verify-migrations.mjs` exit 0 · `npm test` 324/324 · pytest 1110 passed · migration
+harness exit 0 on both paths (0031 applied twice back-to-back) · the new assertion suite proven
+non-vacuous by a deliberate probe failure (exit 3) then restored byte-identically · 20/20
+migration mutants caught by the intended section.
+
+### Can `docs/quarantine/202607280028` be deleted now?
+
+**No — it stays, for now.** Three reasons:
+
+1. Finding 1 proves the dilution defect (quarantine defect 4) is **still live in a different
+   form**, while 0031's own header claims it closed. Until the follow-up migration lands with its
+   paired assertion, the quarantine README is the only durable in-repo record that this defect
+   family exists. Deleting the record while the defect breathes is how it gets reintroduced.
+2. The caestus negative-control evidence (orgs `a1105475-…`) was produced by 0028's acceptance
+   run; the README is what explains those rows to the next person.
+3. It costs nothing: `docs/quarantine/` is outside `supabase/migrations/` and `scripts/ci/`, and
+   every gate is green with it in place `[verified — gates above]`.
+
+**Delete condition**: after a follow-up migration closes finding 1 (and ideally 2–3) with
+assertions, the two SQL files (`202607280028_…​.sql` + `migration-anchored-savings-assertions.sql`)
+may be deleted, folding the README's four-defect record into this report first. The README's
+standing instruction is unchanged either way: **never** re-register those files — the v2 suite's
+sections deliberately assert the opposite semantics, and 0028's expected `525 µUSD` is now the
+wrong number.
+
+### wyfz
+
+Yes, this needs applying to wyfz — cache replays are the only organic savings shape for the
+product's current tenants, so without 0031 every real period settles $0 forever. Apply path:
+**WINDOW B5 ADDENDUM** in `docs/WYFZ_APPLY_PLAN.md`. Nothing bills at apply time (wyfz traffic is
+100% non-authoritative and unpriced; all existing rows backfill to unanchored), and nothing bills
+after apply until the code deploy + process restart + real anchored traffic + attestation all
+land. The finding-1 follow-up should ship before the concentration guard is relied on as an alarm
+against fabricated savings, but it does not block the apply: at apply time there are no anchored
+rows on wyfz to dilute with.
+
+---
+
+## ONE-COMMAND ONBOARDING — 2026-07-30
+
+Appended 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Goal
+(owner's words): collapse "sign up → find Company Administration → create a service account → copy
+key → learn about an undocumented header → operator hand-writes attestation SQL" into one customer
+command and one operator action. Four lanes (design, CLI, attestation SQL, docs) plus an
+independent verifier and an adversarial review. Same tagging convention as the rest of this report.
+wyfz apply steps for the new migration: `docs/WYFZ_APPLY_PLAN.md`, **WINDOW B4 ADDENDUM**.
+
+### The new customer flow
+
+```
+pip install brevitas
+brevitas connect          # paste a dashboard session token when prompted
+# paste the printed snippet into your app; send one request
+brevitas billing-check    # exits 0 only when actually billable
+```
+
+`connect` mints the billable `organization_service` key through the **existing**
+`POST /v1/company/service-accounts` (same endpoint, scopes, and 90-day expiry as the dashboard
+button — nothing bypassed), imports the customer row via `POST /v1/customers/import` so the tenant
+exists before the first request, prints the key exactly once, and writes a secret-free
+`~/.config/brevitas/connection.json` (0600). Every printed snippet carries **both** mandatory
+headers: `X-Brevitas-Key` (the Brevitas key — `Authorization` stays the customer's provider key,
+forwarded upstream; the README's `api_key=<brevitas key>` shape would 401, api/server.py:1731,
+brevitas/proxy.py:1366) and `X-Brevitas-Customer-ID`, with the 400 for omitting it quoted verbatim.
+`--multi-tenant` skips the import and keeps the hard-400 gate exactly as today. `--env-file` /
+`--store-key` are opt-in with git/permission guardrails `[verified — 29 new tests in
+tests/test_hosted_connect_cli.py, all passing; full CLI-touching suites 82 passed]`.
+
+**Deviations from the design, stated plainly** `[verified by grep, not lane trust]`: the browser
+device-auth branch (`purpose='hosted_service'`) does not exist, so `connect` takes a pasted
+dashboard session token today — the weakest part of the flow, swap-out is one function when the
+api-side branch lands. The per-key `default_customer_external_id` pin, `GET /v1/billing/readiness`,
+and the dashboard "accept terms" endpoint are all **unshipped**; `billing-check` 404s honestly
+until readiness exists.
+
+### The new operator flow
+
+One SQL call replaces hand-written DML against a seven-year financial record. Migration
+`202607280030_billing_attestation_writer.sql` adds: role `brevitas_attestor` (login, **no
+password set** — fail-closed until a human sets one out of band, zero direct table privileges);
+`SECURITY DEFINER` `attest_billing_arrangement` / `revoke_billing_arrangement` with EXECUTE
+granted to exactly that role and a `session_user` re-check in the body (a future mistaken GRANT
+still refuses); an insert-only `organization_billing_arrangement_log` (no UPDATE/DELETE for any
+role) recording prior value, new value, named attester, session identity, and cited evidence
+(non-empty always, ≥8 chars plus an open request for the billable value); and
+`billing_arrangement_request` + `open_billing_arrangement_request` — the customer's owner
+accepting commercial terms, captured durably and **inert**: nothing in the settlement path reads
+it `[verified — the migration proves this from pg_get_functiondef at apply time]`.
+202607280009's posture is unrelaxed: `service_role` still cannot write
+`organization_billing_arrangement`, re-asserted by 0030's own DO block `[verified on caestus]`.
+
+**One-action gap, open** `[verified]`: `scripts/ops/attest.py` (`brevitas-ops attest`) was not
+built, and `brevitas_attestor` has no SELECT on `billing_arrangement_request`, so today the
+operator runs one psql call as the attestor **plus** needs a second credential to fetch the
+request id. Proposed fix: NEW migration 202607280031 (`grant select`) + the ops CLI — never an
+edit to 0030.
+
+### What was verified by execution
+
+- **Migration harness.** The "already red on both paths" premise was stale: pristine-HEAD baseline
+  is **green** (exit 0), so the bar was genuine green, not delta-empty `[verified — verifier ran
+  it from `git archive HEAD`]`. All 40 assertion suites were **advisory** — no `ON_ERROR_STOP`, a
+  deliberately broken suite still let the harness pass (proven by mutation, exit 0 with ERROR in
+  the log) — now strict; 80/80 suite×path probe green first, then full harness exit 0 both paths
+  with 0030 registered in both manifests + frozen checksums `[verified]`.
+- **0030 on caestus** (evpoxdrluvihryvqhraz — never wyfz). First apply **failed**: the original
+  `ALTER ROLE … nosuperuser nobypassrls noreplication` is superuser-only and Supabase's `postgres`
+  is not superuser; transactional, so caestus was left clean. Verifier split the ALTER and made
+  the migration assert the resulting state from `pg_roles` unconditionally (strictly stronger);
+  re-apply: COMMIT, exit 0, idempotent `[verified — error and postconditions pasted]`. All step-2
+  postconditions green on caestus: role posture (rolsuper/bypassrls/replication/inherit all `f`,
+  `pg_authid.rolpassword is null` = `t`), EXECUTE matrix, log/request grants, 0 direct table
+  privileges for the attestor `[verified]`.
+- **Negative proofs, verbatim** (the guarantee itself): as `service_role`,
+  `attest_billing_arrangement(...)` → `permission denied for function`; direct INSERT on
+  `organization_billing_arrangement` → `permission denied for table`;
+  `set session authorization brevitas_attestor` → denied even to `postgres` on hosted Supabase
+  `[verified on caestus]`. With EXECUTE forcibly granted back, the body still refuses:
+  `attestation_denied … may only be executed by the brevitas_attestor operator role`
+  `[verified locally]`.
+- **Mutation testing**: 8 mutations (grants restored, guards removed, owner-check widened) — every
+  assertion fails non-vacuously, each for the right reason `[verified]`.
+- **Operator walkthrough** (local Postgres, full chain): unattested org → settlement halts
+  `halting_condition=unattested_billing_arrangement` → terms accepted → attest as
+  `brevitas_attestor` → log row written, request closed, halt **gone** (guard delegates to
+  arithmetic, not short-circuits) `[verified]`.
+- **Suites**: 1104 pytest, `npm test` exit 0, dashboard 132/132, harness + verify-migrations exit
+  0 on the CI-equivalent tree `[verified]`.
+- **Stripe TEST sandbox**: catalog provisioned, `verify_live_stripe_catalog` 14/14, `key mode :
+  test` `[verified]`.
+- **Refused as unsafe**: acceptance step 3 said `supabase db query --linked -f …` — the CLI is
+  linked to **wyfz (production)**; running it as written would have applied 0030 to prod. The
+  verifier reached caestus by direct psql instead. The trap is still armed for the next person
+  `[verified — project-ref read]`.
+- **NOT executed** `[verified absent by grep, so untestable]`: acceptance steps 5–9 and 12–13 —
+  no live `connect` against a running API, no pinned-key header-less-200 test (the pin column
+  does not exist), no readiness call, no dashboard terms surface, and **no settled non-zero test
+  invoice**. The end-to-end money loop for the new flow remains unproven.
+
+### Review verdict: ship-with-fixes — open findings
+
+- **HIGH (doc-only)**: README + ONBOARD_HOSTED_CUSTOMER.md state the customer pin and
+  `/v1/billing/readiness` as shipped, present-tense fact; neither exists. Every org key still
+  hard-400s without the header — a design partner following the README fails on request one,
+  the exact failure this work exists to kill. Fix is hedging copy, not code.
+- **HIGH**: quarantined 0028 sitting on disk unregistered turns `verify-migrations.mjs` and two
+  `npm test` cases red in any working tree containing it (fresh-clone CI green only because it is
+  untracked). Move it out of `supabase/migrations/` or teach `verifyManifest` a quarantine
+  allowlist.
+- **MEDIUM**: an undeclared "savings anchor" workstream (+355 lines across api/ and brevitas/)
+  rides in the same uncommitted diff — currently inert and fail-safe, but it is the live half of
+  quarantined 0028; separate it before this change set is committed.
+- **MEDIUM**: the operator one-action gap above (0031 + ops CLI).
+- **MEDIUM**: `BREVITAS_ATTESTOR_DSN` absence from Railway/Vercel/GHA is enforced by nothing —
+  add assertions to operational-readiness.mjs / release-preflight.mjs. On hosted Supabase this is
+  load-bearing: impersonation is impossible, so a password + DSN is the only way to attest, and
+  its placement is the whole guarantee.
+- **LOW ×2**: `_write_private` chmods a pre-existing world-readable `--env-file` after writing
+  the key line, not before; `billing-check --api-key` lacks the shell-history warning `connect
+  --token` has.
+
+### What STILL requires a human — by design, not omission
+
+- **Attestation is a deliberate act and stays one.** `usage_log.actual_cost_usd` is static list
+  price with no organization dimension, so a committed-capacity (PTU) customer is
+  *indistinguishable in the data* from pay-as-you-go. A person must read the actual provider
+  agreement before writing `marginal_per_call`. 0030 removes the typing and adds an evidence
+  trail; it cannot and does not automate the judgement — the RPC enforces that evidence was
+  *cited*, never that it is *true*. Also human: setting the attestor password out of band, and
+  keeping the DSN out of every deployed environment (a process control with no test behind it —
+  said out loud rather than pretended away).
+- **The cache-only-$0 caveat.** A partner whose verified savings are purely cache replays settles
+  at **$0** under 202607280008 condition 2 — 0028 (the redesign) is quarantined after review
+  found a $0.0000000001-unlocks-$125 path. Readiness/billing-check are specified to say this in
+  plain words; until readiness ships, it must be said by a human, and never papered over in
+  onboarding copy `[verified — the acceptance run itself produced no non-zero draft for this
+  reason]`.
+- **Unowned business decisions** (recorded, not resolved): who may attest and what evidence
+  counts; whether dashboard clickthrough *is* the agreement or a countersigned MSA is required;
+  `connect` open to any org vs invited partners; 90-day key expiry (silent revocation stops
+  traffic); pin immutability after mint; whether the local proxy stays the headline install when
+  it can never bill `[unverified — owner input required]`.
+
+---
+
+## SETTLEMENT SENDER (Phase 4) — 2026-07-30
+
+Written 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Five
+lanes ran against the gap the dress rehearsal proved (below, "Phase-4 settlement-claim-path gap"):
+design, SQL, worker, status-route, integrator, plus an adversarial review. Same tagging
+convention as the rest of this report.
+
+### Bottom line — do not ship, and do not mistake the green for done
+
+**The headline gap is still open.** The SQL lane produced nothing: migration
+`202607280029_period_settlement_claim_path.sql` does not exist — `supabase/migrations/` ends at
+`202607280028` `[verified today — directory listed]` — and a catalog probe of a database built
+from the full registered chain found **0 of the 8 sender-side RPCs** the shipped code calls
+(`claim_period_settlement_entries`, `mark_period_settlement_outbound_started`,
+`renew_period_settlement_lease`, `complete_period_settlement_entry`,
+`release_period_settlement_leases`, `release_period_settlement_claim`,
+`period_settlement_recovery_health`, `billing_period_settlement_history`)
+`[verified — integrator ran the probe; grep finds five consumers of those names and zero
+producers]`. Settlement `1000000005` (`pending`, fee `1235092` µUSD) **still has no path to
+Stripe.** The planned caestus acceptance run (real claim → begin_send → meter event → reconcile →
+`reported`) was therefore never executed; no settlement has ever been sent, anywhere
+`[verified — no lane reports it, and the RPCs it needs do not exist]`.
+
+**Review verdict: do-not-ship** (2 blockers / 3 high / 3 medium / 1 low, all listed below).
+
+### What now works — precisely scoped
+
+- **The design is complete and its riskiest claims were proven live, not assumed**
+  `[verified — design lane probed caestus inside begin;…rollback;]`. The full claim/send/complete
+  state machine was executed transition-by-transition against the real `202607280010` latches
+  (results below). The one structural deviation from the per-row path is load-bearing and proven:
+  the claim must lease a row that **stays `status='pending'`** — a row parked in `'sending'` with
+  a NULL `outbound_started_at` can never leave that state (`202607280010:182-186`), so only
+  `begin_send` may enter `'sending'`, stamping status and marker in one UPDATE.
+- **The worker half is built, inert by default, and green against fakes**
+  `[verified — lane pasted real runs]`: `api/billing_recovery.py` gains `BillingEntry.kind`,
+  `SupabaseSettlementStore` (a subclass overriding only RPC names / entry kind / id param),
+  settlements-first fallthrough in one `process_once` cycle, dual-store health, and a
+  `BREVITAS_BILLING_SETTLEMENT_ENABLED` gate (exact-`"true"`, default OFF — a no-op on any DB
+  without the RPCs). `pytest tests/test_billing_recovery.py tests/test_stripe_api_version_pin.py`
+  → **90 passed**; byte-exact payload test pins identifier `brevitas-settlement-1000000005` and
+  Idempotency-Key `brevitas-settlement-meter-1000000005`; per-row path pinned unchanged.
+- **The status-route half is built and closes the customer-visible dress-rehearsal defect —
+  once the RPC exists** `[verified — lane pasted real runs]`: `/api/billing/status` adds an
+  anchor-free `billing_period_settlement_history` read plus `settlement_history` /
+  `prior_settlement` response fields; the anchored summary and its fail-closed
+  `period_anchor_mismatch` contract are untouched; a missing RPC degrades to `null` + 200 (never
+  a confident `[]` or `$0`). `Billing.jsx` renders a "Last billed week" line and settled-weeks
+  table. New suite `tests/billing_status_settlement_history.test.mjs` **17/17**; three owned
+  suites **35/35**; `tsc`/`eslint` clean.
+- **The pre-0029 baseline gate is sound** `[verified — integrator ran all five commands]`:
+  `verify-migrations.mjs` exit 0 · `pytest tests/` **1075 passed** · dashboard checks **132/132**
+  · full migration harness exit 0 both paths · `npm test` **323/324** — the ONE red is
+  `tests/billing_route_dependency_degradation.test.mjs` correctly naming the missing migration
+  ("`route.ts` calls `public.billing_period_settlement_history`, which no migration defines").
+  That red is honest; do not mask it. Baseline only: none of it exercises one line of
+  settlement-sender SQL, because none exists.
+
+**Important caveat on the tests:** the entire settlement worker path runs against
+`FakeSettlementStore`, a Python re-implementation of the *design's* RPC contract written by the
+same lane. The suites prove the consumers are self-consistent with the design; they cannot prove
+a migration that does not exist implements it. When 0029 lands, hand-diff its SQL against
+`api/billing_recovery.py:433-442` and the route's envelope parser, then run the caestus
+acceptance steps — a field-name mismatch fails **quietly** (route renders "Unavailable"; worker
+surfaces it only when the flag flips) `[verified reasoning; the quiet-degrade paths are tested]`.
+
+### The caestus proof numbers (all probes rolled back; nothing committed)
+
+`[verified — design lane pasted real query output from caestus, reconciled here]`
+
+- Settlement `1000000005`: `status='pending'`, `fee_microusd=1235092`, period
+  `[2026-07-23 18:03:53+00, 2026-07-30 18:03:53+00)`, org `f1305475-…2191`, owner
+  `1827866c-…2584`, customer `cus_UywBHVTvSfUPdo`, `attempts=0`, no lease, no outbound marker.
+- Legacy per-row `billing_ledger` row `5`: `status='reported'`, fee `1235092`, `occurred_at`
+  `2026-07-27 18:03:53+00` — **same org, same customer, same window**. The Stripe meter already
+  holds `1235092`; after the settlement sends it must read **`2470184`**. Therefore
+  `expected_period_microusd` must include committed legacy per-row fees sharing the window —
+  `202607280007:73-75`'s "expected collapses to the row itself" is wrong wherever the two ledgers
+  overlap, and reconcile could never ACCEPT under it.
+- Id-space disjointness honoured and verified: `period_settlement_ledger` sequence starts at
+  `1000000000`; `billing_ledger` seqstart `1`, `max(id)=5`. The design adds the
+  `brevitas-settlement-` prefix anyway, making non-collision with `brevitas-fee-{id}` /
+  `brevitas-meter-{id}` lexically unconditional rather than sequence-conditional.
+- `occurred_at` returned by the claim = `period_end − 5 minutes` (`2026-07-30 17:58:53+00`), NOT
+  `period_end`: reconcile floors its window end to the minute
+  (`api/billing_recovery.py:557-560`), so an event stamped at `period_end` falls outside the
+  queried window forever and could never reconcile.
+- Live latch probe, seven transitions against the real `202607280010` guard (observed, not
+  inferred): pending+lease (status unchanged) **ALLOWED** · pending→sending with marker stamped
+  in the same UPDATE **ALLOWED** · sending(marked)→pending, marker preserved **ALLOWED** ·
+  sending→pending clearing the marker **REFUSED** · sending(marked)→reported+stamps **ALLOWED** ·
+  sending(UNMARKED)→pending **REFUSED** · pending→expired and expired→review **ALLOWED**.
+
+### Review findings, in full (verdict: do-not-ship)
+
+| # | Severity | Finding |
+|---|---|---|
+| 1 | **BLOCKER** | The entire settlement money-path SQL does not exist. 0 of 8 sender RPCs defined by any migration; directory ends at `202607280028`; consumers already wired. Both consumers degrade quietly (worker gated OFF; route nulls + 200), so **nothing will page anyone about the missing money path**. |
+| 2 | **BLOCKER** | Every money guard is untested prose. Cap check, double-send invariant, account gate, sweeps, `superseded_at` exclusion exist only in the design and in `FakeSettlementStore` — same-lane re-implementations. "Can one settlement be sent twice" has no implementation to answer it. Gate the feature on the caestus acceptance run against the real latches. |
+| 3 | **HIGH** | Settlement claim starves the per-row ledger on error: `process_once` claims settlements first and only falls through when the claim returns `None`, not when it **raises** — proven by execution (per-row `claim_one` called 0 times across 3 cycles with a raising settlement store). Fix: try/except around the settlement claim, fall through. |
+| 4 | **HIGH** | Settlement health metrics silently overwrite the per-row billing gauges: `brevitas/observability.py:782-803` discards the `ledger` attribute, so settlement values clobber `queue_depth{queue='billing'}` / `billing_queue_lag` / review/dead/stale gauges every cycle — and a settlement's pending age is ≥1 week by construction, pegging `billing_queue_lag` permanently. The four new `billing_settlement_*` alert names fall through `api/observability.py`'s branch to a bare `log.warning` and can never page. **Fix both before the flag ever flips.** |
+| 5 | **HIGH** | This diff registers the quarantined `202607280028` into CI (both manifests, frozen checksums `fa7622…`, `verify-migrations.mjs`, harness apply line) and ships its client half. It applies cleanly and its assertions pass, so the blocker + 3 highs from its own review are invisible to CI. **Silence ships it**; un-shipping later needs a new migration (checksum frozen). Owner decision required before merge. |
+| 6 | **MEDIUM** | `usage_log.savings_anchor_request_id` is written by shipping code (`api/store.py:165,803`) but created by no migration — the app-side anchoring mechanism is inert everywhere while reading as live. Direction is fail-closed (rows stay unanchored, out of the fee basis), never overbilled. |
+| 7 | **MEDIUM** | Billing card headline renders `$0.000000` for a prior week in `status='sending'` (money committed to Stripe, outcome unconfirmed); the committed amount appears only in the table below. Show `committed_fee_usd` for non-terminal statuses or suppress the line. |
+| 8 | **MEDIUM** | The admin/server surface keeps the blind spot the customer route just fixed: `api/store.py:4713-4749` never calls the history RPC, so `/v1/admin/billing/settlement` reports a settled prior week as nothing — operator and customer will disagree about the same ledger. |
+| 9 | **LOW** | `REVERSE_POSTURE_CUTOFF` bumped to `202607280029` for a migration that does not exist, and the constant is nearly vacuous — the governed set is built from `REVERSE_POSTURE_BACKFILL_FLOOR` (`202607280013`) alone. 0029 will be governed automatically and MUST carry a `-- REVERSE:` header; the cutoff bump grants no exemption. |
+
+### Open design questions needing an owner (none resolved by this build)
+
+1. **Stripe invoice attribution of an in-period-but-past meter event** (a settlement's event is
+   stamped inside an already-ended, possibly already-invoiced subscription period). Whether Stripe
+   bills it, back-dates it, or drops it is not answerable from this repo — must be settled by a
+   TEST-mode test that lets an invoice finalize, before live keys. `[unverified by definition]`
+2. **`release_period_settlement_claim` is adjacent to a deliberate CI guardrail**:
+   `scripts/ci/migration-settlement-writer-assertions.sql:158-164` bans
+   `release_period_settlement_unsent(bigint,text)` outright. The replacement does NOT clear
+   `outbound_started_at` (proven ALLOWED on caestus; the committed predicate keeps counting the
+   fee), so it honours the rule's intent — but only an owner can rule it compliance vs evasion.
+   Mitigation specified: a prosrc self-check in 0029 + mirrored CI assertion.
+3. **A settlement stuck in `'review'` has no recovery surface at all** — both operator-resolution
+   RPC idioms clear the marker, which the latch refuses. Superuser SQL only, and even then only
+   via a new revision (= a new Stripe charge). Real operational gap; needs a decision.
+4. Also recorded: legacy-window overlap must be re-checked in any env with both ledgers populated;
+   the per-row path has the same minute-floor reconcile bug (pre-existing, rare, out of scope);
+   the settlement lag alert threshold (48h in code) is a placeholder, not a chosen value.
+
+### Remaining gates before real money — separate from the above, and unconditional
+
+Even with 0029 authored, reviewed, and green, **no customer money moves** until every one of
+these clears. Listed honestly because each one is currently a $0-by-construction stop:
+
+1. **Quarantined `202607280028` / anchored zero-spend savings — owner decision pending.** Its
+   review found a blocker + 3 highs; it is untracked, must stay untracked, and yet is currently
+   registered-and-green in CI (finding 5). Until the anchored-savings design is decided,
+   **cache-only savings still bill $0**: `zero_spend_concentration`
+   (`202607280008:521-543`) halts any period whose savings are 100% zero-spend rows — which is
+   the only organic shape a DeepSeek-class tenant produces `[verified in the dress rehearsal]`.
+2. **The production savings drought.** wyfz has minted **zero** authoritative/priced rows on
+   every day observed (verified savings stopped 2026-07-17); there is nothing to settle and
+   therefore nothing to send, regardless of the sender existing. Requires the cache flags
+   (`BREVITAS_CACHE_ENABLED` on the process AND per-org `organizations.cache_enabled`) plus real
+   traffic through the hosted proxy, per `docs/PRODUCTION_ENABLE_SAVINGS.md` and the drought
+   diagnosis. `[verified as of the 07-30 probe; unverified since]`
+3. **Live Stripe setup.** All of it: roll the leaked `sk_live` (G11), live webhook endpoint +
+   `whsec_` with the endpoint's own `api_version` pinned to `2026-06-24.dahlia` (G14/G9), portal
+   config, production env (`BREVITAS_PUBLIC_URL` before the flip, weekly cap, recovery secret),
+   and the open-question-1 invoice-attribution test. Nothing in this build touched live mode.
+4. **The manual attestation with no product surface.** `organization_billing_arrangement` has no
+   writer function at all (`202607280009`), and `promote_billing_period_settlement` is granted to
+   nobody — both by design. Every org halts at `unattested_billing_arrangement`, and every
+   settlement stays `draft`, until a human performs out-of-band superuser SQL for each. This
+   design gives a *promoted* settlement a path to Stripe; it does not make anything promote
+   itself.
+5. **The observability fixes (findings 3 and 4) land before `BREVITAS_BILLING_SETTLEMENT_ENABLED`
+   is ever set true** — otherwise the flag flip silently corrupts the per-row billing gauges and
+   a stuck settlement cannot page.
+
+Apply path for 0029, when it exists: **WINDOW B3 ADDENDUM** in `docs/WYFZ_APPLY_PLAN.md` (added
+2026-07-30) — same one-file sanctioned path, with wyfz's out-of-manifest-order history and the
+`280021` probe trap accounted for.
+
+---
+
+## CUSTOMER DRESS REHEARSAL (test mode) — 2026-07-30
+
+Full customer journey run end-to-end against the caestus-labs throwaway Supabase (full
+71-migration chain) + Stripe TEST sandbox + real DeepSeek traffic, then independently verified by a
+second lane with fresh DB/Stripe reads and line-level source checks. Verifier's overall ruling:
+**confirmed-with-notes** — every checked claim CONFIRMED, none REFUTED, one PLAUSIBLE (the
+"first time the drought chain has been observed closing" claim — true within this DB, unverifiable
+beyond it). Key ids: org `f1305475-…2191`, customer `cus_UywBHVTvSfUPdo`, sub
+`sub_1TyyJBC7NZKjd1s3uGHwqDeE`, settlement `1000000005`, ledger row `5`.
+
+### The story, step by step
+
+| # | Step | Outcome |
+|---|---|---|
+| 1 | Sign up (GoTrue admin-create confirmed user, JWT password grant, fresh org + `company_owner` membership + `billing_owner_id`) | **pass** `[verified]` |
+| 2 | Boot hosted API on :8000, mint key via `POST /v1/keys` with the JWT | **pass** `[verified]` — Supabase store only mints `dashboard_session` (8h expiry; `api/server.py:2854-2860`) |
+| 3 | Use the product: 4 real DeepSeek completions + 4 exact-cache replays through the hosted proxy | **pass** `[verified]` — 8 organic `usage_log` rows, all `authoritative`+`priced`, 4 with `verified_savings_usd>0` (journey said 5 upstream calls; verifier found 4 miss rows — a 5th call left no receipt) |
+| 4 | Subscribe: `POST /api/billing/checkout` → hosted checkout URL, `pm_card_visa` attach, real active subscription | **pass** `[verified]` |
+| 5 | Webhook sync: hand-signed `customer.subscription.created` → `{"received": true}`, exact-bytes replay → `{"duplicate": true}`, inbox row `processed`/`attempts=1` (first 500 was a fixture bug — `evt_journey_…` fails `stripe-event-diagnostic.mjs:10` regex, not a product fault) | **pass** `[verified]` |
+| 6a | Settle organic evidence only | **fallback** `[verified]` — three gates fired in sequence, see verdict below |
+| 6b | Settle with one labeled SIMULATION spend-carrying row → settle + promote to `pending`, fee = exactly 25% of net verified ($1.235092) | **pass** `[verified]` |
+| 7 | Worker reports to Stripe: real `process_once` cycle, ledger row → `reported`, Stripe meter aggregate = `1235092` µUSD, exact match, and the meter's ONLY non-zero bucket | **fallback** `[verified]` — via per-row `billing_ledger`, because settlements have no claim path (below) |
+| 8 | Customer view: `/api/billing/status` 200 with `subscription_status=active`, real billing-portal session | **pass with defect** `[verified]` — settled/reported/committed fees all read `0` while Stripe holds $1.235092; route only queries the CURRENT period anchor (`status/route.ts:124,134`) and the summary RPC refuses any other (`period_anchor_mismatch`), so a settled week is never readable here |
+| 9 | Cleanup: subscription canceled, both servers killed, `git status` clean | **pass** `[verified]` |
+
+### Savings-path verdict — the headline for the live-billing decision
+
+`[verified]` **The organic path DID mint authoritative, priced, verified savings on real
+traffic** — 4 `exact_cache` rows, `receipt_source=proxy`, sum `$0.00210196` — the first observed
+end-to-end closure of the SAVINGS_DROUGHT_DIAGNOSIS chain (within this DB; verifier: PLAUSIBLE
+beyond it). The unlock was the caching pivot (exact-hash replay → `_BYTE_PRESERVING_STRATEGIES` →
+`quality_status=verified`), NOT the diagnosis doc's H1/H2 fixes, and it needed two config facts
+that both default false and fail silently to zero savings: `BREVITAS_CACHE_ENABLED=true` on the
+process (`brevitas/proxy.py:483`) and per-tenant `organizations.cache_enabled=true`
+(`api/server.py:1705`).
+
+**But the organic money did not flow.** The exact gate, observed verbatim:
+`zero_spend_concentration` (`202607280008_billing_halting_conditions.sql:521-543`) — share
+`1.00000` of net savings from zero-`actual_cost_usd` rows vs a `0.50000` limit. This is
+**structural, not a fixture artifact**: a cache replay never touches an upstream, so every
+`exact_cache` row has `actual_cost_usd=0` by construction (`brevitas/proxy.py:649-651` →
+`receipts.py:381-386`), and the share's denominator is SAVINGS, so cache-miss spend cannot dilute
+it. For a DeepSeek/OpenAI-compatible tenant this is the only organic savings shape (verifier
+caveat: Anthropic native-cache and xAI affinity paths would produce diluting spend-rows —
+the "only shape" claim is correct as scoped to DeepSeek-class tenants,
+`token_efficiency_model/lossless/engine.py:435-437`). Two period gates also fired first, both
+correct-by-design but fatal to any same-day journey: `period_not_closed` (`202607280013:458`) and
+`period_precedes_enrollment` (`:474`). Settling required two labeled fixtures: backdated
+`billing_started_at` and an out-of-band superuser insert into `organization_billing_arrangement`
+— which has **no product surface at all** (read-only even to service_role per `202607280009`;
+verifier confirmed zero writer functions exist), so no org can be billed until that attestation is
+performed manually.
+
+### Phase-4 settlement-claim-path gap — CONFIRMED
+
+`[verified — verifier read the RPC body and probed the live catalog]`
+`claim_billing_ledger_entries` (`202607200006:302-435`) selects from `public.billing_ledger` only;
+no function in `public` both claims and reads `period_settlement_ledger`, and
+`api/billing_recovery.py` calls only the billing_ledger lease RPCs. So a promoted settlement
+(`1000000005`, `pending`, `$1.235092`) has **no code path to Stripe**. The rehearsal bridged it by
+hand-inserting a per-row `billing_ledger` fallback carrying the settled fee, which the real worker
+then reported and the meter matched exactly — proving the outbound leg works, but only for the
+row-shaped ledger the settlement system is supposed to replace.
+
+### What live keys change
+
+`[verified as to test-mode scope; live behavior unverified by definition]` Going live changes
+exactly three things: credentials (sk_live + live price/meter), a real dashboard-registered
+webhook endpoint (whose payload API version is set by dashboard config, not the SDK pin — see G9
+mediums below), and the drought — production currently mints **zero** authoritative/priced rows,
+so there is nothing to settle regardless of gates. What stays untested until real traffic exists:
+the organic settle→promote→report loop with NO simulation fixtures (blocked by
+`zero_spend_concentration` + the missing settlement claim path + the unattestable billing
+arrangement), livemode meter aggregation and the actual invoice/charge Stripe generates from it,
+webhook delivery/retry from Stripe's side rather than hand-signed posts, the
+`X-Brevitas-Customer-ID` requirement for long-lived `organization_service` keys under real
+customer usage (README snippets still omit the header), and any settled week ever becoming
+visible to a customer through `/api/billing/status`.
+
+---
+
 ## SHIP-PREP — 2026-07-30
 
 Appended after the G9 lane, the wyfz apply-runbook lane, the savings-drought lane and the commit

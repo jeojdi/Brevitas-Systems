@@ -250,60 +250,65 @@ bootstrap_database() {
 }
 
 run_forward_assertions() {
-  psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-cache-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc --file scripts/ci/migration-key-audit-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc --file scripts/dr/compliance-workflow-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  # Every file below runs with ON_ERROR_STOP=1. Without it psql exits 0 even
+  # when a DO block raises, so a failing assertion printed ERROR into the log
+  # and the harness still reported 'checks passed' -- verified by injecting a
+  # deliberate 'raise exception' into one suite and watching the whole run exit
+  # 0. Every assertion in this function was advisory until this line changed.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file scripts/ci/migration-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file scripts/ci/migration-cache-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file scripts/ci/migration-key-audit-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 --file scripts/dr/compliance-workflow-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-device-membership-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-receipt-accounting-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-active-company-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-waitlist-security-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-initial-service-key-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-company-billing-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-recovery-scope-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-provider-credential-cleanup-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-multitab-dashboard-session-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/waitlist-shared-rate-limit-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/billing-recovery-shared-rate-limit-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-compliance-billing-isolation-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/billing-control-shared-rate-limit-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-checkout-session-reservation-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-supabase-advisor-hardening-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-provider-outbound-ambiguity-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-durable-onboarding-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-onboarding-local-proxy-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-customer-owner-fencing-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-cache-warming-assertions.sql
   # Live behaviour of the money path. Each of these files opens its own
   # transaction and ends in ROLLBACK, so they are rerunnable, they leave no
   # financial rows behind, and they are order-independent with respect to each
   # other and to every suite above. They seed public.billing_ledger with direct
   # INSERTs because 202607280006 retired queue_brevitas_fee_after_usage.
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-claim-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-sweeps-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-anchor-assertions.sql
   # Period settlement. Order matters here: the period-settlement structure file
   # must precede the halting-condition file (which drives the guard through a
@@ -311,12 +316,53 @@ run_forward_assertions() {
   # because it exercises settle_billing_period against both of them. These
   # three require 202607280007-202607280013 to be applied, which in turn
   # requires 202607280010-202607280013 to be registered in both manifests.
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-period-settlement-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-halting-conditions-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-settlement-writer-assertions.sql
+  # The outbound claim/send path (202607280029). Runs after the writer file
+  # because it needs promoted settlements to exist as a concept, and it asserts
+  # the ONE property the writer's own suite cannot: that a claim leaves the row
+  # 'pending' so 202607280010's latch can never strand an abandoned claim.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-settlement-sender-assertions.sql
+  # The attestation surface (202607280009 + 202607280030). Runs after the
+  # halting-condition file because it drives the SAME settlement guard, and it
+  # is the only place in this harness where a SUCCESSFUL attestation is
+  # executed: doing so needs session_user = 'brevitas_attestor', which needs SET
+  # SESSION AUTHORIZATION, which is superuser-only and therefore unavailable to
+  # 202607280030's own apply-time DO block on a hosted project. The migration
+  # proves every refusal; this file proves the operator path works at all, and
+  # proves the body still refuses a service_role session even when the EXECUTE
+  # grant is forcibly restored.
+  #
+  # REQUIRES 202607280030 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with 'the attestation writer tables are missing', which is a
+  # missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-attestation-surface-assertions.sql
+  # NOTE: the FIRST anchored fee basis (202607280028) and its assertion file
+  # remain QUARANTINED in docs/quarantine/ -- their review found a blocker plus
+  # three highs, including a path where a $0.0000000001 payment unlocked $125 of
+  # billing. Neither file is registered or wired here and neither may be
+  # restored: 202607280031 below replaces them, and the quarantined assertion
+  # file asserts the existence-gate semantics that design deletes.
+  #
+  # The observed-price cache fee basis (202607280031), which is that
+  # replacement. Runs after the halting-condition and writer files because it
+  # drives the SAME guard and the SAME writer, and after the attestation surface
+  # because every settlement it performs needs an attested organization. It
+  # opens its own transaction and ends in ROLLBACK, so it is rerunnable and
+  # leaves no settlement behind.
+  #
+  # REQUIRES 202607280031 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-anchored-savings-v2-assertions.sql
   # Schema and authorization repairs (202607280014-202607280023). Each file
   # opens its own transaction and ends in ROLLBACK, so they are rerunnable,
   # order-independent, and leave no fixture rows behind. The browser-role file
@@ -325,17 +371,17 @@ run_forward_assertions() {
   # Must run before the browser-role file below: it is what proves the bootstrap
   # still installs Supabase's default anon/authenticated grants, i.e. that every
   # revoke assertion in this function can actually fail.
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-browser-privilege-baseline-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-browser-role-isolation-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-warming-lease-retention-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-company-admin-evidence-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-durable-job-expiry-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-compliance-evidence-assertions.sql
   # 202607280025-202607280026. Both open their own transaction and end in
   # ROLLBACK, so they are rerunnable and order-independent. The network-budget
@@ -343,10 +389,31 @@ run_forward_assertions() {
   # limiter's retention story; the dedupe file is the only place the widened
   # usage uniqueness is executed in both directions (same-authority repeat still
   # rejected, cross-authority pair now admitted).
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/waitlist-network-budget-assertions.sql
-  psql "${DATABASE_URL}" --no-psqlrc \
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-usage-dedupe-authority-assertions.sql
+  # 202607280032: no browser role may EXECUTE a SECURITY DEFINER function in
+  # schema public. Deliberately LAST in this function, because unlike every
+  # other file here it asserts a property of the WHOLE schema rather than of a
+  # named object: it enumerates prosecdef over public and fails on any function
+  # anon or authenticated can call. Running it after every other suite means it
+  # also sees anything they left behind (they all end in ROLLBACK, so the answer
+  # should be nothing -- if it is not, that is worth failing on).
+  #
+  # This is the invariant no other suite expresses. Every existing function-
+  # privilege assertion in this harness is a hardcoded allowlist -- `proname =
+  # <literal>`, `proname like 'company_admin_%'`, `proname in (...)` -- so a
+  # function nobody enumerated, or a project-level ALTER DEFAULT PRIVILEGES
+  # re-grant that hits all of them at once, was invisible to the entire suite.
+  # That is how production reached 99 anon-executable SECURITY DEFINER
+  # functions while a fresh database built from this repo had zero.
+  #
+  # REQUIRES 202607280032 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-browser-function-privilege-assertions.sql
 }
 
 # Pre-COMMIT rollback invariant for the migrations whose atomicity is probed by

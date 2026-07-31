@@ -543,11 +543,37 @@ def _response_complete(data: dict, provider: str) -> bool:
         return False
 
 
-def _cache_store(cache, body: dict, provider: str, model: str, data: dict) -> None:
+def _cache_store(cache, body: dict, provider: str, model: str, data: dict,
+                 origin_request_id: str = "") -> None:
+    """Store a paid response together with the metering id that paid for it.
+
+    `origin_request_id` is this request's server-minted receipt id (_request_id).
+    It is what lets the replay of this entry name a real, receipted, PAID
+    ancestor rather than merely assert that one existed. Every legitimate
+    Brevitas cache hit has such an ancestor; a forged or buggy zero-spend row
+    does not, and stays unanchored — hence unbillable.
+
+    `store` gained this keyword with the anchor; a cache object that predates it
+    raises TypeError, which is retried once without the keyword so an older or
+    third-party implementation degrades to unanchored instead of losing the
+    write. Everything here stays swallowed either way — a cache fault must never
+    reach the caller.
+    """
     try:
         if not _response_complete(data, provider):
             return                 # never cache a truncated / incomplete response
         p, c = _usage_tokens(data, provider)
+    except Exception:
+        return
+    try:
+        cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c,
+                    origin_request_id=origin_request_id)
+        return
+    except TypeError:
+        pass                       # older/foreign cache object: store unanchored
+    except Exception:
+        return
+    try:
         cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c)
     except Exception:
         pass
@@ -644,6 +670,15 @@ async def _report_cache_hit(request: Request, provider: str, model: str, hit,
         session.last_quality = float(getattr(hit, "similarity", 1.0))
         kind = str(getattr(hit, "kind", "semantic") or "semantic").lower()
         strategy = "exact_cache" if kind == "exact" else "semantic_cache"
+        # The forward link. This replay's savings are zero-spend BY CONSTRUCTION
+        # (no upstream was touched), so the only thing that separates it from a
+        # forged or buggy zero-spend row is a provable paid ancestor. The cache
+        # entry remembers the metering id of the real, receipted call that filled
+        # it; carry that id onto the receipt so the anchor is first-class data
+        # rather than an inference. `getattr` because a cache implementation that
+        # predates the column returns hits without one — those replay unanchored,
+        # which bills zero.
+        anchor = str(getattr(hit, "origin_request_id", "") or "")[:128]
         await _emit_usage(request, {"provider": billing_provider or provider, "model": model,
             "operation": "chat", "baseline_tokens": int(hit.prompt_tokens),
             "baseline_output_tokens": int(hit.completion_tokens), "compressed_tokens": 0,
@@ -653,6 +688,10 @@ async def _report_cache_hit(request: Request, provider: str, model: str, hit,
             # Labels first: server-minted fields must always win. See _record_receipt.
             **labels,
             "request_id": _request_id(request), "strategy": strategy,
+            # AFTER the labels for the same reason request_id is: a tracking
+            # header named savings_anchor_request_id must never reach the API as
+            # an anchor. (_record_usage_report re-decides it anyway.)
+            "savings_anchor_request_id": anchor,
             "session_id": session.session_id, "receipt_source": "proxy"})
 
 
@@ -1297,7 +1336,8 @@ async def proxy_anthropic_messages(request: Request) -> Any:
         # Only cache when the forwarded request was byte-faithful to the original —
         # never store an answer produced from retrieval-pruned or reordered context.
         if cache is not None and data and response_faithful:
-            _cache_store(cache, cache_body, "anthropic", model, data)
+            _cache_store(cache, cache_body, "anthropic", model, data,
+                         _request_id(request, str(data.get("id") or "")))
         _observe_warm_prefix(
             request, body, model, meta, headers,
             cache_read=_anthropic_cached_tokens(data.get("usage")) > 0,
@@ -1466,7 +1506,18 @@ async def proxy_openai_chat(request: Request) -> Any:
         # Only cache when the forwarded request was byte-faithful to the original —
         # never store an answer produced from retrieval-pruned or reordered context.
         if cache is not None and data and response_faithful:
-            _cache_store(cache, cache_body, provider, model, data)
+            # Mint the metering id HERE, with the same provider response id
+            # _record_receipt passes below. _request_id caches on request.state,
+            # so the id written onto the cache entry and the id on this request's
+            # paid receipt are the same string by construction.
+            #
+            # It is a forward reference: the receipt is written a few lines down
+            # and can still fail. That is safe in the only direction that
+            # matters — a replay anchored to a receipt that never landed simply
+            # finds no paid ancestor to join to, and is treated as unanchored,
+            # i.e. unbillable. The anchor can promise provenance, never invent it.
+            _cache_store(cache, cache_body, provider, model, data,
+                         _request_id(request, str(data.get("id") or "")))
         _observe_warm_prefix(
             request, body, model, meta, headers,
             cache_read=_openai_cached_tokens(data.get("usage")) > 0,

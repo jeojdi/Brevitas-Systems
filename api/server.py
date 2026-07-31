@@ -4346,6 +4346,20 @@ class UsageReportRequest(BaseModel):
     # than an arbitrary global numeric threshold.
     quality_verified: Optional[bool] = None
     request_id: str = Field(default="", max_length=128)
+    # Metering id of the PAID request whose provider response this row replays.
+    # Reported by the in-process proxy from the cache entry that served the hit.
+    # ACCEPTED HERE, DECIDED IN _record_usage_report: a value on this field is a
+    # claim, never a fact, and every /v1/usage caller can set it. See the gate
+    # there for the conditions under which it is allowed to reach storage.
+    #
+    # Deliberately NOT covered by the control-character validator below. The
+    # proxy derives this from the provider response id of the paid call, and
+    # x-brevitas-upstream lets a caller choose the host that mints it — so a
+    # validator here would be a way to make a hostile upstream id raise, get
+    # swallowed by _hosted_proxy_receipt, and DROP a billable receipt. It is
+    # sanitized in _record_usage_report instead, where a bad value costs the
+    # anchor and nothing else.
+    savings_anchor_request_id: str = Field(default="", max_length=128)
     usage_raw: Optional[dict] = None  # parsed then discarded; never persisted
     strategy: str = Field(default="", max_length=64)
     session_id: str = Field(default="", max_length=128)
@@ -4401,6 +4415,62 @@ _BYTE_PRESERVING_STRATEGIES = (
     "exact_cache",
 )
 BREVITAS_FEE_RATE = 0.25
+
+# Strategies whose savings are zero-spend BY CONSTRUCTION because the replay
+# never touches an upstream (brevitas/proxy.py:_report_cache_hit ->
+# brevitas/receipts.py:calculate_costs with an all-zero receipt). These are the
+# only rows an anchor is meaningful on, and the only rows it is accepted on.
+_BREVITAS_REPLAY_STRATEGIES = ("exact_cache", "semantic_cache")
+# A server-minted metering id and nothing else. The proxy mints
+# `proxy:<uuid4 hex>` or `proxy:<provider response id>`; the provider half is
+# chosen by whoever answers the upstream, and x-brevitas-upstream lets a caller
+# choose that host, so the shape is pinned here rather than trusted.
+_ANCHOR_ID_SHAPE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+def _decide_savings_anchor(body: UsageReportRequest, *, authoritative: bool) -> str:
+    """Decide the paid-ancestor anchor for this row. Never trust the claim.
+
+    A zero-spend saving is billable only if it is ANCHORED: a Brevitas cache
+    replay whose baseline links to a real, receipted, PAID request. That makes
+    the anchor a money-bearing field, so it is DECIDED here from facts this
+    process controls rather than accepted from the payload.
+
+    Every condition is necessary:
+
+    * `authoritative` — only _hosted_proxy_receipt, which observed the provider
+      response in-process, sets it. POST /v1/usage always passes False, so a
+      client-supplied anchor over that route is discarded outright. This is the
+      same boundary that already governs `verified`: a caller can no more anchor
+      a row than it can make one authoritative.
+    * `cache_attributable` — a provider-NATIVE cache discount (DeepSeek
+      prompt_cache_hit_tokens, an automatic prefix cache) is not something
+      Brevitas caused, and must stay unbillable. Those rows report False.
+    * a replay strategy — the anchor describes a replayed response. Nothing
+      else has an ancestor to point at.
+    * the `proxy:` namespace — the ancestor is a receipt the proxy itself
+      minted. An id outside that namespace names a row that, by the /v1/usage
+      intake rewrite, cannot be an authoritative proxy receipt.
+    * not self-referential — a row is not its own ancestor. Without this a
+      single forged replay could anchor to itself and claim provenance from a
+      request that never had spend.
+
+    The join to the ancestor row (same tenant, authoritative, actual_cost_usd>0)
+    is the database's job; this function's contract is that a non-empty value is
+    a server-minted id that this process saw on a real paid call.
+    """
+    claimed = str(body.savings_anchor_request_id or "")
+    if not (authoritative and body.cache_attributable and claimed):
+        return ""
+    if not (body.strategy or "").strip().lower().startswith(_BREVITAS_REPLAY_STRATEGIES):
+        return ""
+    if not _ANCHOR_ID_SHAPE.fullmatch(claimed):
+        return ""
+    if not claimed.startswith(RECEIPT_ID_PREFIX):
+        return ""
+    if claimed == body.request_id:
+        return ""
+    return claimed
 
 
 def _verification_mode(strategy: str, *, cache_attributable: bool = False) -> str:
@@ -4710,6 +4780,9 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
     # Netting is a period-level operation over `verified`; it is deliberately
     # NOT expressed as a per-row fee credit.
     fee = round(max(0.0, verified) * BREVITAS_FEE_RATE, 10)
+    # Decided, never accepted. See _decide_savings_anchor: this is what makes a
+    # zero-spend cache replay provably organic rather than merely zero-cost.
+    savings_anchor_request_id = _decide_savings_anchor(body, authoritative=authoritative)
 
     inserted = _store.record_usage(
         key_hash=kh,
@@ -4758,6 +4831,7 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         gateway=body.gateway,
         run_id=body.run_id,
         request_id=body.request_id,
+        savings_anchor_request_id=savings_anchor_request_id,
         strategy=body.strategy,
         receipt_source=body.receipt_source,
         is_stream=body.is_stream,
@@ -4791,6 +4865,9 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         "pricing_status": costs["pricing_status"],
         "quality_score": body.quality_score,
         "quality_status": quality_status,
+        # What the row was actually anchored to, echoed so a reporter can tell a
+        # dropped claim from an accepted one instead of inferring it from a bill.
+        "savings_anchor_request_id": savings_anchor_request_id,
         # Anchoring provenance. Analytics/audit only — no billing depends on it.
         "token_basis": anchored.basis,
         "reported_token_delta": anchored.reported_delta,

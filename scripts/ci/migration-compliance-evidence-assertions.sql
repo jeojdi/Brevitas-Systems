@@ -152,6 +152,22 @@ declare
         'billing_recovery_audit', 'period_settlement_ledger',
         'organization_billing_arrangement', 'usage_log',
         'data_subject_requests', 'backup_deletion_tombstones',
+        -- 202607280030. Same category as organization_billing_arrangement
+        -- immediately above, and retained for the same reason: these two are
+        -- the evidence BEHIND a fee. The log records who attested an
+        -- organization into billability and against which agreement -- erasing
+        -- it would destroy the only audit trail the money path has, and it
+        -- deliberately carries no foreign key to public.organizations so that
+        -- it survives the tenant. The request records the company owner
+        -- accepting commercial terms. Neither is reachable by tenant erasure in
+        -- practice either: compliance_delete_tenant RENAMES the organizations
+        -- row rather than deleting it, so the request's ON DELETE CASCADE never
+        -- fires. Personal data is handled the way the rest of this chain
+        -- handles it -- requested_by_user_id is a pseudonymous auth.users id
+        -- whose subject row is anonymized in place by
+        -- compliance_anonymize_unshared_user, exactly as audit_events and
+        -- period_settlement_ledger already retain actor ids.
+        'organization_billing_arrangement_log', 'billing_arrangement_request',
         -- Content-free and short-lived operational state:
         'warm_budget_ledger', 'billing_checkout_reservations',
         'active_company_selections'

@@ -39,8 +39,22 @@ function CommandRow({ label, prompt = '$', command }) {
   )
 }
 
+const HOSTED = Object.freeze({
+  install: 'pip install brevitas-systems',
+  connect: 'brevitas connect',
+  check: 'brevitas billing-check',
+  baseUrl: 'https://api.brevitassystems.com/v1',
+})
+
+const HOSTED_SNIPPET = `client = OpenAI(
+    base_url="${HOSTED.baseUrl}",
+    api_key=os.environ["BREVITAS_API_KEY"],
+    default_headers={"X-Brevitas-Customer-ID": "acme"},
+)`
+
 export default function InstallCommand({ phase = 'all', audience = 'personal' }) {
   const [activePlatform, setActivePlatform] = useState(BVX_PLATFORMS[0].id)
+  const [showLocal, setShowLocal] = useState(false)
   const platform = BVX_PLATFORMS.find(item => item.id === activePlatform) || BVX_PLATFORMS[0]
   const showSetup = phase === 'all' || phase === 'setup'
   const showVerification = phase === 'all' || phase === 'verify'
@@ -48,18 +62,88 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
   return (
     <div className="space-y-5 rounded-2xl border border-brand-border bg-white p-5 dark:border-brand-dark-border dark:bg-brand-dark-surface sm:p-6">
       {showSetup && (
+        <section aria-labelledby="hosted-setup-heading" className="space-y-4">
+          <div>
+            <p className="annotation uppercase tracking-widest">// recommended · metered · billable</p>
+            <h2 id="hosted-setup-heading" className="mt-1 font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
+              Connect to the hosted gateway
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+              One command. It opens this dashboard for approval, then hands back an organization service key scoped to
+              this workspace. Nothing to install on your servers and no background service — the only change in your app
+              is the client base URL. This is the path whose savings are verified and billable.
+            </p>
+          </div>
+
+          <CommandRow label="1. Install the CLI" command={HOSTED.install} />
+          <CommandRow label="2. Approve in the browser and receive the key" command={HOSTED.connect} />
+
+          <div>
+            <p className="mb-1.5 text-[11px] text-brand-muted dark:text-brand-dark-muted">3. Point your client at the gateway</p>
+            <pre className="overflow-x-auto rounded-xl border border-brand-border bg-brand-bg px-4 py-3 font-mono text-xs leading-relaxed text-brand-navy dark:border-brand-dark-border dark:bg-brand-dark-bg dark:text-brand-dark-navy">
+              <code>{HOSTED_SNIPPET}</code>
+            </pre>
+          </div>
+
+          <div className="rounded-xl border border-brand-blue/30 bg-brand-blue-dim px-4 py-3 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">
+            <p className="font-medium">
+              <code className="font-mono text-brand-blue">X-Brevitas-Customer-ID</code> is required on every hosted request.
+            </p>
+            <p className="mt-1.5 text-brand-muted dark:text-brand-dark-muted">
+              An organization service key returns{' '}
+              <code className="font-mono">400 Organization service proxy calls require X-Brevitas-Customer-ID</code>{' '}
+              without it. This is the most common reason a first request fails. One key can route traffic for many end
+              customers, and the header says which — attribution is exact and stable, never inferred.{' '}
+              <code className="font-mono text-brand-blue">brevitas connect</code> pins your own id to the key it mints so
+              a missing header resolves rather than fails; send it anyway. Reselling to your own customers? Use{' '}
+              <code className="font-mono text-brand-blue">brevitas connect --multi-tenant</code>, which leaves the key
+              unpinned so a missing header stays a hard 400.
+            </p>
+          </div>
+
+          <CommandRow label="4. Confirm the traffic is actually metered" command={HOSTED.check} />
+          <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+            {audience === 'company'
+              ? 'Manage, rotate, and revoke these keys under Team & keys. Billing stays off until Brevitas attests your commercial arrangement — billing-check shows you that state directly.'
+              : 'Billing stays off until Brevitas attests your commercial arrangement — billing-check shows you that state directly.'}
+          </p>
+        </section>
+      )}
+
+      {showSetup && <div className="h-px bg-brand-border dark:bg-brand-dark-border" />}
+
+      {showSetup && (
         <section aria-labelledby="bvx-setup-heading" className="space-y-4">
           <div>
-            <p className="annotation uppercase tracking-widest">// install, authenticate, configure</p>
+            <p className="annotation uppercase tracking-widest">// alternative · privacy-first · not billable</p>
             <h2 id="bvx-setup-heading" className="mt-1 font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
               One command connects your tools
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">
-              Choose your operating system, copy the command, and follow the prompts. BVX opens this dashboard for
-              authorization, stores a revocable device key, configures detected tools, starts local services, and checks the setup.
+              Prefer to keep every request byte on your own machine? BVX installs a local proxy instead. Choose your
+              operating system, copy the command, and follow the prompts. BVX opens this dashboard for authorization,
+              stores a revocable device key, configures detected tools, starts local services, and checks the setup.
             </p>
+            <p className="mt-2 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+              Honest tradeoff: receipts from the local proxy are recorded <span className="font-medium">non-authoritative</span>,
+              because a proxy running on your machine cannot certify its own savings. You get the dashboard and the
+              accounting; this path is <span className="font-medium">not</span> eligible for savings-based pricing. Use
+              the hosted gateway above for that.
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowLocal(value => !value)}
+              aria-expanded={showLocal}
+              className="mt-3 text-xs font-medium text-brand-blue"
+            >
+              {showLocal ? 'Hide local install' : 'Show local install commands'}
+            </button>
           </div>
+        </section>
+      )}
 
+      {showSetup && showLocal && (
+        <section aria-label="Local proxy install" className="space-y-4">
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Operating system">
             {BVX_PLATFORMS.map(item => (
               <button
@@ -109,6 +193,11 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
             <h2 id="bvx-verify-heading" className="mt-1 font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">
               Verify the complete path
             </h2>
+            <p className="mt-2 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+              On the hosted gateway, <code className="font-mono text-brand-blue">brevitas billing-check</code> is the
+              whole check — it names every unmet condition and exits non-zero until your traffic is genuinely billable.
+              The steps below verify a local BVX install.
+            </p>
           </div>
           <CommandRow label="1. Run the automatic diagnostics" command={BVX_COMMANDS.diagnose} />
           <ol className="space-y-2 text-sm leading-relaxed text-brand-navy-mid dark:text-brand-dark-navy-mid">

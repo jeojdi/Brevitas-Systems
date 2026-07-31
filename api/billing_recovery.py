@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 import requests
@@ -90,6 +90,30 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
     return value
 
 
+# Two ledgers travel this worker, and each one owns a DISJOINT Stripe identity
+# namespace. The per-row billing_ledger keeps 'brevitas-fee-{id}' /
+# 'brevitas-meter-{id}' byte-for-byte; period_settlement_ledger uses
+# 'brevitas-settlement-{id}' / 'brevitas-settlement-meter-{id}'.
+#
+# Non-collision is LEXICAL and therefore unconditional: both per-row templates
+# are a fixed prefix followed by decimal digits only, so a collision would need
+# "brevitas-fee-" + X == "brevitas-settlement-" + Y, i.e. X == "settlement-" + Y,
+# which is not a decimal string (identically for the keys). That is deliberately
+# stronger than 202607280007's id-space argument (the settlement id sequence
+# starts at 1e9 so the two id ranges cannot overlap), which is a one-shot
+# apply-time assertion over an ever-growing sequence and cannot self-check on a
+# database applied by hand with no migration ledger. The two mechanisms are belt
+# and braces; neither alone is relied on here.
+ENTRY_KIND_LEDGER = "ledger"
+ENTRY_KIND_SETTLEMENT = "settlement"
+_STRIPE_IDENTITY: Mapping[str, tuple[str, str]] = {
+    ENTRY_KIND_LEDGER: ("brevitas-fee-{id}", "brevitas-meter-{id}"),
+    ENTRY_KIND_SETTLEMENT: (
+        "brevitas-settlement-{id}", "brevitas-settlement-meter-{id}",
+    ),
+}
+
+
 @dataclass(frozen=True)
 class BillingEntry:
     id: int
@@ -103,9 +127,20 @@ class BillingEntry:
     period_start: datetime
     period_end: datetime
     expected_period_microusd: int
+    # Defaulted last so every existing construction site — production, tests and
+    # BillingEntry.from_row's callers — stays byte-compatible.
+    kind: str = ENTRY_KIND_LEDGER
+
+    def __post_init__(self) -> None:
+        # Validate at construction, not at property access: an unknown kind must
+        # never be able to reach Stripe carrying a silently wrong identifier.
+        if self.kind not in _STRIPE_IDENTITY:
+            raise ValueError("billing entry kind is not a known ledger")
 
     @classmethod
-    def from_row(cls, row: Mapping[str, Any]) -> "BillingEntry":
+    def from_row(
+        cls, row: Mapping[str, Any], *, kind: str = ENTRY_KIND_LEDGER,
+    ) -> "BillingEntry":
         required_dates = {
             name: _parse_datetime(row.get(name))
             for name in ("occurred_at", "period_start", "period_end")
@@ -124,6 +159,7 @@ class BillingEntry:
             period_start=required_dates["period_start"],  # type: ignore[arg-type]
             period_end=required_dates["period_end"],  # type: ignore[arg-type]
             expected_period_microusd=int(row["expected_period_microusd"]),
+            kind=kind,
         )
         if entry.id <= 0 or entry.fee_microusd < 0 or not entry.stripe_customer_id:
             raise ValueError("billing claim contains invalid identifiers or amount")
@@ -131,11 +167,11 @@ class BillingEntry:
 
     @property
     def stripe_identifier(self) -> str:
-        return f"brevitas-fee-{self.id}"
+        return _STRIPE_IDENTITY[self.kind][0].format(id=self.id)
 
     @property
     def idempotency_key(self) -> str:
-        return f"brevitas-meter-{self.id}"
+        return _STRIPE_IDENTITY[self.kind][1].format(id=self.id)
 
 
 @dataclass(frozen=True)
@@ -263,7 +299,26 @@ class LoggingBillingTelemetry:
 
 
 class SupabaseBillingStore:
-    """Service-role adapter over narrowly scoped Postgres RPC functions."""
+    """Service-role adapter over narrowly scoped Postgres RPC functions.
+
+    The RPC names, the claim's entry kind and the id parameter name are class
+    attributes so a second ledger with the identical function *shapes* is a
+    subclass with two dicts and a string, not a second transport. Everything
+    else — lease fencing, the one-row claim contract, the 500-char error clamp —
+    is shared, so the two ledgers cannot drift apart.
+    """
+
+    RPCS: Mapping[str, str] = {
+        "claim": "claim_billing_ledger_entries",
+        "begin_send": "mark_billing_outbound_started",
+        "renew": "renew_billing_ledger_lease",
+        "complete": "complete_billing_ledger_entry",
+        "release_owner": "release_billing_ledger_leases",
+        "release_unsent": "release_billing_ledger_unsent",
+        "health": "billing_recovery_health",
+    }
+    ENTRY_KIND = ENTRY_KIND_LEDGER
+    ID_PARAM = "p_entry_id"
 
     def __init__(
         self,
@@ -298,7 +353,7 @@ class SupabaseBillingStore:
     def claim_one(
         self, owner: str, *, lease_seconds: int, cap_microusd: int,
     ) -> BillingEntry | None:
-        rows = self._rpc("claim_billing_ledger_entries", {
+        rows = self._rpc(self.RPCS["claim"], {
             "p_owner": owner,
             "p_lease_seconds": lease_seconds,
             "p_limit": 1,
@@ -308,48 +363,83 @@ class SupabaseBillingStore:
             raise RuntimeError("billing claim returned an invalid response")
         if len(rows) > 1:
             raise RuntimeError("billing claim returned more than one row")
-        return BillingEntry.from_row(rows[0]) if rows else None
+        return BillingEntry.from_row(rows[0], kind=self.ENTRY_KIND) if rows else None
 
     def begin_send(self, entry_id: int, owner: str) -> bool:
-        return bool(self._rpc("mark_billing_outbound_started", {
-            "p_entry_id": entry_id,
+        return bool(self._rpc(self.RPCS["begin_send"], {
+            self.ID_PARAM: entry_id,
             "p_owner": owner,
         }))
 
     def renew(self, entry_id: int, owner: str, lease_seconds: int) -> bool:
-        return bool(self._rpc("renew_billing_ledger_lease", {
-            "p_entry_id": entry_id,
+        return bool(self._rpc(self.RPCS["renew"], {
+            self.ID_PARAM: entry_id,
             "p_owner": owner,
             "p_lease_seconds": lease_seconds,
         }))
 
     def complete(self, entry_id: int, owner: str, status: str, error: str = "") -> bool:
-        return bool(self._rpc("complete_billing_ledger_entry", {
-            "p_entry_id": entry_id,
+        return bool(self._rpc(self.RPCS["complete"], {
+            self.ID_PARAM: entry_id,
             "p_owner": owner,
             "p_status": status,
             "p_error": error[:500],
         }))
 
     def release_owner(self, owner: str) -> int:
-        return int(self._rpc("release_billing_ledger_leases", {"p_owner": owner}) or 0)
+        return int(self._rpc(self.RPCS["release_owner"], {"p_owner": owner}) or 0)
 
     def release_unsent(self, entry_id: int, owner: str) -> bool:
         # Lease-fenced release of a row whose outbound marker is already set.
         # Only legitimate when Stripe definitively did not ingest the event
         # (HTTP 429), which is why it is a separate RPC from release_owner.
-        return bool(self._rpc("release_billing_ledger_unsent", {
-            "p_entry_id": entry_id,
+        return bool(self._rpc(self.RPCS["release_unsent"], {
+            self.ID_PARAM: entry_id,
             "p_owner": owner,
         }))
 
     def check_health(self) -> BillingHealth:
-        rows = self._rpc("billing_recovery_health", {})
+        rows = self._rpc(self.RPCS["health"], {})
         row = rows[0] if isinstance(rows, list) and rows else rows
         return BillingHealth.from_row(row if isinstance(row, Mapping) else None)
 
     def close(self) -> None:
         self.session.close()
+
+
+class SupabaseSettlementStore(SupabaseBillingStore):
+    """The same state machine over public.period_settlement_ledger.
+
+    Two names differ in meaning from the per-row ledger and the difference is
+    load-bearing:
+
+    * ``claim`` leases a row that STAYS ``pending``. 202607280010 refuses any
+      exit from ``sending`` unless outbound_started_at survives — and it fires
+      even for a row that never had a marker — so a row parked in ``sending``
+      with a NULL marker could never be released. The transition into
+      ``sending`` therefore happens only in begin_send, which stamps the status
+      and the marker in one UPDATE.
+    * ``release_unsent`` maps to release_period_settlement_claim, which does NOT
+      clear outbound_started_at (scripts/ci/migration-settlement-writer-assertions.sql
+      fails the build if a settlement function that clears it exists at all).
+      It is still safe to return the row to ``pending``: the cumulative ceiling
+      counts committed money on ``status in ('sending','reported') OR
+      outbound_started_at is not null``, so the fee stays inside the committed
+      sum and the period cannot be re-billed. The next claim reports
+      reclaimed=True and reconciles before re-sending under the same identifier.
+    """
+
+    RPCS: Mapping[str, str] = {
+        "claim": "claim_period_settlement_entries",
+        "begin_send": "mark_period_settlement_outbound_started",
+        "renew": "renew_period_settlement_lease",
+        "complete": "complete_period_settlement_entry",
+        "release_owner": "release_period_settlement_leases",
+        "release_unsent": "release_period_settlement_claim",
+        "health": "period_settlement_recovery_health",
+    }
+    ENTRY_KIND = ENTRY_KIND_SETTLEMENT
+    ID_PARAM = "p_settlement_id"
 
 
 class StripeRestBillingGateway:
@@ -617,6 +707,13 @@ class BillingRecoverySettings:
     poll_seconds: float = 5.0
     cap_microusd: int = 100_000_000
     lag_alert_seconds: int = 300
+    # billing_recovery_health measures oldest_pending_seconds from occurred_at,
+    # which is minutes old. The settlement analogue can only measure it from
+    # period_end — a whole closed week — so the 300s ledger threshold would page
+    # continuously. This is a SEPARATE knob, defaulted to 48h (a promoted
+    # settlement that has not reached Stripe two days after its week closed is
+    # genuinely stuck) and overridable. The value is an operator decision.
+    settlement_lag_alert_seconds: int = 172_800
     review_alert_count: int = 1
     dead_alert_count: int = 1
 
@@ -628,9 +725,42 @@ class BillingRecoverySettings:
             poll_seconds=_bounded_float("BREVITAS_BILLING_POLL_SECONDS", 5, 1, 60),
             cap_microusd=int(Decimal(str(cap_usd)) * Decimal(1_000_000)),
             lag_alert_seconds=_bounded_int("BREVITAS_BILLING_LAG_ALERT_SECONDS", 300, 60, 86_400),
+            settlement_lag_alert_seconds=_bounded_int(
+                "BREVITAS_BILLING_SETTLEMENT_LAG_ALERT_SECONDS", 172_800, 60, 2_592_000,
+            ),
             review_alert_count=_bounded_int("BREVITAS_BILLING_REVIEW_ALERT_COUNT", 1, 1, 1_000_000),
             dead_alert_count=_bounded_int("BREVITAS_BILLING_DEAD_ALERT_COUNT", 1, 1, 1_000_000),
         )
+
+
+class HealthAlertNames(NamedTuple):
+    """The four ledger-health alert names, spelled out per ledger.
+
+    Alert fields are ints, so the ledger cannot travel as a field, and a stuck
+    settlement must never be masked by a clean billing_ledger. The names are
+    written as literals rather than composed from a prefix so the existing
+    per-row names stay greppable — tests/stripe_billing_config.test.mjs asserts
+    two of them against this file's source text.
+    """
+
+    lag: str
+    review: str
+    dead: str
+    stale: str
+
+
+LEDGER_ALERT_NAMES = HealthAlertNames(
+    "billing_processing_lag",
+    "billing_entries_require_review",
+    "billing_entries_dead",
+    "billing_stale_leases",
+)
+SETTLEMENT_ALERT_NAMES = HealthAlertNames(
+    "billing_settlement_processing_lag",
+    "billing_settlement_entries_require_review",
+    "billing_settlement_entries_dead",
+    "billing_settlement_stale_leases",
+)
 
 
 @dataclass
@@ -640,7 +770,24 @@ class BillingRecoveryProcessor:
     settings: BillingRecoverySettings
     telemetry: BillingTelemetry = field(default_factory=LoggingBillingTelemetry)
     now: Callable[[], datetime] = _utcnow
+    # The period-settlement ledger, when it exists. Optional and defaulted to
+    # None so a deployment whose database stops short of the settlement
+    # migrations is a no-op rather than a stream of RPC-not-found errors.
+    settlement_store: BillingStore | None = None
     catalog_contract_valid: bool = field(default=True, init=False)
+
+    @staticmethod
+    def _entry_attributes(entry: BillingEntry, **extra: str) -> dict[str, str]:
+        """Tag per-entry telemetry with its ledger, leaving billing_ledger alone.
+
+        The per-row ledger keeps emitting exactly the attributes it emits today
+        (no dashboard or alert rule has to be rewritten to keep working); only
+        settlement entries gain the distinguishing ``ledger`` attribute.
+        """
+        attributes = dict(extra)
+        if entry.kind != ENTRY_KIND_LEDGER:
+            attributes["ledger"] = entry.kind
+        return attributes
 
     def _catalog_failure(self) -> None:
         self.catalog_contract_valid = False
@@ -649,7 +796,7 @@ class BillingRecoveryProcessor:
             "catalog_contract_valid": 0,
         })
 
-    def _release_unsent(self, entry: BillingEntry, owner: str) -> bool:
+    def _release_unsent(self, store: BillingStore, entry: BillingEntry, owner: str) -> bool:
         """Return a provably unsent row to `pending` without burning an attempt.
 
         Only valid for HTTP 429, the one status the gateway documents as
@@ -658,7 +805,7 @@ class BillingRecoveryProcessor:
         today's behavior and stays in 'sending' until lease expiry.
         """
         try:
-            return self.store.release_unsent(entry.id, owner)
+            return store.release_unsent(entry.id, owner)
         except Exception as exc:
             logger.error(
                 "billing unsent release failed error_type=%s", type(exc).__name__,
@@ -666,20 +813,25 @@ class BillingRecoveryProcessor:
             return False
 
     def _complete(
-        self, result: BillingRunResult, entry: BillingEntry, owner: str,
-        status: str, error: str = "",
+        self, store: BillingStore, result: BillingRunResult, entry: BillingEntry,
+        owner: str, status: str, error: str = "",
     ) -> bool:
-        if not self.store.complete(entry.id, owner, status, error):
+        if not store.complete(entry.id, owner, status, error):
             result.lease_lost += 1
             result.errors += 1
-            self.telemetry.metric("billing.lease_lost", 1)
+            self.telemetry.metric(
+                "billing.lease_lost", 1, self._entry_attributes(entry),
+            )
             return False
         setattr(result, status, getattr(result, status) + 1)
-        self.telemetry.metric("billing.entries", 1, {"status": status})
+        self.telemetry.metric(
+            "billing.entries", 1, self._entry_attributes(entry, status=status),
+        )
         return True
 
     def _reconcile(
         self,
+        store: BillingStore,
         result: BillingRunResult,
         entry: BillingEntry,
         owner: str,
@@ -696,19 +848,22 @@ class BillingRecoveryProcessor:
             reconciled = Reconciliation.UNKNOWN
         if reconciled is not Reconciliation.ACCEPTED:
             return False
-        if self._complete(result, entry, owner, "reported", "reconciled with Stripe aggregate"):
+        if self._complete(
+            store, result, entry, owner, "reported", "reconciled with Stripe aggregate",
+        ):
             result.reconciled += 1
         return True
 
     def _process_entry(
         self,
+        store: BillingStore,
         result: BillingRunResult,
         entry: BillingEntry,
         owner: str,
         should_stop: Callable[[], bool],
     ) -> None:
         def heartbeat() -> bool:
-            return not should_stop() and self.store.renew(
+            return not should_stop() and store.renew(
                 entry.id, owner, self.settings.lease_seconds,
             )
 
@@ -717,14 +872,14 @@ class BillingRecoveryProcessor:
         if (
             entry.reclaimed
             and entry.outbound_started_at is not None
-            and self._reconcile(result, entry, owner, heartbeat)
+            and self._reconcile(store, result, entry, owner, heartbeat)
         ):
             return
         if entry.reclaimed and entry.outbound_started_at is not None:
             age = (self.now() - entry.outbound_started_at).total_seconds()
             if age >= 23 * 3600:
                 self._complete(
-                    result, entry, owner, "review",
+                    store, result, entry, owner, "review",
                     "ambiguous Stripe send exceeded safe replay window",
                 )
                 return
@@ -732,7 +887,7 @@ class BillingRecoveryProcessor:
         if should_stop():
             # release_owner is safe here because this row has no outbound marker.
             if entry.outbound_started_at is None:
-                self.store.release_owner(owner)
+                store.release_owner(owner)
             return
         try:
             # Catalog validation is lease-covered and precedes both the durable
@@ -747,35 +902,43 @@ class BillingRecoveryProcessor:
             if entry.outbound_started_at is None:
                 # Global recoverable configuration error: the customer row is
                 # untouched and can retry after operators repair the catalog.
-                self.store.release_owner(owner)
+                store.release_owner(owner)
             else:
                 # A prior outbound request remains ambiguous. Fence it in
                 # review; never dead-letter it for today's global config.
-                self._complete(result, entry, owner, "review", str(exc))
+                self._complete(store, result, entry, owner, "review", str(exc))
             return
         except StripeRejected as exc:
-            self._complete(result, entry, owner, "dead", str(exc))
+            self._complete(store, result, entry, owner, "dead", str(exc))
             return
         except StripeUnavailable:
             # Definitive non-ingestion (e.g. rate limited) before any outbound
             # request was made: release the never-submitted claim (which also
             # decrements attempts in the store) and retry it in a later cycle.
             result.errors += 1
-            self.store.release_owner(owner)
-            self.telemetry.metric("billing.stripe_unavailable", 1)
+            store.release_owner(owner)
+            self.telemetry.metric(
+                "billing.stripe_unavailable", 1, self._entry_attributes(entry),
+            )
             return
         except (StripeAmbiguous, requests.RequestException):
             result.errors += 1
-            self.store.release_owner(owner)
-            self.telemetry.metric("billing.catalog_validation_error", 1)
+            store.release_owner(owner)
+            self.telemetry.metric(
+                "billing.catalog_validation_error", 1, self._entry_attributes(entry),
+            )
             return
         if not heartbeat():
             result.lease_lost += 1
-            self.telemetry.metric("billing.lease_lost", 1)
+            self.telemetry.metric(
+                "billing.lease_lost", 1, self._entry_attributes(entry),
+            )
             return
-        if not self.store.begin_send(entry.id, owner):
+        if not store.begin_send(entry.id, owner):
             result.lease_lost += 1
-            self.telemetry.metric("billing.lease_lost", 1)
+            self.telemetry.metric(
+                "billing.lease_lost", 1, self._entry_attributes(entry),
+            )
             return
         try:
             # Reclaimed sends use the same event identifier and idempotency key.
@@ -784,10 +947,10 @@ class BillingRecoveryProcessor:
         except CatalogContractError as exc:
             self._catalog_failure()
             result.errors += 1
-            self._complete(result, entry, owner, "review", str(exc))
+            self._complete(store, result, entry, owner, "review", str(exc))
         except StripeRejected as exc:
             result.errors += 1
-            self._complete(result, entry, owner, "dead", str(exc))
+            self._complete(store, result, entry, owner, "dead", str(exc))
         except StripeUnavailable:
             # Stripe definitively did not ingest the event (e.g. rate limited);
             # see _request, where only a 429 raises this. The outcome is
@@ -799,9 +962,18 @@ class BillingRecoveryProcessor:
             # a provably-unsent fee in 'review' (202607200006:349-353) after a
             # handful of rate-limited cycles. release_unsent clears the marker
             # and gives the attempt back under the same lease fence.
+            #
+            # On the settlement ledger the same call maps to
+            # release_period_settlement_claim, which KEEPS the marker (the
+            # 202607280010 latches forbid erasing send evidence). That is still
+            # correct here: the fee stays inside the cumulative committed sum, so
+            # the period cannot be re-billed, and the next claim arrives with
+            # reclaimed=True and reconciles before replaying the same identifier.
             result.errors += 1
-            self._release_unsent(entry, owner)
-            self.telemetry.metric("billing.stripe_unavailable", 1)
+            self._release_unsent(store, entry, owner)
+            self.telemetry.metric(
+                "billing.stripe_unavailable", 1, self._entry_attributes(entry),
+            )
         except (StripeAmbiguous, requests.Timeout, requests.ConnectionError, TimeoutError):
             # Ambiguous outcome: Stripe may or may not have ingested the event.
             # Try a single reconcile in case its aggregate already matches (for
@@ -815,7 +987,7 @@ class BillingRecoveryProcessor:
             # DB sweeps (outbound_started_at age, attempts>=max) escalate a
             # genuinely stuck row to review.
             result.errors += 1
-            self._reconcile(result, entry, owner, heartbeat)
+            self._reconcile(store, result, entry, owner, heartbeat)
         except Exception as exc:
             # Unknown failures after begin_send are ambiguous by definition and
             # follow the same leave-in-'sending' policy as above.
@@ -824,9 +996,16 @@ class BillingRecoveryProcessor:
                 "billing ambiguous send left in sending error_type=%s",
                 type(exc).__name__,
             )
-            self._reconcile(result, entry, owner, heartbeat)
+            self._reconcile(store, result, entry, owner, heartbeat)
         else:
-            self._complete(result, entry, owner, "reported")
+            self._complete(store, result, entry, owner, "reported")
+
+    def _claim(self, store: BillingStore, owner: str) -> BillingEntry | None:
+        return store.claim_one(
+            owner,
+            lease_seconds=self.settings.lease_seconds,
+            cap_microusd=self.settings.cap_microusd,
+        )
 
     def process_once(
         self,
@@ -834,22 +1013,65 @@ class BillingRecoveryProcessor:
         should_stop: Callable[[], bool] = lambda: False,
     ) -> BillingRunResult:
         started = time.monotonic()
-        entry = None if should_stop() else self.store.claim_one(
-            owner,
-            lease_seconds=self.settings.lease_seconds,
-            cap_microusd=self.settings.cap_microusd,
-        )
+        # ONE cycle handles ONE row, from whichever ledger yields it — the claim
+        # RPCs are contractually p_limit = 1, so a second processor would only
+        # duplicate the catalog cache, the Stripe session and the telemetry.
+        #
+        # Settlements are claimed FIRST and billing_ledger is the fallthrough.
+        # 202607280006 retired the per-row trigger's only writer, so the per-row
+        # ledger is a finite drain-down set while settlements are the only source
+        # of NEW money; claiming per-row first would let a legacy backlog starve
+        # every settlement indefinitely. Fallthrough rather than alternation
+        # means an idle settlement queue costs one extra RPC round trip per
+        # cycle and never idles the worker.
+        store: BillingStore = self.store
+        entry: BillingEntry | None = None
+        if self.settlement_store is not None and not should_stop():
+            entry = self._claim(self.settlement_store, owner)
+            if entry is not None:
+                store = self.settlement_store
+        if entry is None and not should_stop():
+            entry = self._claim(self.store, owner)
         result = BillingRunResult(claimed=int(entry is not None))
         if entry is not None:
-            self._process_entry(result, entry, owner, should_stop)
+            self._process_entry(store, result, entry, owner, should_stop)
         self.telemetry.metric("billing.batch.claimed", result.claimed)
         self.telemetry.metric("billing.batch.duration_ms", (time.monotonic() - started) * 1000)
         return result
 
+    def _health_metrics(
+        self, health: BillingHealth, attributes: Mapping[str, str],
+    ) -> None:
+        for name in BillingHealth.__dataclass_fields__:
+            self.telemetry.metric(
+                f"billing.{name}", float(getattr(health, name)), attributes,
+            )
+
+    def _health_alerts(
+        self, health: BillingHealth, *, lag_alert_seconds: int,
+        names: HealthAlertNames,
+    ) -> None:
+        if health.oldest_pending_seconds >= lag_alert_seconds:
+            self.telemetry.alert(names.lag, "page", {
+                "oldest_pending_seconds": health.oldest_pending_seconds,
+                "pending_count": health.pending_count,
+            })
+        if health.review_count >= self.settings.review_alert_count:
+            self.telemetry.alert(names.review, "ticket", {
+                "review_count": health.review_count,
+            })
+        if health.dead_count >= self.settings.dead_alert_count:
+            self.telemetry.alert(names.dead, "page", {
+                "dead_count": health.dead_count,
+            })
+        if health.stale_sending_count:
+            self.telemetry.alert(names.stale, "page", {
+                "stale_sending_count": health.stale_sending_count,
+            })
+
     def check_health(self) -> BillingHealth:
         health = self.store.check_health()
-        for name in BillingHealth.__dataclass_fields__:
-            self.telemetry.metric(f"billing.{name}", float(getattr(health, name)))
+        self._health_metrics(health, {})
         self.telemetry.metric(
             "billing.catalog_contract_valid", float(self.catalog_contract_valid),
         )
@@ -857,23 +1079,21 @@ class BillingRecoveryProcessor:
             self.telemetry.alert("billing_catalog_contract_invalid", "page", {
                 "catalog_contract_valid": 0,
             })
-        if health.oldest_pending_seconds >= self.settings.lag_alert_seconds:
-            self.telemetry.alert("billing_processing_lag", "page", {
-                "oldest_pending_seconds": health.oldest_pending_seconds,
-                "pending_count": health.pending_count,
-            })
-        if health.review_count >= self.settings.review_alert_count:
-            self.telemetry.alert("billing_entries_require_review", "ticket", {
-                "review_count": health.review_count,
-            })
-        if health.dead_count >= self.settings.dead_alert_count:
-            self.telemetry.alert("billing_entries_dead", "page", {
-                "dead_count": health.dead_count,
-            })
-        if health.stale_sending_count:
-            self.telemetry.alert("billing_stale_leases", "page", {
-                "stale_sending_count": health.stale_sending_count,
-            })
+        self._health_alerts(
+            health,
+            lag_alert_seconds=self.settings.lag_alert_seconds,
+            names=LEDGER_ALERT_NAMES,
+        )
+        if self.settlement_store is not None:
+            # Sampled and alerted independently. A settlement failure raising
+            # here fails the cycle exactly as a billing_ledger failure does.
+            settlement = self.settlement_store.check_health()
+            self._health_metrics(settlement, {"ledger": ENTRY_KIND_SETTLEMENT})
+            self._health_alerts(
+                settlement,
+                lag_alert_seconds=self.settings.settlement_lag_alert_seconds,
+                names=SETTLEMENT_ALERT_NAMES,
+            )
         return health
 
 
@@ -888,6 +1108,17 @@ def billing_recovery_is_configured() -> bool:
     )) and bool(os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL"))
 
 
+def billing_settlement_recovery_is_enabled() -> bool:
+    """Second, independent gate for the period-settlement ledger.
+
+    Defaulted OFF and checked with the same exact-"true" comparison as
+    BREVITAS_BILLING_ENABLED. A database that stops short of the settlement
+    migrations (no claim_period_settlement_entries) must be a no-op, not a
+    stream of RPC-not-found errors on every cycle.
+    """
+    return os.getenv("BREVITAS_BILLING_SETTLEMENT_ENABLED", "") == "true"
+
+
 def build_billing_recovery_processor_from_env(
     *, telemetry: BillingTelemetry | None = None,
 ) -> BillingRecoveryProcessor:
@@ -899,10 +1130,15 @@ def build_billing_recovery_processor_from_env(
         raise RuntimeError(
             "BREVITAS_BILLING_LEASE_SECONDS must cover send and reconciliation timeouts"
         )
+    supabase_url = os.getenv("SUPABASE_URL") or os.environ["NEXT_PUBLIC_SUPABASE_URL"]
+    service_role_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     store = SupabaseBillingStore(
-        os.getenv("SUPABASE_URL") or os.environ["NEXT_PUBLIC_SUPABASE_URL"],
-        os.environ["SUPABASE_SERVICE_ROLE_KEY"],
-        timeout_seconds=timeout,
+        supabase_url, service_role_key, timeout_seconds=timeout,
+    )
+    settlement_store = (
+        SupabaseSettlementStore(supabase_url, service_role_key, timeout_seconds=timeout)
+        if billing_settlement_recovery_is_enabled()
+        else None
     )
     stripe = StripeRestBillingGateway(
         os.environ["STRIPE_SECRET_KEY"],
@@ -921,6 +1157,7 @@ def build_billing_recovery_processor_from_env(
         stripe=stripe,
         settings=settings,
         telemetry=telemetry or LoggingBillingTelemetry(),
+        settlement_store=settlement_store,
     )
 
 
@@ -1148,23 +1385,29 @@ async def run_billing_recovery_loop(
                 pass
     finally:
         # Every processed send is terminal before process_once returns. This RPC
-        # releases only claimed rows whose outbound request never began.
-        try:
-            await _run_thread_call_safely(
-                lambda: processor.store.release_owner(owner),
-                on_cancel=stop.set,
-            )
-        except Exception as exc:
-            logger.error("billing lease release failed error_type=%s", type(exc).__name__)
-            record_error()
+        # releases only claimed rows whose outbound request never began — on
+        # both ledgers, each of which owns its own lease table.
+        for release_store in (processor.store, processor.settlement_store):
+            if release_store is None:
+                continue
+            try:
+                await _run_thread_call_safely(
+                    lambda target=release_store: target.release_owner(owner),
+                    on_cancel=stop.set,
+                )
+            except Exception as exc:
+                logger.error("billing lease release failed error_type=%s", type(exc).__name__)
+                record_error()
         try:
             processor.stripe.close()
         except Exception as exc:
             logger.error("billing Stripe close failed error_type=%s", type(exc).__name__)
             record_error()
         finally:
-            close_store = getattr(processor.store, "close", None)
-            if callable(close_store):
+            for closable in (processor.store, processor.settlement_store):
+                close_store = getattr(closable, "close", None)
+                if not callable(close_store):
+                    continue
                 try:
                     close_store()
                 except Exception as exc:

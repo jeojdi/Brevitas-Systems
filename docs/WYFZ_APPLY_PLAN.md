@@ -2244,3 +2244,730 @@ Then the minimum viable DB set before **any** code deploys is: **Window A + `280
 require `280006`'s freeze). In other words: Window A, then `280006` through `280013`. `280005`,
 `280014` and all of Window C can trail the code deploy safely — but `280005` is fixing a live
 onboarding outage, so trailing it costs you customers.
+
+---
+
+## WINDOW B3 ADDENDUM (2026-07-30) — `202607280029_period_settlement_claim_path.sql`
+
+Appended 2026-07-30. Everything above described the `280005`–`280024` pass, which is **done**:
+wyfz now carries the full `280005`–`280024` chain, applied through Windows A–C, **plus** the
+2026-07-30 function realignment (`scripts/db/wyfz_function_realignment_20260730.sql`), which
+reconciled the two functions that diverged because the chain reached wyfz out of manifest order
+(`280021`'s live `auth.users` trigger broke `280010`/`280012`'s embedded probes; see that file's
+header). wyfz does **not** carry `202607280025`–`202607280028`, and `202607280028` is
+**quarantined** (its review found a blocker + 3 highs) — it must not be applied in this window or
+any other until its owner decision lands.
+
+This addendum covers one future file: **`202607280029_period_settlement_claim_path.sql`**, the
+settlement claim/send path (eight `security definer` functions: `claim_period_settlement_entries`,
+`mark_period_settlement_outbound_started`, `renew_period_settlement_lease`,
+`complete_period_settlement_entry`, `release_period_settlement_leases`,
+`release_period_settlement_claim`, `period_settlement_recovery_health`,
+`billing_period_settlement_history`). Function-only; it must write no rows and grant no table
+privilege on `period_settlement_ledger`.
+
+All Laws (L1–L6) apply unchanged: one file, `supabase db query --linked -f`, never `db push`,
+stop on first non-zero exit, no `brevitas_schema_migrations`, keep the hand-written log.
+
+### B3.0 Blocking gate — the file DOES NOT EXIST yet. Do not open this window.
+
+As of 2026-07-30 the migration has **not been authored**: `supabase/migrations/` ends at
+`202607280028`, and the Phase-4 build's adversarial review verdict is **do-not-ship** (0 of the 8
+functions defined anywhere; see `docs/STRIPE_BUILD_REPORT.md`, "SETTLEMENT SENDER (Phase 4)").
+This addendum is written against the reviewed *design contract*, so its queries pin what the file
+must produce — but every one of the following must be true before you run anything here:
+
+- [ ] `supabase/migrations/202607280029_period_settlement_claim_path.sql` exists, is registered
+      in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt` (same commit — the shared-registrar rule), and
+      has an apply line in `scripts/ci/run-migration-tests.sh`.
+- [ ] It carries a `-- REVERSE:` posture header (`verifyReversePosture` governs everything from
+      `202607280013` on; the `REVERSE_POSTURE_CUTOFF` constant does **not** exempt it).
+- [ ] `node scripts/ci/verify-migrations.mjs` exit 0, `npm test` fully green (including
+      `tests/billing_route_dependency_degradation.test.mjs`, which is red today precisely because
+      this file is missing), and the migration harness exit 0 on **both** paths.
+- [ ] The Phase-4 review's do-not-ship has been re-ruled after the SQL landed, and the caestus
+      acceptance run (claim → begin_send → real TEST-mode meter event → reconcile → `reported`,
+      settlement `1000000005`) has been executed and matches its expected numbers.
+- [ ] `shasum -a 256` of the file matches the frozen checksum line (§3 idiom).
+- [ ] **Dependency check against the quarantine:** confirm the authored file has no precondition
+      on `202607280025`–`202607280028` (wyfz has none of them). In particular it must not assert
+      `202607280028`'s anchored shape of `billing_period_settlement_evidence` — the precondition
+      query below pins wyfz's realigned (pre-0028) md5. If the file requires any of 0025–0028,
+      **stop and re-plan this window**; do not apply 0028 to satisfy it.
+- [ ] **The `280021` probe trap:** if the file carries embedded self-tests that insert
+      `auth.users` probe rows, they MUST set `created_at` (the live legal-acceptance trigger
+      copies it into a NOT NULL column; bare probe inserts are exactly what broke `280010`/
+      `280012` on wyfz). Read the file's probe blocks and verify before applying.
+
+### B3.1 Ordering note — deliberate divergence, recorded
+
+Applying `280029` while skipping `280025`–`280027` diverges wyfz further from manifest order.
+That is acceptable and deliberate: none of the three is a settlement-sender prerequisite
+(waitlist budget, usage-log dedupe, browser TRUNCATE contract), `280028` is quarantined, and wyfz
+already diverges by construction (the realignment file is the precedent and the record). Record
+in `$WYFZ_LOG` that 0025–0028 were intentionally not applied, so the next operator does not
+"helpfully" backfill them — 0028 especially.
+
+### B3.2 · `202607280029_period_settlement_claim_path.sql`
+
+**(a)** Adds the claim/lease/send/complete/release path for `period_settlement_ledger` plus the
+recovery-health and settlement-history reads. All eight functions `security definer`, EXECUTE
+revoked from `public`/`anon`/`authenticated`, granted to `service_role` only. The claim leases
+rows that **stay `status='pending'`** (only `begin_send` enters `'sending'`, stamping
+`outbound_started_at` in the same UPDATE — the `202607280010` latches make any other shape
+permanently stuck). No table privileges change. No rows written.
+
+**(b)** Precondition:
+```bash
+cat > /tmp/wyfz-apply/pre-280029.sql <<'SQL'
+\echo == prerequisites: the 280007-280013 settlement stack must be present ==
+select to_regclass('public.period_settlement_ledger') is not null as psl_table,
+       to_regclass('public.billing_halting_conditions') is not null as bhc_table,
+       to_regprocedure('public.settle_billing_period(uuid,timestamptz,text,boolean)')
+         is not null as f_settle,
+       to_regprocedure('public.promote_billing_period_settlement(bigint,text,text)')
+         is not null as f_promote,
+       to_regprocedure('public.billing_period_settlement_summary(uuid,timestamptz)')
+         is not null as f_summary;
+\echo == wyfz realignment end-state: both md5s must match the canonical (pre-0028) chain ==
+select md5(pg_get_functiondef(to_regprocedure(
+         'public.prevent_period_settlement_identity_change()')))
+         = 'fc6a55f1f773925355d3274f55f6a7c0' as identity_guard_canonical,
+       md5(pg_get_functiondef(to_regprocedure(
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')))
+         = 'ddcb0f6d601e7a29370da6920e63e24e' as evidence_fn_canonical_pre_0028;
+\echo == none of the new functions may exist yet ==
+select to_regprocedure('public.claim_period_settlement_entries(text,integer,integer,bigint)') is null as claim_absent,
+       to_regprocedure('public.mark_period_settlement_outbound_started(bigint,text)')  is null as begin_send_absent,
+       to_regprocedure('public.renew_period_settlement_lease(bigint,text,integer)')    is null as renew_absent,
+       to_regprocedure('public.complete_period_settlement_entry(bigint,text,text,text)') is null as complete_absent,
+       to_regprocedure('public.release_period_settlement_leases(text)')                is null as release_owner_absent,
+       to_regprocedure('public.release_period_settlement_claim(bigint,text)')          is null as release_claim_absent,
+       to_regprocedure('public.period_settlement_recovery_health()')                   is null as health_absent,
+       to_regprocedure('public.billing_period_settlement_history(uuid,integer)')       is null as history_absent,
+       to_regprocedure('public.release_period_settlement_unsent(bigint,text)')         is null as banned_name_absent_REQUIRED;
+\echo == money state: wyfz must still be frozen ==
+select (select count(*) from public.period_settlement_ledger) as settlements_expect_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_expect_0,
+       (select coalesce(max(id),0) from public.billing_ledger) as ledger_max_id_must_be_lt_1e9,
+       (select seqstart from pg_sequence
+         where seqrelid = pg_get_serial_sequence(
+                 'public.period_settlement_ledger','id')::regclass)
+         as psl_seq_start_expect_1e9,
+       (select count(*) from pg_trigger
+         where tgrelid='public.usage_log'::regclass and not tgisinternal)
+         as usage_triggers_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280029.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Every boolean `t`, `settlements_expect_0 = 0` (**if not 0, STOP** — a settlement row on wyfz that
+this runbook did not create is the §10.4 escalation case), `billing_ledger_expect_0 = 0`,
+`psl_seq_start_expect_1e9 = 1000000000` (the Stripe identifier id-space disjointness that
+`202607280007:478-486` asserts at apply time and the new file's own self-check should re-assert).
+
+**(c)**
+```bash
+wyfz_run supabase/migrations/202607280029_period_settlement_claim_path.sql
+```
+
+**(d)** Postcondition:
+```bash
+cat > /tmp/wyfz-apply/post-280029.sql <<'SQL'
+\echo == all eight functions exist ==
+select to_regprocedure('public.claim_period_settlement_entries(text,integer,integer,bigint)') is not null as f_claim,
+       to_regprocedure('public.mark_period_settlement_outbound_started(bigint,text)')  is not null as f_begin_send,
+       to_regprocedure('public.renew_period_settlement_lease(bigint,text,integer)')    is not null as f_renew,
+       to_regprocedure('public.complete_period_settlement_entry(bigint,text,text,text)') is not null as f_complete,
+       to_regprocedure('public.release_period_settlement_leases(text)')                is not null as f_release_owner,
+       to_regprocedure('public.release_period_settlement_claim(bigint,text)')          is not null as f_release_claim,
+       to_regprocedure('public.period_settlement_recovery_health()')                   is not null as f_health,
+       to_regprocedure('public.billing_period_settlement_history(uuid,integer)')       is not null as f_history;
+\echo == privilege posture: service_role only, for every one of the eight ==
+select p.oid::regprocedure as fn,
+       has_function_privilege('service_role', p.oid, 'EXECUTE')      as sr_expect_t,
+       not has_function_privilege('anon', p.oid, 'EXECUTE')          as anon_blocked_expect_t,
+       not has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth_blocked_expect_t
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and p.proname in ('claim_period_settlement_entries','mark_period_settlement_outbound_started',
+                     'renew_period_settlement_lease','complete_period_settlement_entry',
+                     'release_period_settlement_leases','release_period_settlement_claim',
+                     'period_settlement_recovery_health','billing_period_settlement_history')
+ order by 1;
+\echo == the table stays sealed: zero PostgREST table privileges (21 checks, all false) ==
+select count(*) as postgrest_table_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role')) roles(r)
+ cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),
+                    ('TRUNCATE'),('REFERENCES'),('TRIGGER')) privs(p)
+ where has_table_privilege(roles.r, 'public.period_settlement_ledger', privs.p);
+\echo == the banned 429-path name must still not exist, and the replacement must not touch the marker ==
+select to_regprocedure('public.release_period_settlement_unsent(bigint,text)') is null
+         as banned_name_still_absent_REQUIRED,
+       (select prosrc not like '%outbound_started_at%' from pg_proc
+         where oid = to_regprocedure('public.release_period_settlement_claim(bigint,text)'))
+         as release_claim_never_clears_marker_REQUIRED;
+\echo == the migration wrote no rows ==
+select (select count(*) from public.period_settlement_ledger) as settlements_STILL_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_STILL_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280029.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Then two behavioral reads — safe on an empty ledger, and the only exercise wyfz can give this
+path today:
+```bash
+cat > /tmp/wyfz-apply/post-280029-behave.sql <<'SQL'
+\echo == health over an empty ledger: one row, zeros/nulls ==
+select * from public.period_settlement_recovery_health();
+\echo == claim on an empty ledger: zero rows, nothing swept, nothing written ==
+select * from public.claim_period_settlement_entries('wyfz-b3-probe', 60, 1, 1000000);
+select count(*) as settlements_STILL_0_after_claim from public.period_settlement_ledger;
+\echo == history refusal vocabulary for an org with no billing account ==
+select public.billing_period_settlement_history(
+         '00000000-0000-0000-0000-000000000000'::uuid, 1) as expect_ok_false_no_billing_account;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280029-behave.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+The claim call is a real invocation, not read-only — on an empty ledger its sweeps match zero
+rows and it returns zero rows, so its only observable effect is nothing; the follow-up count
+pins that. Expect the history call to return `{"ok": false, "code": "no_billing_account"}`.
+
+**(e)** Single transaction (verify the file: `grep -c '^begin;'` = 1, `grep -c '^commit;'` = 1,
+no `CONCURRENTLY`), functions only, no rows, no locks beyond catalog. A mid-file failure is a
+no-op. If the authored file carries self-test fixtures, they must self-unwind AND respect the
+B3.0 `created_at` trap; re-run `verify-no-probes.sql` after applying regardless. Reverse posture:
+whatever its `-- REVERSE:` header says — expect `DDL:` drop statements for the eight functions,
+since it writes no data.
+
+**(f)** **DB-first, and the code that uses it stays dark.** The deployed worker calls none of
+these RPCs unless `BREVITAS_BILLING_SETTLEMENT_ENABLED` is exactly `"true"` — leave it unset on
+Railway; the review requires the observability fixes (per-row gauge clobber, dead settlement
+alert names) before that flag ever flips. The status route's history read degrades to
+`settlement_history: null` + HTTP 200 when the RPC is absent, so either deploy order is safe;
+DB-first simply makes the settled-weeks UI truthful on the first post-deploy request. **Nothing
+this file installs can move money on wyfz**: zero settlements exist, `billing_ledger` is empty,
+`promote_billing_period_settlement` is granted to nobody, and production traffic is still 100%
+unbillable (the drought) — the apply is inert plumbing, which is exactly why it is safe to land
+DB-first and prove in place.
+
+### B3.3 Window gate
+
+- [ ] B3.0 fully satisfied **before** connecting to wyfz (file exists, registered, frozen,
+      reviewed, caestus acceptance run green, no 0025–0028 dependency, probe trap checked).
+- [ ] `pre-280029.sql` all green, `settlements_expect_0 = 0`.
+- [ ] `280029` exited 0 with an `OK` line in `$WYFZ_LOG`.
+- [ ] `post-280029.sql`: eight functions present; every row of the privilege table
+      `t`/`t`/`t`; `postgrest_table_privs_MUST_BE_0 = 0`; both `REQUIRED` booleans `t`;
+      both row counts still 0.
+- [ ] `post-280029-behave.sql`: health returns, claim returns zero rows and writes nothing,
+      history refuses with `no_billing_account`.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0.
+- [ ] `BREVITAS_BILLING_SETTLEMENT_ENABLED` confirmed **unset** in the Railway service env.
+- [ ] `$WYFZ_LOG` records that `202607280025`–`202607280028` were deliberately not applied.
+
+---
+
+## WINDOW B4 ADDENDUM (2026-07-30) — `202607280030_billing_attestation_writer.sql`
+
+Appended 2026-07-30, later the same day as B3. **B3 is done: wyfz is now at `202607280029`** —
+the claim/send path is applied and postcondition-verified. wyfz still does **not** carry
+`202607280025`–`202607280028`, and `202607280028` remains **quarantined** (B3.1's log entry
+stands: do not "helpfully" backfill it).
+
+This addendum covers one file: **`202607280030_billing_attestation_writer.sql`**, the attestation
+writer that `202607280009` deliberately did not build. It creates one login role
+(`brevitas_attestor`, **no password** — fail-closed until a human sets one out of band), two
+`SECURITY DEFINER` operator functions (`attest_billing_arrangement(uuid,text,text,text,uuid)`,
+`revoke_billing_arrangement(uuid,text)`) executable by **only** that role, one API-facing capture
+RPC (`open_billing_arrangement_request(uuid,uuid,text,text,text,text,text)`, `service_role`
+EXECUTE), and two tables (`organization_billing_arrangement_log`, insert-only;
+`billing_arrangement_request`, `service_role` INSERT/SELECT only). It does **not** relax
+`202607280009`: no role gains any write on `public.organization_billing_arrangement`, and the
+file's own DO block re-asserts that before committing.
+
+All Laws (L1–L6) apply unchanged: one file, `supabase db query --linked -f`, never `db push`,
+stop on first non-zero exit, no `brevitas_schema_migrations`, keep the hand-written log.
+
+### B4.0 Gate — all satisfied 2026-07-30 except the last two, which are yours
+
+- [x] File exists and is registered in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt` (same change set; `REVERSE_POSTURE_CUTOFF`
+      bumped to `202607280031`).
+- [x] Migration harness exit 0 on **both** paths — and note the harness got strictly harder the
+      same day: every assertion suite now runs under `ON_ERROR_STOP=1` (they were previously
+      advisory), so this green is load-bearing in a way earlier greens were not.
+- [x] Applied to **caestus** (`evpoxdrluvihryvqhraz`) with every postcondition below green, plus
+      the negative proofs (service_role denied on function and table; `set session authorization
+      brevitas_attestor` denied even to `postgres`). Idempotent on re-apply.
+- [x] **The hosted-Supabase ALTER ROLE trap is fixed in the frozen bytes.** The first authored
+      version died on caestus with `permission denied to alter role` (`nosuperuser`/`nobypassrls`/
+      `noreplication` are superuser-only and Supabase's `postgres` is not superuser). The frozen
+      file runs those in a privilege-tolerant block and then **asserts the resulting state from
+      `pg_roles` unconditionally** — a pre-existing over-privileged `brevitas_attestor` aborts the
+      file. Checksum verification (below) is what guarantees you are applying the fixed bytes.
+- [x] No dependency on `202607280025`–`202607280028`: the file reads
+      `pg_get_functiondef` of the two settlement guards only to assert they do **not** reference
+      the new tables, and behaviorally probes the guard — it does not assert 0028's anchored
+      evidence shape. Safe against wyfz's realigned (pre-0028) chain.
+- [x] **The `280021` probe trap does not bite:** the embedded contract probe inserts one
+      `public.organizations` row and one `billing_arrangement_request` row (no `auth.users`
+      writes), and deletes both before commit.
+- [ ] Adversarial review verdict is **ship-with-fixes** (see `docs/STRIPE_BUILD_REPORT.md`, "ONE-
+      COMMAND ONBOARDING"). None of the open findings blocks this apply — the two highs are a
+      docs claim and a working-tree/0028 hygiene issue; the mediums are follow-ups
+      (`202607280031` attestor SELECT grant, ops CLI, DSN preflight assertion). Record in
+      `$WYFZ_LOG` that you read them and proceeded.
+- [ ] **After** the apply: do NOT set a password on `brevitas_attestor` in this window. That is a
+      separate, deliberate act, done only when the first real attestation is due, from an
+      operator machine — and `BREVITAS_ATTESTOR_DSN` must never appear in Railway, Vercel, or
+      GitHub Actions env. On hosted Supabase there is no impersonation path (`set session
+      authorization` is denied to `postgres`), so the password's existence and placement IS the
+      entire remaining guarantee.
+
+Checksum (§3 idiom) — must match exactly, or someone edited the frozen file; **stop**:
+
+```bash
+grep 202607280030 scripts/ci/migration-frozen-checksums.txt
+shasum -a 256 supabase/migrations/202607280030_billing_attestation_writer.sql
+```
+
+```
+a35ed35f181502803f00fbc2f536c4b859ff849b342a298763d150d3e27c41c2  202607280030_billing_attestation_writer.sql
+```
+
+### B4.1 Ordering note
+
+Applying `280030` while still skipping `280025`–`280028` continues B3.1's recorded divergence,
+on the same rationale: none of the four is a prerequisite, `280028` is quarantined, and the
+realignment file is the precedent. Record again in `$WYFZ_LOG` that 0025–0028 were intentionally
+not applied.
+
+### B4.2 · `202607280030_billing_attestation_writer.sql`
+
+**(a)** Replaces hand-written attestation DML with an audited RPC path. Adds the cluster-wide
+role `brevitas_attestor` (login, **no password**, `noinherit`, zero direct table privileges —
+blanket-revoked), the two operator functions (EXECUTE granted to `brevitas_attestor` only,
+revoked from `public`/`anon`/`authenticated`/`service_role`, and a `session_user` check inside
+each body so a future mistaken GRANT still refuses), the insert-only attestation log (no
+UPDATE/DELETE for any role; deliberately **no FK to organizations** so evidence outlives the
+tenant), and the inert customer-request capture table + owner-only RPC. Grants nothing new on
+`organization_billing_arrangement`.
+
+**(b)** Precondition:
+```bash
+cat > /tmp/wyfz-apply/pre-280030.sql <<'SQL'
+\echo == prerequisites: the 0009/0013 attestation + settlement stack must be present ==
+select to_regclass('public.organization_billing_arrangement') is not null as oba_table,
+       to_regprocedure('public.organization_billing_arrangement_state(uuid)')
+         is not null as f_state,
+       to_regprocedure('public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)')
+         is not null as f_settle_guard,
+       to_regprocedure('public.assert_billing_period_halting_conditions(uuid,timestamptz,timestamptz,bigint)')
+         is not null as f_halt_guard,
+       to_regclass('public.organizations') is not null as organizations;
+\echo == 0009's posture must still hold BEFORE this file (it re-asserts it after) ==
+select count(*) as oba_write_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement', privs.p);
+\echo == none of the new objects may exist yet ==
+select not exists (select 1 from pg_roles where rolname = 'brevitas_attestor')
+         as attestor_role_absent,
+       to_regclass('public.organization_billing_arrangement_log') is null as log_absent,
+       to_regclass('public.billing_arrangement_request')          is null as request_absent,
+       to_regprocedure('public.attest_billing_arrangement(uuid,text,text,text,uuid)')
+         is null as attest_absent,
+       to_regprocedure('public.revoke_billing_arrangement(uuid,text)')
+         is null as revoke_absent,
+       to_regprocedure('public.open_billing_arrangement_request(uuid,uuid,text,text,text,text,text)')
+         is null as open_req_absent;
+\echo == money state: wyfz must still be frozen ==
+select (select count(*) from public.period_settlement_ledger) as settlements_expect_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_expect_0,
+       (select count(*) from public.organization_billing_arrangement)
+         as attestations_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280030.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Every boolean `t`, both `MUST_BE_0`/`expect_0` counts `0`. If `attestor_role_absent = f`, someone
+created the role outside this runbook — **stop**, that is the §10.4 escalation case (the file
+would then *assert* the role's posture rather than create it, and an over-privileged pre-existing
+role correctly aborts it).
+
+**(c)**
+```bash
+wyfz_run supabase/migrations/202607280030_billing_attestation_writer.sql
+```
+
+**(d)** Postcondition:
+```bash
+cat > /tmp/wyfz-apply/post-280030.sql <<'SQL'
+\echo == role posture: exists, can log in, holds nothing dangerous, has NO password ==
+select rolcanlogin as can_login_expect_t,
+       not rolsuper       as no_super,
+       not rolbypassrls   as no_bypassrls,
+       not rolreplication as no_replication,
+       not rolinherit     as no_inherit,
+       not rolcreaterole  as no_createrole,
+       not rolcreatedb    as no_createdb
+  from pg_roles where rolname = 'brevitas_attestor';
+select (select rolpassword is null from pg_authid where rolname = 'brevitas_attestor')
+         as password_unset_expect_t;  -- pg_roles masks every password as '********'; pg_authid
+                                      -- is authoritative (readable by postgres on Supabase)
+\echo == EXECUTE matrix: operator functions attestor-only; capture RPC service_role-only ==
+select p.oid::regprocedure as fn,
+       not has_function_privilege('anon', p.oid, 'EXECUTE')            as anon_blocked,
+       not has_function_privilege('authenticated', p.oid, 'EXECUTE')   as auth_blocked,
+       has_function_privilege('service_role', p.oid, 'EXECUTE')        as sr,
+       has_function_privilege('brevitas_attestor', p.oid, 'EXECUTE')   as attestor
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and p.proname in ('attest_billing_arrangement','revoke_billing_arrangement',
+                     'open_billing_arrangement_request')
+ order by 1;
+\echo == 0009 still sealed, log insert-only, request table API-writable but not closable ==
+select count(*) as oba_write_privs_STILL_0
+  from (values ('anon'),('authenticated'),('service_role'),('brevitas_attestor')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement', privs.p);
+select count(*) as log_mutation_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role'),('brevitas_attestor')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement_log', privs.p);
+select has_table_privilege('service_role','public.billing_arrangement_request','INSERT') as req_sr_insert,
+       has_table_privilege('service_role','public.billing_arrangement_request','SELECT') as req_sr_select,
+       not has_table_privilege('service_role','public.billing_arrangement_request','UPDATE') as req_sr_no_update,
+       not has_table_privilege('service_role','public.billing_arrangement_request','DELETE') as req_sr_no_delete,
+       not has_table_privilege('anon','public.billing_arrangement_request','SELECT') as req_anon_blocked,
+       not has_table_privilege('authenticated','public.billing_arrangement_request','SELECT') as req_auth_blocked;
+\echo == the attestor's ONLY reach into public is the two operator functions ==
+select count(*) as attestor_direct_table_privs_MUST_BE_0
+  from information_schema.role_table_grants
+ where grantee = 'brevitas_attestor' and table_schema = 'public';
+\echo == the migration's probe unwound itself: no rows anywhere ==
+select (select count(*) from public.organization_billing_arrangement_log) as log_rows_expect_0,
+       (select count(*) from public.billing_arrangement_request)          as request_rows_expect_0,
+       (select count(*) from public.organization_billing_arrangement)     as attestations_STILL_0,
+       (select count(*) from public.organizations
+         where name like '202607280030%') as probe_orgs_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280030.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Role posture all `t`; EXECUTE matrix: the two operator functions `t/t/f/t`
+(anon-blocked / auth-blocked / **sr=f** / attestor=t), `open_billing_arrangement_request`
+`t/t/t/f`; every count `0`.
+
+Then the two negative proofs — these error strings ARE the guarantee; capture them verbatim in
+`$WYFZ_LOG` (both confirmed on caestus 2026-07-30):
+```bash
+cat > /tmp/wyfz-apply/post-280030-negative.sql <<'SQL'
+\echo == a leaked service key cannot attest: expect TWO permission-denied errors ==
+begin;
+set local role service_role;
+select public.attest_billing_arrangement(
+  '00000000-0000-0000-0000-000000000000'::uuid, 'marginal_per_call', 'nobody', 'no evidence', null);
+rollback;
+begin;
+set local role service_role;
+insert into public.organization_billing_arrangement (organization_id, arrangement)
+values ('00000000-0000-0000-0000-000000000000'::uuid, 'marginal_per_call');
+rollback;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280030-negative.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Expect `permission denied for function attest_billing_arrangement` and
+`permission denied for table organization_billing_arrangement`. Do **not** attempt
+`set session authorization brevitas_attestor` — it is denied to `postgres` on hosted Supabase
+(that denial is itself a property, verified on caestus); the successful-attestation path is
+proven only in local CI, and on wyfz it becomes possible only after a password is set out of
+band.
+
+**(e)** Single transaction (`grep -c '^begin;'` = 1, `^commit;` = 1, zero `CONCURRENTLY` —
+verified in the frozen bytes), so a mid-file failure rolls back **everything, including the
+`CREATE ROLE`** (role DDL is transactional; caestus's failed first apply left
+`attestor_rows=0`, `log_absent=t`, `req_absent=t`). The embedded contract probe inserts one
+`public.organizations` row + one request row, proves both functions refuse a non-attestor
+session, calls the real settlement guard expecting the `unattested` halt, then deletes both rows
+— the `probe_orgs_expect_0` postcondition pins the unwind. One cluster-wide residue on success:
+the role itself, which is the point. `REVERSE: PITR-ONLY` per its header — the log table is
+insert-only evidence; the DDL reverse (drop functions, drop role) exists mechanically but any
+log rows written after go-live must never be deleted.
+
+**(f)** **DB-first, and it stays dark.** No deployed code calls anything this file creates:
+`service_role` gains EXECUTE on `open_billing_arrangement_request` only, and no API endpoint
+invokes it yet (the dashboard "accept terms" surface is unbuilt — see the build report). Nothing
+here can move money: attestation requires a direct connection as `brevitas_attestor`, whose
+password does not exist until a human sets it, and `promote_billing_period_settlement` remains
+granted to nobody. The one behaviour that changes at apply time is **for the better**: the file's
+probe re-proves, inside the apply transaction on wyfz itself, that an unattested organization
+cannot settle a positive fee.
+
+### B4.3 Window gate
+
+- [ ] B4.0 fully satisfied; checksum `a35ed35f…` matches both lists.
+- [ ] `pre-280030.sql` all green; `attestor_role_absent = t`; all zero-counts 0.
+- [ ] `280030` exited 0 with an `OK` line in `$WYFZ_LOG`.
+- [ ] `post-280030.sql`: role posture 7×`t` + `password_unset_expect_t = t`; EXECUTE matrix as
+      specified (operator functions **sr=f**); all four count checks `0`; probe rows gone.
+- [ ] `post-280030-negative.sql`: both permission-denied strings captured verbatim.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0.
+- [ ] No password set on `brevitas_attestor`; `BREVITAS_ATTESTOR_DSN` confirmed absent from
+      Railway, Vercel, and GitHub Actions env.
+- [ ] `$WYFZ_LOG` records: 0025–0028 still deliberately unapplied; review findings read;
+      follow-ups (`202607280031` attestor SELECT grant, `brevitas-ops attest`, DSN preflight
+      assertion) tracked but not blocking.
+
+---
+
+## WINDOW B5 ADDENDUM (2026-07-30) — `202607280031_observed_price_cache_fee_basis.sql`
+
+Appended 2026-07-30, later the same day as B4. Assumes **wyfz is at `202607280029` plus B4
+(`202607280030`) applied and gated green** — apply B4 first. Note on numbering: the B4 gate's
+"follow-ups" list reserved `202607280031` for an attestor SELECT grant; that number was instead
+consumed by this file (the anchored-savings v2 basis — see `docs/STRIPE_BUILD_REPORT.md`,
+"ANCHORED SAVINGS v2"). The attestor grant, if built, takes `202607280032` or later.
+
+This addendum covers one file: **`202607280031_observed_price_cache_fee_basis.sql`** — the
+redesign that replaces quarantined `202607280028` and makes Brevitas cache-replay savings
+billable when, and only when, each replay is forward-linked to the real paid request that filled
+the cache. It ships both halves of that link (`usage_log.savings_anchor_request_id` +
+`semantic_cache.origin_request_id`, an 11-arg `semantic_cache_store_bounded` overload, a widened
+`semantic_cache_lookup`), three tighten-only config columns on `billing_halting_conditions`
+(materiality floor `0.3000` USD / lookback `30` days / spend-ratio cap `3.000`), a new helper
+`billing_observed_model_price`, and DROP+CREATEs the evidence function to a 4-arg form
+(`p_usage_log_watermark_id bigint default null`) so every input to a settlement is pinned by the
+settlement's own watermark. The settlement writer records the anchored **basis** but still gates
+on the un-narrowed gross.
+
+All Laws (L1–L6) apply unchanged. One law gets sharper teeth here: **L3 (never replay the chain)
+now has a measured, silent failure mode** — re-applying `202607170002_cache_security.sql` after
+this file DROPs and recreates `semantic_cache_lookup` with the narrow OUT list, and anchoring
+stops **with no error anywhere**; every subsequent replay settles $0 (proven by execution during
+review). If `202607170002` is ever re-applied for any reason, `202607280031` must be re-applied
+after it and the API/proxy process restarted.
+
+### B5.0 Gate — all satisfied 2026-07-30 except the last three, which are yours
+
+- [x] File exists and is registered in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt`; `REVERSE_POSTURE_CUTOFF` bumped to
+      `202607280032` in the same change set.
+- [x] Migration harness exit 0 on **both** paths under `ON_ERROR_STOP=1`, with 0031 applied twice
+      back-to-back (idempotent). The new assertion suite
+      (`scripts/ci/migration-anchored-savings-v2-assertions.sql`) proven **non-vacuous** by a
+      deliberate injected failure (harness exit 3 at the exact line) then restored byte-identical.
+      20/20 migration mutants caught.
+- [x] Applied to **caestus** (`evpoxdrluvihryvqhraz`), exit 0, all catalog postconditions green.
+      Negative control executed there: the pre-existing organic replays did **not** become
+      billable (empty-anchor backfill), the pure-replay org still halts verbatim at
+      `zero_spend_concentration` share 1.00000, and the worked acceptance fee (85,377 µUSD)
+      matched its pre-written prediction exactly.
+- [x] No dependency on the skipped `202607280025`–`202607280028`: the file's precondition block
+      requires only the 0007/0008/0012/0013-era objects plus `semantic_cache`; `202607280026`
+      appears in comments only, and the anchor equijoin uses `exists()` precisely so it is safe
+      **without** 0026's dedupe index. Safe against wyfz's realigned chain.
+- [x] Adversarial review verdict **ship-with-fixes** — findings listed in full in
+      `docs/STRIPE_BUILD_REPORT.md`, "ANCHORED SAVINGS v2". None blocks this apply: the HIGH
+      (concentration-guard dilution) needs anchored rows to exploit and wyfz will have **zero**
+      anchored rows at apply time; the reachable-today findings are CI/import hygiene, not
+      settlement-path money movement. Record in `$WYFZ_LOG` that you read them and proceeded.
+- [ ] **Traffic window chosen.** Unlike every other Window B file, this one takes `SHARE` on
+      `public.usage_log` for **three non-CONCURRENT index builds** inside its single transaction
+      — inserts (i.e. metering receipts, ~12k/day) block for the duration of the builds. The
+      in-file `lock_timeout` bounds lock *acquisition* only, not build time. Treat this file as
+      Window-C-grade for scheduling: quiet window, `locks.sql` open in a second terminal (§6.1),
+      interrupt the client if it hangs >~30s (safe — §4). Measure first:
+      `select pg_size_pretty(pg_total_relation_size('public.usage_log'));` — at wyfz's current
+      row counts this is seconds, but measure, don't assume.
+- [ ] Fresh PITR reference point taken (§5) — this file is `REVERSE: PITR-ONLY`.
+- [ ] You have read §B5.4 (what this does and does NOT turn on) so nobody expects a fee to move.
+
+Checksum (§3 idiom) — must match exactly, or someone edited the frozen file; **stop**:
+
+```bash
+grep 202607280031 scripts/ci/migration-frozen-checksums.txt
+shasum -a 256 supabase/migrations/202607280031_observed_price_cache_fee_basis.sql
+```
+
+```
+2ce9da1355416078ea18f2a12f3c7af7753ca37d7f08396ebc063aed906da424  202607280031_observed_price_cache_fee_basis.sql
+```
+
+### B5.1 Ordering note
+
+Applying `280031` while still skipping `280025`–`280028` continues B3.1/B4.1's recorded
+divergence, same rationale, re-verified for this file specifically (see gate). Record again in
+`$WYFZ_LOG` that 0025–0028 were intentionally not applied. One ordering property is new and
+deliberate: **after this file, `202607280008`/`0012`/`0013` can never be re-applied** (the
+evidence function's return type changed; `create or replace` on the old files will abort loudly).
+That is fail-closed and correct — it is one more reason L3 is law.
+
+### B5.2 · `202607280031_observed_price_cache_fee_basis.sql`
+
+**(a)** Adds `usage_log.savings_anchor_request_id` (default `''`, backfilling **all** existing
+rows as unanchored) + three partial indexes; adds `semantic_cache.origin_request_id`, the 11-arg
+`semantic_cache_store_bounded` overload (10-arg stays, so the deployed Python's fallback path
+keeps resolving), and DROP+CREATEs `semantic_cache_lookup` with `origin_request_id` in its OUT
+list; adds the three tighten-only threshold columns; adds `billing_observed_model_price`;
+DROP+CREATEs `billing_period_settlement_evidence` as 4-arg-with-default (the checksum-frozen
+0008 guard's 3-arg call still resolves) with six new trailing OUT columns;
+`create or replace`s `settle_billing_period` (records the anchored basis, gates on gross) and
+`billing_period_settlement_summary`. The frozen halting-conditions guard is **not** edited. A
+self-check DO block asserts the whole surface, the threshold seeds, the loosening-UPDATE
+refusals, and the ACL matrix before commit.
+
+**(b)** Precondition:
+
+```bash
+cat > /tmp/wyfz-apply/pre-280031.sql <<'SQL'
+\echo == prerequisites: the 0007-0013 settlement stack + cache schema ==
+select to_regclass('public.period_settlement_ledger')   is not null as psl,
+       to_regclass('public.billing_halting_conditions') is not null as bhc,
+       to_regclass('public.warm_budget_ledger')         is not null as warm,
+       to_regclass('public.semantic_cache')             is not null as cache,
+       to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')
+         is not null as evidence_3arg_present,
+       to_regprocedure('public.settle_billing_period(uuid,timestamptz,text,boolean)')
+         is not null as writer,
+       to_regprocedure('public.period_settlement_fee_microusd(numeric,numeric)')
+         is not null as fee_helper;
+\echo == none of the new objects may exist yet ==
+select to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)')
+         is null as evidence_4arg_absent,
+       to_regprocedure('public.billing_observed_model_price(uuid,timestamptz,timestamptz,integer,bigint)')
+         is null as price_fn_absent,
+       not exists (select 1 from information_schema.columns
+                    where table_schema='public' and table_name='usage_log'
+                      and column_name='savings_anchor_request_id') as anchor_col_absent,
+       not exists (select 1 from information_schema.columns
+                    where table_schema='public' and table_name='semantic_cache'
+                      and column_name='origin_request_id') as origin_col_absent;
+\echo == freeze still held; money state baseline ==
+select not exists (select 1 from pg_trigger
+                    where tgrelid='public.usage_log'::regclass
+                      and tgname='queue_brevitas_fee_after_usage'
+                      and not tgisinternal) as fee_trigger_absent,
+       (select count(*) from public.usage_log) as usage_rows_before,
+       pg_size_pretty(pg_total_relation_size('public.usage_log')) as usage_log_size,
+       (select count(*) from public.period_settlement_ledger) as settlements_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280031.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+
+Every boolean `t`, `settlements_expect_0 = 0`. Record `usage_rows_before` and `usage_log_size` —
+the size is your index-build lock-duration estimate, and the row count is the number of rows the
+`ALTER` will backfill to unanchored.
+
+**(c)**
+
+```bash
+wyfz_run supabase/migrations/202607280031_observed_price_cache_fee_basis.sql
+```
+
+**(d)** Postcondition:
+
+```bash
+cat > /tmp/wyfz-apply/post-280031.sql <<'SQL'
+\echo == surface: new objects present, old evidence signature gone ==
+select to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)')
+         is not null as evidence_4arg,
+       to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')
+         is null as evidence_3arg_gone,
+       to_regprocedure('public.billing_observed_model_price(uuid,timestamptz,timestamptz,integer,bigint)')
+         is not null as price_fn,
+       to_regprocedure('public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer,text)')
+         is not null as store_11arg,
+       to_regprocedure('public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer)')
+         is not null as store_10arg_retained,
+       (select 'origin_request_id' = any(proargnames) from pg_proc
+         where oid = to_regprocedure('public.semantic_cache_lookup(vector,text,double precision,text,text)'))
+         as lookup_widened;
+\echo == thresholds seeded at their loosen-bounds ==
+select cache_anchor_materiality_floor_usd = 0.3000 as floor_ok,
+       cache_anchor_lookback_days         = 30     as lookback_ok,
+       max_cache_savings_per_spend_ratio  = 3.000  as ratio_ok
+  from public.billing_halting_conditions;
+\echo == the backfill: every historical row is UNANCHORED (this is the negative control) ==
+select count(*) as total_rows,
+       count(*) filter (where savings_anchor_request_id <> '') as anchored_rows_expect_0
+  from public.usage_log;
+\echo == ACL: nothing new reachable by browser roles ==
+select not has_function_privilege('anon',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as anon_blocked,
+       not has_function_privilege('authenticated',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as auth_blocked,
+       has_function_privilege('service_role',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as sr_evidence,
+       has_function_privilege('service_role',
+         'public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer,text)','EXECUTE')
+         as sr_cache_store;
+\echo == loosening must refuse (expect ERROR: check constraint) ==
+begin;
+update public.billing_halting_conditions set max_cache_savings_per_spend_ratio = 3.001;
+rollback;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280031.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+
+Every boolean `t`, `anchored_rows_expect_0 = 0`, `total_rows` = the `usage_rows_before` you
+recorded, and the final UPDATE **must fail** with a check-constraint error — capture that error
+string verbatim; it is the proof the thresholds can only be tightened in place.
+
+**(e)** Single transaction (`grep -c '^begin;'` = 1, `^commit;` = 1, zero `CONCURRENTLY` —
+verified in the frozen bytes), so a mid-file failure leaves wyfz byte-identical. Beyond that:
+the three index builds hold `SHARE` on `usage_log` for the build duration (metering inserts
+queue — see the gate item), and the `ALTER ... default ''` backfill touches every `usage_log`
+row. `REVERSE: PITR-ONLY` per its header — the widened OUT lists cannot be narrowed in place,
+and re-narrowing the basis would re-halt every anchored period.
+
+**(f)** **DB-first, and it stays dark — nothing can move a fee at apply time.** wyfz traffic is
+100% non-authoritative and 100% unpriced (§1), the settlement ledger is empty, every historical
+row backfills to unanchored, and the deployed code neither writes anchors nor calls the widened
+RPC surface (the 10-arg overload and the 3-arg-compatible evidence default keep every deployed
+call resolving unchanged). The one behaviour that changes at apply time is for the better: any
+future settlement is watermark-pinned and reproducible.
+
+### B5.3 What this does NOT turn on — read before anyone expects a number
+
+Billing anchored cache savings on wyfz requires **all** of the following after this apply, in
+order, and every one fails closed to $0 if skipped:
+
+1. **Code deploy** carrying the anchor plumbing (`api/store.py`, `brevitas/proxy.py`,
+   `brevitas/semantic_cache.py`, `api/server.py` from this change set).
+2. **Process restart** of the API/proxy service *after* both the migration and the deploy.
+   `SemanticCache._anchor_supported` and `store._anchor_column_warned` are process-lifetime
+   latches: a process that ever saw the un-migrated schema keeps anchoring off for its whole
+   life, and the only signal is a single log line. A restart-less deploy silently reproduces
+   today's $0 behaviour and will look like a billing-SQL bug.
+3. **Real anchored traffic**: paid misses (authoritative + priced) followed by replays, with
+   `BREVITAS_CACHE_ENABLED=true` on the process and `organizations.cache_enabled=true` for the
+   tenant — both default false, both fail silently to zero savings. Production currently mints
+   zero authoritative/priced rows at all (§1), so the savings drought must be closed first
+   regardless.
+4. **≥ $0.30 of paid traffic** for the provider+model inside the window+lookback (the
+   materiality floor), and per-org **attestation** (`202607280009`/`202607280030`) before any
+   settlement escapes `draft`.
+5. The **finding-1 follow-up migration** (concentration-guard dilution — see the build report)
+   before the guard is relied on as an alarm against fabricated savings. Not a blocker for this
+   apply (zero anchored rows exist to dilute with), but it should land before real anchored
+   volume does.
+
+And one standing hazard to log every time: **never re-apply `202607170002`** (silent de-anchor,
+measured — see the preamble above).
+
+### B5.4 Window gate
+
+- [ ] B5.0 fully satisfied; checksum `2ce9da13…` matches both lists; B4 gated green first.
+- [ ] `pre-280031.sql` all green; `usage_rows_before` + `usage_log_size` recorded.
+- [ ] `280031` exited 0 with an `OK` line in `$WYFZ_LOG`; total wall time noted (index-build
+      lock evidence).
+- [ ] `post-280031.sql`: surface 6×`t`; thresholds 3×`t`; `anchored_rows_expect_0 = 0` with
+      `total_rows` matching; ACL 4×`t`; the loosening UPDATE **failed** and the error is
+      captured verbatim.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0; `period_settlement_ledger` still
+      empty.
+- [ ] `$WYFZ_LOG` records: 0025–0028 still deliberately unapplied; review findings read
+      (ship-with-fixes, HIGH = guard dilution, not exploitable at zero anchored rows); B5.3
+      acknowledged — no restart performed in this window means anchoring is expected-off.

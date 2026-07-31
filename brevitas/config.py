@@ -6,6 +6,11 @@ from urllib.parse import urlsplit
 # f"{base_url}/v1/usage", so a "/v1"-suffixed base yields /v1/v1 and 404s silently.
 DEFAULT_BASE_URL = "https://api.brevitassystems.com"
 
+# Where a human signs in. The API uses the same default for the bvx browser
+# authorization link (BREVITAS_DASHBOARD_URL, api/server.py:2438), so `brevitas
+# connect` points at the same place rather than inventing a second one.
+DEFAULT_DASHBOARD_URL = "https://brevitassystems.com/dashboard"
+
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", ""}
 _warned_base_urls: set[str] = set()
 

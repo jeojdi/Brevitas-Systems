@@ -105,6 +105,59 @@ export const expectedFreshMigrationOrder = [
   // it must stay after 20260710 (the index) and 202607170001 (the column).
   'supabase/migrations/202607280026_usage_log_authority_dedupe.sql',
   'supabase/migrations/202607280027_browser_role_truncate_contract.sql',
+  // The outbound claim/send path for period_settlement_ledger. Must stay after
+  // 202607280013 (the writer it sends for) and 202607280010 (whose latches
+  // dictate that the claim leaves status 'pending').
+  'supabase/migrations/202607280029_period_settlement_claim_path.sql',
+  // The attestation WRITER for the table 202607280009 created and deliberately
+  // left with no write path. Must stay after 202607280009 (whose grants and
+  // vocabulary it re-asserts and narrows) and after 202607280013/202607280008
+  // (its own contract block drives settle_billing_period to prove an unattested
+  // org still halts). Adds no privilege to any runtime role: the two writer
+  // functions are executable only by the login role brevitas_attestor, which
+  // this migration creates WITHOUT a password, so a fresh apply yields a
+  // credential that cannot authenticate until a human sets one out of band.
+  'supabase/migrations/202607280030_billing_attestation_writer.sql',
+  // The observed-price cache fee basis: a Brevitas cache replay costs $0 upstream
+  // by construction, so 202607280008's zero_spend_concentration halted every
+  // period whose savings were cache hits. This migration prices those replays off
+  // the customer's OWN observed per-token cost for the same provider+model, so the
+  // fee cannot exceed what they demonstrably would have paid.
+  //
+  // Ordering is load-bearing in BOTH directions and is fail-closed either way:
+  //   - It must stay after 202607280008 (whose halting-condition table it adds
+  //     three config columns to, and whose checksum-frozen guard still CALLs the
+  //     evidence function with three arguments -- which is why the new watermark
+  //     parameter is TRAILING and DEFAULT NULL), after 202607280012 and
+  //     202607280013 (whose OUT list it widens again, and whose settle_billing_period
+  //     it replaces), and after 202607170002 (whose semantic_cache_lookup it widens
+  //     by origin_request_id).
+  //   - Nothing may be re-applied AFTER it: 202607280008/0012/0013 all use
+  //     CREATE OR REPLACE on billing_period_settlement_evidence, and PostgreSQL
+  //     refuses to change a return type that way, so an out-of-order replay aborts
+  //     loudly instead of silently narrowing the evidence function out from under
+  //     the writer. 202607170002 is the one exception that would NOT abort -- it
+  //     DROPs semantic_cache_lookup before recreating it -- so re-applying it to a
+  //     live project silently re-narrows the lookup and stops anchoring with no
+  //     error. The migration header records that 202607280031 must be re-applied
+  //     after any such replay.
+  'supabase/migrations/202607280031_observed_price_cache_fee_basis.sql',
+  // The FUNCTION analogue of the browser-role privilege contract that
+  // 202607280015 / 202607280024 / 202607280027 closed for TABLES. It revokes
+  // EXECUTE on every non-extension routine in schema public from
+  // public/anon/authenticated, strips Supabase's project-level ALTER DEFAULT
+  // PRIVILEGES grant to those roles, and installs
+  // public.assert_browser_role_function_privileges() as a standing guard that
+  // the harness runs last (scripts/ci/migration-browser-function-privilege-assertions.sql).
+  //
+  // It must stay LAST in the chain and must not be reordered ahead of any
+  // migration that creates a routine: the revoke is a catalog sweep over
+  // pg_proc at apply time, not a name list, so a routine created AFTER it is
+  // not covered by it and is only caught by the guard (PostgreSQL's built-in
+  // EXECUTE-to-PUBLIC default cannot be removed by ALTER DEFAULT PRIVILEGES,
+  // which is why every migration still writes its own revoke and why the
+  // durable half of this control is the assertion, not the sweep).
+  'supabase/migrations/202607280032_browser_function_execute_contract.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -873,7 +926,18 @@ function verifyUpgradeHarnessCoverage() {
 // BACKFILL FLOOR below extends enforcement to them explicitly. Everything
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
-const REVERSE_POSTURE_CUTOFF = '202607280029'
+// Advanced from 202607280030 to 202607280031 when 202607280030 was added to the
+// chain, from 202607280031 to 202607280032 when 202607280031 consumed that
+// number, and from 202607280032 to 202607280033 when the browser-function
+// EXECUTE contract consumed 202607280032: the cutoff is by definition the NEXT
+// UNUSED number, so consuming a number has to move it.
+// tests/release_security.test.mjs pins that it stays strictly ahead of the
+// manifest head, which is what forces this edit rather than letting the control
+// silently stop governing the newest migration.
+// Note 202607280028 is NOT in this chain and never will be -- it is quarantined
+// in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
+// cutoff tracks the head of what actually ships, not the highest number written.
+const REVERSE_POSTURE_CUTOFF = '202607280033'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/
