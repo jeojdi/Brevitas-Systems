@@ -169,6 +169,12 @@ export const expectedFreshMigrationOrder = [
   // This migration does both -- it revokes inline and then asserts its own
   // posture -- so the browser-execute contract still holds with it last.
   'supabase/migrations/202607280033_period_settlement_recovery_health.sql',
+  // Two defects on the outbound settlement path, both on code that has never run
+  // against real money. Must stay after 202607280029 (whose two functions it
+  // replaces) and after 202607280010 (whose identity latches dictate that the
+  // claim still refuses to set status='sending' -- re-asserted by this
+  // migration's own prosrc self-check).
+  'supabase/migrations/202607280034_settlement_reconciliation_fixes.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -948,7 +954,7 @@ function verifyUpgradeHarnessCoverage() {
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280034'
+const REVERSE_POSTURE_CUTOFF = '202607280035'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

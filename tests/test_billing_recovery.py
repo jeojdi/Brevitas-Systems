@@ -1515,10 +1515,16 @@ class FakeSettlementStore:
             return BillingEntry(
                 id=row["id"],
                 user_id=row["billing_owner_id"],
-                # period_end itself is provably OUTSIDE reconcile's window once
-                # end_time is floored to the minute; five minutes earlier is
-                # unambiguously inside [period_start, period_end).
-                occurred_at=row["period_end"] - timedelta(minutes=5),
+                # period_end EXACTLY, which is what 202607280029's claim
+                # actually returns. This fixture used to subtract five minutes,
+                # with a comment noting that period_end "is provably OUTSIDE
+                # reconcile's window once end_time is floored to the minute" --
+                # so the fake was steering around a real defect instead of
+                # exposing it, and the suite passed while production could never
+                # reconcile a single send. reconcile() now ends the window at the
+                # first minute boundary strictly after occurred_at, so the honest
+                # value belongs here and the test exercises the real shape.
+                occurred_at=row["period_end"],
                 fee_microusd=row["fee_microusd"],
                 stripe_customer_id=row["stripe_customer_id"],
                 attempts=row["attempts"],
@@ -1723,10 +1729,18 @@ def test_settlement_claim_leases_without_entering_sending_and_heartbeats_while_p
     # A row parked in 'sending' with a NULL marker could never be released.
     assert store.row["status"] == "pending"
     assert store.row["lease_owner"] == "owner-1"
-    # occurred_at is inside [period_start, period_end), not AT period_end, which
-    # reconcile's minute-flooring would put outside the queried window.
-    assert entry.occurred_at == store.row["period_end"] - timedelta(minutes=5)
-    assert store.row["period_start"] <= entry.occurred_at < store.row["period_end"]
+    # occurred_at is period_end EXACTLY, matching what 202607280029's claim
+    # returns. This assertion used to require period_end MINUS five minutes,
+    # justified by the fact that reconcile's minute-flooring would otherwise put
+    # the event outside the queried window -- which described a real defect in
+    # reconcile and then hid it, since production always sends period_end. The
+    # window now ends at the first minute boundary strictly after the event, so
+    # the honest value is the one under test.
+    assert entry.occurred_at == store.row["period_end"]
+    # AT the closing edge, not strictly inside it: a settlement bills a whole
+    # period, so period_end is the honest instant for its meter event. It is
+    # reconcile's window that must accommodate that, and now does.
+    assert store.row["period_start"] < entry.occurred_at <= store.row["period_end"]
     # expected must carry the legacy per-row fee sharing the window, or a
     # settlement could never reconcile to ACCEPTED.
     assert entry.expected_period_microusd == SETTLEMENT_FEE + LEGACY_COMMITTED
