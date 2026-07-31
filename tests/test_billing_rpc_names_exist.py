@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from api.billing_recovery import SupabaseBillingStore, SupabaseSettlementStore
+from api.billing_settlement_sweep import SupabaseSettlementSweepStore
 
 REPO = Path(__file__).resolve().parents[1]
 FRESH_MANIFEST = REPO / "scripts" / "ci" / "migration-fresh-manifest.txt"
@@ -74,8 +75,8 @@ def _rpc_names(store_class) -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize(
     "store_class",
-    [SupabaseBillingStore, SupabaseSettlementStore],
-    ids=["billing_ledger", "period_settlement"],
+    [SupabaseBillingStore, SupabaseSettlementStore, SupabaseSettlementSweepStore],
+    ids=["billing_ledger", "period_settlement", "settlement_sweep"],
 )
 def test_every_store_rpc_name_is_created_by_a_shipped_migration(store_class):
     missing = [

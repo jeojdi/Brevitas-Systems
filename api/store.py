@@ -3019,6 +3019,30 @@ class UsageStore:
                 "SELECT * FROM usage_log ORDER BY ts DESC,id DESC LIMIT ?",
                 (LOCAL_USAGE_SCAN_MAX,))]
 
+    def _owner_rows(self, owner_id: str) -> list[dict[str, Any]]:
+        """Every row this ACCOUNT wrote, tenant-owned rows included — the local
+        mirror of 202607280037's admin_account_usage_page.
+
+        Deliberately NOT _rows(): that one carries 202607280035's tenant
+        predicate, which is the key-authenticated read. This is the
+        platform-admin read, reached only through _admin_authenticated, and it
+        must keep returning org-scoped rows or the admin account view silently
+        swaps to older org-less history with no count change to signal it.
+
+        Also deliberately not `_all_rows() filtered by owner`, which is what it
+        used to be: that scans the newest LOCAL_USAGE_SCAN_MAX rows PLATFORM-WIDE
+        and then keeps this owner's, so a quiet account whose traffic is older
+        than the platform's newest 10,000 rows reported ZERO calls while the
+        hosted backend reported a full window for it. Scoping the LIMIT to the
+        owner makes the two backends answer the same question.
+        """
+        if not owner_id:
+            return []
+        with self._conn() as db:
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM usage_log WHERE owner_id=? ORDER BY ts DESC,id DESC LIMIT ?",
+                (owner_id, LOCAL_USAGE_SCAN_MAX))]
+
     def get_stats(self, key_hash: str) -> dict[str, Any]:
         rows = self._rows(key_hash)
         result = _stats(rows)
@@ -3059,7 +3083,7 @@ class UsageStore:
         return _activity(self._rows(key_hash))
 
     def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
-        rows = [r for r in self._all_rows() if str(r.get("owner_id") or "") == owner_id]
+        rows = self._owner_rows(owner_id)
         return {"owner_id": owner_id, "window_calls": len(rows),
                 "totals": _stats(rows), "activity": _activity(rows)}
 
@@ -4612,13 +4636,17 @@ class SupabaseUsageStore:
             **self._usage_scope(key_hash), "p_limit": ADMIN_RESULT_MAX,
         }) or []
 
-    def _collect_usage_rows(self, scope: dict[str, Any]) -> list[dict[str, Any]]:
+    def _collect_usage_rows(self, scope: dict[str, Any],
+                            path: str = "rpc/usage_page") -> list[dict[str, Any]]:
         # usage_page caps each page at USAGE_PAGE_MAX, so walk the cursor until
-        # the history window is filled.
+        # the history window is filled. `path` lets the platform-admin account
+        # read drive the same walk against rpc/admin_account_usage_page
+        # (202607280037), which returns the identical setof usage_log shape and
+        # the identical p_limit + 1 has-more convention.
         rows: list[dict[str, Any]] = []
         cursor_ts = cursor_id = None
         while len(rows) < ACTIVITY_SCAN_MAX:
-            page = self._request("POST", "rpc/usage_page", data={
+            page = self._request("POST", path, data={
                 **scope, "p_cursor_ts": cursor_ts, "p_cursor_id": cursor_id,
                 "p_limit": USAGE_PAGE_MAX,
             }) or []
@@ -4674,9 +4702,24 @@ class SupabaseUsageStore:
             self._collect_usage_rows(self._usage_scope(key_hash)), warm_providers)
 
     def get_admin_account_detail(self, owner_id: str) -> dict[str, Any]:
-        # usage_page owner scoping: with an empty key hash only owner_id rows match.
-        rows = self._collect_usage_rows({
-            "p_key_hash": "", "p_organization_id": None, "p_owner_id": owner_id})
+        # 202607280037's dedicated platform-admin read, NOT usage_page.
+        #
+        # This used to post {"p_key_hash": "", "p_organization_id": None,
+        # "p_owner_id": owner_id} to rpc/usage_page — exactly the org-less
+        # branch 202607280035 narrowed to `usage.organization_id is null`.
+        # Keeping it there would have made 202607280035 rewrite this view: on
+        # production two owners have ALL of their newest ACTIVITY_SCAN_MAX rows
+        # org-scoped, so window_calls would have stayed at 1000 while the rows
+        # behind it silently became an older, org-less population. A dedicated
+        # owner-scoped RPC keeps staff on the same row set as before, and
+        # leaves the tenant read narrowed.
+        #
+        # Reachable only via _admin_authenticated (api/server.py:2217-2223) and
+        # only after _audit_platform_read has durably recorded the read, which
+        # returns 503 rather than proceeding if that append fails
+        # (api/server.py:2225-2256).
+        rows = self._collect_usage_rows(
+            {"p_owner_id": owner_id}, "rpc/admin_account_usage_page")
         return {"owner_id": owner_id, "window_calls": len(rows),
                 "totals": _stats(rows), "activity": _activity(rows)}
 

@@ -193,6 +193,18 @@ export const expectedFreshMigrationOrder = [
   // reason 202607280033's note gives: it restates its own revoke/grant posture
   // inline and asserts it in its own apply-time self-check.
   'supabase/migrations/202607280036_settlement_evidence_erasure_fence.sql',
+  // Adds the dedicated platform-admin account read the /v1/admin/accounts route
+  // needs, which is what makes 202607280035 applyable: that caller was reaching
+  // usage_page's org-less branch with an empty key hash, i.e. exactly the branch
+  // 202607280035 narrows, so without this the security fix silently rewrites the
+  // staff view. Must stay after 202607280002 (it returns `setof
+  // public.usage_log` and its apply guard requires that migration's widest
+  // column) and after 202607280035, whose narrowing is the premise
+  // scripts/ci/migration-admin-account-usage-assertions.sql measures across.
+  // Outside 202607280032's pg_proc sweep for the reason 202607280033's note
+  // gives: it revokes from the browser roles inline and asserts that posture in
+  // its own apply-time self-check.
+  'supabase/migrations/202607280037_platform_admin_account_usage.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -968,14 +980,15 @@ function verifyUpgradeHarnessCoverage() {
 // UNUSED number, so consuming a number has to move it. Advanced again to
 // 202607280036 when the usage-read tenant-scope fix consumed 202607280035, and
 // to 202607280037 when the settlement-evidence erasure fence consumed
-// 202607280036.
+// 202607280036, and to 202607280038 when the platform-admin account read
+// consumed 202607280037.
 // tests/release_security.test.mjs pins that it stays strictly ahead of the
 // manifest head, which is what forces this edit rather than letting the control
 // silently stop governing the newest migration.
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280037'
+const REVERSE_POSTURE_CUTOFF = '202607280038'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

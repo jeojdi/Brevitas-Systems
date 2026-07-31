@@ -49,8 +49,16 @@ from .server import (
 )
 from .billing_recovery import (
     billing_recovery_is_configured,
+    billing_worker_owner,
     build_billing_recovery_processor_from_env,
     run_billing_recovery_loop,
+)
+from .billing_settlement_sweep import (
+    SWEEP_ENABLED_ENV,
+    billing_settlement_sweep_is_configured,
+    billing_settlement_sweep_is_enabled,
+    build_settlement_sweep_from_env,
+    run_billing_settlement_sweep_loop,
 )
 from .build_info import build_identity, validate_production_build_identity
 from .jobs import PermanentJobError
@@ -751,6 +759,40 @@ async def warming(stop: asyncio.Event) -> None:
             pass
 
 
+async def settlement_sweep(stop: asyncio.Event) -> None:
+    """Draft-only period-settlement sweep. OFF unless explicitly armed.
+
+    Three independent things must all be true before a single RPC is sent:
+    BREVITAS_BILLING_SETTLEMENT_SWEEP_ENABLED is exactly "true", Supabase
+    service-role credentials are present, and this worker is not declared
+    `nonbilling`. Anything less returns immediately, so deploying the sweep
+    cannot draft for anyone by surprise.
+
+    Deliberately NOT under _run_billing_supervisor: that supervisor escalates to
+    a full process restart because a dead send loop is silent revenue loss. This
+    loop only writes drafts — money still cannot move without a human running
+    promote_billing_period_settlement in psql — so a sweep outage is a ticket,
+    not a reason to bounce a worker that is serving jobs.
+    """
+    if _BILLING_ROLE == "nonbilling":
+        return
+    if not billing_settlement_sweep_is_enabled():
+        return
+    if not billing_settlement_sweep_is_configured():
+        logger.error(
+            "billing_settlement_sweep_unconfigured", outcome="disabled",
+            flag=SWEEP_ENABLED_ENV,
+        )
+        return
+    try:
+        sweep = build_settlement_sweep_from_env(owner=billing_worker_owner())
+    except Exception as exc:
+        logger.error("billing_settlement_sweep_build_failed",
+                     error_type=type(exc).__name__)
+        return
+    await run_billing_settlement_sweep_loop(sweep, stop)
+
+
 def _billing_restart_delay(restart_backoff: float, restarts: int) -> float:
     """Bounded restart backoff: linear in restart count, hard-capped at 60s."""
     return min(max(0.0, restart_backoff) * max(1, restarts), 60.0)
@@ -1028,6 +1070,7 @@ async def run() -> None:
         asyncio.create_task(dependency_monitor(), name="worker-dependency-monitor"),
         asyncio.create_task(maintenance(), name="worker-maintenance"),
         asyncio.create_task(warming(stop), name="worker-warming"),
+        asyncio.create_task(settlement_sweep(stop), name="worker-settlement-sweep"),
         *(asyncio.create_task(consume(slot), name=f"worker-consumer-{slot}")
           for slot in range(concurrency)),
     ]
