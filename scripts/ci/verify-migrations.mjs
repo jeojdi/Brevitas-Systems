@@ -175,6 +175,24 @@ export const expectedFreshMigrationOrder = [
   // claim still refuses to set status='sending' -- re-asserted by this
   // migration's own prosrc self-check).
   'supabase/migrations/202607280034_settlement_reconciliation_fixes.sql',
+  // Closes the cross-tenant read in the org-less branch of the four usage read
+  // RPCs. Must stay after 202607280002, whose usage_breakdown / usage_grouped
+  // return-type shapes it restates (against 202607170006's narrower shapes the
+  // replace would fail on the return type), and after 202607280032, outside
+  // whose pg_proc sweep it sits -- safe for the reason 202607280033's note
+  // gives: it revokes from the browser roles inline and then asserts that
+  // posture in its own apply-time self-check.
+  'supabase/migrations/202607280035_usage_read_tenant_scope.sql',
+  // Fences every usage_log deletion on period_settlement_ledger's watermark
+  // instead of on billing_ledger, which has had no writer since 202607280006.
+  // Must stay after 202607280007 (the table it reads), after 202607280016 and
+  // 202607200011 (whose outer erasure wrappers it restates), and after
+  // 202607280023 (whose compliance_run_retention body it restates) -- it
+  // replaces the LIVE definition of each, so applying it earlier would be
+  // silently overwritten by them. Outside 202607280032's pg_proc sweep for the
+  // reason 202607280033's note gives: it restates its own revoke/grant posture
+  // inline and asserts it in its own apply-time self-check.
+  'supabase/migrations/202607280036_settlement_evidence_erasure_fence.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -947,14 +965,17 @@ function verifyUpgradeHarnessCoverage() {
 // chain, from 202607280031 to 202607280032 when 202607280031 consumed that
 // number, and from 202607280032 to 202607280033 when the browser-function
 // EXECUTE contract consumed 202607280032: the cutoff is by definition the NEXT
-// UNUSED number, so consuming a number has to move it.
+// UNUSED number, so consuming a number has to move it. Advanced again to
+// 202607280036 when the usage-read tenant-scope fix consumed 202607280035, and
+// to 202607280037 when the settlement-evidence erasure fence consumed
+// 202607280036.
 // tests/release_security.test.mjs pins that it stays strictly ahead of the
 // manifest head, which is what forces this edit rather than letting the control
 // silently stop governing the newest migration.
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280035'
+const REVERSE_POSTURE_CUTOFF = '202607280037'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

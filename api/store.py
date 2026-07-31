@@ -2965,7 +2965,15 @@ class UsageStore:
             predicates.append("organization_id=?")
             values.append(organization_id)
         elif owner:
-            predicates.append("(owner_id=? OR key_hash=?)")
+            # Same tenancy contract as 202607280035's SQL predicate: an org-less
+            # key resolves its owner string only against UNTENANTED rows, never
+            # against rows an organization owns. The key_hash arm stays
+            # unrestricted because it is self-scope -- those rows were written by
+            # this very key -- which is also what the untenanted `else` branch
+            # below grants. sqlite stores the untenanted value as '' (see
+            # _fill_organization_id), so both spellings must be admitted.
+            predicates.append(
+                "((COALESCE(organization_id,'')='' AND owner_id=?) OR key_hash=?)")
             values.extend((owner, key_hash))
         else:
             predicates.append("key_hash=?")
@@ -2996,7 +3004,10 @@ class UsageStore:
                     "SELECT * FROM usage_log WHERE organization_id=? ORDER BY ts DESC,id DESC LIMIT ?",
                     (organization_id, LOCAL_USAGE_SCAN_MAX))]
             if owner:
-                query = "SELECT * FROM usage_log WHERE owner_id=? OR key_hash=? ORDER BY ts DESC,id DESC LIMIT ?"
+                # Mirrors list_usage_page above and 202607280035's SQL predicate.
+                query = ("SELECT * FROM usage_log "
+                         "WHERE (COALESCE(organization_id,'')='' AND owner_id=?) OR key_hash=? "
+                         "ORDER BY ts DESC,id DESC LIMIT ?")
                 return [dict(r) for r in db.execute(query, (owner, key_hash, LOCAL_USAGE_SCAN_MAX))]
             return [dict(r) for r in db.execute(
                 "SELECT * FROM usage_log WHERE key_hash=? ORDER BY ts DESC,id DESC LIMIT ?",

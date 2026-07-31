@@ -393,6 +393,34 @@ run_forward_assertions() {
     --file scripts/ci/waitlist-network-budget-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-usage-dedupe-authority-assertions.sql
+  # 202607280035: an org-less key may not read org-owned usage rows. This is the
+  # ONLY place in scripts/ci that exercises the org-less branch of the four
+  # usage read predicates -- migration-assertions.sql's existing "usage_page
+  # crossed the tenant boundary" check passes a non-null p_organization_id and
+  # an empty p_owner_id, so it only ever drove branch 1, which was never the
+  # broken one. Opens its own transaction and ends in ROLLBACK.
+  #
+  # REQUIRES 202607280035 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-usage-tenant-scope-assertions.sql
+  # 202607280036: no erasure or retention path may delete a usage_log row at or
+  # below a non-void period_settlement_ledger watermark, and the preservation
+  # invariant must abort when one is. This is the ONLY place in scripts/ci where
+  # that property is exercised: migration-compliance-evidence-assertions.sql
+  # fences and counts on billing_ledger, which has had no writer since
+  # 202607280006, so every check in it compares 0 to 0 and passes no matter what
+  # the erasure deletes. Section 5 of this file is a mutation test -- it strips
+  # the fence out of the live prosrc and requires the invariant to fire -- so
+  # the suite cannot go green on a fence that merely deletes nothing. Opens its
+  # own transaction and ends in ROLLBACK.
+  #
+  # REQUIRES 202607280036 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-settlement-evidence-preservation-assertions.sql
   # 202607280032: no browser role may EXECUTE a SECURITY DEFINER function in
   # schema public. Deliberately LAST in this function, because unlike every
   # other file here it asserts a property of the WHOLE schema rather than of a
