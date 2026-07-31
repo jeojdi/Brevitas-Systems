@@ -60,8 +60,13 @@ begin
        or to_regprocedure(
            'public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)'
        ) is null
+       -- 202607280031 widened this by a trailing p_usage_log_watermark_id
+       -- bigint DEFAULT NULL. to_regprocedure resolves by EXACT argument types
+       -- and is not default-aware, so the three-argument spelling no longer
+       -- names anything -- while the frozen 202607280008 guard's own
+       -- three-argument CALL still resolves, which is what the default is for.
        or to_regprocedure(
-           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)'
+           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)'
        ) is null
        or to_regprocedure('public.organization_billing_arrangement_state(uuid)') is null then
         raise exception 'a halting-condition function is missing (202607280008/0009 not applied)';
@@ -85,10 +90,10 @@ begin
            'public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)',
            'EXECUTE')
        or has_function_privilege('anon',
-           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)',
+           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)',
            'EXECUTE')
        or has_function_privilege('authenticated',
-           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)',
+           'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)',
            'EXECUTE') then
         raise exception 'billing evidence is reachable from a browser role';
     end if;

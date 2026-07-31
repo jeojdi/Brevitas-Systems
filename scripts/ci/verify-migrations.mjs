@@ -118,6 +118,30 @@ export const expectedFreshMigrationOrder = [
   // this migration creates WITHOUT a password, so a fresh apply yields a
   // credential that cannot authenticate until a human sets one out of band.
   'supabase/migrations/202607280030_billing_attestation_writer.sql',
+  // The observed-price cache fee basis: a Brevitas cache replay costs $0 upstream
+  // by construction, so 202607280008's zero_spend_concentration halted every
+  // period whose savings were cache hits. This migration prices those replays off
+  // the customer's OWN observed per-token cost for the same provider+model, so the
+  // fee cannot exceed what they demonstrably would have paid.
+  //
+  // Ordering is load-bearing in BOTH directions and is fail-closed either way:
+  //   - It must stay after 202607280008 (whose halting-condition table it adds
+  //     three config columns to, and whose checksum-frozen guard still CALLs the
+  //     evidence function with three arguments -- which is why the new watermark
+  //     parameter is TRAILING and DEFAULT NULL), after 202607280012 and
+  //     202607280013 (whose OUT list it widens again, and whose settle_billing_period
+  //     it replaces), and after 202607170002 (whose semantic_cache_lookup it widens
+  //     by origin_request_id).
+  //   - Nothing may be re-applied AFTER it: 202607280008/0012/0013 all use
+  //     CREATE OR REPLACE on billing_period_settlement_evidence, and PostgreSQL
+  //     refuses to change a return type that way, so an out-of-order replay aborts
+  //     loudly instead of silently narrowing the evidence function out from under
+  //     the writer. 202607170002 is the one exception that would NOT abort -- it
+  //     DROPs semantic_cache_lookup before recreating it -- so re-applying it to a
+  //     live project silently re-narrows the lookup and stops anchoring with no
+  //     error. The migration header records that 202607280031 must be re-applied
+  //     after any such replay.
+  'supabase/migrations/202607280031_observed_price_cache_fee_basis.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -887,11 +911,15 @@ function verifyUpgradeHarnessCoverage() {
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
 // Advanced from 202607280030 to 202607280031 when 202607280030 was added to the
-// chain: the cutoff is by definition the NEXT UNUSED number, so consuming a
+// chain, and from 202607280031 to 202607280032 when 202607280031 consumed that
+// number: the cutoff is by definition the NEXT UNUSED number, so consuming a
 // number has to move it. tests/release_security.test.mjs pins that it stays
 // strictly ahead of the manifest head, which is what forces this edit rather
 // than letting the control silently stop governing the newest migration.
-const REVERSE_POSTURE_CUTOFF = '202607280031'
+// Note 202607280028 is NOT in this chain and never will be -- it is quarantined
+// in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
+// cutoff tracks the head of what actually ships, not the highest number written.
+const REVERSE_POSTURE_CUTOFF = '202607280032'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

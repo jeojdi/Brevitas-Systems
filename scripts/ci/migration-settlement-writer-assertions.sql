@@ -175,12 +175,21 @@ begin
                         'never a row-ingestion predicate';
     end if;
     -- The evidence function now produces the watermark 202607280007 declared.
+    --
+    -- 202607280031 widened the signature by a trailing p_usage_log_watermark_id
+    -- bigint DEFAULT NULL and moved the watermark from a bare max(usage.id) in
+    -- the main aggregate to a coalesce(argument, max(...)) CTE -- because the
+    -- watermark is now an INPUT as well as an output, which is what makes a
+    -- settled basis reproducible against later backdated rows. So this checks
+    -- the OUT column by name rather than the aggregate by spelling, which is
+    -- what it should always have done; the distinct-day count is unchanged and
+    -- is still checked literally.
     if not exists (
         select 1
           from pg_proc evidence_function
          where evidence_function.oid = to_regprocedure(
-                   'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')
-           and evidence_function.prosrc like '%max(usage.id)%'
+                   'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)')
+           and 'usage_log_watermark_id' = any(evidence_function.proargnames)
            and evidence_function.prosrc like '%count(distinct warm.day)%'
     ) then
         raise exception 'the evidence function lost either the 202607280012 distinct-day count or '

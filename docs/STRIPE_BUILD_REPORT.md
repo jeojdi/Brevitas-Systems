@@ -9,6 +9,258 @@ measured).
 
 ---
 
+## ANCHORED SAVINGS v2 — 2026-07-30
+
+Appended 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. This
+is the redesign that replaces quarantined `202607280028`. Migration number used:
+**`202607280031_observed_price_cache_fee_basis.sql`** (`202607280030` = attestation writer is the
+last shipped number below it; `REVERSE_POSTURE_CUTOFF` advanced to `202607280032` in the same
+change set `[verified — verify-migrations.mjs:922 read today; checksum
+`2ce9da13…da424` matches `migration-frozen-checksums.txt` and both manifests]`). Five lanes ran:
+design, SQL, Python, verifier, adversarial review. wyfz apply steps: `docs/WYFZ_APPLY_PLAN.md`,
+**WINDOW B5 ADDENDUM**. Same tagging convention as the rest of this report; "lane pasted real
+output" claims were reconciled against the lane transcripts, not re-executed by this section's
+author unless said so.
+
+### The problem this closes
+
+A Brevitas exact-cache replay serves the customer from our cache and never calls the provider, so
+the replay row has `actual_cost_usd = 0` **by construction**. `202607280008`'s
+`zero_spend_concentration` therefore halts every period whose savings are mostly cache replays —
+and for a DeepSeek/OpenAI-compatible tenant that is *every* period, permanently, at share
+`1.00000`, settling $0 (observed verbatim on caestus, dress-rehearsal section below). The
+quarantined first attempt fixed this with an existence gate ("has this org ever paid for this
+provider+model?") and was rejected with four reproduced defects. v2 makes the paid ancestor the
+**price source**, not a gate.
+
+### What now bills — and what does not
+
+**Bills (all five conditions required, per replay row):**
+
+1. The replay is **forward-linked**: `usage_log.savings_anchor_request_id` names the exact paid
+   request whose provider response filled the cache entry it replayed. The id is minted by the
+   proxy on the cache miss, stored on the cache entry, read back on the hit, and **decided
+   server-side** — a caller-supplied claim over `POST /v1/usage` is discarded twice (API decide +
+   storage floor) `[verified — python lane mutation-proved both layers independently; 18 targeted
+   tests + 1110 full pytest green]`.
+2. The named ancestor really exists: authoritative, priced, `receipt_source='proxy'`,
+   `actual_cost_usd > 0`, same org, within the lookback, **and at-or-below the settlement's
+   watermark id** — so a row inserted after settlement can never change a settled basis
+   `[verified — SQL lane reproduced the quarantine's exact retroactivity attack and it now fails;
+   re-running the evidence with a settled watermark returns byte-identical numbers
+   (`except all` both ways = 0 rows)]`.
+3. The org paid **≥ the materiality floor** for that provider+model in the window+lookback.
+4. The row is `cache_attributable` (Brevitas-caused). Provider-native cache discounts (e.g.
+   DeepSeek's own `prompt_cache_hit_tokens`) carry no anchor and never bill — proven as an
+   isolation test: byte-identical fixture, one boolean flipped, settle vs verbatim halt
+   `[verified — executed on caestus inside a rolled-back transaction]`.
+5. The per-row amount is `least(list-price saving, tokens_saved × the org's own observed
+   $/token)`, floored at 0 — so the fee can never exceed 25% of what they demonstrably would have
+   paid. The period total is additionally capped at `ratio × that period's real provider spend`.
+
+**Does not bill:**
+
+- **Every replay written before this ships.** The `ALTER` backfills history with an empty anchor,
+  and empty = unanchored = $0, with **no fallback** to "same org+provider+model" — that fallback
+  is deleted, not weakened. Concretely: org `f1305475`'s week's recomputed fee **falls** from
+  1,235,092 → 1,234,567 µUSD, because the four organic replays that contributed 525 µUSD under the
+  old arithmetic now contribute nothing `[verified — executed on caestus, rolled back]`. This is a
+  small permanent revenue regression across every tenant's pre-ship replays, and it is the
+  intended direction (under-bill, never over-bill).
+- Unanchored zero-spend savings of any shape — they land in the concentration guard's numerator,
+  so a period with **no price source at all still halts** exactly as today (`share 1.00000`,
+  recomputed fee 0) `[verified on caestus — the pure-replay clone org halts verbatim]`.
+- Provider-native cache discounts (`cache_attributable=false`), telemetry-only rows
+  (`authoritative=false`), batch imports (the anchor column is dropped outright on that path).
+
+Every degradation in the chain fails **closed** to $0: missing cache column, tripped process
+latch, PGRST204 retry, hostile upstream id, forged claim `[verified — python lane negative tests
++ SQL-side argument negatives run at apply time]`.
+
+### The three configured numbers, and how to change them
+
+All three are columns on `public.billing_halting_conditions` (the singleton thresholds row), CHECK-
+bounded so an operator can **tighten with a one-line UPDATE** but can only **loosen via a new,
+reviewed migration** — same posture as the existing 0.25/0.50 thresholds `[verified — apply-time
+self-check proves each loosening UPDATE raises `check_violation`]`:
+
+| Column | Default | Tighten means | Bound |
+|---|---|---|---|
+| `cache_anchor_materiality_floor_usd` | `0.3000` | **raise** it | `[0.30, 1000.00]` |
+| `cache_anchor_lookback_days` | `30` | **shorten** it | `[1, 30]` |
+| `max_cache_savings_per_spend_ratio` | `3.000` | **lower** it | `[0, 3.000]` |
+
+- **Floor $0.30, per provider+model, per window** (not per request — a single request is
+  ~$0.0005): asserts the org is a real paying customer of the model whose price we are about to
+  use. Kills the quarantine's `$0.0000000001-ancestor-anchors-$125` shape outright.
+- **Lookback 30 days**: the link itself only ever needs 24h (cache TTL is CHECK-bounded at 24h),
+  so 30 days is slack for the *price set* — roughly four billing periods of price evidence.
+- **Ratio 3.000**: caps billable cache savings at 3× the period's real provider spend. Two
+  independent derivations agree: it is a 75% cache-hit-rate ceiling (`R/(1+R)`), and it caps the
+  cache-derived fee at 75% of the customer's own provider bill (4.0 would be the point where our
+  fee could equal their entire provider bill). **This is reasoned, not measured** — the one
+  observed real workload sits at ratio ~1.0. Re-derive it after a few real billing periods; that
+  is precisely why it is a column `[unverified as a value; verified as a mechanism]`.
+
+### The acceptance arithmetic (predicted before execution, then observed exactly)
+
+Fixture matching the acceptance brief's traffic shape — 40 deepseek-chat misses at 60,000 input +
+1,000 output tokens, then 40 forward-linked exact-cache replays `[verified — executed on caestus
+inside a rolled-back transaction; the fee was written down in the brief before any of this code
+ran]`:
+
+```
+40 misses:   $0.00868 each  → real spend $0.34720, paid tokens 2,440,000
+observed $/token = 0.34720 / 2,440,000            = $0.000000142295…
+per replay:  least(list $0.00868, 60,000 × observed = $0.0085377) = $0.0085377
+basis        = 40 × 0.0085377                      = $0.34150820   (ratio 0.9836 ≤ 3.000, floor $0.3472 ≥ $0.30)
+fee          = floor(0.34150820 × 25% × 1e6)       = 85,377 µUSD   (predicted 85,377; observed 85,377)
+gross ceiling                                       = 86,800 µUSD
+```
+
+The 1,423 µUSD gap (1.64%) is deliberate under-billing: `usage_log` has no
+`baseline_output_tokens` column, so the avoided *completion* leg of a replay is unrecoverable and
+the observed-price term reconstructs the input leg only; the `least()` makes that cost us revenue,
+never the customer money. Output-heavy workloads under-bill more `[verified — hard limit read from
+schema; not designable around without a new column]`.
+
+**What was NOT executed**: real DeepSeek traffic through a hosted proxy (steps 3–5 of the brief —
+the "expect 40 anchored rows" count). The hosted proxy for caestus does not exist
+(api.brevitassystems.com is production), and closing the gap would have required forging an
+api-key credential, which the verifier declined and flagged rather than doing quietly. **The SQL
+is proven; the live plumbing that feeds it is not.** Step 5 remains the first thing to run — and
+the first thing to disbelieve — when this reaches real traffic `[verified as absent]`.
+
+### Attacker's maximum extractable fee per real dollar
+
+**$0.75 of fee per $1.00 of real provider spend, and the ceiling is exact**: it is
+`3.000 (ratio) × 0.25 (fee share)`. The adversarial lane could not exceed it by any combination of
+cache-path vectors — the worst executed shape claimed **$5,000,000** of list-price "savings"
+against $1.00 of real spend and settled for 750,000 µUSD ($0.75); the cap discarded 99.99994% of
+the claim `[verified — attack lane executed four independent max-extraction shapes on the full
+local chain; all four converged on 0.750000]`.
+
+**Caveat the owner must hear plainly**: $0.75/dollar is the ceiling for the *cache* path only. Any
+row carrying even a dust cost (`actual_cost_usd = $0.0000000001`) lands in `spend_backed_savings`,
+which 0031 leaves **uncapped** (unchanged from `202607280013`) — the attack lane manufactured
+$2,500 of fee against $0.0000001 of spend that way (finding 4 below). Not reachable from any
+current proxy path (`_report_cache_hit` always emits actual = 0 exactly), but "3× spend" is a
+property of the cache term, not of the invoice `[verified by execution on synthetic rows]`.
+
+### Verdict and every open finding
+
+**Adversarial review verdict: ship-with-fixes.** All findings reproduced by execution unless noted.
+
+1. **HIGH — quarantine defect 4 (dilution) is NOT closed, and the migration header claims it
+   is.** The concentration guard divides by *gross* net savings, which includes anchored
+   list-price savings, while the ratio cap bounds only the *basis*. Executed: 400 fabricated
+   unanchored rows ($40,000) halt alone at share 1.00000, but adding 5,000 anchored replays of a
+   single $1.00 ancestor drops the share to 0.44444 and the period **settles**. $1 of real spend
+   bought $50,000 of denominator. No money moves today (unanchored savings never enter the basis;
+   the fee stayed at the $0.75/dollar ceiling) — what is lost is the **only alarm** that a
+   tenant's savings have no price source, i.e. requirement 7's alarm survives only for 100%-
+   unanchored periods. Fix is one line in the evidence function's final select (bound the
+   reported gross by the same cap) plus a paired assertion. **Do this in a follow-up migration
+   before relying on the guard as an alarm** `[verified]`.
+2. **MEDIUM — the ratio cap's spend denominator does not require `receipt_source='proxy'`**,
+   while the price set in the same function does. An operator CSV import
+   (`record_usage_batch` passes `authoritative`/`receipt_source` through) can inflate the cap
+   100× with a priced `sdk` row. Not reachable from any HTTP route `[verified]`.
+3. **MEDIUM — one token-light paid call defeats the observed price.** A single $0.30 payment over
+   one billed token yields $0.30/token observed, so the list-price term binds on every replay and
+   a genuinely discounted (PTU/aggregator) tenant reprices at list — the exact direction that
+   costs the customer money. Fix: a second materiality dimension, a minimum paid-token floor
+   column in the same tighten-only shape `[verified]`.
+4. **MEDIUM — every new guard is conditioned on `actual_cost_usd <= 0`**, so a future path that
+   attributes any dust cost to a replay silently relocates it into the uncapped spend-backed
+   term ($2,500 fee on $0.0000001 spend, executed). Fix: classify replay rows by shape
+   (strategy + attribution + source), not by cost `[verified; not reachable today]`.
+5. **MEDIUM — nothing in CI pins the widened cache objects.** Re-applying
+   `202607170002_cache_security.sql` silently drops `origin_request_id` from
+   `semantic_cache_lookup` — anchoring stops, every replay settles $0, no error anywhere
+   (measured by execution; the harness's green is order-dependent). Fix: two assertions in the
+   existing cache-reapply suite `[verified]`.
+6. **LOW — the per-row `least()` fails open if the null-price conjunct is ever dropped**
+   (Postgres `least()` ignores NULLs). One `coalesce()` makes it structurally fail-closed
+   `[verified]`.
+7. **LOW — the anchor equijoin is not scoped by provider/model**: a replay can be *linked* by a
+   paid row for a different model (priced still from its own model, so damage is bounded), which
+   is closer to the quarantined existence gate than the header admits. Fix: two `and` clauses
+   `[verified]`.
+8. **LOW — an out-of-lane CI edit weakened the settlement-writer assertion** from pinning *how*
+   the watermark is derived to merely that the OUT column exists. Behaviour is still covered by
+   the new suite's sections 4/4b; restore a derivation pin `[verified]`.
+9. **LOW — the three new `usage_log` indexes build non-CONCURRENTLY inside the transaction**,
+   blocking inserts (dropped billable receipts) for the build duration on a large table. Not
+   fixable in-file (the repo's atomicity contract forbids CONCURRENTLY); it is a **runbook
+   constraint** — see Window B5 `[verified reasoning]`.
+
+**Operational opens beyond the review:**
+
+- **Process restart is mandatory and its absence is silent.** `SemanticCache._anchor_supported`
+  and `store._anchor_column_warned` are process-lifetime latches; any process that ever saw the
+  un-migrated schema has anchoring off for its whole life, one log line total. The latches are
+  now armed on caestus (migration committed there, nothing restarted). If an acceptance run shows
+  0 anchored rows, check this before the billing SQL `[verified — code read]`.
+- **The repo's Supabase CLI link points at production.** `supabase/.temp/project-ref` = wyfz, so
+  the acceptance brief's own `supabase db query --linked -f` apply line targets prod. The verifier
+  caught this and applied to caestus over an explicitly-addressed connection instead. The trap is
+  still armed `[verified — same trap already documented in the 0030 section]`.
+- **"Observed price" is honest in the mix dimension only.** `actual_cost_usd` is static list
+  price re-weighted by the org's own token mix, not a contracted rate — a PTU customer is handled
+  solely by the `202607280009` attestation. The arithmetic needs no change once provider-reported
+  cost lands in that column `[verified — 202607280008's own comment says so]`.
+- **Pre-existing watermark race** (identity ids commit out of order; seconds-wide window),
+  inherited from `202607280013`, mitigated by settling only closed periods. Flagged, not fixed
+  `[verified reasoning]`.
+- **Two orphan fixture orgs remain committed on caestus** from the quarantined 0028 run
+  (`a1105475-…0001/0002`, ledger rows `1000000007` pending / `1000000008` draft). Deliberately
+  left — they are the negative control's evidence — but a "clean caestus" assumption will trip on
+  them, and `1000000007` sits in a state the claim path would pick up if that queue ever drained
+  `[verified — final-state probe]`.
+- `docs/CROSS_SESSION_STATE.md` and `docs/ENTERPRISE_SIMULATION.md` appeared untracked during the
+  run; no lane claims them `[unverified — provenance unknown; do not fold into this change set
+  unread]`.
+
+**Gates, all green at time of writing** `[verified — re-run by the verifier after the final
+edit]`: `verify-migrations.mjs` exit 0 · `npm test` 324/324 · pytest 1110 passed · migration
+harness exit 0 on both paths (0031 applied twice back-to-back) · the new assertion suite proven
+non-vacuous by a deliberate probe failure (exit 3) then restored byte-identically · 20/20
+migration mutants caught by the intended section.
+
+### Can `docs/quarantine/202607280028` be deleted now?
+
+**No — it stays, for now.** Three reasons:
+
+1. Finding 1 proves the dilution defect (quarantine defect 4) is **still live in a different
+   form**, while 0031's own header claims it closed. Until the follow-up migration lands with its
+   paired assertion, the quarantine README is the only durable in-repo record that this defect
+   family exists. Deleting the record while the defect breathes is how it gets reintroduced.
+2. The caestus negative-control evidence (orgs `a1105475-…`) was produced by 0028's acceptance
+   run; the README is what explains those rows to the next person.
+3. It costs nothing: `docs/quarantine/` is outside `supabase/migrations/` and `scripts/ci/`, and
+   every gate is green with it in place `[verified — gates above]`.
+
+**Delete condition**: after a follow-up migration closes finding 1 (and ideally 2–3) with
+assertions, the two SQL files (`202607280028_…​.sql` + `migration-anchored-savings-assertions.sql`)
+may be deleted, folding the README's four-defect record into this report first. The README's
+standing instruction is unchanged either way: **never** re-register those files — the v2 suite's
+sections deliberately assert the opposite semantics, and 0028's expected `525 µUSD` is now the
+wrong number.
+
+### wyfz
+
+Yes, this needs applying to wyfz — cache replays are the only organic savings shape for the
+product's current tenants, so without 0031 every real period settles $0 forever. Apply path:
+**WINDOW B5 ADDENDUM** in `docs/WYFZ_APPLY_PLAN.md`. Nothing bills at apply time (wyfz traffic is
+100% non-authoritative and unpriced; all existing rows backfill to unanchored), and nothing bills
+after apply until the code deploy + process restart + real anchored traffic + attestation all
+land. The finding-1 follow-up should ship before the concentration guard is relied on as an alarm
+against fabricated savings, but it does not block the apply: at apply time there are no anchored
+rows on wyfz to dilute with.
+
+---
+
 ## ONE-COMMAND ONBOARDING — 2026-07-30
 
 Appended 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Goal

@@ -2716,3 +2716,258 @@ cannot settle a positive fee.
 - [ ] `$WYFZ_LOG` records: 0025–0028 still deliberately unapplied; review findings read;
       follow-ups (`202607280031` attestor SELECT grant, `brevitas-ops attest`, DSN preflight
       assertion) tracked but not blocking.
+
+---
+
+## WINDOW B5 ADDENDUM (2026-07-30) — `202607280031_observed_price_cache_fee_basis.sql`
+
+Appended 2026-07-30, later the same day as B4. Assumes **wyfz is at `202607280029` plus B4
+(`202607280030`) applied and gated green** — apply B4 first. Note on numbering: the B4 gate's
+"follow-ups" list reserved `202607280031` for an attestor SELECT grant; that number was instead
+consumed by this file (the anchored-savings v2 basis — see `docs/STRIPE_BUILD_REPORT.md`,
+"ANCHORED SAVINGS v2"). The attestor grant, if built, takes `202607280032` or later.
+
+This addendum covers one file: **`202607280031_observed_price_cache_fee_basis.sql`** — the
+redesign that replaces quarantined `202607280028` and makes Brevitas cache-replay savings
+billable when, and only when, each replay is forward-linked to the real paid request that filled
+the cache. It ships both halves of that link (`usage_log.savings_anchor_request_id` +
+`semantic_cache.origin_request_id`, an 11-arg `semantic_cache_store_bounded` overload, a widened
+`semantic_cache_lookup`), three tighten-only config columns on `billing_halting_conditions`
+(materiality floor `0.3000` USD / lookback `30` days / spend-ratio cap `3.000`), a new helper
+`billing_observed_model_price`, and DROP+CREATEs the evidence function to a 4-arg form
+(`p_usage_log_watermark_id bigint default null`) so every input to a settlement is pinned by the
+settlement's own watermark. The settlement writer records the anchored **basis** but still gates
+on the un-narrowed gross.
+
+All Laws (L1–L6) apply unchanged. One law gets sharper teeth here: **L3 (never replay the chain)
+now has a measured, silent failure mode** — re-applying `202607170002_cache_security.sql` after
+this file DROPs and recreates `semantic_cache_lookup` with the narrow OUT list, and anchoring
+stops **with no error anywhere**; every subsequent replay settles $0 (proven by execution during
+review). If `202607170002` is ever re-applied for any reason, `202607280031` must be re-applied
+after it and the API/proxy process restarted.
+
+### B5.0 Gate — all satisfied 2026-07-30 except the last three, which are yours
+
+- [x] File exists and is registered in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt`; `REVERSE_POSTURE_CUTOFF` bumped to
+      `202607280032` in the same change set.
+- [x] Migration harness exit 0 on **both** paths under `ON_ERROR_STOP=1`, with 0031 applied twice
+      back-to-back (idempotent). The new assertion suite
+      (`scripts/ci/migration-anchored-savings-v2-assertions.sql`) proven **non-vacuous** by a
+      deliberate injected failure (harness exit 3 at the exact line) then restored byte-identical.
+      20/20 migration mutants caught.
+- [x] Applied to **caestus** (`evpoxdrluvihryvqhraz`), exit 0, all catalog postconditions green.
+      Negative control executed there: the pre-existing organic replays did **not** become
+      billable (empty-anchor backfill), the pure-replay org still halts verbatim at
+      `zero_spend_concentration` share 1.00000, and the worked acceptance fee (85,377 µUSD)
+      matched its pre-written prediction exactly.
+- [x] No dependency on the skipped `202607280025`–`202607280028`: the file's precondition block
+      requires only the 0007/0008/0012/0013-era objects plus `semantic_cache`; `202607280026`
+      appears in comments only, and the anchor equijoin uses `exists()` precisely so it is safe
+      **without** 0026's dedupe index. Safe against wyfz's realigned chain.
+- [x] Adversarial review verdict **ship-with-fixes** — findings listed in full in
+      `docs/STRIPE_BUILD_REPORT.md`, "ANCHORED SAVINGS v2". None blocks this apply: the HIGH
+      (concentration-guard dilution) needs anchored rows to exploit and wyfz will have **zero**
+      anchored rows at apply time; the reachable-today findings are CI/import hygiene, not
+      settlement-path money movement. Record in `$WYFZ_LOG` that you read them and proceeded.
+- [ ] **Traffic window chosen.** Unlike every other Window B file, this one takes `SHARE` on
+      `public.usage_log` for **three non-CONCURRENT index builds** inside its single transaction
+      — inserts (i.e. metering receipts, ~12k/day) block for the duration of the builds. The
+      in-file `lock_timeout` bounds lock *acquisition* only, not build time. Treat this file as
+      Window-C-grade for scheduling: quiet window, `locks.sql` open in a second terminal (§6.1),
+      interrupt the client if it hangs >~30s (safe — §4). Measure first:
+      `select pg_size_pretty(pg_total_relation_size('public.usage_log'));` — at wyfz's current
+      row counts this is seconds, but measure, don't assume.
+- [ ] Fresh PITR reference point taken (§5) — this file is `REVERSE: PITR-ONLY`.
+- [ ] You have read §B5.4 (what this does and does NOT turn on) so nobody expects a fee to move.
+
+Checksum (§3 idiom) — must match exactly, or someone edited the frozen file; **stop**:
+
+```bash
+grep 202607280031 scripts/ci/migration-frozen-checksums.txt
+shasum -a 256 supabase/migrations/202607280031_observed_price_cache_fee_basis.sql
+```
+
+```
+2ce9da1355416078ea18f2a12f3c7af7753ca37d7f08396ebc063aed906da424  202607280031_observed_price_cache_fee_basis.sql
+```
+
+### B5.1 Ordering note
+
+Applying `280031` while still skipping `280025`–`280028` continues B3.1/B4.1's recorded
+divergence, same rationale, re-verified for this file specifically (see gate). Record again in
+`$WYFZ_LOG` that 0025–0028 were intentionally not applied. One ordering property is new and
+deliberate: **after this file, `202607280008`/`0012`/`0013` can never be re-applied** (the
+evidence function's return type changed; `create or replace` on the old files will abort loudly).
+That is fail-closed and correct — it is one more reason L3 is law.
+
+### B5.2 · `202607280031_observed_price_cache_fee_basis.sql`
+
+**(a)** Adds `usage_log.savings_anchor_request_id` (default `''`, backfilling **all** existing
+rows as unanchored) + three partial indexes; adds `semantic_cache.origin_request_id`, the 11-arg
+`semantic_cache_store_bounded` overload (10-arg stays, so the deployed Python's fallback path
+keeps resolving), and DROP+CREATEs `semantic_cache_lookup` with `origin_request_id` in its OUT
+list; adds the three tighten-only threshold columns; adds `billing_observed_model_price`;
+DROP+CREATEs `billing_period_settlement_evidence` as 4-arg-with-default (the checksum-frozen
+0008 guard's 3-arg call still resolves) with six new trailing OUT columns;
+`create or replace`s `settle_billing_period` (records the anchored basis, gates on gross) and
+`billing_period_settlement_summary`. The frozen halting-conditions guard is **not** edited. A
+self-check DO block asserts the whole surface, the threshold seeds, the loosening-UPDATE
+refusals, and the ACL matrix before commit.
+
+**(b)** Precondition:
+
+```bash
+cat > /tmp/wyfz-apply/pre-280031.sql <<'SQL'
+\echo == prerequisites: the 0007-0013 settlement stack + cache schema ==
+select to_regclass('public.period_settlement_ledger')   is not null as psl,
+       to_regclass('public.billing_halting_conditions') is not null as bhc,
+       to_regclass('public.warm_budget_ledger')         is not null as warm,
+       to_regclass('public.semantic_cache')             is not null as cache,
+       to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')
+         is not null as evidence_3arg_present,
+       to_regprocedure('public.settle_billing_period(uuid,timestamptz,text,boolean)')
+         is not null as writer,
+       to_regprocedure('public.period_settlement_fee_microusd(numeric,numeric)')
+         is not null as fee_helper;
+\echo == none of the new objects may exist yet ==
+select to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)')
+         is null as evidence_4arg_absent,
+       to_regprocedure('public.billing_observed_model_price(uuid,timestamptz,timestamptz,integer,bigint)')
+         is null as price_fn_absent,
+       not exists (select 1 from information_schema.columns
+                    where table_schema='public' and table_name='usage_log'
+                      and column_name='savings_anchor_request_id') as anchor_col_absent,
+       not exists (select 1 from information_schema.columns
+                    where table_schema='public' and table_name='semantic_cache'
+                      and column_name='origin_request_id') as origin_col_absent;
+\echo == freeze still held; money state baseline ==
+select not exists (select 1 from pg_trigger
+                    where tgrelid='public.usage_log'::regclass
+                      and tgname='queue_brevitas_fee_after_usage'
+                      and not tgisinternal) as fee_trigger_absent,
+       (select count(*) from public.usage_log) as usage_rows_before,
+       pg_size_pretty(pg_total_relation_size('public.usage_log')) as usage_log_size,
+       (select count(*) from public.period_settlement_ledger) as settlements_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280031.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+
+Every boolean `t`, `settlements_expect_0 = 0`. Record `usage_rows_before` and `usage_log_size` —
+the size is your index-build lock-duration estimate, and the row count is the number of rows the
+`ALTER` will backfill to unanchored.
+
+**(c)**
+
+```bash
+wyfz_run supabase/migrations/202607280031_observed_price_cache_fee_basis.sql
+```
+
+**(d)** Postcondition:
+
+```bash
+cat > /tmp/wyfz-apply/post-280031.sql <<'SQL'
+\echo == surface: new objects present, old evidence signature gone ==
+select to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)')
+         is not null as evidence_4arg,
+       to_regprocedure('public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)')
+         is null as evidence_3arg_gone,
+       to_regprocedure('public.billing_observed_model_price(uuid,timestamptz,timestamptz,integer,bigint)')
+         is not null as price_fn,
+       to_regprocedure('public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer,text)')
+         is not null as store_11arg,
+       to_regprocedure('public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer)')
+         is not null as store_10arg_retained,
+       (select 'origin_request_id' = any(proargnames) from pg_proc
+         where oid = to_regprocedure('public.semantic_cache_lookup(vector,text,double precision,text,text)'))
+         as lookup_widened;
+\echo == thresholds seeded at their loosen-bounds ==
+select cache_anchor_materiality_floor_usd = 0.3000 as floor_ok,
+       cache_anchor_lookback_days         = 30     as lookback_ok,
+       max_cache_savings_per_spend_ratio  = 3.000  as ratio_ok
+  from public.billing_halting_conditions;
+\echo == the backfill: every historical row is UNANCHORED (this is the negative control) ==
+select count(*) as total_rows,
+       count(*) filter (where savings_anchor_request_id <> '') as anchored_rows_expect_0
+  from public.usage_log;
+\echo == ACL: nothing new reachable by browser roles ==
+select not has_function_privilege('anon',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as anon_blocked,
+       not has_function_privilege('authenticated',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as auth_blocked,
+       has_function_privilege('service_role',
+         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)','EXECUTE')
+         as sr_evidence,
+       has_function_privilege('service_role',
+         'public.semantic_cache_store_bounded(text,text,text,vector,text,text,integer,integer,integer,integer,text)','EXECUTE')
+         as sr_cache_store;
+\echo == loosening must refuse (expect ERROR: check constraint) ==
+begin;
+update public.billing_halting_conditions set max_cache_savings_per_spend_ratio = 3.001;
+rollback;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280031.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+
+Every boolean `t`, `anchored_rows_expect_0 = 0`, `total_rows` = the `usage_rows_before` you
+recorded, and the final UPDATE **must fail** with a check-constraint error — capture that error
+string verbatim; it is the proof the thresholds can only be tightened in place.
+
+**(e)** Single transaction (`grep -c '^begin;'` = 1, `^commit;` = 1, zero `CONCURRENTLY` —
+verified in the frozen bytes), so a mid-file failure leaves wyfz byte-identical. Beyond that:
+the three index builds hold `SHARE` on `usage_log` for the build duration (metering inserts
+queue — see the gate item), and the `ALTER ... default ''` backfill touches every `usage_log`
+row. `REVERSE: PITR-ONLY` per its header — the widened OUT lists cannot be narrowed in place,
+and re-narrowing the basis would re-halt every anchored period.
+
+**(f)** **DB-first, and it stays dark — nothing can move a fee at apply time.** wyfz traffic is
+100% non-authoritative and 100% unpriced (§1), the settlement ledger is empty, every historical
+row backfills to unanchored, and the deployed code neither writes anchors nor calls the widened
+RPC surface (the 10-arg overload and the 3-arg-compatible evidence default keep every deployed
+call resolving unchanged). The one behaviour that changes at apply time is for the better: any
+future settlement is watermark-pinned and reproducible.
+
+### B5.3 What this does NOT turn on — read before anyone expects a number
+
+Billing anchored cache savings on wyfz requires **all** of the following after this apply, in
+order, and every one fails closed to $0 if skipped:
+
+1. **Code deploy** carrying the anchor plumbing (`api/store.py`, `brevitas/proxy.py`,
+   `brevitas/semantic_cache.py`, `api/server.py` from this change set).
+2. **Process restart** of the API/proxy service *after* both the migration and the deploy.
+   `SemanticCache._anchor_supported` and `store._anchor_column_warned` are process-lifetime
+   latches: a process that ever saw the un-migrated schema keeps anchoring off for its whole
+   life, and the only signal is a single log line. A restart-less deploy silently reproduces
+   today's $0 behaviour and will look like a billing-SQL bug.
+3. **Real anchored traffic**: paid misses (authoritative + priced) followed by replays, with
+   `BREVITAS_CACHE_ENABLED=true` on the process and `organizations.cache_enabled=true` for the
+   tenant — both default false, both fail silently to zero savings. Production currently mints
+   zero authoritative/priced rows at all (§1), so the savings drought must be closed first
+   regardless.
+4. **≥ $0.30 of paid traffic** for the provider+model inside the window+lookback (the
+   materiality floor), and per-org **attestation** (`202607280009`/`202607280030`) before any
+   settlement escapes `draft`.
+5. The **finding-1 follow-up migration** (concentration-guard dilution — see the build report)
+   before the guard is relied on as an alarm against fabricated savings. Not a blocker for this
+   apply (zero anchored rows exist to dilute with), but it should land before real anchored
+   volume does.
+
+And one standing hazard to log every time: **never re-apply `202607170002`** (silent de-anchor,
+measured — see the preamble above).
+
+### B5.4 Window gate
+
+- [ ] B5.0 fully satisfied; checksum `2ce9da13…` matches both lists; B4 gated green first.
+- [ ] `pre-280031.sql` all green; `usage_rows_before` + `usage_log_size` recorded.
+- [ ] `280031` exited 0 with an `OK` line in `$WYFZ_LOG`; total wall time noted (index-build
+      lock evidence).
+- [ ] `post-280031.sql`: surface 6×`t`; thresholds 3×`t`; `anchored_rows_expect_0 = 0` with
+      `total_rows` matching; ACL 4×`t`; the loosening UPDATE **failed** and the error is
+      captured verbatim.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0; `period_settlement_ledger` still
+      empty.
+- [ ] `$WYFZ_LOG` records: 0025–0028 still deliberately unapplied; review findings read
+      (ship-with-fixes, HIGH = guard dilution, not exploitable at zero anchored rows); B5.3
+      acknowledged — no restart performed in this window means anchoring is expected-off.

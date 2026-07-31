@@ -2117,6 +2117,7 @@ def test_store_drops_an_anchor_on_a_row_shaped_to_have_none(tmp_path):
 
     base = {
         "authoritative": True, "cache_attributable": True, "strategy": "exact_cache",
+        "receipt_source": "proxy",
         "request_id": "proxy:row", "savings_anchor_request_id": "proxy:ancestor",
     }
     assert _usage_row("kh", 600, 0, **base)["savings_anchor_request_id"] == "proxy:ancestor"
@@ -2125,6 +2126,13 @@ def test_store_drops_an_anchor_on_a_row_shaped_to_have_none(tmp_path):
     assert _usage_row("kh", 600, 0, **{**base, "cache_attributable": False})[
         "savings_anchor_request_id"] == ""
     assert _usage_row("kh", 600, 0, **{**base, "strategy": "passthrough"})[
+        "savings_anchor_request_id"] == ""
+    # A replay we served came through the proxy. Any other receipt_source names
+    # traffic we did not intermediate -- no cache entry, so no ancestor to
+    # inherit -- and the settlement's own predicate excludes it either way.
+    assert _usage_row("kh", 600, 0, **{**base, "receipt_source": "sdk"})[
+        "savings_anchor_request_id"] == ""
+    assert _usage_row("kh", 600, 0, **{**base, "receipt_source": "import"})[
         "savings_anchor_request_id"] == ""
     assert _usage_row("kh", 600, 0, **{**base, "savings_anchor_request_id": "proxy:row"})[
         "savings_anchor_request_id"] == ""
@@ -2170,7 +2178,7 @@ def test_anchored_receipt_survives_a_usage_log_without_the_anchor_column(monkeyp
     store = _Store()
     assert store.record_usage(
         "kh", 600, 0, authoritative=True, cache_attributable=True,
-        strategy="exact_cache", request_id="proxy:row",
+        strategy="exact_cache", receipt_source="proxy", request_id="proxy:row",
         savings_anchor_request_id="proxy:ancestor") is True
     # Tried anchored, then retried without -- the receipt is recorded either way.
     assert len(attempts) == 2
@@ -2216,5 +2224,5 @@ def test_a_real_insert_failure_is_not_mistaken_for_a_missing_column(monkeypatch)
     with pytest.raises(requests.HTTPError):
         _Store().record_usage(
             "kh", 600, 0, authoritative=True, cache_attributable=True,
-            strategy="exact_cache", request_id="proxy:row",
+            strategy="exact_cache", receipt_source="proxy", request_id="proxy:row",
             savings_anchor_request_id="proxy:ancestor")

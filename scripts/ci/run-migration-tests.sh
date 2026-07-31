@@ -344,11 +344,25 @@ run_forward_assertions() {
   # missing-registration message, not a regression.
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-attestation-surface-assertions.sql
-  # NOTE: the anchored fee basis (202607280028) and its assertion file are
-  # QUARANTINED pending an owner decision -- their review found a blocker plus
+  # NOTE: the FIRST anchored fee basis (202607280028) and its assertion file
+  # remain QUARANTINED in docs/quarantine/ -- their review found a blocker plus
   # three highs, including a path where a $0.0000000001 payment unlocked $125 of
-  # billing. Neither file is registered or wired here. Restore both together, or
-  # this job fails on a missing file rather than on a real regression.
+  # billing. Neither file is registered or wired here and neither may be
+  # restored: 202607280031 below replaces them, and the quarantined assertion
+  # file asserts the existence-gate semantics that design deletes.
+  #
+  # The observed-price cache fee basis (202607280031), which is that
+  # replacement. Runs after the halting-condition and writer files because it
+  # drives the SAME guard and the SAME writer, and after the attestation surface
+  # because every settlement it performs needs an attested organization. It
+  # opens its own transaction and ends in ROLLBACK, so it is rerunnable and
+  # leaves no settlement behind.
+  #
+  # REQUIRES 202607280031 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-anchored-savings-v2-assertions.sql
   # Schema and authorization repairs (202607280014-202607280023). Each file
   # opens its own transaction and ends in ROLLBACK, so they are rerunnable,
   # order-independent, and leave no fixture rows behind. The browser-role file

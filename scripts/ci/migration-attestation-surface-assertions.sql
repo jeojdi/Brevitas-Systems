@@ -973,7 +973,12 @@ begin
         'public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)',
         'public.assert_billing_period_halting_conditions(uuid,timestamptz,timestamptz,bigint)',
         'public.organization_billing_arrangement_state(uuid)',
+        -- Both spellings: 202607280031 widened this by a trailing
+        -- p_usage_log_watermark_id bigint. The loop skips whichever is absent,
+        -- so listing only the narrow one would silently drop the evidence
+        -- function out of this scan instead of failing.
         'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz)',
+        'public.billing_period_settlement_evidence(uuid,timestamptz,timestamptz,bigint)',
         'public.settle_billing_period(uuid,timestamptz,text,boolean)',
         'public.promote_billing_period_settlement(bigint,text,text)'
     ]

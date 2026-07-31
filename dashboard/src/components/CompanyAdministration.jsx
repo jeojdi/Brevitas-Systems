@@ -12,6 +12,93 @@ const DEFAULT_SCOPES = ['proxy:invoke', 'usage:write', 'usage:read_own', 'custom
 
 const label = value => String(value || '').replaceAll('_', ' ')
 
+// --- hosted integration snippets (pure; exercised by onboarding-hosted-config.check.mjs) ---
+// A freshly minted organization_service key is useless on its own: the hosted proxy
+// middleware (api/server.py) reads the credential from X-Brevitas-Key — never from
+// Authorization — and hard-400s an organization_service call that arrives without
+// X-Brevitas-Customer-ID. Both facts used to be undiscoverable from this screen, which is
+// why keys were minted and no billable traffic ever followed. These builders put the key,
+// the hosted base URL, and both headers into one block the customer can paste.
+const HOSTED_BASE_URL = 'https://api.brevitassystems.com/v1'
+const KEY_HEADER = 'X-Brevitas-Key'
+const CUSTOMER_HEADER = 'X-Brevitas-Customer-ID'
+const CUSTOMER_ID_FALLBACK = 'your-customer-id'
+const CUSTOMER_ID_MAX = 128
+
+// The server accepts any control-character-free string up to 128 chars, but the id is
+// interpolated into quoted Python/JS/shell literals here. Restricting it to an unambiguous
+// slug alphabet means no generated snippet can ever be broken — or reshaped — by what a
+// customer types into the field.
+export function customerIdSlug(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-._]+/, '')
+    .replace(/[-._]+$/, '')
+    .slice(0, CUSTOMER_ID_MAX)
+}
+
+export function hostedIntegrationSnippets({ apiKey = '', customerId = '' } = {}) {
+  const key = String(apiKey || '')
+  const customer = customerIdSlug(customerId) || CUSTOMER_ID_FALLBACK
+  return [
+    {
+      id: 'python',
+      label: 'Python',
+      caption: 'OpenAI SDK',
+      code: `from openai import OpenAI
+
+client = OpenAI(
+    # Brevitas hosted gateway — the billable path.
+    base_url="${HOSTED_BASE_URL}",
+    api_key="${key}",
+    default_headers={
+        "${KEY_HEADER}": "${key}",
+        "${CUSTOMER_HEADER}": "${customer}",
+    },
+)
+
+completion = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "ping"}],
+)`,
+    },
+    {
+      id: 'node',
+      label: 'Node',
+      caption: 'OpenAI SDK',
+      code: `import OpenAI from 'openai'
+
+const client = new OpenAI({
+  // Brevitas hosted gateway — the billable path.
+  baseURL: '${HOSTED_BASE_URL}',
+  apiKey: '${key}',
+  defaultHeaders: {
+    '${KEY_HEADER}': '${key}',
+    '${CUSTOMER_HEADER}': '${customer}',
+  },
+})
+
+const completion = await client.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{ role: 'user', content: 'ping' }],
+})`,
+    },
+    {
+      id: 'curl',
+      label: 'curl',
+      caption: 'raw HTTP',
+      code: `curl ${HOSTED_BASE_URL}/chat/completions \\
+  -H "${KEY_HEADER}: ${key}" \\
+  -H "${CUSTOMER_HEADER}: ${customer}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'`,
+    },
+  ]
+}
+// --- end hosted integration snippets ---
+
 async function companyJson(path, accessToken, { method = 'GET', body, signal } = {}) {
   let response
   try {
@@ -72,6 +159,105 @@ function OneTimeSecret({ title, value, onClear, description = '' }) {
       <button type="button" onClick={onClear} className="text-xs text-brand-muted">Clear from view</button>
     </div>
     {copyStatus && copyStatus !== 'Copied' && <p role="status" className="text-xs text-brand-muted">{copyStatus}</p>}
+  </div>
+}
+
+function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
+  const [activeTab, setActiveTab] = useState('python')
+  const [copyStatus, setCopyStatus] = useState('')
+  // The block carries the live secret, so any change to what is on screen invalidates the
+  // "Copied" affordance rather than implying the previous block reached the clipboard.
+  useEffect(() => { setCopyStatus('') }, [apiKey, customerId, activeTab])
+
+  // Rendered only while the one-time secret is in memory; it is derived at render and never
+  // stored, so clearing the key clears every copy of it here too.
+  if (!apiKey) return null
+
+  const snippets = hostedIntegrationSnippets({ apiKey, customerId })
+  const active = snippets.find(snippet => snippet.id === activeTab) || snippets[0]
+
+  const copyConfig = async () => {
+    try {
+      if (typeof navigator.clipboard?.writeText !== 'function') throw new Error('unavailable')
+      await navigator.clipboard.writeText(active.code)
+      setCopyStatus('Copied')
+    } catch {
+      setCopyStatus('Copy failed — select the block and copy it manually')
+    }
+  }
+
+  return <div data-testid="hosted-integration" className="rounded-xl border border-brand-blue/30 bg-white dark:bg-brand-dark-surface p-4 space-y-4">
+    <div>
+      <p className="annotation text-brand-blue">Ready to paste · hosted gateway</p>
+      <p className="mt-1 text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+        The key above is already in every block below. Paste one into your application and the next request is
+        metered — there is nothing else to install and no other configuration step.
+      </p>
+    </div>
+
+    <div className="grid gap-1 sm:max-w-sm">
+      <label htmlFor="hosted-customer-id" className="annotation">Customer ID sent with every request</label>
+      <input
+        id="hosted-customer-id"
+        value={customerId}
+        onChange={event => onCustomerIdChange(customerIdSlug(event.target.value))}
+        maxLength={CUSTOMER_ID_MAX}
+        placeholder={CUSTOMER_ID_FALLBACK}
+        className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 font-mono text-sm"
+      />
+      <p className="text-xs text-brand-muted dark:text-brand-dark-muted">
+        Any stable id you choose — your own company slug if you are the only tenant, or your end customer's id if you
+        resell. Usage, savings, and invoices are attributed to exactly this value, never inferred.
+      </p>
+    </div>
+
+    <div role="tablist" aria-label="Integration language" className="flex flex-wrap gap-2">
+      {snippets.map(snippet => <button
+        key={snippet.id}
+        type="button"
+        role="tab"
+        id={`hosted-tab-${snippet.id}`}
+        aria-selected={snippet.id === active.id}
+        aria-controls="hosted-config-panel"
+        onClick={() => setActiveTab(snippet.id)}
+        className={`rounded-lg px-3 py-1.5 text-xs ${snippet.id === active.id
+          ? 'bg-brand-blue text-white'
+          : 'border border-brand-border dark:border-brand-dark-border text-brand-muted'}`}
+      >{snippet.label} <span className="opacity-70">· {snippet.caption}</span></button>)}
+    </div>
+
+    <pre
+      id="hosted-config-panel"
+      role="tabpanel"
+      aria-labelledby={`hosted-tab-${active.id}`}
+      className="overflow-x-auto rounded-xl border border-brand-border dark:border-brand-dark-border bg-brand-bg dark:bg-brand-dark-bg px-4 py-3 font-mono text-xs leading-relaxed ph-no-capture"
+      data-ph-sensitive
+    ><code>{active.code}</code></pre>
+
+    <div className="flex flex-wrap gap-3">
+      <button type="button" onClick={copyConfig} className="rounded-xl bg-brand-blue px-4 py-2 text-xs text-white">
+        {copyStatus === 'Copied' ? 'Copied' : `Copy ${active.label} config`}
+      </button>
+    </div>
+    {copyStatus && copyStatus !== 'Copied' && <p role="status" className="text-xs text-brand-muted">{copyStatus}</p>}
+
+    <p className="rounded-lg border border-brand-blue/30 bg-brand-blue-dim px-3 py-2 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">
+      <code className="font-mono text-brand-blue">{CUSTOMER_HEADER}</code> and{' '}
+      <code className="font-mono text-brand-blue">{KEY_HEADER}</code> are required on every single request — there is
+      no fallback and no pinned default. Without the customer header the gateway answers{' '}
+      <code className="font-mono">400 Organization service proxy calls require {CUSTOMER_HEADER}</code>; without the
+      key header it answers <code className="font-mono">401 Missing {KEY_HEADER}</code>. The OpenAI SDK's{' '}
+      <code className="font-mono">api_key</code> alone is not enough, which is why the blocks above set the header
+      explicitly.
+    </p>
+
+    <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
+      Honest about billing: this hosted path — traffic through{' '}
+      <code className="font-mono">{HOSTED_BASE_URL}</code> — is the only one that produces billable usage.{' '}
+      <code className="font-mono">bvx install</code> runs a local proxy that reports analytics only; its savings are
+      real but are never billed and never appear on an invoice. If your calls are not going through the base URL
+      above, expect a $0 invoice.
+    </p>
   </div>
 }
 
@@ -198,6 +384,7 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
   const [serviceName, setServiceName] = useState('')
   const [serviceEnvironment, setServiceEnvironment] = useState('production')
   const [serviceSecret, setServiceSecret] = useState('')
+  const [hostedCustomerId, setHostedCustomerId] = useState('')
   const [mutating, setMutating] = useState(false)
   const [mutationError, setMutationError] = useState('')
   const [confirmation, setConfirmation] = useState(null)
@@ -208,6 +395,10 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
     companyJson('capabilities', accessToken, { signal: controller.signal })
       .then(value => {
         setCapabilities(value)
+        // Seed a usable default so the config block is copy-paste on first read; the
+        // customer can still override it before copying.
+        const active = (value?.companies || []).find(company => company.company_id === value.company_id)
+        setHostedCustomerId(current => current || customerIdSlug(active?.company_name || ''))
         onCompanyContextChange?.(value)
       })
       .catch(reason => { if (reason.name !== 'AbortError') setCapabilityError(reason.message) })
@@ -349,6 +540,11 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
         value={serviceSecret}
         description="Copy this key into the new service now. Brevitas cannot recover it after you clear or leave this page; rotate the account later if it is lost."
         onClear={() => setServiceSecret('')}
+      />
+      <HostedIntegration
+        apiKey={serviceSecret}
+        customerId={hostedCustomerId}
+        onCustomerIdChange={setHostedCustomerId}
       />
       {services.error && <p className="font-mono text-xs text-red-500">{services.error}</p>}
       <div className="grid lg:grid-cols-2 gap-3">{services.page.items.map(account => <article key={account.id} className="rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface p-5 space-y-3">

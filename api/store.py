@@ -733,6 +733,13 @@ def _savings_anchor(values: dict[str, Any]) -> str:
     if not str(values.get("strategy") or "").strip().lower().startswith(
             _ANCHORABLE_STRATEGIES):
         return ""
+    # A replay Brevitas served came through the proxy. A row that reports any
+    # other receipt_source describes traffic we did not intermediate, so it has
+    # no cache entry behind it and nothing to inherit an ancestor from. The fee
+    # basis excludes those rows anyway, so this only keeps the stored value
+    # honest with what the settlement will actually count.
+    if str(values.get("receipt_source") or "sdk") != "proxy":
+        return ""
     return "" if anchor == str(values.get("request_id") or "") else anchor
 
 
