@@ -20,6 +20,13 @@ select 'service_role_executable', count(*)::text, 'must stay ~130 (money paths i
 union all
 select 'guard_installed', (to_regprocedure('public.assert_browser_role_function_privileges()') is not null)::text, 'true expected'
 union all
+-- Looked up by NAME, never by a hand-written signature: to_regprocedure and
+-- has_function_privilege(text,...) both resolve by EXACT argument types, so a
+-- guessed spelling raises 42883 and fails the CHECK rather than the property.
 select 'attestation_still_locked',
-       (not has_function_privilege('service_role','public.attest_billing_arrangement(uuid,text,text,text,timestamptz,text)','execute'))::text,
-       'true expected (no role may self-attest)';
+       (not exists (
+          select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname = 'attest_billing_arrangement'
+             and has_function_privilege('service_role', p.oid, 'execute')))::text,
+       'true expected (no PostgREST role may self-attest)';
