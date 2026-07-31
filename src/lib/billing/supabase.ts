@@ -420,3 +420,83 @@ export async function releaseBillingCheckoutGeneration(values: {
   }
   return data;
 }
+
+/** PostgREST/Postgres codes that mean "this RPC is not deployed here". */
+const ARRANGEMENT_UNAVAILABLE_CODES = new Set([
+  'PGRST202', // schema cache: function not found
+  '42883',    // undefined_function
+  '42P01',    // undefined_table
+  '42501',    // insufficient_privilege (execute grant not applied)
+]);
+
+function arrangementRequestUnavailable(error: { code?: unknown; message?: unknown }): boolean {
+  if (typeof error?.code === 'string' && ARRANGEMENT_UNAVAILABLE_CODES.has(error.code)) return true;
+  return typeof error?.message === 'string' &&
+    /could not find the function|does not exist|permission denied/i.test(error.message);
+}
+
+/**
+ * Record the customer's acceptance of commercial terms.
+ *
+ * WHY THIS EXISTS. 202607280030 built attestation as a deliberate TWO-STEP: the
+ * customer requests an arrangement, and a human operator holding the
+ * out-of-band `brevitas_attestor` role attests it. `attest_billing_arrangement`
+ * refuses without the request it answers ("attesting marginal_per_call requires
+ * the billing-arrangement request it answers"). Nothing in the app ever called
+ * the request half, so the first real customer had to have one hand-written in
+ * SQL, and every subsequent one would have too.
+ *
+ * This closes that half and ONLY that half. It deliberately does NOT attest:
+ * `attest_billing_arrangement` is executable by no PostgREST role -- not even
+ * service_role -- and that is the single strongest guarantee in the billing
+ * system, namely that no bug and no compromised web process can mark a customer
+ * billable. Automating enrolment must not mean automating consent to charge.
+ *
+ * IDEMPOTENT BY STRIPE IDENTITY. p_request_id is the Checkout Session id, so
+ * Stripe's at-least-once delivery and its ~3-day retry schedule collapse onto
+ * one row rather than a queue of identical requests for an operator to sift.
+ */
+export async function openBillingArrangementRequest(input: {
+  organizationId: string;
+  actorUserId: string;
+  arrangement: string;
+  agreementReference: string;
+  ratePresented: string;
+  termsVersion: string;
+  requestId: string;
+}): Promise<{ ok: boolean; requestId: string | null; created: boolean }> {
+  const { data, error } = await billingDatabase().rpc('open_billing_arrangement_request', {
+    p_organization_id: input.organizationId,
+    p_actor_user_id: input.actorUserId,
+    p_self_declared_arrangement: input.arrangement,
+    p_agreement_reference: input.agreementReference,
+    p_rate_presented: input.ratePresented,
+    p_terms_version: input.termsVersion,
+    p_request_id: input.requestId,
+  });
+  // DEGRADE GUARD. 202607280030 is at or after the deployment cutoff
+  // tests/billing_route_dependency_degradation.test.mjs tracks, so a database
+  // that has not received it yet must degrade rather than fault. A missing
+  // request is a customer an operator cannot attest -- visible, and fixable by
+  // running the migration. A thrown error here 5xxes a Stripe delivery with a
+  // ~3-day retry window, which is how a subscription event gets lost for good.
+  // Everything that is NOT "this RPC is not deployed" still throws: a genuine
+  // fault must never be silently reported as an un-enrolled customer.
+  if (error) {
+    if (!arrangementRequestUnavailable(error)) throw error;
+    console.error(
+      'open_billing_arrangement_request is not deployed; the customer is enrolled ' +
+      'in Stripe but has no arrangement request for an operator to attest',
+      typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code?: unknown }).code
+        : 'no-code',
+    );
+    return { ok: false, requestId: null, created: false };
+  }
+  const result = (data ?? {}) as Record<string, unknown>;
+  return {
+    ok: result.ok === true,
+    requestId: typeof result.request_id === 'string' ? result.request_id : null,
+    created: result.created === true,
+  };
+}

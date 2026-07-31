@@ -59,6 +59,7 @@ const SUPABASE_EXPORTS = [
   'consumeBillingRecoveryAttempt',
   'getBillingAccount',
   'manuallyResolveBillingLedgerEntry',
+  'openBillingArrangementRequest',
   'persistBillingCheckoutSession',
   'releaseBillingCheckoutGeneration',
   'reserveBillingCheckoutGeneration',

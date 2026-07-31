@@ -172,6 +172,12 @@ if (loaderUnavailable === false) {
     billingIsConfigured: () => true,
   })
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     authenticatedBillingUser: undefined,
     authorizeActiveBillingCompany: undefined,
     billingDatabase: undefined,
@@ -242,6 +248,12 @@ function installStub({
     forbidFrom: true,
   })
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     authenticatedBillingUser: async () => ({ id: OWNER_ID }),
     authorizeActiveBillingCompany: async () => ({
       ok: true, organizationId: ORGANIZATION_ID, billingOwnerId: OWNER_ID,
@@ -486,6 +498,12 @@ test('unauthenticated and unauthorized callers read no settlement history', { sk
 
   let database = installStub()
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     authenticatedBillingUser: async () => null,
     authorizeActiveBillingCompany: async () => ({ ok: true, organizationId: ORGANIZATION_ID, billingOwnerId: OWNER_ID }),
     billingDatabase: () => database.client,
@@ -497,6 +515,12 @@ test('unauthenticated and unauthorized callers read no settlement history', { sk
 
   database = installStub()
   stubModule('@/lib/billing/supabase', {
+    // The webhook imports this to open the arrangement request after a
+    // completed checkout. This suite never reaches it, so it throws rather
+    // than returning a plausible value that would hide a route that did.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in this suite')
+    },
     authenticatedBillingUser: async () => ({ id: OWNER_ID }),
     authorizeActiveBillingCompany: async () => ({ ok: false }),
     billingDatabase: () => database.client,

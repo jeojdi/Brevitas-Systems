@@ -60,6 +60,13 @@ if (loaderUnavailable === false) {
   stubModule('@/lib/billing/supabase', {
     billingDatabase: () => currentScenario().database.client,
     getBillingAccount: async () => null,
+    // Imported by the webhook to open the arrangement request after a
+    // completed checkout. Never reached in this suite -- every scenario here
+    // refuses before dispatch -- so it throws rather than returning a
+    // plausible value that could mask a route reaching it by mistake.
+    openBillingArrangementRequest: async () => {
+      throw new Error('no arrangement request is permitted in the config-gate suite')
+    },
   })
   stubModule('@/lib/posthog-server', { captureServerEvent: async () => {} })
 }
