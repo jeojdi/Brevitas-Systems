@@ -1216,6 +1216,14 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
         forward = {"authorization", "openai-organization", "openai-project",
                    "openai-beta", "idempotency-key", "http-referer", "x-title",
                    "x-client-request-id",
+                   # Azure OpenAI's native credential header. AzureOpenAI(
+                   # api_key=...) sends `api-key`, not Authorization, so without
+                   # this an Azure caller's request reaches the upstream with no
+                   # credential at all and 401s -- and a failed upstream writes
+                   # no receipt, so the traffic is invisible as well as broken.
+                   # Entra/managed-identity callers send Authorization instead
+                   # and were already covered.
+                   "api-key",
                    # xAI replica-affinity hint; a caller-supplied value always
                    # beats Brevitas's injected one (_apply_xai_affinity).
                    "x-grok-conv-id"}
