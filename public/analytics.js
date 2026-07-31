@@ -35,6 +35,22 @@
     return hostIsApp;
   }
 
+  // Development machines run the production bundle with the production project
+  // token, so every `npm run dev` session was landing in the customer-facing
+  // numbers. On 2026-07-29 two of the nine recorded signup attempts came from
+  // http://localhost:3000 — 22% of that funnel was a developer. The server-side
+  // admin summary filters $host as well; this is the half that stops the events
+  // being sent in the first place.
+  function isDevelopmentHost() {
+    try {
+      var host = location.hostname;
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1' ||
+        host === '' || /\.local$/.test(host);
+    } catch (_) {
+      return false;
+    }
+  }
+
   function privacySignalEnabled() {
     // GPC only. It is legally binding under CCPA/CPRA (California) and the Colorado and
     // Connecticut privacy acts, so it must be honoured. Do Not Track is deliberately NOT
@@ -50,6 +66,7 @@
   }
 
   function analyticsEnabled() {
+    if (isDevelopmentHost()) return false;
     if (privacySignalEnabled()) return false;
     return storedPreference() !== 'off';
   }
@@ -222,7 +239,10 @@
   }
 
   function loadPostHog(config) {
-    if (!config.enabled || !config.projectToken) return;
+    // Belt and braces with the analyticsEnabled() guard: opting out still loads and
+    // initializes the SDK, and a developer clicking "Allow analytics" on localhost
+    // would then opt straight back in. Declining to initialize at all removes that path.
+    if (!config.enabled || !config.projectToken || isDevelopmentHost()) return;
     // PostHog's queueing bootstrap lets calls made during initial page render wait
     // safely for the asynchronously loaded SDK.
     (function (documentObject, posthog) {

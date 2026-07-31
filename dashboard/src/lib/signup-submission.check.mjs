@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { normalizeAuthEmail } from './auth-credentials.js'
+import { normalizeAuthEmail, PASSWORD_MISMATCH_MESSAGE } from './auth-credentials.js'
 import {
   DUPLICATE_SIGNUP_NOTICE,
   SIGNUP_CONFIRMATION_NOTICE,
   SIGNUP_TRACKER_MAX_ENTRIES,
   createSignupTracker,
+  signupFailureReason,
 } from './signup-submission.js'
+import { EMAIL_DELIVERY_FAILED_MESSAGE } from './supabase.js'
 
 const sentenceCount = copy => copy.split(/[.!?]+\s+|[.!?]+$/).filter(Boolean).length
 
@@ -140,4 +142,61 @@ test('trackers do not share state', () => {
   assert.equal(second.hasAttempted('user@example.com'), false)
   second.reset()
   assert.equal(first.hasAttempted('user@example.com'), true)
+})
+
+test('the mail-delivery failure the friendly copy maps to gets its own bucket', () => {
+  // The caller passes this in because the pattern lives in supabase.js, next to the
+  // copy. Pinning it against the real exported constant keeps the two in step: if the
+  // wording moves and Auth.jsx's `===` stops matching, this fails rather than silently
+  // relabelling every undeliverable address as a generic auth error.
+  assert.equal(
+    signupFailureReason(EMAIL_DELIVERY_FAILED_MESSAGE, { emailDeliveryFailed: true }),
+    'email_delivery',
+  )
+  assert.equal(signupFailureReason('anything at all', { emailDeliveryFailed: true }), 'email_delivery')
+})
+
+test('a mismatch is recognised by identity, not by guessing at the word "password"', () => {
+  assert.equal(signupFailureReason(PASSWORD_MISMATCH_MESSAGE), 'password_mismatch')
+  // Still a password problem, but a different one, so it must not claim mismatch.
+  assert.equal(signupFailureReason('Password should be at least 6 characters'), 'weak_password')
+})
+
+test('provider and transport failures are separated', () => {
+  assert.equal(signupFailureReason('Email rate limit exceeded'), 'rate_limited')
+  assert.equal(signupFailureReason('User already registered'), 'duplicate_email')
+  assert.equal(signupFailureReason('Failed to fetch'), 'network')
+  assert.equal(signupFailureReason('NetworkError when attempting to fetch resource.'), 'network')
+  assert.equal(signupFailureReason('Load failed'), 'network')
+  assert.equal(signupFailureReason('Something went wrong on our end.'), 'auth_error')
+})
+
+test('an absent or unusable message still yields a bucket, never a throw', () => {
+  for (const value of [undefined, null, '', '   ', {}, 42]) {
+    const reason = signupFailureReason(value)
+    assert.equal(typeof reason, 'string')
+    assert.ok(reason.length > 0)
+  }
+  assert.equal(signupFailureReason(null), 'unknown')
+})
+
+test('no reason bucket can leak an address, a password, or raw provider text', () => {
+  // The whole point of a fixed vocabulary: whatever GoTrue says, the property we send
+  // to PostHog is drawn from this closed set and never echoes the input.
+  const vocabulary = new Set([
+    'email_delivery', 'password_mismatch', 'weak_password', 'rate_limited',
+    'duplicate_email', 'network', 'auth_error', 'unknown',
+  ])
+  const hostile = [
+    'Error sending confirmation email to ada@example.com',
+    'password "hunter2" is too weak',
+    PASSWORD_MISMATCH_MESSAGE,
+    'Email rate limit exceeded for ada@example.com',
+  ]
+  for (const message of hostile) {
+    const reason = signupFailureReason(message)
+    assert.ok(vocabulary.has(reason), `${reason} is not in the closed vocabulary`)
+    assert.ok(!reason.includes('@'), 'a reason must never carry an address')
+    assert.ok(!reason.includes('hunter2'), 'a reason must never carry a password')
+  }
 })

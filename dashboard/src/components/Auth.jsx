@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import {
   authErrorMessage,
   confirmationPathForLoginAudience,
+  EMAIL_DELIVERY_FAILED_MESSAGE,
   LOGIN_AUDIENCE,
   resendSignupConfirmation,
   supabase,
@@ -15,6 +16,7 @@ import {
 import {
   createSignupTracker,
   DUPLICATE_SIGNUP_NOTICE,
+  signupFailureReason,
   SIGNUP_CONFIRMATION_NOTICE,
 } from '../lib/signup-submission.js'
 import { PENDING_VERIFICATION_METADATA } from '../lib/email-verification.js'
@@ -93,6 +95,9 @@ export default function Auth({
         // submission never stores the newly typed password. Say so instead of
         // reporting a success that did not happen.
         if (signupAttempts.current.hasAttempted(email)) {
+          // Terminal, like the two captures below: this attempt is finished and
+          // cannot reach `signup_submitted`, so it has to close the funnel itself.
+          capture('signup_blocked', { reason: 'duplicate_email' })
           setConfirmationEmail(email)
           setNotice(DUPLICATE_SIGNUP_NOTICE)
           setMode('login')
@@ -148,6 +153,16 @@ export default function Auth({
       const message = authErrorMessage(err)
       if (mode === 'login' && message.toLowerCase().includes('email not confirmed')) {
         setConfirmationEmail(email)
+      }
+      // Every signup failure lands here, so this is the only place that can make
+      // `signup_started == signup_submitted + signup_failed + signup_blocked` hold.
+      // The reason is a fixed vocabulary, never the provider's raw text.
+      if (mode === 'signup') {
+        capture('signup_failed', {
+          reason: signupFailureReason(message, {
+            emailDeliveryFailed: message === EMAIL_DELIVERY_FAILED_MESSAGE,
+          }),
+        })
       }
       setError(message)
     } finally {
