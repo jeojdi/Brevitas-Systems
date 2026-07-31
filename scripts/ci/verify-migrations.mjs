@@ -205,6 +205,10 @@ export const expectedFreshMigrationOrder = [
   // gives: it revokes from the browser roles inline and asserts that posture in
   // its own apply-time self-check.
   'supabase/migrations/202607280037_platform_admin_account_usage.sql',
+  // New organizations cache by default. Column default only -- existing rows are
+  // untouched -- so it may sit anywhere after 202607170001, which defines the
+  // column. Placed last because it is the newest.
+  'supabase/migrations/202607280038_new_organizations_cache_by_default.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -988,7 +992,7 @@ function verifyUpgradeHarnessCoverage() {
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280038'
+const REVERSE_POSTURE_CUTOFF = '202607280039'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/
