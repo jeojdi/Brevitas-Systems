@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import requests as _requests
 import httpx
@@ -1223,6 +1223,148 @@ _PROXY_PATHS = {"/v1/messages", "/v1/chat/completions", "/openai/v1/chat/complet
                 "/openai/responses", "/openai/embeddings", "/openai/completions",
                 "/openai/v1/embeddings", "/v1/completions", "/openai/v1/completions"}
 
+# Proxy lanes whose path carries a variable segment, so no literal can name them.
+# Bedrock addresses the model in the URL (/bedrock/model/<model-id>/invoke) and
+# Azure OpenAI addresses BOTH the resource and the deployment in the URL
+# (/azure/<resource>/openai/deployments/<deployment>/chat/completions), which is
+# why an exact-match set cannot gate either of them.
+#
+# THIS IS AUTHENTICATION. Membership in _PROXY_PATHS/_PROXY_PATH_PREFIXES is the
+# ONLY thing that makes _protect_model_proxy run, and _protect_model_proxy is the
+# only authentication a proxy route has (every handler in brevitas/proxy.py takes
+# a bare `request: Request` with no Depends). A lane that routes but is not named
+# here reaches an upstream with the caller's own provider credential and no key
+# check, no proxy:invoke check, no tenant scoping and no admission control.
+#
+# So: an explicit allowlist of literal prefixes, never a regex over caller input.
+# Every entry starts and ends with "/" so it can only match whole path segments --
+# "/bedrock/" cannot match "/bedrockish/..." -- and the set is deliberately WIDER
+# than the routes it protects. Matching wider than the router only costs a 401 on
+# a path that would have 404'd; matching narrower than the router is an
+# unauthenticated open relay. Widen freely, narrow never.
+_PROXY_PATH_PREFIXES: tuple[str, ...] = ("/azure/", "/bedrock/")
+# Validated at import, and with a raise rather than an assert: `python -O` strips
+# asserts, and a malformed prefix here is an authentication bypass, not a typo.
+for _prefix in _PROXY_PATH_PREFIXES:
+    if not (_prefix.startswith("/") and _prefix.endswith("/") and "//" not in _prefix
+            and "%" not in _prefix and "." not in _prefix):
+        raise RuntimeError(
+            f"proxy path prefix must be a whole-segment literal: {_prefix!r}")
+del _prefix
+
+# Percent escapes that may not appear in a raw proxy path. Each one is a way to
+# make the string the router matches differ from the string an upstream, a CDN or
+# a log reader sees: encoded separators (%2f, %5c), encoded dot segments (%2e),
+# a re-encoded percent for double decoding (%25), and NUL truncation (%00).
+# Unreserved characters are never percent-encoded by urllib.parse.quote at any
+# `safe=` setting, so a real client's Bedrock model id ("us.anthropic.claude-
+# opus-5-v1:0") survives this: only ":" and "/" get encoded, and ":" is fine.
+# KNOWN AND ACCEPTED: an ARN-shaped model id contains "/", so a client that sends
+# one percent-encoded is refused with a 400. That costs nothing today --
+# normalize_bedrock_model() already returns "" for an ARN (no leading vendor
+# namespace), so such a request is unpriced and unbillable either way -- and a
+# loud 400 is the right way to lose it. Do not relax this to buy ARN support;
+# decode it in the handler instead, after the gate has run.
+_ENCODED_PATH_ESCAPES = ("%2f", "%5c", "%2e", "%25", "%00")
+
+_PROXY_GATE_OPEN = "open"          # not a proxy path: unchanged passthrough
+_PROXY_GATE_PROTECTED = "protected"  # run the full middleware
+_PROXY_GATE_REFUSED = "refused"    # in the proxy namespace but not canonical
+
+
+def _normalized_path_form(value: str) -> str:
+    """The path a permissive intermediary might route on: no dot or empty segments.
+
+    Used only to ask "could this reach the proxy namespace?", never to build the
+    path that is actually served -- a request whose normalized form differs from
+    what the router matched is refused, not rewritten.
+    """
+    collapsed = value.replace("\\", "/")
+    segments: list[str] = []
+    for segment in collapsed.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if segments:
+                segments.pop()
+            continue
+        segments.append(segment)
+    return "/" + "/".join(segments)
+
+
+def _proxy_path_candidates(path: str, raw_path: bytes | None) -> tuple[str, ...]:
+    """Every string this request could plausibly be read as, decoded and normalized.
+
+    Bounded at three decode rounds; each round contributes both the decoded form
+    and its dot-segment-collapsed form, so `/x/../bedrock/...` and `%2562edrock`
+    style tricks are all seen before the allowlist test.
+    """
+    candidates = [path]
+    if raw_path is not None:
+        candidates.append(raw_path.split(b"?", 1)[0].decode("utf-8", "replace"))
+    forms: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        current = candidate
+        for _ in range(3):
+            for form in (current, _normalized_path_form(current)):
+                if form not in seen:
+                    seen.add(form)
+                    forms.append(form)
+            decoded = unquote(current)
+            if decoded == current:
+                break
+            current = decoded
+    return tuple(forms)
+
+
+def _is_canonical_proxy_path(path: str, raw_path: bytes | None) -> bool:
+    """True only when the routed path is exactly what the client sent, undisguised.
+
+    `path` is the ASGI-decoded path -- the same string Starlette routes on and the
+    same string handlers build the upstream URL from. This refuses every way that
+    string can be made to differ from the bytes on the wire.
+    """
+    if not path.startswith(_PROXY_PATH_PREFIXES):
+        # Only a literal, already-canonical prefix may be served. Anything that
+        # merely decodes onto the namespace is refused by the caller.
+        return False
+    if _normalized_path_form(path) != path:
+        return False  # empty segment, "." / ".." segment, or a backslash
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in path):
+        return False  # control characters, including a bare NUL
+    if unquote(path) != path:
+        return False  # decodes again: the router matched an encoded form
+    if raw_path is None:
+        # No server-provided raw path (hand-built ASGI scope). The checks above
+        # still hold; there is simply nothing further to compare against.
+        return True
+    raw_text = raw_path.split(b"?", 1)[0].decode("utf-8", "replace")
+    lowered = raw_text.lower()
+    if any(escape in lowered for escape in _ENCODED_PATH_ESCAPES):
+        return False
+    if unquote(raw_text) != path:
+        return False  # the routed path is not a decoding of what was sent
+    return True
+
+
+def _proxy_gate_disposition(path: str, raw_path: bytes | None) -> str:
+    """Classify a request against the proxy gate. See the constants above.
+
+    The 13 literals are answered first, by the same exact-membership test they
+    always were, so their behaviour is byte-for-byte what it was before prefixes
+    existed. Only a path that is NOT one of them can reach the new arms.
+    """
+    if path in _PROXY_PATHS:
+        return _PROXY_GATE_PROTECTED
+    if not any(form.startswith(_PROXY_PATH_PREFIXES)
+               for form in _proxy_path_candidates(path, raw_path)):
+        return _PROXY_GATE_OPEN
+    if not _is_canonical_proxy_path(path, raw_path):
+        return _PROXY_GATE_REFUSED
+    return _PROXY_GATE_PROTECTED
+
+
 _CUSTOMER_EXTERNAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
 
@@ -1472,6 +1614,20 @@ def _require_scope(request: Request, kh: str, scope: str) -> AuthContext:
 def _provider_bucket(path: str, raw_body: bytes) -> str:
     if path == "/v1/messages":
         return "anthropic"
+    # Bedrock names the model in the URL, not the body, so the body sniff below
+    # would drop the whole lane into the shared "all" bucket -- and the provider
+    # rpm/concurrency buckets are global (api/distributed_limits.py:281,290), so
+    # that bucket is shared with every unparseable body on the fleet. Give the
+    # lane its own bucket, like every other named provider has.
+    if path.startswith("/bedrock/"):
+        return "bedrock"
+    # Azure names the DEPLOYMENT in the URL and puts the deployment alias in
+    # body["model"], so the sniff below would bucket every Azure request by a
+    # customer-chosen string -- usually landing on "openai" and sharing Azure's
+    # global rpm/concurrency bucket with first-party OpenAI traffic, which is a
+    # different quota at a different provider. Give the lane its own bucket.
+    if path.startswith("/azure/"):
+        return "azure_openai"
     try:
         model = str((json.loads(raw_body) or {}).get("model") or "").lower()
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -1726,8 +1882,16 @@ def _invalidate_cache_policy(organization_id: str) -> None:
 
 @app.middleware("http")
 async def _protect_model_proxy(request: Request, call_next):
-    if request.url.path not in _PROXY_PATHS:
+    disposition = _proxy_gate_disposition(
+        request.url.path, request.scope.get("raw_path"))
+    if disposition == _PROXY_GATE_OPEN:
         return await call_next(request)
+    if disposition == _PROXY_GATE_REFUSED:
+        # In the proxy namespace but not canonical. Refuse here rather than fall
+        # through: falling through is what would hand a crafted path to a proxy
+        # handler with no authentication at all.
+        logger.warning("proxy path refused reason=non_canonical_path")
+        return JSONResponse(status_code=400, content={"detail": "Malformed proxy path"})
     raw_key = request.headers.get("x-brevitas-key", "")
     if _production_runtime() and not _proxy_auth_enabled():
         return JSONResponse(status_code=503, content={"detail": "Proxy authentication unavailable"})

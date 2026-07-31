@@ -31,16 +31,37 @@ class _Request:
         self.headers = headers
 
 
-def test_azure_api_key_reaches_the_upstream():
+def test_azure_api_key_is_NOT_forwarded_on_the_openai_family_lanes():
+    """The regression this file was originally written with, now inverted.
+
+    `api-key` is Azure's native credential. This shared forward set serves the
+    four OPENAI-FAMILY call sites, whose upstreams are OpenAI, DeepSeek, Groq,
+    xAI and the resellers. Forwarding it here sends an Azure customer's key to
+    whichever of those the model prefix routes to -- a credential arriving at a
+    company the caller never named, which is strictly worse than the 401 it was
+    meant to fix.
+
+    An earlier version of this test asserted the opposite and was wrong. The
+    Azure lane forwards `api-key` itself, to a host built from a validated
+    resource label; that is the only place it belongs.
+    """
     headers = _passthrough_headers(
         _Request({"api-key": "azure-secret", "content-type": "application/json"}),
         "openai",
     )
-    assert headers.get("api-key") == "azure-secret", (
-        "Azure OpenAI's native credential header is not forwarded, so an "
-        "AzureOpenAI(api_key=...) caller reaches the upstream unauthenticated "
-        "and 401s -- with no receipt written, so the traffic is invisible too"
+    assert "api-key" not in {k.lower() for k in headers}, (
+        "an Azure credential is being forwarded on an OpenAI-family lane, so it "
+        "will reach whichever company the model prefix routes to"
     )
+
+
+def test_the_azure_lane_forwards_the_credential_itself():
+    """...and the customer is still authenticated, via the dedicated lane."""
+    from brevitas.proxy import _azure_credential
+
+    assert _azure_credential(_Request({"api-key": "azure-secret"})) == "azure-secret"
+    assert _azure_credential(
+        _Request({"authorization": "Bearer entra-token"})) == "Bearer entra-token"
 
 
 def test_entra_bearer_still_reaches_the_upstream():
