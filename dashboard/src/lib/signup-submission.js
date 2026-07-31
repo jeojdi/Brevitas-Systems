@@ -12,7 +12,7 @@
  * Pure logic: no React, no Supabase client, no DOM. Unit-testable in isolation.
  */
 
-import { normalizeAuthEmail } from './auth-credentials.js'
+import { normalizeAuthEmail, PASSWORD_MISMATCH_MESSAGE } from './auth-credentials.js'
 
 export const SIGNUP_CONFIRMATION_NOTICE =
   'We sent a confirmation link to your email, and you need to click it to activate your account. '
@@ -25,6 +25,41 @@ export const DUPLICATE_SIGNUP_NOTICE =
   + '"Forgot password" to set a password you can sign in with.'
 
 export const SIGNUP_TRACKER_MAX_ENTRIES = 64
+
+/**
+ * Bucket a failed signup into a coarse, non-PII reason for analytics.
+ *
+ * `signup_started` fires on the button press and `signup_submitted` only after
+ * GoTrue accepts the account, so before this existed every failure was
+ * denominator-only: the funnel could show that an attempt died but never why,
+ * and an abandoned form was indistinguishable from a server error. These buckets
+ * close that gap while carrying no address, password, or raw provider text —
+ * only the caller's already-sanitized message is inspected, and nothing derived
+ * from it is returned.
+ *
+ * `emailDeliveryFailed` is passed in rather than re-derived, because the pattern
+ * that recognizes GoTrue's "Error sending ... email" lives in supabase.js next to
+ * the copy it maps to, and this module is deliberately free of that import.
+ *
+ * @param {unknown} message  a user-facing message from `authErrorMessage`
+ * @param {{ emailDeliveryFailed?: boolean }} [options]
+ * @returns {string}
+ */
+export function signupFailureReason(message, { emailDeliveryFailed = false } = {}) {
+  if (emailDeliveryFailed) return 'email_delivery'
+  const raw = String(message ?? '').trim()
+  if (!raw) return 'unknown'
+  if (raw === PASSWORD_MISMATCH_MESSAGE) return 'password_mismatch'
+  const text = raw.toLowerCase()
+  if (text.includes('rate limit')) return 'rate_limited'
+  if (text.includes('already registered') || text.includes('already exists')) return 'duplicate_email'
+  if (text.includes('password')) return 'weak_password'
+  // Browsers word a dead connection three different ways; none of them reach GoTrue.
+  if (text.includes('failed to fetch') || text.includes('networkerror') || text.includes('load failed')) {
+    return 'network'
+  }
+  return 'auth_error'
+}
 
 /**
  * Normalize an email for comparison.

@@ -2350,15 +2350,26 @@ def _posthog_admin_summary(days: int) -> dict:
         return cached
 
     interval = f"{days} DAY"
+    # Developer machines share the production project token, so without this every
+    # `npm run dev` session lands in the customer-facing numbers. At the volumes this
+    # dashboard reports, a single local QA pass dominates the signup ratio — two of the
+    # nine signup attempts on 2026-07-29 were http://localhost:3000.
+    real_traffic = (
+        "NOT startsWith(toString(properties.$host), 'localhost') "
+        "AND NOT startsWith(toString(properties.$host), '127.0.0.1')"
+    )
     overview = _posthog_query(f"""
         SELECT
           countIf(event = '$pageview') AS pageviews,
           uniqIf(distinct_id, event = '$pageview') AS visitors,
           uniqIf(toString(properties.$session_id), event = '$pageview') AS sessions,
-          countIf(event = 'signup_started') AS signup_started,
-          countIf(event = 'signup_submitted') AS signup_submitted
+          uniqIf(distinct_id, event = 'signup_started') AS signup_started,
+          uniqIf(distinct_id, event = 'signup_submitted') AS signup_submitted,
+          countIf(event = 'signup_started') AS signup_attempts,
+          countIf(event = 'signup_failed') AS signup_failures
         FROM events
         WHERE timestamp >= now() - INTERVAL {interval}
+          AND {real_traffic}
     """)
     session_rows = _posthog_query(f"""
         SELECT round(avg(duration), 1), round(100 * avg(if(pageviews <= 1, 1, 0)), 1)
@@ -2368,6 +2379,7 @@ def _posthog_admin_summary(days: int) -> dict:
           FROM events
           WHERE timestamp >= now() - INTERVAL {interval}
             AND notEmpty(toString(properties.$session_id))
+            AND {real_traffic}
           GROUP BY toString(properties.$session_id)
         )
     """)
@@ -2378,9 +2390,10 @@ def _posthog_admin_summary(days: int) -> dict:
                countIf(event = '$pageview') AS pageviews
         FROM events
         WHERE timestamp >= now() - INTERVAL {interval}
+          AND {real_traffic}
         GROUP BY day ORDER BY day
     """)
-    totals = overview[0] if overview else [0, 0, 0, 0, 0]
+    totals = overview[0] if overview else [0, 0, 0, 0, 0, 0, 0]
     session_metrics = session_rows[0] if session_rows else [0, 0]
     project_id = os.getenv("POSTHOG_PROJECT_ID", "")
     ui_host = os.getenv("NEXT_PUBLIC_POSTHOG_UI_HOST", "https://us.posthog.com").rstrip("/")
@@ -2389,8 +2402,12 @@ def _posthog_admin_summary(days: int) -> dict:
         "pageviews": int(totals[0] or 0),
         "visitors": int(totals[1] or 0),
         "sessions": int(totals[2] or 0),
+        # People, not button presses. `signup_attempts` keeps the raw press count so the
+        # retry rate stays visible instead of silently inflating the conversion ratio.
         "signup_started": int(totals[3] or 0),
         "signup_submitted": int(totals[4] or 0),
+        "signup_attempts": int(totals[5] or 0),
+        "signup_failures": int(totals[6] or 0),
         "avg_session_duration_seconds": float(session_metrics[0] or 0),
         "bounce_rate": float(session_metrics[1] or 0),
         "trend": [{"date": str(row[0]), "visitors": int(row[1] or 0),

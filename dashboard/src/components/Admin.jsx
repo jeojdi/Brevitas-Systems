@@ -24,6 +24,25 @@ const sessionWhen = iso => new Date(iso).toLocaleString([], { month: 'short', da
 const sessionTime = iso => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 const sortFields = ['actual_cost_usd', 'baseline_cost_usd', 'verified_savings_usd', 'brevitas_fee_usd', 'calls', 'tokens_saved']
 
+/**
+ * Minimum people who must have reached signup before the ratio means anything.
+ *
+ * Browser analytics only began landing 2026-07-28, and the first read of this card
+ * showed "2 / 9 started" off four people — two of whom were a developer on
+ * localhost. At that size one retry swings the headline by ten points, so the card
+ * reports the raw counts and withholds the ratio until the sample can carry it.
+ */
+export const SIGNUP_RATIO_MIN_PEOPLE = 25
+
+export function signupSummary(traffic) {
+  const started = Number(traffic?.signup_started) || 0
+  const submitted = Number(traffic?.signup_submitted) || 0
+  if (started < SIGNUP_RATIO_MIN_PEOPLE) {
+    return `${num(submitted)} of ${num(started)} — too few to rate`
+  }
+  return `${num(submitted)} / ${num(started)} started`
+}
+
 function StatCard({ label, value, accent = '' }) {
   return <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5">
     <p className="annotation">{label}</p>
@@ -195,7 +214,7 @@ export default function Admin({ accessToken, refreshTick }) {
           <div className="h-72 bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5" data-ph-sensitive>
             <ResponsiveContainer width="100%" height="100%"><LineChart data={traffic.trend}><CartesianGrid strokeDasharray="3 3" stroke="#e2e4f0"/><XAxis dataKey="date" tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }}/><Tooltip/><Line type="monotone" dataKey="visitors" stroke="#4f5fc4" strokeWidth={2} dot={false}/><Line type="monotone" dataKey="pageviews" stroke="#2d8a6e" strokeWidth={2} dot={false}/></LineChart></ResponsiveContainer>
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-1 gap-4"><StatCard label="Pageviews" value={num(traffic.pageviews)} /><StatCard label="Signup submitted" value={`${num(traffic.signup_submitted)} / ${num(traffic.signup_started)} started`} accent="text-brand-teal" /></div>
+          <div className="grid grid-cols-2 lg:grid-cols-1 gap-4"><StatCard label="Pageviews" value={num(traffic.pageviews)} /><StatCard label="Signup submitted" value={signupSummary(traffic)} accent="text-brand-teal" /></div>
         </div>
       </>}
     </section>
