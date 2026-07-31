@@ -169,7 +169,10 @@ begin
         select current_user
     loop
         begin
-            -- ON FUNCTIONS covers functions, procedures and aggregates.
+            -- ALTER DEFAULT PRIVILEGES spells this ON FUNCTIONS, and there it
+            -- genuinely does cover functions, procedures and aggregates. The
+            -- REVOKE in section 2 is the opposite: there, ON FUNCTION rejects a
+            -- procedure outright, so it says ON ROUTINE instead.
             execute format(
                 'alter default privileges for role %I in schema public '
                 'revoke execute on functions from public, anon, authenticated',
@@ -244,13 +247,20 @@ begin
                   and dependency.deptype = 'e')
          order by 1
     loop
+        -- ON ROUTINE, not ON FUNCTION. The cursor above selects every
+        -- non-extension pg_proc row in public with no prokind filter -- which is
+        -- correct, because a SECURITY DEFINER PROCEDURE is exactly as
+        -- anon-reachable as a function -- but `REVOKE EXECUTE ON FUNCTION`
+        -- raises `<name> is not a function` for prokind='p' and takes the whole
+        -- migration down with it. ON ROUTINE accepts functions, procedures and
+        -- aggregates alike, so the revoke matches the rows the cursor yields.
         execute format(
-            'revoke execute on function %s from public, anon, authenticated',
+            'revoke execute on routine %s from public, anon, authenticated',
             target.signature);
 
         if target.service_role_had_execute then
             execute format(
-                'grant execute on function %s to service_role',
+                'grant execute on routine %s to service_role',
                 target.signature);
         end if;
 
