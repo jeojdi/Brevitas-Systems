@@ -646,8 +646,58 @@ class StripeRestBillingGateway:
         meter_id = self.validate_contract(heartbeat)
         start = int(entry.period_start.timestamp())
         start -= start % 60
-        end = min(int(entry.period_end.timestamp()), int(self._now().timestamp()))
-        end -= end % 60
+        # The window MUST contain the event this call is trying to confirm.
+        #
+        # It did not. `occurred_at` is the settlement's period_end
+        # (202607280029's claim returns v_claimed.period_end), send() stamps the
+        # meter event with exactly that second, and the old window ended at
+        # min(period_end, now) FLOORED to the minute -- while Stripe's
+        # event_summaries end_time is EXCLUSIVE. Two independent reasons the
+        # event could never be inside: exclusivity alone excludes an event at
+        # period_end, and the flooring excludes it by up to a further 59s
+        # whenever period_end is not minute-aligned (production's is
+        # 06:15:13). remote_total therefore structurally omitted the very event
+        # it was summing for, the equality below could never hold, and
+        # reconcile returned UNKNOWN on EVERY attempt.
+        #
+        # The consequence was not cosmetic: one Stripe 504 left the row in
+        # 'sending', the 23h sweep moved it to 'review', and 'review' is
+        # terminal for the claim predicate -- while the fee still counted as
+        # committed, so the period could never be re-settled either. The first
+        # ambiguous send froze that customer's billing period permanently.
+        #
+        # The window MUST contain the event this call is confirming, and must
+        # still not run into the future.
+        #
+        # Two shapes share this path:
+        #   - a SETTLEMENT stamps occurred_at = period_end (202607280029's claim
+        #     returns v_claimed.period_end), i.e. the exclusive edge itself;
+        #   - a per-row LEDGER entry stamps the moment the usage happened, which
+        #     is inside the period and may sit in a period that has not closed.
+        #
+        # The old rule -- min(period_end, now), floored to the minute -- served
+        # the second shape and structurally broke the first: Stripe's end_time is
+        # EXCLUSIVE, so an event at period_end was already outside, and the
+        # flooring pushed the edge up to 59s earlier still (production's
+        # period_end is 06:15:13). remote_total could never contain the event it
+        # was summing for, so reconcile returned UNKNOWN on EVERY attempt, and
+        # one Stripe 504 then froze the period permanently: the row swept to
+        # 'review', which the claim predicate will not re-select, while its fee
+        # still counted as committed so the period could not be re-settled.
+        #
+        # So: take the old capped edge, and widen it if -- and only if -- that
+        # edge would exclude the event.
+        event_second = int(entry.occurred_at.timestamp())
+        now_second = int(self._now().timestamp())
+        if now_second < event_second:
+            # Stripe cannot have aggregated an event that has not happened yet.
+            return Reconciliation.UNKNOWN
+        capped = min(int(entry.period_end.timestamp()), now_second)
+        capped -= capped % 60
+        # First minute boundary STRICTLY after the event, so an exclusive
+        # end_time still contains it, and Stripe's minute alignment holds.
+        after_event = ((event_second // 60) + 1) * 60
+        end = max(capped, after_event)
         if end <= start:
             return Reconciliation.UNKNOWN
         params: dict[str, Any] = {
