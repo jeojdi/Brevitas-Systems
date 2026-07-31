@@ -393,6 +393,67 @@ run_forward_assertions() {
     --file scripts/ci/waitlist-network-budget-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-usage-dedupe-authority-assertions.sql
+  # 202607280035: an org-less key may not read org-owned usage rows. This is the
+  # ONLY place in scripts/ci that exercises the org-less branch of the four
+  # usage read predicates -- migration-assertions.sql's existing "usage_page
+  # crossed the tenant boundary" check passes a non-null p_organization_id and
+  # an empty p_owner_id, so it only ever drove branch 1, which was never the
+  # broken one. Opens its own transaction and ends in ROLLBACK.
+  #
+  # REQUIRES 202607280035 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-usage-tenant-scope-assertions.sql
+  # 202607280035, end to end across TWO tenants. The file above has a single
+  # organization, so it cannot tell "an org-less key reads no org rows" apart
+  # from "an org-less key reads only its own org's rows", and it never drives an
+  # org key against a second tenant's data. This one adds a row carrying the
+  # org-less caller's owner string inside an organization that owner is not a
+  # member of -- the case membership would not have excused -- and asserts the
+  # partition is exact: every fixture row is visible to exactly one of the three
+  # keys. Its section 0 evaluates the PRE-202607280035 predicate inline and
+  # fails if the fixture does not actually reach the hole, so the suite cannot
+  # go green vacuously. Opens its own transaction and ends in ROLLBACK.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-usage-multi-tenant-isolation-assertions.sql
+  # 202607280036: no erasure or retention path may delete a usage_log row at or
+  # below a non-void period_settlement_ledger watermark, and the preservation
+  # invariant must abort when one is. This is the ONLY place in scripts/ci where
+  # that property is exercised: migration-compliance-evidence-assertions.sql
+  # fences and counts on billing_ledger, which has had no writer since
+  # 202607280006, so every check in it compares 0 to 0 and passes no matter what
+  # the erasure deletes. Section 5 of this file is a mutation test -- it strips
+  # the fence out of the live prosrc and requires the invariant to fire -- so
+  # the suite cannot go green on a fence that merely deletes nothing. Opens its
+  # own transaction and ends in ROLLBACK.
+  #
+  # REQUIRES 202607280036 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-settlement-evidence-preservation-assertions.sql
+  # 202607280037: the PLATFORM-ADMIN account view must return the SAME rows
+  # before and after 202607280035. This is the regression that made
+  # 202607280035 unapplyable -- GET /v1/admin/accounts/{owner_id}/usage reached
+  # usage_page's org-less branch with an empty key hash, i.e. exactly the branch
+  # 202607280035 narrows -- and nothing else in scripts/ci measures a read
+  # ACROSS a migration. migration-usage-tenant-scope-assertions.sql asserts the
+  # tenant read got NARROWER; this file asserts the admin read did NOT, which is
+  # the opposite direction and cannot be derived from it.
+  #
+  # Section 2 is differential: it installs 202607170006's pre-202607280035
+  # usage_page predicate as a pg_temp oracle, requires the new admin RPC to
+  # return that exact row set, AND requires the live usage_page to return
+  # strictly fewer rows at the same scope -- so it cannot pass by the admin read
+  # having narrowed too, nor by 202607280035 not being applied. Opens its own
+  # transaction and ends in ROLLBACK.
+  #
+  # REQUIRES 202607280037 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-admin-account-usage-assertions.sql
   # 202607280032: no browser role may EXECUTE a SECURITY DEFINER function in
   # schema public. Deliberately LAST in this function, because unlike every
   # other file here it asserts a property of the WHOLE schema rather than of a

@@ -2226,3 +2226,47 @@ def test_a_real_insert_failure_is_not_mistaken_for_a_missing_column(monkeypatch)
             "kh", 600, 0, authoritative=True, cache_attributable=True,
             strategy="exact_cache", receipt_source="proxy", request_id="proxy:row",
             savings_anchor_request_id="proxy:ancestor")
+
+
+def test_local_usage_reads_deny_an_org_less_key_the_tenant_rows(tmp_path):
+    """The SQLite half of 202607280035's tenancy contract.
+
+    api/store.py's UsageStore carried the same defect as the Supabase read RPCs:
+    an org-less key resolved its owner string against EVERY row that string ever
+    wrote, tenant-owned rows included. Both local read paths -- list_usage_page
+    and _rows, which every /v1/stats surface funnels through -- are asserted,
+    because they build the predicate independently.
+    """
+    store = UsageStore(str(tmp_path / "scope.db"))
+    organization_id = store.ensure_organization("user-org")["id"]
+    # One owner string, two keys: one attached to the tenant, one not. This is
+    # the production shape the SQL migration was written for.
+    store.create_key("scope-org-key", "org key", owner_id="shared-owner",
+                     organization_id=organization_id, created_by="user-org",
+                     actor_role="company_owner")
+    store.create_key("scope-orgless-key", "org-less key", owner_id="shared-owner")
+    # Written by the tenant's key: off-limits to the org-less key.
+    store.record_usage("scope-org-key", 100, 40, request_id="org-row",
+                       project="org", owner_id="shared-owner")
+    # The org-less key's own untenanted row: must stay visible.
+    store.record_usage("scope-orgless-key", 10, 4, request_id="free-row",
+                       project="free", owner_id="shared-owner")
+    # Self-scope, pinned deliberately (see 202607280035): an org-stamped row the
+    # org-less key wrote ITSELF stays visible, because key_hash is never
+    # caller-supplied and the untenanted branch already grants exactly this.
+    store.record_usage("scope-orgless-key", 20, 8, request_id="self-row",
+                       project="self", owner_id="shared-owner",
+                       organization_id=organization_id)
+
+    for reader in (lambda key: store._rows(key),
+                   lambda key: store.list_usage_page(key)["rows"]):
+        assert sorted(row["request_id"] for row in reader("scope-orgless-key")) == [
+            "free-row", "self-row"]
+        # Restated as the property, so a fixture edit cannot pass this vacuously.
+        assert not [row for row in reader("scope-orgless-key")
+                    if row["organization_id"]
+                    and row["key_hash"] != "scope-orgless-key"]
+        # The tenant-scoped read is untouched: the fix must not close the hole by
+        # breaking the organization's own view.
+        assert sorted(row["request_id"] for row in reader("scope-org-key")) == [
+            "org-row", "self-row"]

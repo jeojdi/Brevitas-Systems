@@ -298,27 +298,17 @@ class LoggingBillingTelemetry:
         }, separators=(",", ":"), sort_keys=True))
 
 
-class SupabaseBillingStore:
-    """Service-role adapter over narrowly scoped Postgres RPC functions.
+class SupabaseRpcClient:
+    """The service-role PostgREST transport, and nothing else.
 
-    The RPC names, the claim's entry kind and the id parameter name are class
-    attributes so a second ledger with the identical function *shapes* is a
-    subclass with two dicts and a string, not a second transport. Everything
-    else — lease fencing, the one-row claim contract, the 500-char error clamp —
-    is shared, so the two ledgers cannot drift apart.
+    Extracted from SupabaseBillingStore so a caller that is not a ledger state
+    machine — api/billing_settlement_sweep.py, which only enumerates and drafts —
+    reuses the SAME HTTPS check, the same service-role headers, the same split
+    connect/read timeout and the same raise_for_status posture instead of growing
+    a second, subtly different transport. It deliberately declares no RPCS map
+    and no methods beyond the transport: subclassing this must not hand anyone a
+    claim, a complete, or a release they did not ask for.
     """
-
-    RPCS: Mapping[str, str] = {
-        "claim": "claim_billing_ledger_entries",
-        "begin_send": "mark_billing_outbound_started",
-        "renew": "renew_billing_ledger_lease",
-        "complete": "complete_billing_ledger_entry",
-        "release_owner": "release_billing_ledger_leases",
-        "release_unsent": "release_billing_ledger_unsent",
-        "health": "billing_recovery_health",
-    }
-    ENTRY_KIND = ENTRY_KIND_LEDGER
-    ID_PARAM = "p_entry_id"
 
     def __init__(
         self,
@@ -349,6 +339,32 @@ class SupabaseBillingStore:
         )
         response.raise_for_status()
         return response.json()
+
+    def close(self) -> None:
+        self.session.close()
+
+
+class SupabaseBillingStore(SupabaseRpcClient):
+    """Service-role adapter over narrowly scoped Postgres RPC functions.
+
+    The RPC names, the claim's entry kind and the id parameter name are class
+    attributes so a second ledger with the identical function *shapes* is a
+    subclass with two dicts and a string, not a second transport. Everything
+    else — lease fencing, the one-row claim contract, the 500-char error clamp —
+    is shared, so the two ledgers cannot drift apart.
+    """
+
+    RPCS: Mapping[str, str] = {
+        "claim": "claim_billing_ledger_entries",
+        "begin_send": "mark_billing_outbound_started",
+        "renew": "renew_billing_ledger_lease",
+        "complete": "complete_billing_ledger_entry",
+        "release_owner": "release_billing_ledger_leases",
+        "release_unsent": "release_billing_ledger_unsent",
+        "health": "billing_recovery_health",
+    }
+    ENTRY_KIND = ENTRY_KIND_LEDGER
+    ID_PARAM = "p_entry_id"
 
     def claim_one(
         self, owner: str, *, lease_seconds: int, cap_microusd: int,
@@ -402,9 +418,6 @@ class SupabaseBillingStore:
         rows = self._rpc(self.RPCS["health"], {})
         row = rows[0] if isinstance(rows, list) and rows else rows
         return BillingHealth.from_row(row if isinstance(row, Mapping) else None)
-
-    def close(self) -> None:
-        self.session.close()
 
 
 class SupabaseSettlementStore(SupabaseBillingStore):
