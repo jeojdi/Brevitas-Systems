@@ -142,6 +142,22 @@ export const expectedFreshMigrationOrder = [
   //     error. The migration header records that 202607280031 must be re-applied
   //     after any such replay.
   'supabase/migrations/202607280031_observed_price_cache_fee_basis.sql',
+  // The FUNCTION analogue of the browser-role privilege contract that
+  // 202607280015 / 202607280024 / 202607280027 closed for TABLES. It revokes
+  // EXECUTE on every non-extension routine in schema public from
+  // public/anon/authenticated, strips Supabase's project-level ALTER DEFAULT
+  // PRIVILEGES grant to those roles, and installs
+  // public.assert_browser_role_function_privileges() as a standing guard that
+  // the harness runs last (scripts/ci/migration-browser-function-privilege-assertions.sql).
+  //
+  // It must stay LAST in the chain and must not be reordered ahead of any
+  // migration that creates a routine: the revoke is a catalog sweep over
+  // pg_proc at apply time, not a name list, so a routine created AFTER it is
+  // not covered by it and is only caught by the guard (PostgreSQL's built-in
+  // EXECUTE-to-PUBLIC default cannot be removed by ALTER DEFAULT PRIVILEGES,
+  // which is why every migration still writes its own revoke and why the
+  // durable half of this control is the assertion, not the sweep).
+  'supabase/migrations/202607280032_browser_function_execute_contract.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -911,15 +927,17 @@ function verifyUpgradeHarnessCoverage() {
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
 // Advanced from 202607280030 to 202607280031 when 202607280030 was added to the
-// chain, and from 202607280031 to 202607280032 when 202607280031 consumed that
-// number: the cutoff is by definition the NEXT UNUSED number, so consuming a
-// number has to move it. tests/release_security.test.mjs pins that it stays
-// strictly ahead of the manifest head, which is what forces this edit rather
-// than letting the control silently stop governing the newest migration.
+// chain, from 202607280031 to 202607280032 when 202607280031 consumed that
+// number, and from 202607280032 to 202607280033 when the browser-function
+// EXECUTE contract consumed 202607280032: the cutoff is by definition the NEXT
+// UNUSED number, so consuming a number has to move it.
+// tests/release_security.test.mjs pins that it stays strictly ahead of the
+// manifest head, which is what forces this edit rather than letting the control
+// silently stop governing the newest migration.
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280032'
+const REVERSE_POSTURE_CUTOFF = '202607280033'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

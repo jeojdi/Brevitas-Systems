@@ -393,6 +393,27 @@ run_forward_assertions() {
     --file scripts/ci/waitlist-network-budget-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-usage-dedupe-authority-assertions.sql
+  # 202607280032: no browser role may EXECUTE a SECURITY DEFINER function in
+  # schema public. Deliberately LAST in this function, because unlike every
+  # other file here it asserts a property of the WHOLE schema rather than of a
+  # named object: it enumerates prosecdef over public and fails on any function
+  # anon or authenticated can call. Running it after every other suite means it
+  # also sees anything they left behind (they all end in ROLLBACK, so the answer
+  # should be nothing -- if it is not, that is worth failing on).
+  #
+  # This is the invariant no other suite expresses. Every existing function-
+  # privilege assertion in this harness is a hardcoded allowlist -- `proname =
+  # <literal>`, `proname like 'company_admin_%'`, `proname in (...)` -- so a
+  # function nobody enumerated, or a project-level ALTER DEFAULT PRIVILEGES
+  # re-grant that hits all of them at once, was invisible to the entire suite.
+  # That is how production reached 99 anon-executable SECURITY DEFINER
+  # functions while a fresh database built from this repo had zero.
+  #
+  # REQUIRES 202607280032 to be registered in migration-fresh-manifest.txt and
+  # migration-upgrade-manifest.txt. Until it is, this file fails in its own
+  # section 0 with a missing-registration message, not a regression.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-browser-function-privilege-assertions.sql
 }
 
 # Pre-COMMIT rollback invariant for the migrations whose atomicity is probed by
