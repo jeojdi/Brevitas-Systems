@@ -158,6 +158,17 @@ export const expectedFreshMigrationOrder = [
   // which is why every migration still writes its own revoke and why the
   // durable half of this control is the assertion, not the sweep).
   'supabase/migrations/202607280032_browser_function_execute_contract.sql',
+  // The health probe api/billing_recovery.py's SupabaseSettlementStore has been
+  // asking for since 202607280029, which shipped the claim/send RPCs without it.
+  //
+  // It sits AFTER 202607280032 and therefore outside that migration's pg_proc
+  // sweep. That is safe for the reason 202607280032's own note gives: the sweep
+  // is a point-in-time catalog pass, every migration still writes its own
+  // `revoke execute ... from public, anon, authenticated`, and the durable half
+  // of the control is assert_browser_role_function_privileges(), not the sweep.
+  // This migration does both -- it revokes inline and then asserts its own
+  // posture -- so the browser-execute contract still holds with it last.
+  'supabase/migrations/202607280033_period_settlement_recovery_health.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -937,7 +948,7 @@ function verifyUpgradeHarnessCoverage() {
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280033'
+const REVERSE_POSTURE_CUTOFF = '202607280034'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/
