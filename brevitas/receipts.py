@@ -384,7 +384,21 @@ def model_price(provider: str, model: str) -> dict[str, float] | None:
 def calculate_costs(provider: str, model: str, baseline_input_tokens: int,
                     receipt: TokenReceipt, baseline_output_tokens: int | None = None,
                     cache_attributable: bool = True) -> dict[str, Any]:
-    provider = canonical_provider(provider, model)
+    # The RAW route, deliberately un-canonicalised. model_price() resolves the
+    # route itself now -- exact (route, model) first, canonical family as
+    # fallback -- so collapsing the provider here would erase the very
+    # distinction that lookup exists to honour, one frame above it.
+    #
+    # It did exactly that: `provider = canonical_provider(provider, model)` ran
+    # first, so every billing-path call (api/server.py's calculate_costs(
+    # body.provider, ...)) reached model_price with the route already gone. A
+    # ("bedrock", "claude-opus-5") row resolved correctly through model_price and
+    # was still billed at Anthropic first-party list here -- $30 against $3 on a
+    # 1M/1M receipt, a 10x overstatement of what the customer "would have paid",
+    # which is the number the whole fee is a percentage of.
+    #
+    # `provider` is not read again in this function; the reassignment existed
+    # only to feed the lookup.
     price = model_price(provider, model)
     if not price:
         return {"pricing_status": "unpriced", "baseline_cost_usd": None,

@@ -1056,9 +1056,26 @@ def get_openai_compatible_upstream(model: str, override_header: str | None = Non
     Can be overridden with x-brevitas-upstream header (SSRF-protected: allowlist only).
     Non-allowlisted overrides are ignored; falls back to model-prefix routing.
     """
-    # SSRF protection: only allow known upstream URLs
+    # SSRF protection: only allow known upstream URLs.
     if override_header and override_header in _ALLOWED_UPSTREAMS:
         return override_header
+
+    # A SUPPLIED-BUT-REJECTED override is refused, not ignored. Silently falling
+    # back re-routes the request to a DIFFERENT company than the caller named --
+    # and _passthrough_headers forwards `authorization` for every non-Anthropic
+    # provider, so the caller's credential goes with it. A customer aiming at
+    # their own Azure resource and mistyping the host would have had their Entra
+    # bearer transmitted to api.openai.com, with a 200 back and nothing to see.
+    #
+    # Ignoring an override is only safe when an override cannot carry a secret
+    # somewhere new. It can.
+    if override_header:
+        raise HTTPException(
+            status_code=400,
+            detail=("x-brevitas-upstream is not an allowed upstream. Refusing "
+                    "rather than routing this request, and the credential it "
+                    "carries, to a different provider."),
+        )
 
     return _UPSTREAMS[_provider_for(model, provider)]
 

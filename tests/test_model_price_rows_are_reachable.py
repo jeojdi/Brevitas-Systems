@@ -94,6 +94,53 @@ def test_an_unpriced_route_still_falls_back_to_the_family():
         MODEL_PRICES[("anthropic", "claude-opus-5")]
 
 
+def test_the_billing_path_honours_the_route_too(monkeypatch):
+    """calculate_costs must not canonicalise before pricing.
+
+    THE GAP THIS CLOSES. Fixing model_price alone was not enough:
+    calculate_costs reassigned `provider = canonical_provider(provider, model)`
+    BEFORE calling it, so every billing-path call reached the lookup with the
+    route already erased. A ("bedrock", "claude-opus-5") row resolved correctly
+    through model_price and was still billed at Anthropic list -- $30 against $3
+    on a 1M/1M receipt.
+
+    That matters more than a lookup bug: baseline_cost_usd is what the customer
+    "would have paid", and the fee is 25% of savings derived from it. A 10x
+    overstatement here is a 10x overstatement of the invoice.
+    """
+    from brevitas.receipts import TokenReceipt, calculate_costs
+
+    route_price = {"input": 1.0, "cached": 0.1, "write": 1.25, "output": 2.0}
+    patched = dict(MODEL_PRICES)
+    patched[("bedrock", "claude-opus-5")] = route_price
+    monkeypatch.setattr("brevitas.receipts.MODEL_PRICES", patched)
+
+    receipt = TokenReceipt(
+        fresh_input_tokens=1_000_000, cached_input_tokens=0, output_tokens=1_000_000,
+    )
+    costs = calculate_costs("bedrock", "claude-opus-5", 1_000_000, receipt)
+
+    assert costs["prices"] == route_price, (
+        "the billing path priced a bedrock request at another provider's rates; "
+        "calculate_costs is canonicalising the route away before model_price "
+        "can honour it"
+    )
+    # 1M fresh input at 1.0 + 1M output at 2.0, per million.
+    assert costs["baseline_cost_usd"] == pytest.approx(3.0)
+
+
+def test_the_billing_path_still_falls_back_for_an_unpriced_route():
+    """A route with no table of its own must not become unpriced ($0 savings)."""
+    from brevitas.receipts import TokenReceipt, calculate_costs
+
+    receipt = TokenReceipt(
+        fresh_input_tokens=1_000_000, cached_input_tokens=0, output_tokens=1_000_000,
+    )
+    costs = calculate_costs("some-unlisted-gateway", "claude-opus-5", 1_000_000, receipt)
+    assert costs["pricing_status"] != "unpriced"
+    assert costs["prices"] == MODEL_PRICES[("anthropic", "claude-opus-5")]
+
+
 def test_dated_snapshots_still_resolve_through_the_alias():
     """Longest-prefix snapshot matching is unchanged by the route-first lookup."""
     assert model_price("anthropic", "claude-haiku-4-5-20251001") == \
