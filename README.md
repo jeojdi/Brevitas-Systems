@@ -45,8 +45,30 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://api.brevitassystems.com/v1",
-    api_key=os.environ["BREVITAS_API_KEY"],
-    default_headers={"X-Brevitas-Customer-ID": "acme"},   # required — see below
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        # BOTH are required. X-Brevitas-Key is the only header the gateway
+        # authenticates on (api/server.py:1731); `api_key=` becomes an
+        # Authorization bearer, which nothing maps to it, so leaving this out
+        # is `401 Missing X-Brevitas-Key header` on the first call.
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
+)
+```
+
+Claude direct through Anthropic — same two headers, different SDK:
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["ANTHROPIC_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
 )
 ```
 
