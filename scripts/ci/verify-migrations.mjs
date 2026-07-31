@@ -109,6 +109,15 @@ export const expectedFreshMigrationOrder = [
   // 202607280013 (the writer it sends for) and 202607280010 (whose latches
   // dictate that the claim leaves status 'pending').
   'supabase/migrations/202607280029_period_settlement_claim_path.sql',
+  // The attestation WRITER for the table 202607280009 created and deliberately
+  // left with no write path. Must stay after 202607280009 (whose grants and
+  // vocabulary it re-asserts and narrows) and after 202607280013/202607280008
+  // (its own contract block drives settle_billing_period to prove an unattested
+  // org still halts). Adds no privilege to any runtime role: the two writer
+  // functions are executable only by the login role brevitas_attestor, which
+  // this migration creates WITHOUT a password, so a fresh apply yields a
+  // credential that cannot authenticate until a human sets one out of band.
+  'supabase/migrations/202607280030_billing_attestation_writer.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -877,7 +886,12 @@ function verifyUpgradeHarnessCoverage() {
 // BACKFILL FLOOR below extends enforcement to them explicitly. Everything
 // before the floor stays ungoverned deliberately (202607280010-202607280012
 // are the repo owner's in-flight work and are off-limits either way).
-const REVERSE_POSTURE_CUTOFF = '202607280030'
+// Advanced from 202607280030 to 202607280031 when 202607280030 was added to the
+// chain: the cutoff is by definition the NEXT UNUSED number, so consuming a
+// number has to move it. tests/release_security.test.mjs pins that it stays
+// strictly ahead of the manifest head, which is what forces this edit rather
+// than letting the control silently stop governing the newest migration.
+const REVERSE_POSTURE_CUTOFF = '202607280031'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

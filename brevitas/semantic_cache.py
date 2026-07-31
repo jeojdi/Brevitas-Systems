@@ -88,6 +88,23 @@ def _record_cache(outcome: str) -> None:
         pass
 
 
+# A cached response is only ever written from a real upstream call that the
+# proxy paid for and receipted. `origin_request_id` remembers WHICH one, so a
+# replay can name its paid ancestor instead of asserting one exists.
+#
+# It is the metering id of the miss (brevitas.proxy._request_id, always in the
+# server-minted `proxy:` namespace), never anything a caller supplied. Empty is
+# always a legal value and always means "unanchored" — a pre-existing entry
+# written before this column, a backend that cannot carry it, or a store that
+# was called without one. Unanchored is the fail-closed direction: an
+# unanchored zero-spend replay is excluded from the fee basis.
+_ORIGIN_REQUEST_ID_MAX = 128
+
+
+def _origin_id(value: Any) -> str:
+    return str(value or "")[:_ORIGIN_REQUEST_ID_MAX]
+
+
 @dataclass
 class CacheHit:
     kind: str                    # "exact" | "semantic"
@@ -95,6 +112,8 @@ class CacheHit:
     prompt_tokens: int
     completion_tokens: int
     similarity: float = 1.0
+    # Metering id of the PAID request whose response this entry stores. See above.
+    origin_request_id: str = ""
 
 
 class SemanticCache:
@@ -199,7 +218,8 @@ class SemanticCache:
                     completion_tokens INTEGER NOT NULL DEFAULT 0,
                     created_at       REAL NOT NULL,
                     expires_at       REAL NOT NULL,
-                    hit_count        INTEGER NOT NULL DEFAULT 0
+                    hit_count        INTEGER NOT NULL DEFAULT 0,
+                    origin_request_id TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(semantic_cache)")}
@@ -207,6 +227,10 @@ class SemanticCache:
                 db.execute("ALTER TABLE semantic_cache ADD COLUMN response_ciphertext TEXT NOT NULL DEFAULT ''")
             if "tenant_namespace" not in columns:
                 db.execute("ALTER TABLE semantic_cache ADD COLUMN tenant_namespace TEXT NOT NULL DEFAULT ''")
+            if "origin_request_id" not in columns:
+                # Entries written before this column stay readable and keep
+                # serving hits; they simply replay UNANCHORED (see CacheHit).
+                db.execute("ALTER TABLE semantic_cache ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE INDEX IF NOT EXISTS sc_ctx ON semantic_cache (context_hash, expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS sc_tenant ON semantic_cache (tenant_namespace, expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS sc_created ON semantic_cache (created_at, exact_hash)")
@@ -448,7 +472,8 @@ class SemanticCache:
             model_id = f"{provider}:{model}"
             with self._db_lock, self._conn() as db:
                 row = db.execute(
-                    "SELECT response_ciphertext, prompt_tokens, completion_tokens "
+                    "SELECT response_ciphertext, prompt_tokens, completion_tokens, "
+                    "origin_request_id "
                     "FROM semantic_cache WHERE exact_hash=? AND tenant_namespace=? "
                     "AND model_id=? AND expires_at>?",
                     (exact, tenant_namespace, model_id, now),
@@ -467,7 +492,8 @@ class SemanticCache:
                 return None
             self._bump(exact)
             _record_cache("hit")
-            return CacheHit("exact", response, row[1], row[2])
+            return CacheHit("exact", response, row[1], row[2],
+                            origin_request_id=_origin_id(row[3]))
 
         # Layer 2 — semantic (only if enabled AND opted-in/untripped AND embeddings available)
         if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
@@ -486,7 +512,7 @@ class SemanticCache:
             with self._db_lock, self._conn() as db:
                 cursor = db.execute(
                     "SELECT exact_hash, response_ciphertext, prompt_tokens, "
-                    "completion_tokens, embedding FROM semantic_cache "
+                    "completion_tokens, embedding, origin_request_id FROM semantic_cache "
                     "WHERE context_hash=? AND tenant_namespace=? AND model_id=? "
                     "AND expires_at>? AND embedding IS NOT NULL "
                     "ORDER BY created_at DESC, exact_hash DESC LIMIT ?",
@@ -513,12 +539,14 @@ class SemanticCache:
                 return None
             self._bump(best[0])
             _record_cache("hit")
-            return CacheHit("semantic", response, best[2], best[3], best_sim)
+            return CacheHit("semantic", response, best[2], best[3], best_sim,
+                            origin_request_id=_origin_id(best[5]))
         _record_cache("miss")
         return None
 
     def store(self, body: dict, provider: str, model: str, response: dict, *,
-              prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None) -> None:
+              prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None,
+              origin_request_id: str = "") -> None:
         if not self.cacheable(body):
             _record_cache("disabled")
             return
@@ -563,10 +591,12 @@ class SemanticCache:
                     "INSERT OR REPLACE INTO semantic_cache "
                     "(exact_hash, context_hash, model_id, embedding, response_json, "
                     "response_ciphertext, tenant_namespace, prompt_tokens, completion_tokens, "
-                    "created_at, expires_at, hit_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,0)",
+                    "created_at, expires_at, hit_count, origin_request_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
                     (exact, ctx, f"{provider}:{model}", emb_bytes, "", ciphertext,
                      tenant_namespace, min(2_000_000_000, max(0, int(prompt_tokens or 0))),
-                     min(2_000_000_000, max(0, int(completion_tokens or 0))), now, expires),
+                     min(2_000_000_000, max(0, int(completion_tokens or 0))), now, expires,
+                     _origin_id(origin_request_id)),
                 )
                 cursor = db.execute(
                     "DELETE FROM semantic_cache WHERE exact_hash IN ("
@@ -665,10 +695,47 @@ class SupabaseSemanticCache(SemanticCache):
         self._db_lock = threading.RLock()
         self._last_purge = 0.0
         # NB: no SQLite init — this backend does not touch the local filesystem.
+        # Anchoring (semantic_cache.origin_request_id and the matching
+        # `p_origin_request_id` argument on semantic_cache_store_bounded) arrives
+        # with a hand-applied migration while this code deploys on push, so it is
+        # attempted optimistically and switched off for the life of the process
+        # the first time an anchored call fails.
+        #
+        # Deliberately trips on ANY failure, not just the not-deployed
+        # signatures: the alternative is letting an unrecognized error reach the
+        # caller's except clause, where it becomes a cache miss (a real upstream
+        # call) or a lost cache write. A transient blip therefore costs
+        # anchoring until the process restarts, which is the cheap direction —
+        # unanchored replays are excluded from the fee basis, so the loss is
+        # revenue attribution, never a wrong charge or a broken request.
+        self._anchor_supported = True
 
     @staticmethod
     def _vec_literal(vec) -> str:
         return "[" + ",".join(f"{x:.6f}" for x in vec.tolist()) + "]"  # pgvector text form
+
+    def _exact_select(self, exact: str, tenant_namespace: str, model_id: str,
+                      now_iso: str):
+        """Exact-hash read, retried once WITHOUT the anchor column if it is absent.
+
+        A select naming a column the deployed table does not have is a hard 400,
+        and the caller's except clause would turn that into a permanent cache
+        MISS — i.e. the anchoring change would disable hosted caching outright
+        on an un-migrated database. Retry once, remember, never probe again.
+        """
+        columns = "response_ciphertext, prompt_tokens, completion_tokens"
+        if self._anchor_supported:
+            try:
+                return (self._c.table("semantic_cache")
+                        .select(f"{columns}, origin_request_id")
+                        .eq("exact_hash", exact).eq("tenant_namespace", tenant_namespace)
+                        .eq("model_id", model_id).gt("expires_at", now_iso)
+                        .limit(1).execute())
+            except Exception:
+                self._anchor_supported = False
+        return (self._c.table("semantic_cache").select(columns)
+                .eq("exact_hash", exact).eq("tenant_namespace", tenant_namespace)
+                .eq("model_id", model_id).gt("expires_at", now_iso).limit(1).execute())
 
     def lookup(self, body: dict, provider: str, model: str, *,
                gate_key: str = "") -> CacheHit | None:
@@ -681,10 +748,7 @@ class SupabaseSemanticCache(SemanticCache):
         tenant_namespace = self._tenant_namespace(body, self.namespace)
         model_id = f"{provider}:{model}"
         try:
-            r = (self._c.table("semantic_cache")
-                 .select("response_ciphertext, prompt_tokens, completion_tokens")
-                 .eq("exact_hash", exact).eq("tenant_namespace", tenant_namespace)
-                 .eq("model_id", model_id).gt("expires_at", now_iso).limit(1).execute())
+            r = self._exact_select(exact, tenant_namespace, model_id, now_iso)
             if r.data:
                 row = r.data[0]
                 response = self._decrypt_response(
@@ -694,7 +758,8 @@ class SupabaseSemanticCache(SemanticCache):
                 self._bump(exact)
                 _record_cache("hit")
                 return CacheHit("exact", response,
-                                row["prompt_tokens"], row["completion_tokens"])
+                                row["prompt_tokens"], row["completion_tokens"],
+                                origin_request_id=_origin_id(row.get("origin_request_id")))
             if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
                 _record_cache("miss")
                 return None
@@ -719,7 +784,8 @@ class SupabaseSemanticCache(SemanticCache):
                 self._bump(row["exact_hash"])
                 _record_cache("hit")
                 return CacheHit("semantic", response, row["prompt_tokens"],
-                                row["completion_tokens"], float(row.get("similarity", 1.0)))
+                                row["completion_tokens"], float(row.get("similarity", 1.0)),
+                                origin_request_id=_origin_id(row.get("origin_request_id")))
         except Exception:
             _record_cache("error")
             return None  # cache never breaks the request path
@@ -727,7 +793,8 @@ class SupabaseSemanticCache(SemanticCache):
         return None
 
     def store(self, body: dict, provider: str, model: str, response: dict, *,
-              prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None) -> None:
+              prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None,
+              origin_request_id: str = "") -> None:
         if not self.cacheable(body):
             _record_cache("disabled")
             return
@@ -768,7 +835,7 @@ class SupabaseSemanticCache(SemanticCache):
             # The RPC performs upsert and deterministic oldest-first eviction in
             # one database transaction. Production must not use a non-atomic
             # select/count/delete sequence across replicas.
-            self._c.rpc("semantic_cache_store_bounded", {
+            args = {
                 "p_exact_hash": exact,
                 "p_context_hash": ctx,
                 "p_model_id": f"{provider}:{model}",
@@ -779,7 +846,22 @@ class SupabaseSemanticCache(SemanticCache):
                 "p_completion_tokens": min(2_000_000_000, max(0, int(completion_tokens or 0))),
                 "p_ttl_seconds": duration,
                 "p_max_entries": self.max_entries,
-            }).execute()
+            }
+            # An unknown argument makes PostgREST fail to resolve the overload
+            # (PGRST202), so the anchored call is attempted first and the
+            # un-anchored one is the fallback — never the other way round, which
+            # would write an anchor-less entry and then a duplicate. The RPC is
+            # an idempotent upsert, so the retry cannot double-write either.
+            if self._anchor_supported:
+                try:
+                    self._c.rpc("semantic_cache_store_bounded", {
+                        **args, "p_origin_request_id": _origin_id(origin_request_id),
+                    }).execute()
+                    _record_cache("write")
+                    return
+                except Exception:
+                    self._anchor_supported = False
+            self._c.rpc("semantic_cache_store_bounded", args).execute()
             _record_cache("write")
         except Exception:
             _record_cache("error")

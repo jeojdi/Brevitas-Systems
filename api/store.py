@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -158,6 +159,10 @@ _USAGE_COLUMNS: dict[str, str] = {
     "pipeline": "TEXT NOT NULL DEFAULT ''",
     "run_id": "TEXT NOT NULL DEFAULT ''",
     "request_id": "TEXT NOT NULL DEFAULT ''",
+    # request_id of the PAID row this row's zero-spend savings descend from.
+    # Non-empty only on a Brevitas cache replay; '' means UNANCHORED, which is
+    # the fail-closed value (excluded from the fee basis). See _usage_row.
+    "savings_anchor_request_id": "TEXT NOT NULL DEFAULT ''",
     "usage_raw": "TEXT NOT NULL DEFAULT ''",
 }
 
@@ -241,11 +246,29 @@ def _postgrest_function_missing(exc: requests.HTTPError) -> bool:
 # would tell an operator to run a migration that is already applied.
 _POSTGREST_MISSING_OBJECT_CODES = frozenset({
     "PGRST202",  # function not found in the schema cache
+    "PGRST204",  # column not found in the schema cache (an INSERT naming it)
     "PGRST205",  # table/view not found in the schema cache
     "42883",     # undefined_function, forwarded from Postgres
     "42P01",     # undefined_table
     "42703",     # undefined_column (an older table shape, same deploy-order state)
 })
+
+
+logger = logging.getLogger(__name__)
+
+# Once per process. The condition is a deploy-ordering state that persists until
+# an operator applies a migration, so repeating it on every receipt would bury
+# the log without telling anyone anything new.
+_anchor_column_warned = False
+
+
+def _log_anchor_column_missing() -> None:
+    global _anchor_column_warned
+    if not _anchor_column_warned:
+        _anchor_column_warned = True
+        logger.warning(
+            "usage_log.savings_anchor_request_id is not deployed; cache replays "
+            "are being stored UNANCHORED and cannot enter the fee basis")
 
 
 def _postgrest_object_missing(exc: requests.HTTPError) -> bool:
@@ -683,6 +706,36 @@ def _organization_cache(records: list[Any], lookup: Any) -> dict[str, str]:
     return cache
 
 
+# Only these strategies produce a row whose savings are zero-spend by
+# construction, and therefore the only rows a paid-ancestor anchor describes.
+# Kept in step with api.server._BREVITAS_REPLAY_STRATEGIES.
+_ANCHORABLE_STRATEGIES = ("exact_cache", "semantic_cache")
+
+
+def _savings_anchor(values: dict[str, Any]) -> str:
+    """Last gate before storage: an anchor survives only on a row shaped to have one.
+
+    api.server._decide_savings_anchor is the primary decision and knows about
+    authority namespaces; this is the shared floor under EVERY write path,
+    including record_usage_batch, whose per-record dict reaches _usage_row with
+    whatever keys the caller sent. An anchor on a row that is not an
+    authoritative, Brevitas-attributable cache replay is meaningless at best and
+    a billing claim at worst, so it is dropped rather than stored.
+
+    Anchoring is monotonic in the safe direction: dropping one can only move a
+    row OUT of the fee basis.
+    """
+    anchor = str(values.get("savings_anchor_request_id") or "")[:128]
+    if not anchor:
+        return ""
+    if not (values.get("authoritative") and values.get("cache_attributable")):
+        return ""
+    if not str(values.get("strategy") or "").strip().lower().startswith(
+            _ANCHORABLE_STRATEGIES):
+        return ""
+    return "" if anchor == str(values.get("request_id") or "") else anchor
+
+
 def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
                savings_pct: float = 0, quality_proxy: Optional[float] = None,
                **values: Any) -> dict[str, Any]:
@@ -747,6 +800,7 @@ def _usage_row(key_hash: str, baseline_tokens: int, optimized_tokens: int,
         "pipeline": values.get("pipeline") or "",
         "run_id": values.get("run_id") or "",
         "request_id": values.get("request_id") or "",
+        "savings_anchor_request_id": _savings_anchor(values),
         # Legacy column retained for schema compatibility; raw provider JSON is not persisted.
         "usage_raw": "",
     }
@@ -4383,9 +4437,46 @@ class SupabaseUsageStore:
         # traffic uses NULL, never the invalid UUID literal ''.
         row["organization_id"] = row.get("organization_id") or None
         row["customer_id"] = row.get("customer_id") or None
-        result = self._request("POST", "usage_log", data=row,
-                               prefer="return=representation,resolution=ignore-duplicates")
+        result = self._insert_usage_rows(row)
         return bool(result)
+
+    def _insert_usage_rows(self, data: Any) -> Any:
+        """Insert receipts, surviving a usage_log that predates the anchor column.
+
+        api/ deploys on push; usage_log.savings_anchor_request_id arrives with a
+        hand-applied migration. In the window between the two, naming the column
+        in an INSERT is a 400 (PGRST204) — and a 400 here does not degrade one
+        field, it DROPS the whole receipt, which for an authoritative row is lost
+        revenue and understated customer savings.
+
+        So: the column is only ever sent when it carries a value, and if the
+        database says it does not exist the insert is retried without it. The row
+        lands UNANCHORED, which is exactly the conservative outcome — it bills
+        zero until the migration is applied, and nothing is lost but provenance.
+        """
+        prefer = "return=representation,resolution=ignore-duplicates"
+        rows = data if isinstance(data, list) else [data]
+        # An empty anchor is indistinguishable from an absent one, so never make
+        # an ordinary receipt depend on a column it has no use for.
+        for row in rows:
+            if isinstance(row, dict) and not row.get("savings_anchor_request_id"):
+                row.pop("savings_anchor_request_id", None)
+        if not any(isinstance(row, dict) and row.get("savings_anchor_request_id")
+                   for row in rows):
+            return self._request("POST", "usage_log", data=data, prefer=prefer)
+        try:
+            return self._request("POST", "usage_log", data=data, prefer=prefer)
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+        for row in rows:
+            if isinstance(row, dict):
+                row.pop("savings_anchor_request_id", None)
+        # Loud: a receipt that should have been anchored was stored unanchored,
+        # so a period that ought to be billable will not be. Operator action is
+        # applying the migration, not investigating the proxy.
+        _log_anchor_column_missing()
+        return self._request("POST", "usage_log", data=data, prefer=prefer)
 
     def record_usage_batch(self, records: list[dict[str, Any]]) -> dict[str, Any]:
         """Insert at most 100 receipts, isolating malformed/failed rows on retry."""
@@ -4401,6 +4492,16 @@ class SupabaseUsageStore:
                 _fill_organization_id(row, organizations.get)
                 row["organization_id"] = row.get("organization_id") or None
                 row["customer_id"] = row.get("customer_id") or None
+                # Batch is the IMPORT path: it carries receipts a caller
+                # assembled, never one the in-process proxy observed, so
+                # _savings_anchor already refuses to anchor anything arriving
+                # here. Drop the column outright rather than leave the retry
+                # ladder below — which is built purely around request_id
+                # idempotency — to also cope with a column that may not be
+                # deployed yet (see _insert_usage_rows). Unanchored is the
+                # fail-closed value, so this can only keep rows OUT of the fee
+                # basis, never sneak one in.
+                row.pop("savings_anchor_request_id", None)
                 prepared.append((dict(record), row))
             except (TypeError, ValueError):
                 result["failed"] += 1

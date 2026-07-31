@@ -65,3 +65,4 @@ supabase/migrations/202607280025_waitlist_network_budget.sql
 supabase/migrations/202607280026_usage_log_authority_dedupe.sql
 supabase/migrations/202607280027_browser_role_truncate_contract.sql
 supabase/migrations/202607280029_period_settlement_claim_path.sql
+supabase/migrations/202607280030_billing_attestation_writer.sql

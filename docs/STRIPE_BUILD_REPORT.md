@@ -9,6 +9,153 @@ measured).
 
 ---
 
+## ONE-COMMAND ONBOARDING — 2026-07-30
+
+Appended 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Goal
+(owner's words): collapse "sign up → find Company Administration → create a service account → copy
+key → learn about an undocumented header → operator hand-writes attestation SQL" into one customer
+command and one operator action. Four lanes (design, CLI, attestation SQL, docs) plus an
+independent verifier and an adversarial review. Same tagging convention as the rest of this report.
+wyfz apply steps for the new migration: `docs/WYFZ_APPLY_PLAN.md`, **WINDOW B4 ADDENDUM**.
+
+### The new customer flow
+
+```
+pip install brevitas
+brevitas connect          # paste a dashboard session token when prompted
+# paste the printed snippet into your app; send one request
+brevitas billing-check    # exits 0 only when actually billable
+```
+
+`connect` mints the billable `organization_service` key through the **existing**
+`POST /v1/company/service-accounts` (same endpoint, scopes, and 90-day expiry as the dashboard
+button — nothing bypassed), imports the customer row via `POST /v1/customers/import` so the tenant
+exists before the first request, prints the key exactly once, and writes a secret-free
+`~/.config/brevitas/connection.json` (0600). Every printed snippet carries **both** mandatory
+headers: `X-Brevitas-Key` (the Brevitas key — `Authorization` stays the customer's provider key,
+forwarded upstream; the README's `api_key=<brevitas key>` shape would 401, api/server.py:1731,
+brevitas/proxy.py:1366) and `X-Brevitas-Customer-ID`, with the 400 for omitting it quoted verbatim.
+`--multi-tenant` skips the import and keeps the hard-400 gate exactly as today. `--env-file` /
+`--store-key` are opt-in with git/permission guardrails `[verified — 29 new tests in
+tests/test_hosted_connect_cli.py, all passing; full CLI-touching suites 82 passed]`.
+
+**Deviations from the design, stated plainly** `[verified by grep, not lane trust]`: the browser
+device-auth branch (`purpose='hosted_service'`) does not exist, so `connect` takes a pasted
+dashboard session token today — the weakest part of the flow, swap-out is one function when the
+api-side branch lands. The per-key `default_customer_external_id` pin, `GET /v1/billing/readiness`,
+and the dashboard "accept terms" endpoint are all **unshipped**; `billing-check` 404s honestly
+until readiness exists.
+
+### The new operator flow
+
+One SQL call replaces hand-written DML against a seven-year financial record. Migration
+`202607280030_billing_attestation_writer.sql` adds: role `brevitas_attestor` (login, **no
+password set** — fail-closed until a human sets one out of band, zero direct table privileges);
+`SECURITY DEFINER` `attest_billing_arrangement` / `revoke_billing_arrangement` with EXECUTE
+granted to exactly that role and a `session_user` re-check in the body (a future mistaken GRANT
+still refuses); an insert-only `organization_billing_arrangement_log` (no UPDATE/DELETE for any
+role) recording prior value, new value, named attester, session identity, and cited evidence
+(non-empty always, ≥8 chars plus an open request for the billable value); and
+`billing_arrangement_request` + `open_billing_arrangement_request` — the customer's owner
+accepting commercial terms, captured durably and **inert**: nothing in the settlement path reads
+it `[verified — the migration proves this from pg_get_functiondef at apply time]`.
+202607280009's posture is unrelaxed: `service_role` still cannot write
+`organization_billing_arrangement`, re-asserted by 0030's own DO block `[verified on caestus]`.
+
+**One-action gap, open** `[verified]`: `scripts/ops/attest.py` (`brevitas-ops attest`) was not
+built, and `brevitas_attestor` has no SELECT on `billing_arrangement_request`, so today the
+operator runs one psql call as the attestor **plus** needs a second credential to fetch the
+request id. Proposed fix: NEW migration 202607280031 (`grant select`) + the ops CLI — never an
+edit to 0030.
+
+### What was verified by execution
+
+- **Migration harness.** The "already red on both paths" premise was stale: pristine-HEAD baseline
+  is **green** (exit 0), so the bar was genuine green, not delta-empty `[verified — verifier ran
+  it from `git archive HEAD`]`. All 40 assertion suites were **advisory** — no `ON_ERROR_STOP`, a
+  deliberately broken suite still let the harness pass (proven by mutation, exit 0 with ERROR in
+  the log) — now strict; 80/80 suite×path probe green first, then full harness exit 0 both paths
+  with 0030 registered in both manifests + frozen checksums `[verified]`.
+- **0030 on caestus** (evpoxdrluvihryvqhraz — never wyfz). First apply **failed**: the original
+  `ALTER ROLE … nosuperuser nobypassrls noreplication` is superuser-only and Supabase's `postgres`
+  is not superuser; transactional, so caestus was left clean. Verifier split the ALTER and made
+  the migration assert the resulting state from `pg_roles` unconditionally (strictly stronger);
+  re-apply: COMMIT, exit 0, idempotent `[verified — error and postconditions pasted]`. All step-2
+  postconditions green on caestus: role posture (rolsuper/bypassrls/replication/inherit all `f`,
+  `pg_authid.rolpassword is null` = `t`), EXECUTE matrix, log/request grants, 0 direct table
+  privileges for the attestor `[verified]`.
+- **Negative proofs, verbatim** (the guarantee itself): as `service_role`,
+  `attest_billing_arrangement(...)` → `permission denied for function`; direct INSERT on
+  `organization_billing_arrangement` → `permission denied for table`;
+  `set session authorization brevitas_attestor` → denied even to `postgres` on hosted Supabase
+  `[verified on caestus]`. With EXECUTE forcibly granted back, the body still refuses:
+  `attestation_denied … may only be executed by the brevitas_attestor operator role`
+  `[verified locally]`.
+- **Mutation testing**: 8 mutations (grants restored, guards removed, owner-check widened) — every
+  assertion fails non-vacuously, each for the right reason `[verified]`.
+- **Operator walkthrough** (local Postgres, full chain): unattested org → settlement halts
+  `halting_condition=unattested_billing_arrangement` → terms accepted → attest as
+  `brevitas_attestor` → log row written, request closed, halt **gone** (guard delegates to
+  arithmetic, not short-circuits) `[verified]`.
+- **Suites**: 1104 pytest, `npm test` exit 0, dashboard 132/132, harness + verify-migrations exit
+  0 on the CI-equivalent tree `[verified]`.
+- **Stripe TEST sandbox**: catalog provisioned, `verify_live_stripe_catalog` 14/14, `key mode :
+  test` `[verified]`.
+- **Refused as unsafe**: acceptance step 3 said `supabase db query --linked -f …` — the CLI is
+  linked to **wyfz (production)**; running it as written would have applied 0030 to prod. The
+  verifier reached caestus by direct psql instead. The trap is still armed for the next person
+  `[verified — project-ref read]`.
+- **NOT executed** `[verified absent by grep, so untestable]`: acceptance steps 5–9 and 12–13 —
+  no live `connect` against a running API, no pinned-key header-less-200 test (the pin column
+  does not exist), no readiness call, no dashboard terms surface, and **no settled non-zero test
+  invoice**. The end-to-end money loop for the new flow remains unproven.
+
+### Review verdict: ship-with-fixes — open findings
+
+- **HIGH (doc-only)**: README + ONBOARD_HOSTED_CUSTOMER.md state the customer pin and
+  `/v1/billing/readiness` as shipped, present-tense fact; neither exists. Every org key still
+  hard-400s without the header — a design partner following the README fails on request one,
+  the exact failure this work exists to kill. Fix is hedging copy, not code.
+- **HIGH**: quarantined 0028 sitting on disk unregistered turns `verify-migrations.mjs` and two
+  `npm test` cases red in any working tree containing it (fresh-clone CI green only because it is
+  untracked). Move it out of `supabase/migrations/` or teach `verifyManifest` a quarantine
+  allowlist.
+- **MEDIUM**: an undeclared "savings anchor" workstream (+355 lines across api/ and brevitas/)
+  rides in the same uncommitted diff — currently inert and fail-safe, but it is the live half of
+  quarantined 0028; separate it before this change set is committed.
+- **MEDIUM**: the operator one-action gap above (0031 + ops CLI).
+- **MEDIUM**: `BREVITAS_ATTESTOR_DSN` absence from Railway/Vercel/GHA is enforced by nothing —
+  add assertions to operational-readiness.mjs / release-preflight.mjs. On hosted Supabase this is
+  load-bearing: impersonation is impossible, so a password + DSN is the only way to attest, and
+  its placement is the whole guarantee.
+- **LOW ×2**: `_write_private` chmods a pre-existing world-readable `--env-file` after writing
+  the key line, not before; `billing-check --api-key` lacks the shell-history warning `connect
+  --token` has.
+
+### What STILL requires a human — by design, not omission
+
+- **Attestation is a deliberate act and stays one.** `usage_log.actual_cost_usd` is static list
+  price with no organization dimension, so a committed-capacity (PTU) customer is
+  *indistinguishable in the data* from pay-as-you-go. A person must read the actual provider
+  agreement before writing `marginal_per_call`. 0030 removes the typing and adds an evidence
+  trail; it cannot and does not automate the judgement — the RPC enforces that evidence was
+  *cited*, never that it is *true*. Also human: setting the attestor password out of band, and
+  keeping the DSN out of every deployed environment (a process control with no test behind it —
+  said out loud rather than pretended away).
+- **The cache-only-$0 caveat.** A partner whose verified savings are purely cache replays settles
+  at **$0** under 202607280008 condition 2 — 0028 (the redesign) is quarantined after review
+  found a $0.0000000001-unlocks-$125 path. Readiness/billing-check are specified to say this in
+  plain words; until readiness ships, it must be said by a human, and never papered over in
+  onboarding copy `[verified — the acceptance run itself produced no non-zero draft for this
+  reason]`.
+- **Unowned business decisions** (recorded, not resolved): who may attest and what evidence
+  counts; whether dashboard clickthrough *is* the agreement or a countersigned MSA is required;
+  `connect` open to any org vs invited partners; 90-day key expiry (silent revocation stops
+  traffic); pin immutability after mint; whether the local proxy stays the headline install when
+  it can never bill `[unverified — owner input required]`.
+
+---
+
 ## SETTLEMENT SENDER (Phase 4) — 2026-07-30
 
 Written 2026-07-30 on branch `security/enterprise-audit-2026-07-30`, all work uncommitted. Five

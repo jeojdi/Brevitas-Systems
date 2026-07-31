@@ -14,7 +14,10 @@ but can affect behavior and are disabled until explicitly enabled.
 - **Mechanism-separated evidence.** Reports distinguish provider input tokens avoided,
   native-cache discount, model calls avoided, transport bytes avoided, and measured
   Brevitas lift from an isolated control arm.
-- **Two ways in**, both drop-in: a zero-code proxy, or a one-line client wrap.
+- **Two ways in.** The **hosted gateway** is a base-URL change and is the path that
+  produces metered, billable savings. The **local proxy** is a zero-code install that
+  keeps every byte on your machine — and, by design, cannot be billed on
+  percentage-of-savings.
 
 Site: https://brevitassystems.com
 
@@ -25,7 +28,74 @@ pip install brevitas-systems            # core
 pip install "brevitas-systems[all]"     # + retrieval embeddings, llmlingua, provider SDKs
 ```
 
-## Quick start
+## Quick start — hosted gateway (recommended)
+
+One command. It opens your browser, you approve as a workspace owner or admin, and
+it hands back an organization service key scoped to your workspace.
+
+```bash
+brevitas connect
+```
+
+Then three lines in your app — no install, no background service, no code changes
+beyond the client constructor:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["BREVITAS_API_KEY"],
+    default_headers={"X-Brevitas-Customer-ID": "acme"},   # required — see below
+)
+```
+
+```bash
+export BREVITAS_API_KEY=bvt_...
+export OPENAI_BASE_URL=https://api.brevitassystems.com/v1
+export BREVITAS_CUSTOMER_ID=acme
+```
+
+Confirm your traffic is actually being metered. `brevitas billing-check` and its
+`GET /v1/billing/readiness` endpoint are **designed but not yet shipped**; until they
+are, ask us and we will read it out of the usage log for you — the query is in
+`docs/ONBOARD_HOSTED_CUSTOMER.md` §3.2.
+
+### `X-Brevitas-Customer-ID` is required on every hosted request
+
+An organization service key **rejects every proxy call without it**:
+
+```
+400  {"detail": "Organization service proxy calls require X-Brevitas-Customer-ID"}
+```
+
+This is the single most common reason a first request fails. It is deliberate: one
+organization key can route traffic for many end customers, and the header is what
+says which one. Identity assignment is exact and stable — never semantic, never
+fuzzy.
+
+- **You are the tenant** (most integrations): use one stable id such as your company
+  slug. `brevitas connect` creates that customer record up front and pins it to the
+  key it mints, so a header-less call resolves to it rather than 400ing. The header
+  still wins whenever it is present, and we still recommend always sending it.
+- **You resell to your own customers**: send each end customer's stable id from your
+  own database. `brevitas connect --multi-tenant` leaves the key unpinned so a
+  missing header stays a hard 400 — attribution is never guessed from "this account
+  only has one customer".
+
+Existing customers can be bulk-imported by stable id (`POST /v1/customers/import`) or
+created automatically on first traffic. End customers do not install anything and do
+not receive Brevitas keys.
+
+## Local proxy — privacy-first, not on savings-based pricing
+
+Everything stays on your machine. Your provider keys stay in **your** environment or
+`.env`; Brevitas never receives them in this flow.
+
+Be aware of the tradeoff: receipts from the local proxy arrive over `POST /v1/usage`
+and are recorded **non-authoritative**, because a client-side proxy cannot certify
+its own savings. They give you dashboards and accounting. They are **not** eligible
+for percentage-of-savings billing — that requires the hosted gateway above.
 
 ### 1. See where you'd save (no changes made)
 
@@ -34,9 +104,6 @@ brevitas init            # scans your workspace, finds every LLM call site,
                          # checks which provider keys you have, shows next steps
 brevitas init --ai       # add an LLM pass for tricky/dynamic call sites
 ```
-
-Your API keys stay in **your** environment / `.env` — Brevitas never receives them
-in the self-hosted flow.
 
 ### 2a. Zero-code proxy — no code changes
 
@@ -87,23 +154,41 @@ isolated cache namespaces, fixed transcripts, cold and warm results, repeated tr
 confidence intervals. Without that control evidence, the dashboard shows the provider's
 native cache discount but leaves “Brevitas vs control” unmeasured.
 
-## Billing (if you use the hosted metering)
+## Billing (hosted gateway only)
 
 Brevitas bills a percentage of **verified** savings only. Savings are checked by an
 always-valid sequential quality gate (mSPRT) on an audited sample; if a lever's quality
 drops, billing for it stops automatically. Every call is logged with the provider's
 usage receipt and an idempotency key.
 
+Three things are true and worth knowing before you pick a path:
+
+- **Only hosted-gateway traffic is billable.** Receipts posted by the local proxy are
+  recorded non-authoritative by design, because a client-side proxy cannot certify its
+  own savings. Local-proxy usage produces analytics, never an invoice.
+- **Billing is off until a human at Brevitas attests your commercial arrangement.**
+  The database refuses that write from the application entirely, so no bug and no
+  leaked key can turn savings into a charge. Ask us for your attestation state at any
+  time — it is not an internal detail, and a self-service view of it is planned.
+- **Savings that come only from cache replays currently settle at $0.** Today's
+  halting conditions stop any period where zero-spend rows dominate the savings, and a
+  cache replay is a zero-spend row by construction. The redesign is pending. We would
+  rather say this here than have you find it on an invoice.
+
+Operator-side detail: [Onboarding a hosted (billable) customer](docs/ONBOARD_HOSTED_CUSTOMER.md).
+
 ## Cloud usage tracking
 
 See [Account and company onboarding](docs/ONBOARDING.md) for the individual,
 employee-invitation, workspace-switching, and enterprise-customer flows.
 
-For a SaaS integration, the SaaS company holds one Brevitas service key per environment. Each
-request from its backend includes an exact, stable `X-Brevitas-Customer-ID` from its own database.
-End customers do not install BVX and do not receive Brevitas keys. Existing customers may be
-bulk-imported by stable ID or are created automatically on first traffic; identity assignment is
-never semantic or fuzzy.
+For a SaaS integration, the SaaS company holds one Brevitas service key per environment
+(`brevitas connect` mints one; the dashboard's **Company Administration → service
+accounts** is the manual equivalent). Each request from its backend includes an exact,
+stable `X-Brevitas-Customer-ID` from its own database — see
+[the header rules above](#x-brevitas-customer-id-is-required-on-every-hosted-request),
+which are the most common cause of a failed first request. End customers do not install
+BVX and do not receive Brevitas keys.
 
 AgentMap-discovered backend services, workers, Claude Code, Codex, and custom clients all
 write the same content-free receipt:
@@ -121,8 +206,13 @@ export BREVITAS_SOURCE=api-worker
 `https://api.brevitassystems.com`. Set it **only** if you run your own API (self-hosted or
 local development) — otherwise a self-hosted deployment reports its usage to the hosted
 service. Do not give it a `/v1` suffix: the SDK appends `/v1` itself, so a `/v1` base
-produces `/v1/v1` and silently 404s. (`https://brevitassystems.com/v1` is the value for
-gateway integrations such as `ANTHROPIC_BASE_URL`, not for `BREVITAS_BASE_URL`.)
+produces `/v1/v1` and silently 404s.
+
+A `/v1` suffix is correct for **gateway** base URLs (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, the OpenAI SDK's `base_url`) and wrong for `BREVITAS_BASE_URL`. Both
+`https://api.brevitassystems.com/v1` and `https://brevitassystems.com/v1` reach the
+gateway — the marketing origin rewrites `/v1/*` to the API host — but prefer the direct
+`api.` host, which is what `brevitas connect` prints and one fewer hop.
 
 When `BREVITAS_PROJECT` is unset the SDK falls back to your local Git-root folder name so
 the dashboard has a project dimension. That folder name is your own material, so

@@ -2464,3 +2464,255 @@ DB-first and prove in place.
 - [ ] `verify-no-probes.sql` (§9.0): every column still 0.
 - [ ] `BREVITAS_BILLING_SETTLEMENT_ENABLED` confirmed **unset** in the Railway service env.
 - [ ] `$WYFZ_LOG` records that `202607280025`–`202607280028` were deliberately not applied.
+
+---
+
+## WINDOW B4 ADDENDUM (2026-07-30) — `202607280030_billing_attestation_writer.sql`
+
+Appended 2026-07-30, later the same day as B3. **B3 is done: wyfz is now at `202607280029`** —
+the claim/send path is applied and postcondition-verified. wyfz still does **not** carry
+`202607280025`–`202607280028`, and `202607280028` remains **quarantined** (B3.1's log entry
+stands: do not "helpfully" backfill it).
+
+This addendum covers one file: **`202607280030_billing_attestation_writer.sql`**, the attestation
+writer that `202607280009` deliberately did not build. It creates one login role
+(`brevitas_attestor`, **no password** — fail-closed until a human sets one out of band), two
+`SECURITY DEFINER` operator functions (`attest_billing_arrangement(uuid,text,text,text,uuid)`,
+`revoke_billing_arrangement(uuid,text)`) executable by **only** that role, one API-facing capture
+RPC (`open_billing_arrangement_request(uuid,uuid,text,text,text,text,text)`, `service_role`
+EXECUTE), and two tables (`organization_billing_arrangement_log`, insert-only;
+`billing_arrangement_request`, `service_role` INSERT/SELECT only). It does **not** relax
+`202607280009`: no role gains any write on `public.organization_billing_arrangement`, and the
+file's own DO block re-asserts that before committing.
+
+All Laws (L1–L6) apply unchanged: one file, `supabase db query --linked -f`, never `db push`,
+stop on first non-zero exit, no `brevitas_schema_migrations`, keep the hand-written log.
+
+### B4.0 Gate — all satisfied 2026-07-30 except the last two, which are yours
+
+- [x] File exists and is registered in `expectedFreshMigrationOrder`, **both** manifests, and
+      `scripts/ci/migration-frozen-checksums.txt` (same change set; `REVERSE_POSTURE_CUTOFF`
+      bumped to `202607280031`).
+- [x] Migration harness exit 0 on **both** paths — and note the harness got strictly harder the
+      same day: every assertion suite now runs under `ON_ERROR_STOP=1` (they were previously
+      advisory), so this green is load-bearing in a way earlier greens were not.
+- [x] Applied to **caestus** (`evpoxdrluvihryvqhraz`) with every postcondition below green, plus
+      the negative proofs (service_role denied on function and table; `set session authorization
+      brevitas_attestor` denied even to `postgres`). Idempotent on re-apply.
+- [x] **The hosted-Supabase ALTER ROLE trap is fixed in the frozen bytes.** The first authored
+      version died on caestus with `permission denied to alter role` (`nosuperuser`/`nobypassrls`/
+      `noreplication` are superuser-only and Supabase's `postgres` is not superuser). The frozen
+      file runs those in a privilege-tolerant block and then **asserts the resulting state from
+      `pg_roles` unconditionally** — a pre-existing over-privileged `brevitas_attestor` aborts the
+      file. Checksum verification (below) is what guarantees you are applying the fixed bytes.
+- [x] No dependency on `202607280025`–`202607280028`: the file reads
+      `pg_get_functiondef` of the two settlement guards only to assert they do **not** reference
+      the new tables, and behaviorally probes the guard — it does not assert 0028's anchored
+      evidence shape. Safe against wyfz's realigned (pre-0028) chain.
+- [x] **The `280021` probe trap does not bite:** the embedded contract probe inserts one
+      `public.organizations` row and one `billing_arrangement_request` row (no `auth.users`
+      writes), and deletes both before commit.
+- [ ] Adversarial review verdict is **ship-with-fixes** (see `docs/STRIPE_BUILD_REPORT.md`, "ONE-
+      COMMAND ONBOARDING"). None of the open findings blocks this apply — the two highs are a
+      docs claim and a working-tree/0028 hygiene issue; the mediums are follow-ups
+      (`202607280031` attestor SELECT grant, ops CLI, DSN preflight assertion). Record in
+      `$WYFZ_LOG` that you read them and proceeded.
+- [ ] **After** the apply: do NOT set a password on `brevitas_attestor` in this window. That is a
+      separate, deliberate act, done only when the first real attestation is due, from an
+      operator machine — and `BREVITAS_ATTESTOR_DSN` must never appear in Railway, Vercel, or
+      GitHub Actions env. On hosted Supabase there is no impersonation path (`set session
+      authorization` is denied to `postgres`), so the password's existence and placement IS the
+      entire remaining guarantee.
+
+Checksum (§3 idiom) — must match exactly, or someone edited the frozen file; **stop**:
+
+```bash
+grep 202607280030 scripts/ci/migration-frozen-checksums.txt
+shasum -a 256 supabase/migrations/202607280030_billing_attestation_writer.sql
+```
+
+```
+a35ed35f181502803f00fbc2f536c4b859ff849b342a298763d150d3e27c41c2  202607280030_billing_attestation_writer.sql
+```
+
+### B4.1 Ordering note
+
+Applying `280030` while still skipping `280025`–`280028` continues B3.1's recorded divergence,
+on the same rationale: none of the four is a prerequisite, `280028` is quarantined, and the
+realignment file is the precedent. Record again in `$WYFZ_LOG` that 0025–0028 were intentionally
+not applied.
+
+### B4.2 · `202607280030_billing_attestation_writer.sql`
+
+**(a)** Replaces hand-written attestation DML with an audited RPC path. Adds the cluster-wide
+role `brevitas_attestor` (login, **no password**, `noinherit`, zero direct table privileges —
+blanket-revoked), the two operator functions (EXECUTE granted to `brevitas_attestor` only,
+revoked from `public`/`anon`/`authenticated`/`service_role`, and a `session_user` check inside
+each body so a future mistaken GRANT still refuses), the insert-only attestation log (no
+UPDATE/DELETE for any role; deliberately **no FK to organizations** so evidence outlives the
+tenant), and the inert customer-request capture table + owner-only RPC. Grants nothing new on
+`organization_billing_arrangement`.
+
+**(b)** Precondition:
+```bash
+cat > /tmp/wyfz-apply/pre-280030.sql <<'SQL'
+\echo == prerequisites: the 0009/0013 attestation + settlement stack must be present ==
+select to_regclass('public.organization_billing_arrangement') is not null as oba_table,
+       to_regprocedure('public.organization_billing_arrangement_state(uuid)')
+         is not null as f_state,
+       to_regprocedure('public.assert_billing_period_settlement_allowed(uuid,timestamptz,timestamptz,bigint)')
+         is not null as f_settle_guard,
+       to_regprocedure('public.assert_billing_period_halting_conditions(uuid,timestamptz,timestamptz,bigint)')
+         is not null as f_halt_guard,
+       to_regclass('public.organizations') is not null as organizations;
+\echo == 0009's posture must still hold BEFORE this file (it re-asserts it after) ==
+select count(*) as oba_write_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement', privs.p);
+\echo == none of the new objects may exist yet ==
+select not exists (select 1 from pg_roles where rolname = 'brevitas_attestor')
+         as attestor_role_absent,
+       to_regclass('public.organization_billing_arrangement_log') is null as log_absent,
+       to_regclass('public.billing_arrangement_request')          is null as request_absent,
+       to_regprocedure('public.attest_billing_arrangement(uuid,text,text,text,uuid)')
+         is null as attest_absent,
+       to_regprocedure('public.revoke_billing_arrangement(uuid,text)')
+         is null as revoke_absent,
+       to_regprocedure('public.open_billing_arrangement_request(uuid,uuid,text,text,text,text,text)')
+         is null as open_req_absent;
+\echo == money state: wyfz must still be frozen ==
+select (select count(*) from public.period_settlement_ledger) as settlements_expect_0,
+       (select count(*) from public.billing_ledger)           as billing_ledger_expect_0,
+       (select count(*) from public.organization_billing_arrangement)
+         as attestations_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/pre-280030.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Every boolean `t`, both `MUST_BE_0`/`expect_0` counts `0`. If `attestor_role_absent = f`, someone
+created the role outside this runbook — **stop**, that is the §10.4 escalation case (the file
+would then *assert* the role's posture rather than create it, and an over-privileged pre-existing
+role correctly aborts it).
+
+**(c)**
+```bash
+wyfz_run supabase/migrations/202607280030_billing_attestation_writer.sql
+```
+
+**(d)** Postcondition:
+```bash
+cat > /tmp/wyfz-apply/post-280030.sql <<'SQL'
+\echo == role posture: exists, can log in, holds nothing dangerous, has NO password ==
+select rolcanlogin as can_login_expect_t,
+       not rolsuper       as no_super,
+       not rolbypassrls   as no_bypassrls,
+       not rolreplication as no_replication,
+       not rolinherit     as no_inherit,
+       not rolcreaterole  as no_createrole,
+       not rolcreatedb    as no_createdb
+  from pg_roles where rolname = 'brevitas_attestor';
+select (select rolpassword is null from pg_authid where rolname = 'brevitas_attestor')
+         as password_unset_expect_t;  -- pg_roles masks every password as '********'; pg_authid
+                                      -- is authoritative (readable by postgres on Supabase)
+\echo == EXECUTE matrix: operator functions attestor-only; capture RPC service_role-only ==
+select p.oid::regprocedure as fn,
+       not has_function_privilege('anon', p.oid, 'EXECUTE')            as anon_blocked,
+       not has_function_privilege('authenticated', p.oid, 'EXECUTE')   as auth_blocked,
+       has_function_privilege('service_role', p.oid, 'EXECUTE')        as sr,
+       has_function_privilege('brevitas_attestor', p.oid, 'EXECUTE')   as attestor
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public'
+   and p.proname in ('attest_billing_arrangement','revoke_billing_arrangement',
+                     'open_billing_arrangement_request')
+ order by 1;
+\echo == 0009 still sealed, log insert-only, request table API-writable but not closable ==
+select count(*) as oba_write_privs_STILL_0
+  from (values ('anon'),('authenticated'),('service_role'),('brevitas_attestor')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement', privs.p);
+select count(*) as log_mutation_privs_MUST_BE_0
+  from (values ('anon'),('authenticated'),('service_role'),('brevitas_attestor')) roles(r)
+ cross join (values ('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE')) privs(p)
+ where has_table_privilege(roles.r, 'public.organization_billing_arrangement_log', privs.p);
+select has_table_privilege('service_role','public.billing_arrangement_request','INSERT') as req_sr_insert,
+       has_table_privilege('service_role','public.billing_arrangement_request','SELECT') as req_sr_select,
+       not has_table_privilege('service_role','public.billing_arrangement_request','UPDATE') as req_sr_no_update,
+       not has_table_privilege('service_role','public.billing_arrangement_request','DELETE') as req_sr_no_delete,
+       not has_table_privilege('anon','public.billing_arrangement_request','SELECT') as req_anon_blocked,
+       not has_table_privilege('authenticated','public.billing_arrangement_request','SELECT') as req_auth_blocked;
+\echo == the attestor's ONLY reach into public is the two operator functions ==
+select count(*) as attestor_direct_table_privs_MUST_BE_0
+  from information_schema.role_table_grants
+ where grantee = 'brevitas_attestor' and table_schema = 'public';
+\echo == the migration's probe unwound itself: no rows anywhere ==
+select (select count(*) from public.organization_billing_arrangement_log) as log_rows_expect_0,
+       (select count(*) from public.billing_arrangement_request)          as request_rows_expect_0,
+       (select count(*) from public.organization_billing_arrangement)     as attestations_STILL_0,
+       (select count(*) from public.organizations
+         where name like '202607280030%') as probe_orgs_expect_0;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280030.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Role posture all `t`; EXECUTE matrix: the two operator functions `t/t/f/t`
+(anon-blocked / auth-blocked / **sr=f** / attestor=t), `open_billing_arrangement_request`
+`t/t/t/f`; every count `0`.
+
+Then the two negative proofs — these error strings ARE the guarantee; capture them verbatim in
+`$WYFZ_LOG` (both confirmed on caestus 2026-07-30):
+```bash
+cat > /tmp/wyfz-apply/post-280030-negative.sql <<'SQL'
+\echo == a leaked service key cannot attest: expect TWO permission-denied errors ==
+begin;
+set local role service_role;
+select public.attest_billing_arrangement(
+  '00000000-0000-0000-0000-000000000000'::uuid, 'marginal_per_call', 'nobody', 'no evidence', null);
+rollback;
+begin;
+set local role service_role;
+insert into public.organization_billing_arrangement (organization_id, arrangement)
+values ('00000000-0000-0000-0000-000000000000'::uuid, 'marginal_per_call');
+rollback;
+SQL
+supabase db query --linked -f /tmp/wyfz-apply/post-280030-negative.sql 2>&1 | tee -a "$WYFZ_LOG"
+```
+Expect `permission denied for function attest_billing_arrangement` and
+`permission denied for table organization_billing_arrangement`. Do **not** attempt
+`set session authorization brevitas_attestor` — it is denied to `postgres` on hosted Supabase
+(that denial is itself a property, verified on caestus); the successful-attestation path is
+proven only in local CI, and on wyfz it becomes possible only after a password is set out of
+band.
+
+**(e)** Single transaction (`grep -c '^begin;'` = 1, `^commit;` = 1, zero `CONCURRENTLY` —
+verified in the frozen bytes), so a mid-file failure rolls back **everything, including the
+`CREATE ROLE`** (role DDL is transactional; caestus's failed first apply left
+`attestor_rows=0`, `log_absent=t`, `req_absent=t`). The embedded contract probe inserts one
+`public.organizations` row + one request row, proves both functions refuse a non-attestor
+session, calls the real settlement guard expecting the `unattested` halt, then deletes both rows
+— the `probe_orgs_expect_0` postcondition pins the unwind. One cluster-wide residue on success:
+the role itself, which is the point. `REVERSE: PITR-ONLY` per its header — the log table is
+insert-only evidence; the DDL reverse (drop functions, drop role) exists mechanically but any
+log rows written after go-live must never be deleted.
+
+**(f)** **DB-first, and it stays dark.** No deployed code calls anything this file creates:
+`service_role` gains EXECUTE on `open_billing_arrangement_request` only, and no API endpoint
+invokes it yet (the dashboard "accept terms" surface is unbuilt — see the build report). Nothing
+here can move money: attestation requires a direct connection as `brevitas_attestor`, whose
+password does not exist until a human sets it, and `promote_billing_period_settlement` remains
+granted to nobody. The one behaviour that changes at apply time is **for the better**: the file's
+probe re-proves, inside the apply transaction on wyfz itself, that an unattested organization
+cannot settle a positive fee.
+
+### B4.3 Window gate
+
+- [ ] B4.0 fully satisfied; checksum `a35ed35f…` matches both lists.
+- [ ] `pre-280030.sql` all green; `attestor_role_absent = t`; all zero-counts 0.
+- [ ] `280030` exited 0 with an `OK` line in `$WYFZ_LOG`.
+- [ ] `post-280030.sql`: role posture 7×`t` + `password_unset_expect_t = t`; EXECUTE matrix as
+      specified (operator functions **sr=f**); all four count checks `0`; probe rows gone.
+- [ ] `post-280030-negative.sql`: both permission-denied strings captured verbatim.
+- [ ] `verify-no-probes.sql` (§9.0): every column still 0.
+- [ ] No password set on `brevitas_attestor`; `BREVITAS_ATTESTOR_DSN` confirmed absent from
+      Railway, Vercel, and GitHub Actions env.
+- [ ] `$WYFZ_LOG` records: 0025–0028 still deliberately unapplied; review findings read;
+      follow-ups (`202607280031` attestor SELECT grant, `brevitas-ops attest`, DSN preflight
+      assertion) tracked but not blocking.

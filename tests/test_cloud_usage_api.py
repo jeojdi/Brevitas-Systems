@@ -839,7 +839,12 @@ def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
         def json(self):
             return {"results": self._results}
 
-    results = [[[120, 80, 90, 12, 8]], [[45.5, 32.1]],
+    # Seven columns, matching the overview query in _posthog_admin_summary:
+    # pageviews, visitors, sessions, signup_started, signup_submitted, then the
+    # two the signup-funnel change added -- signup_attempts (raw button presses,
+    # so it is >= signup_started) and signup_failures. A five-element row made
+    # the route raise IndexError on totals[5] rather than fail an assertion.
+    results = [[[120, 80, 90, 12, 8, 14, 2]], [[45.5, 32.1]],
                [["2026-07-15", 80, 90, 120]]]
 
     def post(url, *, headers, json, timeout):
@@ -854,6 +859,12 @@ def test_admin_posthog_summary_keeps_personal_key_server_side(monkeypatch):
     assert response.status_code == 200
     assert response.json()["visitors"] == 80
     assert response.json()["avg_session_duration_seconds"] == 45.5
+    # Pin the funnel columns to their own positions, so a future reordering of
+    # the SELECT list fails here instead of silently relabelling the numbers.
+    assert response.json()["signup_started"] == 12
+    assert response.json()["signup_submitted"] == 8
+    assert response.json()["signup_attempts"] == 14
+    assert response.json()["signup_failures"] == 2
     assert all(call[1]["Authorization"] == f"Bearer {personal_key}" for call in calls)
     assert personal_key not in response.text
 
@@ -1855,3 +1866,355 @@ def test_a_quality_stream_fault_never_manufactures_a_verified_status(
 
     assert server._stream_snapshot(None) == {"available": False}
     assert server._stream_snapshot(_Broken()) == {"available": False}
+
+
+# ── Anchored zero-spend savings ───────────────────────────────────────────────
+# A Brevitas exact-cache replay has actual_cost_usd = 0 BY CONSTRUCTION: it never
+# touches an upstream. That makes "zero spend" useless as a fraud signal on its
+# own -- a legitimate replay and a forged row look identical on cost. What
+# separates them is provenance: a real replay descends from an earlier real,
+# receipted, PAID request, and a forged one descends from nothing. These tests
+# pin the forward link that makes the difference machine-checkable.
+
+
+def _anchor_proxy_env(server, proxy, store, monkeypatch, respond):
+    """Wire a TestClient whose proxy reports authoritative receipts into `store`."""
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+    server._seq_streams.clear()
+    real = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda *args, **kwargs: real(
+        transport=httpx.MockTransport(respond)))
+    proxy._cache_init_done = True
+    proxy._cache_singleton = None
+    proxy.set_usage_reporter(server._hosted_proxy_receipt)
+    monkeypatch.setenv("BREVITAS_PASSTHROUGH", "1")
+    monkeypatch.setenv("BREVITAS_PROXY_RPM", "50")
+    server._proxy_windows.clear()
+    server._proxy_active.clear()
+    return TestClient(server.app)
+
+
+def test_cache_replay_row_anchors_to_the_paid_request_that_filled_the_cache(
+        tmp_path, monkeypatch):
+    """The replay receipt names the metering id of its PAID ancestor.
+
+    Not "an ancestor existed" as an inference from strategy -- the id itself,
+    written at replay time from the cache entry that served the hit, resolvable
+    to a row in the same tenant's usage_log that really did carry provider spend.
+    """
+    import api.server as server
+    import brevitas.proxy as proxy
+    from brevitas.semantic_cache import SemanticCache
+
+    store = UsageStore(str(tmp_path / "anchor.db"))
+    raw_key = "bvt_anchor"
+    store.create_key(hash_key(raw_key), "anchor", owner_id="customer-anchor")
+
+    calls = []
+
+    def _respond(request):
+        calls.append(request.url.host)
+        # A distinct provider id per call, as a real upstream returns: the
+        # metering id is derived from it, so reusing one would collide.
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=(
+            b'{"id":"chatcmpl-paid-ancestor-%d","choices":[{"message":{"content":"ok"},'
+            b'"finish_reason":"stop"}],"usage":{"prompt_tokens":600,'
+            b'"completion_tokens":50}}' % len(calls)))
+
+    client = _anchor_proxy_env(server, proxy, store, monkeypatch, _respond)
+    cache = SemanticCache(db_path=str(tmp_path / "cache.db"))
+    monkeypatch.setattr(proxy, "_cache_for_request", lambda request: cache)
+
+    # temperature 0 is a precondition of cacheability: a caller who may expect
+    # fresh sampling never gets a replay.
+    payload = {"model": "gpt-4o", "temperature": 0,
+               "messages": [{"role": "user", "content": "anchor me"}]}
+    headers = {"X-Brevitas-Key": raw_key, "Authorization": f"{BEARER} provider-key"}
+    assert client.post("/v1/chat/completions", headers=headers, json=payload).status_code == 200
+    assert client.post("/v1/chat/completions", headers=headers, json=payload).status_code == 200
+    # The second request was served from cache: exactly one upstream call.
+    assert len(calls) == 1
+
+    rows = store._rows(hash_key(raw_key))
+    paid = [r for r in rows if not str(r["strategy"]).startswith("exact_cache")]
+    replay = [r for r in rows if str(r["strategy"]).startswith("exact_cache")]
+    assert len(paid) == 1 and len(replay) == 1
+    paid, replay = paid[0], replay[0]
+
+    # The ancestor is real and PAID -- this is what the anchor is worth pointing at.
+    assert paid["authoritative"]
+    assert float(paid["actual_cost_usd"]) > 0
+    # The replay is zero-spend by construction, which is exactly why it needs one.
+    assert float(replay["actual_cost_usd"]) == 0
+    assert replay["cache_attributable"]
+    # And it is the shape the fee basis is about: real verified savings with no
+    # spend behind them. Without an anchor this row is indistinguishable from a
+    # fabricated one and has to bill zero.
+    assert replay["authoritative"]
+    assert float(replay["verified_savings_usd"]) > 0
+
+    # THE assertion: a first-class forward link, not an inference.
+    assert replay["savings_anchor_request_id"] == paid["request_id"]
+    assert replay["savings_anchor_request_id"].startswith(proxy.RECEIPT_ID_PREFIX)
+    # And the ancestor does not anchor to anything: it has spend of its own.
+    assert paid["savings_anchor_request_id"] == ""
+    # A row is never its own ancestor.
+    assert replay["savings_anchor_request_id"] != replay["request_id"]
+    proxy.set_usage_reporter(None)
+
+
+def test_native_provider_cache_discount_carries_no_anchor(tmp_path, monkeypatch):
+    """A provider-NATIVE discount is not a Brevitas replay and never anchors.
+
+    DeepSeek's prompt_cache_hit_tokens (and every automatic prefix cache) would
+    have happened without Brevitas, so it reports cache_attributable=False and
+    must stay outside the fee basis. Anchoring one would launder exactly the
+    saving the attributable flag exists to exclude -- so the gate refuses it even
+    when the payload names a perfectly well-formed proxy-minted ancestor.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "native.db"))
+    raw_key = "bvt_native"
+    store.create_key(hash_key(raw_key), "native", owner_id="customer-native")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    server._hosted_proxy_receipt(raw_key, {
+        "provider": "deepseek", "model": "deepseek-chat",
+        "baseline_tokens": 1000, "compressed_tokens": 1000,
+        "fresh_input_tokens": 200, "cached_input_tokens": 800, "output_tokens": 10,
+        "request_id": "proxy:chatcmpl-native", "strategy": "native_cache",
+        "receipt_source": "proxy", "receipt_available": True,
+        # False is the whole point: Brevitas did not cause this discount.
+        "cache_attributable": False,
+        "savings_anchor_request_id": "proxy:chatcmpl-paid-ancestor",
+    })
+
+    rows = [r for r in store._rows(hash_key(raw_key)) if r["authoritative"]]
+    assert len(rows) == 1
+    assert rows[0]["request_id"] == "proxy:chatcmpl-native"
+    # Spend-backed row, so it is not a zero-spend saving at all -- and it holds
+    # no anchor that could make one look organic.
+    assert rows[0]["savings_anchor_request_id"] == ""
+
+
+@pytest.mark.parametrize("claim,reason", [
+    ("proxy:chatcmpl-paid-ancestor", "well_formed_proxy_id"),
+    ("client:chatcmpl-paid-ancestor", "outside_the_minted_namespace"),
+    ("proxy:chatcmpl-self", "self_reference"),
+    ("proxy:bad\nid", "control_characters"),
+])
+def test_client_reported_anchor_over_v1_usage_is_never_stored(
+        tmp_path, monkeypatch, claim, reason):
+    """A caller cannot anchor a row, for the same reason it cannot authorize one.
+
+    POST /v1/usage is analytics: it always records authoritative=False, so its
+    rows can never carry verified savings. The anchor is money-bearing evidence
+    and gets the same boundary -- otherwise a tenant could POST a self-serving
+    zero-spend row claiming descent from a paid request and re-enter the fee
+    basis through the exact door the concentration guard was built to watch.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / f"forge-{reason}.db"))
+    raw_key = "bvt_forge"
+    store.create_key(hash_key(raw_key), "forge", owner_id="customer-forge")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._auth_context_cache.clear()
+    server._seq_streams.clear()
+    client = TestClient(server.app)
+
+    reported = client.post("/v1/usage", headers={"X-Brevitas-Key": raw_key}, json={
+        "provider": "openai", "model": "gpt-4o",
+        "baseline_tokens": 600, "compressed_tokens": 0,
+        "fresh_input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+        "baseline_output_tokens": 50,
+        "request_id": "proxy:chatcmpl-self", "strategy": "exact_cache",
+        "receipt_source": "proxy", "cache_attributable": True,
+        "savings_anchor_request_id": claim,
+    })
+    # Accepted and recorded -- rejecting it would be a way to probe the gate,
+    # and analytics are not the thing being protected here.
+    assert reported.status_code == 200
+    assert reported.json()["savings_anchor_request_id"] == ""
+
+    rows = store._rows(hash_key(raw_key))
+    assert len(rows) == 1
+    assert not rows[0]["authoritative"]
+    assert rows[0]["verified_savings_usd"] == 0
+    assert rows[0]["savings_anchor_request_id"] == ""
+    # The reserved-namespace rewrite still applies to the row's OWN id, so the
+    # anchor gate is not the only thing standing between a caller and a
+    # billable slot.
+    assert rows[0]["request_id"].startswith("client:")
+
+
+def test_authoritative_anchor_claims_are_pinned_not_trusted(tmp_path, monkeypatch):
+    """Even on the authoritative bridge the anchor is DECIDED, never accepted.
+
+    _hosted_proxy_receipt is in-process, but its payload is assembled next to
+    caller-controlled tracking labels and a caller-selectable upstream, so the
+    shape of the claim is re-derived rather than believed.
+    """
+    import api.server as server
+
+    store = UsageStore(str(tmp_path / "pinned.db"))
+    raw_key = "bvt_pinned"
+    store.create_key(hash_key(raw_key), "pinned", owner_id="customer-pinned")
+    monkeypatch.setattr(server, "_store", store)
+    server._valid_key_cache.clear()
+    server._seq_streams.clear()
+
+    def _receipt(request_id, **overrides):
+        payload = {
+            "provider": "openai", "model": "gpt-4o",
+            "baseline_tokens": 600, "compressed_tokens": 0,
+            "baseline_output_tokens": 50,
+            "fresh_input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+            "request_id": request_id, "strategy": "exact_cache",
+            "receipt_source": "proxy", "receipt_available": True,
+            "cache_attributable": True,
+        }
+        payload.update(overrides)
+        server._hosted_proxy_receipt(raw_key, payload)
+        return next(r for r in store._rows(hash_key(raw_key))
+                    if r["request_id"] == request_id)
+
+    good = _receipt("proxy:a", savings_anchor_request_id="proxy:ancestor")
+    assert good["savings_anchor_request_id"] == "proxy:ancestor"
+    # The row is genuinely billable, so the anchor is load-bearing here.
+    assert float(good["verified_savings_usd"]) > 0
+
+    # A self-anchor proves nothing: it would let one forged row bootstrap itself.
+    assert _receipt("proxy:b", savings_anchor_request_id="proxy:b")[
+        "savings_anchor_request_id"] == ""
+    # An id outside the server-minted namespace cannot name an authoritative row.
+    assert _receipt("proxy:c", savings_anchor_request_id="client:ancestor")[
+        "savings_anchor_request_id"] == ""
+    # A quality-affecting strategy has no replayed ancestor to point at.
+    assert _receipt("proxy:d", strategy="reorder",
+                    savings_anchor_request_id="proxy:ancestor")[
+        "savings_anchor_request_id"] == ""
+    # A hostile upstream id must cost the ANCHOR, never the receipt: the row is
+    # still written and still billable.
+    control = _receipt("proxy:e", savings_anchor_request_id="proxy:anc\nestor")
+    assert control["savings_anchor_request_id"] == ""
+    assert float(control["verified_savings_usd"]) > 0
+
+
+def test_store_drops_an_anchor_on_a_row_shaped_to_have_none(tmp_path):
+    """The storage floor holds on every write path, not just the HTTP one.
+
+    record_usage_batch reaches _usage_row with whatever keys its caller sent, so
+    the authoritative/attributable/replay shape is re-checked here as well.
+    """
+    from api.store import _usage_row
+
+    base = {
+        "authoritative": True, "cache_attributable": True, "strategy": "exact_cache",
+        "request_id": "proxy:row", "savings_anchor_request_id": "proxy:ancestor",
+    }
+    assert _usage_row("kh", 600, 0, **base)["savings_anchor_request_id"] == "proxy:ancestor"
+    assert _usage_row("kh", 600, 0, **{**base, "authoritative": False})[
+        "savings_anchor_request_id"] == ""
+    assert _usage_row("kh", 600, 0, **{**base, "cache_attributable": False})[
+        "savings_anchor_request_id"] == ""
+    assert _usage_row("kh", 600, 0, **{**base, "strategy": "passthrough"})[
+        "savings_anchor_request_id"] == ""
+    assert _usage_row("kh", 600, 0, **{**base, "savings_anchor_request_id": "proxy:row"})[
+        "savings_anchor_request_id"] == ""
+    # Absent is the default, and the default is unanchored.
+    assert _usage_row("kh", 600, 0)["savings_anchor_request_id"] == ""
+
+
+def test_anchored_receipt_survives_a_usage_log_without_the_anchor_column(monkeypatch):
+    """A migration that has not been applied yet must not eat a billable receipt.
+
+    api/ deploys on push while usage_log migrations are hand-applied, so there is
+    a real window in which savings_anchor_request_id does not exist. Naming a
+    missing column in an INSERT is a 400, and a 400 on this path does not degrade
+    a field -- it drops the whole authoritative row, which is lost revenue and
+    understated customer savings. The row must land unanchored instead.
+    """
+    import requests
+    from api.store import SupabaseUsageStore
+
+    attempts = []
+
+    class _ColumnMissing:
+        status_code = 400
+
+        @staticmethod
+        def json():
+            return {"code": "PGRST204",
+                    "message": "Could not find the 'savings_anchor_request_id' column"}
+
+    class _Store(SupabaseUsageStore):
+        def __init__(self):
+            pass
+
+        def key_organization(self, key_hash):
+            return ""
+
+        def _request(self, method, path, *, params=None, data=None, prefer=""):
+            attempts.append(dict(data))
+            if "savings_anchor_request_id" in data:
+                raise requests.HTTPError(response=_ColumnMissing())
+            return [{"id": len(attempts)}]
+
+    store = _Store()
+    assert store.record_usage(
+        "kh", 600, 0, authoritative=True, cache_attributable=True,
+        strategy="exact_cache", request_id="proxy:row",
+        savings_anchor_request_id="proxy:ancestor") is True
+    # Tried anchored, then retried without -- the receipt is recorded either way.
+    assert len(attempts) == 2
+    assert "savings_anchor_request_id" in attempts[0]
+    assert "savings_anchor_request_id" not in attempts[1]
+
+    # An ordinary receipt never names the column at all, so deploying this code
+    # against a usage_log that predates the migration changes nothing for the
+    # 99.9% of rows that have no anchor to carry.
+    attempts.clear()
+    assert store.record_usage("kh", 600, 400, authoritative=True,
+                              strategy="passthrough", request_id="proxy:plain") is True
+    assert len(attempts) == 1
+    assert "savings_anchor_request_id" not in attempts[0]
+
+
+def test_a_real_insert_failure_is_not_mistaken_for_a_missing_column(monkeypatch):
+    """The retry is scoped to the deploy-ordering signature, nothing else.
+
+    Swallowing an arbitrary 4xx here would silently convert a genuine write
+    failure into a half-written row and a success return.
+    """
+    import requests
+    from api.store import SupabaseUsageStore
+
+    class _Conflict:
+        status_code = 409
+
+        @staticmethod
+        def json():
+            return {"code": "23505", "message": "duplicate key value"}
+
+    class _Store(SupabaseUsageStore):
+        def __init__(self):
+            pass
+
+        def key_organization(self, key_hash):
+            return ""
+
+        def _request(self, method, path, *, params=None, data=None, prefer=""):
+            raise requests.HTTPError(response=_Conflict())
+
+    with pytest.raises(requests.HTTPError):
+        _Store().record_usage(
+            "kh", 600, 0, authoritative=True, cache_attributable=True,
+            strategy="exact_cache", request_id="proxy:row",
+            savings_anchor_request_id="proxy:ancestor")
