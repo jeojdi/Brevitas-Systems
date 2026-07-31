@@ -34,14 +34,25 @@
 --   4. DILUTION. Narrowing the guard's numerator while leaving the gross
 --      denominator let a large anchored component hide fabricated rows: a shape
 --      that halts at share 1.00000 settled at 0.00200.
---      -> NOT CLOSED. An earlier revision of this header claimed it was, and
---      that claim was wrong. Reproduced against this file on PostgreSQL 17.10:
---      400 unanchored zero-spend rows worth $40,000 halt correctly on their own
+--      -> CLOSED by GUARD 4 (section 10b of settle_billing_period). An earlier
+--      revision of this header claimed it was closed when it was not; that claim
+--      was wrong and was retracted, and this one is written only after the
+--      reproduction below FAILS to settle.
+--
+--      THE DEFECT, as reproduced against this file on PostgreSQL 17.10: 400
+--      unanchored zero-spend rows worth $40,000 halt correctly on their own
 --      (share 1.00000), but the SAME rows beside 5,000 legitimately anchored
 --      replays drop the share to 0.44444 and the period settles. GUARD 3 bounds
 --      the anchored component but does not touch the denominator the FROZEN
 --      202607280008 guard divides by (net_verified_savings_usd, the gross
---      list-price sum), so legitimate savings still dilute the ratio.
+--      list-price sum), so legitimate savings dilute the ratio.
+--
+--      THE FIX, and why it is a new condition rather than an edit: 202607280008
+--      is checksum-frozen AND applied to production, so its share test cannot be
+--      re-aimed in place. GUARD 4 therefore adds an INDEPENDENT halt on the same
+--      quantity expressed in DOLLARS -- an axis that adding good rows cannot
+--      dilute, because a denominator is what dilution needs. The share guard is
+--      left exactly as it is and keeps working on the shapes it always caught.
 --
 --      WHAT THIS DOES AND DOES NOT MEAN. It is NOT an overcharge: the fee basis
 --      is `spend_backed + anchored_capped` (see the SELECT at the end of
@@ -52,16 +63,37 @@
 --      Unanchored savings bill $0 by construction, which is a STRONGER
 --      protection than the share guard ever provided.
 --
---      What is genuinely lost is the ALARM. The frozen share guard used to be
---      the thing that stopped unverifiable savings from being billed; that job
---      now belongs to the basis, and the guard has been left measuring a ratio
---      that legitimate activity can quietly suppress. An operator loses the
---      signal that an account looks wrong. The fix is a NEW condition that
---      watches unanchored savings in ABSOLUTE terms against recorded provider
---      spend, so no amount of legitimate savings can dilute it -- 202607280008
---      is frozen and applied to production, so its share guard cannot be
---      re-aimed in place. Until that ships, treat the concentration condition as
---      informational rather than protective.
+--      What was lost was the ALARM, not the money. The frozen share guard used
+--      to be the thing that stopped unverifiable savings from being billed; that
+--      job now belongs to the basis, and the guard was left measuring a ratio
+--      that legitimate activity could quietly suppress -- so an operator lost the
+--      signal that an account looks wrong, exactly when a working cache made the
+--      account look busy. GUARD 4 restores that signal. Because unanchored
+--      savings bill $0 either way, GUARD 4 can only ever HALT a period that would
+--      otherwise have settled; it cannot raise a fee.
+--
+--   5. UNCAPPED SPEND-BACKED TERM. GUARD 3 bounds the ANCHORED term against
+--      recomputed spend, but spend_backed_savings arrives from 202607280013 with
+--      no relation to spend at all -- a synthetic probe reached 2.5e10 of basis
+--      per dollar of spend. Not reachable from any current proxy path (the
+--      authoritative boundary at api/server.py forces authoritative=False on
+--      POST /v1/usage, so a caller cannot inject savings), which is why this is a
+--      backstop and not an emergency.
+--      -> CLOSED by GUARD 5, which bounds the WHOLE basis at
+--      max_total_savings_per_spend_ratio x recomputed spend.
+--
+--      WHY THE DEFAULT IS 20000 AND NOT 3. A tight ratio is right for cache
+--      replays and WRONG here: spend-backed savings come from model
+--      substitution, and brevitas/receipts.py MODEL_PRICES spans 0.0028
+--      (deepseek-chat cached) to 50.0 (claude-fable-5 output) -- a ratio of
+--      17857.1. Routing one frontier request to a cheap model can therefore
+--      legitimately produce savings thousands of times the resulting spend, and
+--      a ratio of 3 would silently underbill exactly the routing wins this
+--      product exists to create. 20000 is the smallest round number above what
+--      the catalog can express, so it never binds on real routing and still
+--      turns an unbounded number into a bounded one. The TIGHT economic guard on
+--      this axis already exists and is unchanged: 202607280008's
+--      relative_ceiling holds the fee at or below 25% of net verified savings.
 --
 -- ============================================================================
 -- THE DECISION (the owner's; this file implements it and does not relitigate it)
@@ -666,6 +698,19 @@ alter table public.billing_halting_conditions
 alter table public.billing_halting_conditions
     add column if not exists max_cache_savings_per_spend_ratio numeric(6,3) not null default 3.000;
 
+-- GUARD 4 -- ABSOLUTE UNANCHORED ZERO-SPEND HALT. See the header. The frozen
+-- 202607280008 concentration test is a SHARE, and narrowing only its numerator
+-- let anchored replays dilute it below the threshold. This is the same alarm
+-- expressed on an axis nothing can dilute: dollars.
+alter table public.billing_halting_conditions
+    add column if not exists max_unanchored_zero_spend_savings_usd numeric(12,4) not null default 1.0000;
+
+-- GUARD 5 -- TOTAL BASIS BACKSTOP. Bounds the WHOLE basis against recomputed
+-- spend, where GUARD 3 bounds only the anchored term. numeric(12,3) rather than
+-- (6,3) because the derived default does not fit in six digits.
+alter table public.billing_halting_conditions
+    add column if not exists max_total_savings_per_spend_ratio numeric(12,3) not null default 20000.000;
+
 -- Tightening the floor means RAISING it. The upper bound of 1000.00 is a
 -- fat-finger stop, not a policy: a floor typo'd to 300000 silently unbills every
 -- organization forever, which is a different failure from an overcharge but
@@ -692,6 +737,49 @@ alter table public.billing_halting_conditions
     check (max_cache_savings_per_spend_ratio >= 0
        and max_cache_savings_per_spend_ratio <= 3.000);
 
+-- Tightening the absolute unanchored allowance means LOWERING it. Zero is
+-- permitted and means "halt on ANY unanchored zero-spend savings", which is the
+-- strictest setting and is a legitimate incident posture.
+alter table public.billing_halting_conditions
+    drop constraint if exists billing_halting_conditions_unanchored_absolute_check;
+alter table public.billing_halting_conditions
+    add constraint billing_halting_conditions_unanchored_absolute_check
+    check (max_unanchored_zero_spend_savings_usd >= 0
+       and max_unanchored_zero_spend_savings_usd <= 1.0000);
+
+-- Tightening the total backstop means LOWERING it. The upper bound equals the
+-- default, per the 0.25/0.50 pattern: loosening needs a reviewed migration.
+alter table public.billing_halting_conditions
+    drop constraint if exists billing_halting_conditions_total_spend_ratio_check;
+alter table public.billing_halting_conditions
+    add constraint billing_halting_conditions_total_spend_ratio_check
+    check (max_total_savings_per_spend_ratio >= 0
+       and max_total_savings_per_spend_ratio <= 20000.000);
+
+comment on column public.billing_halting_conditions.max_unanchored_zero_spend_savings_usd is
+    'GUARD 4. Absolute ceiling, in USD, on UNANCHORED zero-spend savings in one '
+    'period before settlement halts with halting_condition='
+    'unanchored_zero_spend_savings. Exists because 202607280008''s concentration '
+    'test is a SHARE and this file narrows only its NUMERATOR: 400 unanchored '
+    'rows beside 5,000 legitimately anchored replays drop the share from 1.00000 '
+    'to 0.44444 and pass a 0.50000 threshold, so the alarm went quiet exactly '
+    'when the cache started working. It is an ALARM, not a price -- unanchored '
+    'savings are already excluded from the basis by construction, so this can '
+    'only ever cause a HALT, never a larger fee. Bounded [0, 1.0000]: lowering '
+    'is tightening.';
+comment on column public.billing_halting_conditions.max_total_savings_per_spend_ratio is
+    'GUARD 5. Ceiling on TOTAL billable basis as a multiple of recomputed '
+    'provider spend. GUARD 3 bounds only the anchored term, leaving the '
+    'spend-backed term inherited from 202607280013 unbounded against spend. '
+    'Default 20000.000 is DERIVED, not chosen: brevitas/receipts.py MODEL_PRICES '
+    'spans 0.0028 (deepseek-chat cached) to 50.0 (claude-fable-5 output), a ratio '
+    'of 17857.1, so no substitution expressible by the catalog can exceed it and '
+    'this can never bind on real routing savings. It is a CORRUPTION BACKSTOP '
+    'that turns an unbounded number into a bounded one -- not a tight economic '
+    'guard, which on this axis would underbill legitimate frontier-to-cheap '
+    'routing. The tight economic guard is 202607280008''s relative_ceiling (fee '
+    '<= 25%% of net verified savings), which is unchanged. Bounded [0, '
+    '20000.000]: lowering is tightening.';
 comment on column public.billing_halting_conditions.cache_anchor_materiality_floor_usd is
     'GUARD 1. Minimum TOTAL priced provider spend (USD) an organization must have '
     'recorded for one (provider, model) inside the lookback window before any '
@@ -906,7 +994,16 @@ as $$
                    from public.billing_halting_conditions conditions
                   where conditions.singleton),
                 0::numeric
-            ) as spend_ratio
+            ) as spend_ratio,
+            -- GUARD 5. Same fail-closed sentinel as spend_ratio: a missing
+            -- thresholds row yields 0, which bounds the whole basis to 0 rather
+            -- than leaving it unbounded.
+            coalesce(
+                (select conditions.max_total_savings_per_spend_ratio
+                   from public.billing_halting_conditions conditions
+                  where conditions.singleton),
+                0::numeric
+            ) as total_ratio
     ),
     watermark as (
         -- The settlement's pin. Supplied => this call reproduces that
@@ -1067,7 +1164,17 @@ as $$
             then round(capped.anchored_savings_raw / capped.spend, 6)
             else null
         end,
-        least(capped.spend_backed_savings + capped.anchored_capped, capped.net_verified)
+        -- GUARD 5 lands HERE, on the sum, because GUARD 3 above bounds only the
+        -- anchored term: spend_backed_savings enters from 202607280013 with no
+        -- relation to spend at all. least() with the existing net_verified bound
+        -- keeps this monotonic in the safe direction -- adding a term to a
+        -- least() can only ever LOWER the basis, never raise it, so this cannot
+        -- turn a previously-halting period into a billable one.
+        least(
+            capped.spend_backed_savings + capped.anchored_capped,
+            capped.net_verified,
+            (select limits.total_ratio from limits) * capped.spend
+        )
       from capped;
 $$;
 
@@ -1478,6 +1585,86 @@ begin
                 'detail', v_detail
             );
     end;
+
+    ------------------------------------------------------------------
+    -- 11b. GUARD 4 -- ABSOLUTE UNANCHORED ZERO-SPEND HALT.
+    --
+    --      This runs AFTER the frozen gate, deliberately. Every condition
+    --      202607280008 already names keeps precedence, so this changes no
+    --      existing halt and only fires on what the dilution let THROUGH --
+    --      which is the whole and only job. Placing it first was tried and
+    --      was wrong: it renamed the halt on a shape the settlement-writer
+    --      suite pins to zero_spend_concentration.
+    --
+    --      It cannot live inside the frozen guard either:
+    --      202607280008 is checksum-frozen and already applied to production, so
+    --      the dilution it suffers from cannot be fixed by editing it.
+    --
+    --      THE DILUTION, precisely. That guard's condition 2 is a SHARE --
+    --      zero_spend_net_savings_usd / net_verified_savings_usd (202607280008
+    --      :490-491). This file narrows the NUMERATOR to unanchored savings and
+    --      leaves the denominator gross, which is correct for the money and
+    --      wrong for the alarm: 400 unanchored zero-spend rows ALONE give a
+    --      share of 1.00000 and halt, but the same 400 rows beside 5,000
+    --      legitimately anchored replays give 0.44444, pass a 0.50000 threshold,
+    --      and settle. The alarm went quiet exactly when the cache started
+    --      working, which is the worst possible time for it to go quiet.
+    --
+    --      Dollars cannot be diluted by adding good rows, so that is the axis
+    --      used here.
+    --
+    --      THIS IS AN ALARM, NOT A PRICE. Unanchored savings are already outside
+    --      the fee basis by construction -- they appear in neither
+    --      spend_backed_savings nor anchored_capped -- so nobody was ever
+    --      overcharged by the dilution and nobody is charged less by this. The
+    --      only reachable outcome is a HALT that would otherwise not have
+    --      happened.
+    --
+    --      Settling zero stays allowed, matching 202607280008:485-487: a zero
+    --      fee moves no money, so halting it protects nothing.
+    ------------------------------------------------------------------
+    if v_fee > 0
+       and v_evidence.zero_spend_net_savings_usd >
+           coalesce(
+               (select conditions.max_unanchored_zero_spend_savings_usd
+                  from public.billing_halting_conditions conditions
+                 where conditions.singleton),
+               0::numeric
+           )
+    then
+        return jsonb_build_object(
+            'ok', false, 'outcome', 'halted',
+            'code', 'unanchored_zero_spend_savings',
+            'halting_condition', 'unanchored_zero_spend_savings',
+            'organization_id', p_organization_id,
+            'period_start', v_start, 'period_end', v_end,
+            'recomputed_fee_microusd', v_fee,
+            'gate_fee_microusd', v_gate_fee,
+            'billable_savings_basis_usd', v_verified,
+            'gross_verified_savings_usd', v_gross_verified,
+            'unanchored_zero_spend_savings_usd',
+                v_evidence.zero_spend_net_savings_usd,
+            'anchored_zero_spend_savings_usd',
+                v_evidence.anchored_zero_spend_savings_usd,
+            'message', format(
+                'halting_condition=unanchored_zero_spend_savings: %s USD of this '
+                'period''s savings are zero-spend with no paid ancestor, above '
+                'the absolute allowance. These savings are already excluded from '
+                'the fee basis; this halts the settlement so the shape is looked '
+                'at rather than billed around.',
+                v_evidence.zero_spend_net_savings_usd
+            ),
+            'detail', format(
+                'organization=%s period=[%s,%s) unanchored_rows=%s anchored_rows=%s '
+                'unanchored_savings_usd=%s anchored_savings_usd=%s',
+                p_organization_id, v_start, v_end,
+                v_evidence.unanchored_zero_spend_rows,
+                v_evidence.anchored_zero_spend_rows,
+                v_evidence.zero_spend_net_savings_usd,
+                v_evidence.anchored_zero_spend_savings_usd
+            )
+        );
+    end if;
 
     ------------------------------------------------------------------
     -- 12. The 3-step correction flow, in 202607280007's documented order.

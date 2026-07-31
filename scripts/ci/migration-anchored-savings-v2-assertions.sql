@@ -1260,6 +1260,166 @@ begin
 end;
 $section_10$;
 
+-- ---------------------------------------------------------------------------
+-- SECTION 11. GUARD 4 -- THE DILUTION SHAPE.
+--
+-- This is the defect the header of 202607280031 spent forty lines retracting a
+-- false "closed" claim about, so this fixture is built to FAIL against the
+-- version without GUARD 4 rather than merely to pass with it.
+--
+-- The shape: unanchored zero-spend savings sitting beside a LARGER, entirely
+-- legitimate anchored component. 202607280008's concentration test is a SHARE,
+-- and this file narrows only its numerator, so the good rows dilute the ratio
+-- under the 0.50000 threshold and the frozen guard waves the period through.
+-- The assertions below prove BOTH halves: that the frozen guard genuinely does
+-- not fire (share strictly under its limit), and that the settlement halts
+-- anyway on the absolute dollar test. Without the second, the first is just a
+-- description of the bug.
+-- ---------------------------------------------------------------------------
+do $section_11$
+declare
+    v_org uuid;
+    v_start timestamptz;
+    v_end timestamptz;
+    v_evidence record;
+    v_result jsonb;
+    v_share numeric;
+    v_limit numeric;
+begin
+    select org_id, window_start, window_end into v_org, v_start, v_end
+      from pg_temp.new_billing_org('section11-dilution');
+
+    -- $1.00 of real spend over 1,000,000 billed tokens => observed unit cost
+    -- 0.000001 USD/token, and comfortably over the $0.30 materiality floor.
+    perform pg_temp.paid_miss(v_org, v_start + interval '1 hour',
+                              'proxy:s11-ancestor', 1.00, 1000000);
+
+    -- The LEGITIMATE component: a linked replay of that ancestor, 3,000,000
+    -- tokens saved => 3.00 of anchored savings. Exactly the traffic this whole
+    -- migration exists to make billable.
+    perform pg_temp.replay(v_org, v_start + interval '2 hours',
+                           'proxy:s11-good', 'proxy:s11-ancestor', 3000000, 3.00);
+
+    -- The SUSPECT component: 2.00 of zero-spend savings with no ancestor at all.
+    -- On its own this is share 1.00000 and halts. Here it hides behind the good
+    -- rows.
+    perform pg_temp.replay(v_org, v_start + interval '3 hours',
+                           'proxy:s11-bad', '', 2000000, 2.00);
+
+    select * into v_evidence
+      from public.billing_period_settlement_evidence(v_org, v_start, v_end);
+
+    if v_evidence.zero_spend_net_savings_usd <> 2.00 then
+        raise exception 'SECTION 11: the unanchored component is %, expected 2.00; the '
+                        'dilution below is then untested', v_evidence.zero_spend_net_savings_usd;
+    end if;
+    if v_evidence.anchored_zero_spend_savings_usd <> 3.00 then
+        raise exception 'SECTION 11: the anchored component is %, expected 3.00',
+            v_evidence.anchored_zero_spend_savings_usd;
+    end if;
+
+    -- HALF ONE: the frozen guard does NOT fire on this shape. If this ever
+    -- starts failing because the share climbed back over the limit, the fixture
+    -- has stopped testing dilution and must be re-tuned, not deleted.
+    v_share := v_evidence.zero_spend_net_savings_usd
+             / v_evidence.net_verified_savings_usd;
+    select conditions.max_zero_spend_savings_share into v_limit
+      from public.billing_halting_conditions conditions where conditions.singleton;
+    if v_share >= v_limit then
+        raise exception 'SECTION 11: share % is not under the % limit, so 202607280008 would '
+                        'halt this on its own and GUARD 4 is not what is being tested',
+            v_share, v_limit;
+    end if;
+
+    -- HALF TWO: it halts anyway, on dollars.
+    v_result := public.settle_billing_period(
+        v_org, v_start + interval '4 hours', 'ci:202607280031-section11');
+    if v_result->>'outcome' <> 'halted'
+       or v_result->>'halting_condition' <> 'unanchored_zero_spend_savings' then
+        raise exception 'SECTION 11: THE DILUTION IS BACK. % of unanchored zero-spend savings '
+                        'settled because a larger anchored component pushed the share to %, '
+                        'under the % limit. GUARD 4 is what is supposed to catch this: %',
+            v_evidence.zero_spend_net_savings_usd, v_share, v_limit, v_result;
+    end if;
+
+    -- The halt is an ALARM, not a repricing: the unanchored savings were never
+    -- in the basis to begin with, so the reported basis is the anchored
+    -- component alone and nothing was refunded or reduced by halting.
+    if (v_result->>'billable_savings_basis_usd')::numeric <> 3.00 then
+        raise exception 'SECTION 11: the halt changed the basis to %; it must report the '
+                        'anchored component unchanged, because unanchored savings never '
+                        'entered any fee expression',
+            v_result->>'billable_savings_basis_usd';
+    end if;
+end;
+$section_11$;
+
+-- ---------------------------------------------------------------------------
+-- SECTION 12. GUARD 5 -- THE UNCAPPED SPEND-BACKED TERM.
+--
+-- GUARD 3 bounds the ANCHORED term against recomputed spend. spend_backed
+-- savings arrive from 202607280013 with no relation to spend at all, and a
+-- synthetic probe reached 2.5e10 of basis per dollar of spend. Not reachable
+-- from any current proxy path -- api/server.py forces authoritative=false on
+-- POST /v1/usage -- so this is a corruption backstop, and it is tested as one.
+--
+-- A dust-sized but STRICTLY POSITIVE cost keeps the row out of the zero-spend
+-- class (so it is spend_backed, not anchored) and keeps
+-- halting_condition=zero_spend from firing instead, which would prove nothing.
+-- ---------------------------------------------------------------------------
+do $section_12$
+declare
+    v_org uuid;
+    v_start timestamptz;
+    v_end timestamptz;
+    v_evidence record;
+    v_expected numeric;
+begin
+    select org_id, window_start, window_end into v_org, v_start, v_end
+      from pg_temp.new_billing_org('section12-spend-backed-cap');
+
+    -- 0.0000000001 USD of spend carrying 1000.00 USD of claimed savings: a
+    -- ratio of 1e13, far beyond anything brevitas/receipts.py MODEL_PRICES can
+    -- express (its widest span is 17857.1).
+    perform pg_temp.paid_miss(v_org, v_start + interval '1 hour',
+                              'proxy:s12-dust', 0.0000000001, 1000000);
+    update public.usage_log
+       set verified_savings_usd = 1000.00
+     where organization_id = v_org and request_id = 'proxy:s12-dust';
+
+    select * into v_evidence
+      from public.billing_period_settlement_evidence(v_org, v_start, v_end);
+
+    if v_evidence.actual_spend_usd <= 0 then
+        raise exception 'SECTION 12: the fixture has no spend, so halting_condition=zero_spend '
+                        'would fire and GUARD 5 is not what is being tested: %',
+            row_to_json(v_evidence);
+    end if;
+    if v_evidence.anchored_zero_spend_savings_usd <> 0 then
+        raise exception 'SECTION 12: the fixture produced anchored savings, so GUARD 3 could '
+                        'be doing the bounding instead of GUARD 5: %', row_to_json(v_evidence);
+    end if;
+
+    -- 20000.000 x 0.0000000001 = 0.000002. Without GUARD 5 the basis is the full
+    -- 1000.00 and the fee is 250,000,000 microUSD against a tenth of a
+    -- nanodollar of real spend.
+    select conditions.max_total_savings_per_spend_ratio * v_evidence.actual_spend_usd
+      into v_expected
+      from public.billing_halting_conditions conditions where conditions.singleton;
+
+    if v_evidence.billable_savings_basis_usd > v_expected then
+        raise exception 'SECTION 12: THE SPEND-BACKED TERM IS UNBOUNDED AGAIN. basis % exceeds '
+                        'the % ceiling GUARD 5 derives from % of recomputed spend',
+            v_evidence.billable_savings_basis_usd, v_expected,
+            v_evidence.actual_spend_usd;
+    end if;
+    if v_evidence.billable_savings_basis_usd >= 1000.00 then
+        raise exception 'SECTION 12: the full 1000.00 of claimed savings entered the basis '
+                        'unbounded: %', row_to_json(v_evidence);
+    end if;
+end;
+$section_12$;
+
 -- Every fixture above -- organizations, billing accounts, attestations, usage
 -- rows, warm ledger rows and settlements -- is discarded here. This is not
 -- housekeeping: period_settlement_ledger carries an unconditional BEFORE DELETE
