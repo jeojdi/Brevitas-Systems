@@ -46,11 +46,36 @@ const HOSTED = Object.freeze({
   baseUrl: 'https://api.brevitassystems.com/v1',
 })
 
+// X-Brevitas-Key is REQUIRED and is the header the gateway actually reads
+// (api/server.py:1731). It has NO fallback: `api_key=` becomes an Authorization
+// bearer, and nothing maps that to x-brevitas-key, so a snippet carrying only
+// the customer id returns `401 Missing X-Brevitas-Key header` on the very first
+// request. This block used to omit it.
 const HOSTED_SNIPPET = `client = OpenAI(
     base_url="${HOSTED.baseUrl}",
-    api_key=os.environ["BREVITAS_API_KEY"],
-    default_headers={"X-Brevitas-Customer-ID": "acme"},
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
 )`
+
+// Claude called directly through Anthropic. Same two headers; the SDK differs,
+// and `/v1` belongs on a gateway base URL (it is wrong on BREVITAS_BASE_URL,
+// where it produces /v1/v1 and a silent 404).
+const HOSTED_SNIPPET_ANTHROPIC = `client = Anthropic(
+    base_url="${HOSTED.baseUrl}",
+    api_key=os.environ["ANTHROPIC_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
+)`
+
+// Claude Code and anything else that is environment-variables-only.
+const HOSTED_SNIPPET_ENV = `export ANTHROPIC_BASE_URL="${HOSTED.baseUrl}"
+export ANTHROPIC_CUSTOM_HEADERS="X-Brevitas-Key: \${BREVITAS_API_KEY}
+X-Brevitas-Customer-ID: acme"`
 
 export default function InstallCommand({ phase = 'all', audience = 'personal' }) {
   const [activePlatform, setActivePlatform] = useState(BVX_PLATFORMS[0].id)
@@ -79,10 +104,23 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
           <CommandRow label="2. Approve in the browser and receive the key" command={HOSTED.connect} />
 
           <div>
-            <p className="mb-1.5 text-[11px] text-brand-muted dark:text-brand-dark-muted">3. Point your client at the gateway</p>
-            <pre className="overflow-x-auto rounded-xl border border-brand-border bg-brand-bg px-4 py-3 font-mono text-xs leading-relaxed text-brand-navy dark:border-brand-dark-border dark:bg-brand-dark-bg dark:text-brand-dark-navy">
-              <code>{HOSTED_SNIPPET}</code>
-            </pre>
+            <p className="mb-1.5 text-[11px] text-brand-muted dark:text-brand-dark-muted">
+              3. Point your client at the gateway
+            </p>
+            {[
+              ['OpenAI-compatible', HOSTED_SNIPPET],
+              ['Anthropic (Claude)', HOSTED_SNIPPET_ANTHROPIC],
+              ['Environment only (Claude Code)', HOSTED_SNIPPET_ENV],
+            ].map(([label, snippet]) => (
+              <div key={label} className="mt-2 first:mt-0">
+                <p className="mb-1 font-mono text-[10px] uppercase tracking-widest text-brand-muted dark:text-brand-dark-muted">
+                  {label}
+                </p>
+                <pre className="overflow-x-auto rounded-xl border border-brand-border bg-brand-bg px-4 py-3 font-mono text-xs leading-relaxed text-brand-navy dark:border-brand-dark-border dark:bg-brand-dark-bg dark:text-brand-dark-navy">
+                  <code>{snippet}</code>
+                </pre>
+              </div>
+            ))}
           </div>
 
           <div className="rounded-xl border border-brand-blue/30 bg-brand-blue-dim px-4 py-3 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">

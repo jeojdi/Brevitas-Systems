@@ -83,8 +83,24 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://api.brevitassystems.com/v1",
-    api_key=os.environ["BREVITAS_API_KEY"],
-    default_headers={"X-Brevitas-Customer-ID": "acme"},
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        # REQUIRED. api/server.py:1731 reads this header and nothing else --
+        # `api_key=` becomes an Authorization bearer and is never consulted, so
+        # omitting it is a 401 on the first request.
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
+)
+
+# Claude direct through Anthropic -- same two headers, different SDK.
+client = Anthropic(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["ANTHROPIC_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
 )
 ```
 

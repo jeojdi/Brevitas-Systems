@@ -45,8 +45,30 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://api.brevitassystems.com/v1",
-    api_key=os.environ["BREVITAS_API_KEY"],
-    default_headers={"X-Brevitas-Customer-ID": "acme"},   # required — see below
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        # BOTH are required. X-Brevitas-Key is the only header the gateway
+        # authenticates on (api/server.py:1731); `api_key=` becomes an
+        # Authorization bearer, which nothing maps to it, so leaving this out
+        # is `401 Missing X-Brevitas-Key header` on the first call.
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
+)
+```
+
+Claude direct through Anthropic — same two headers, different SDK:
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["ANTHROPIC_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+    },
 )
 ```
 
@@ -55,6 +77,96 @@ export BREVITAS_API_KEY=bvt_...
 export OPENAI_BASE_URL=https://api.brevitassystems.com/v1
 export BREVITAS_CUSTOMER_ID=acme
 ```
+
+Claude on **Amazon Bedrock** — the same two headers, plus your own Bedrock API key
+as the bearer. Brevitas never holds an AWS credential: Bedrock API keys authenticate
+`bedrock-runtime` with `Authorization: Bearer` and no SigV4 signing, so the gateway
+forwards the key you send and stores nothing.
+
+```bash
+curl https://api.brevitassystems.com/bedrock/model/us.anthropic.claude-opus-5-v1:0/invoke \
+  -H "X-Brevitas-Key: $BREVITAS_API_KEY" \
+  -H "X-Brevitas-Customer-ID: acme" \
+  -H "X-Brevitas-Bedrock-Region: us-east-1" \
+  -H "Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK" \
+  -H "Content-Type: application/json" \
+  -d '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1024,
+       "messages":[{"role":"user","content":"hello"}]}'
+```
+
+`/invoke-with-response-stream` works the same way and returns Bedrock's
+`application/vnd.amazon.eventstream` frames unchanged. What this lane does **not**
+accept, on purpose:
+
+- **The Converse API** (`/converse`, `/converse-stream`) — refused with a `400`.
+  Converse reports cache reads and writes under field names the receipt parser does
+  not read, and its content blocks are not recognised by the token counter, so every
+  Converse call would be recorded as zero measured savings while AWS still charged
+  for it. Silent zero is worse than a refusal.
+- **Non-Anthropic InvokeModel bodies** (Amazon/Meta/Mistral) — refused for the same
+  reason. The body must carry `anthropic_version` and a non-empty `messages` array.
+- **SigV4-signed requests** — a signature covers bytes a proxy cannot preserve. Use
+  a Bedrock API key.
+- **Regions outside `us-east-1/us-east-2/us-west-1/us-west-2`** — these route and
+  work normally, but are recorded **unpriced** and bill nothing, because we have not
+  verified their Claude rates against the ones in `brevitas/receipts.py`. Under-
+  billing is the only direction this codebase rounds.
+
+**Azure OpenAI** — point `azure_endpoint` at the gateway with your resource name in
+the path and the rest of your code is unchanged. The Azure SDK builds
+`{azure_endpoint}/openai/deployments/{deployment}/chat/completions`, so the resource
+name that used to be a hostname becomes the first path segment; Brevitas validates it
+down to a DNS label and rebuilds `https://<resource>.openai.azure.com` itself, so no
+caller-supplied hostname is ever dialled.
+
+```python
+from openai import AzureOpenAI
+
+client = AzureOpenAI(
+    azure_endpoint="https://api.brevitassystems.com/azure/contoso-openai",
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],   # forwarded; never stored
+    api_version="2024-10-21",                     # required, and forwarded
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
+        "X-Brevitas-Azure-SKU": "GlobalStandard",   # see below
+    },
+)
+client.chat.completions.create(model="gpt-4.1", messages=[...])   # deployment name
+```
+
+`Authorization: Bearer` works too, for Entra ID and managed identity. Streaming works
+and returns Azure's SSE bytes unchanged.
+
+Two things about this lane are worth reading before you rely on the numbers:
+
+- **Pricing follows the RESPONSE, not the path.** On Azure the `model=` you pass is
+  your *deployment* name, which you chose — it is not evidence of anything. Brevitas
+  prices from the dated snapshot Azure returns in the response body
+  (`gpt-4.1-2025-04-14`). If the response names no model we recognise, the row is
+  recorded **unpriced** and bills nothing rather than being charged at the rate of
+  whatever model your deployment happens to be named after.
+- **The deployment type has to be declared.** Global Standard, DataZone Standard,
+  regional Standard and Provisioned/PTU are the same model at different per-token
+  prices, and Azure returns the SKU in no response field and no documented header —
+  it is genuinely unreadable. So `X-Brevitas-Azure-SKU` (or `BREVITAS_AZURE_SKU`)
+  declares it, and **only `GlobalStandard` prices today**. Everything else, including
+  an undeclared SKU, is recorded unpriced. PTU capacity is bought by the hour and has
+  no marginal per-token price at all, so a **PTU customer correctly bills $0** instead
+  of paying a percentage of a token cost they never incurred.
+
+What this lane does **not** accept, on purpose:
+
+- **The Responses API** (`/openai/responses`, `/openai/v1/responses`) — refused with a
+  `400`. Microsoft documents that `response.model` there returns the *deployment* name
+  rather than the model, so every Responses row would either bill nothing or bill
+  against a label you invented. Use Chat Completions, whose response carries the real
+  snapshot.
+- **Query parameters other than `api-version`** — refused rather than silently
+  dropped, so the request Azure sees is always the request you made.
+- **Hosts other than `<resource>.openai.azure.com`** — sovereign clouds and Foundry
+  aliases are separate price lists, and routing to one while pricing from another is
+  the mistake the SKU rule above exists to prevent.
 
 Confirm your traffic is actually being metered. `brevitas billing-check` and its
 `GET /v1/billing/readiness` endpoint are **designed but not yet shipped**; until they

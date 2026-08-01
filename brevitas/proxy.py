@@ -40,13 +40,35 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ._compress import count_messages_tokens, report_usage
+from .azure import (
+    AzureStreamModelSniffer,
+    azure_chat_endpoint,
+    azure_priced_model,
+    azure_provider_label,
+    azure_stream_usage_supported,
+    azure_unpriced_model,
+    normalize_azure_api_version,
+    normalize_azure_resource,
+    normalize_azure_sku,
+    valid_azure_deployment,
+)
+from .bedrock import (
+    BEDROCK_INVOKE,
+    BEDROCK_INVOKE_STREAM,
+    BedrockEventStreamDecoder,
+    bedrock_priced_model,
+    bedrock_provider_label,
+    bedrock_runtime_endpoint,
+    normalize_bedrock_region,
+    valid_bedrock_model_id,
+)
 from .identity import CUSTOMER_ID_HEADER, normalize_customer_id, short_tenant_key, tenant_key
 from .labels import _git_root_name
 from .provider_reliability import ProviderCircuitOpen, provider_http
@@ -511,10 +533,21 @@ def _admission_canceled(request: Request) -> bool:
     return bool(event is not None and event.is_set())
 
 
+# Routes whose response body IS an Anthropic Messages response, under a different
+# billing label. Bedrock's InvokeModel with the Anthropic-native body returns the
+# Anthropic response verbatim, so anything that reads the response SHAPE must
+# treat "bedrock" as "anthropic" -- while everything that names a PRICE or a
+# cache namespace must keep them apart. Reading a Bedrock response through the
+# OpenAI branch below finds no `choices` and no `prompt_tokens`, so it would
+# quietly decide every Bedrock response was incomplete (never cacheable) and
+# worth zero tokens.
+_ANTHROPIC_WIRE_SHAPE = frozenset({"anthropic", "bedrock"})
+
+
 def _usage_tokens(data: dict, provider: str) -> tuple[int, int]:
     """(prompt_tokens, completion_tokens) from a provider response usage object."""
     u = (data or {}).get("usage", {}) or {}
-    if provider == "anthropic":
+    if provider in _ANTHROPIC_WIRE_SHAPE:
         prompt = int(u.get("input_tokens", 0)) + int(u.get("cache_read_input_tokens", 0)) \
             + int(u.get("cache_creation_input_tokens", 0))
         return prompt, int(u.get("output_tokens", 0))
@@ -534,7 +567,7 @@ def _response_complete(data: dict, provider: str) -> bool:
     EVERY choice must be complete: a multi-choice response with any truncated choice
     is not cacheable."""
     try:
-        if provider == "anthropic":
+        if provider in _ANTHROPIC_WIRE_SHAPE:
             return str((data or {}).get("stop_reason") or "") in ("end_turn", "stop_sequence")
         choices = (data or {}).get("choices") or []
         return bool(choices) and all(
@@ -1031,6 +1064,11 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
 
 def _response_headers(response: httpx.Response) -> dict[str, str]:
     keep = {"content-type", "request-id", "x-request-id", "openai-request-id",
+            # The ONE response header Azure OpenAI's REST reference documents.
+            # Without it an Azure customer has no correlation id to quote in a
+            # Microsoft support case, because the proxy strips what it does not
+            # name here and Azure sends none of the openai-* ids.
+            "apim-request-id",
             "retry-after", "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests",
             "x-ratelimit-reset-requests"}
     headers = getattr(response, "headers", {}) or {}
@@ -1056,9 +1094,26 @@ def get_openai_compatible_upstream(model: str, override_header: str | None = Non
     Can be overridden with x-brevitas-upstream header (SSRF-protected: allowlist only).
     Non-allowlisted overrides are ignored; falls back to model-prefix routing.
     """
-    # SSRF protection: only allow known upstream URLs
+    # SSRF protection: only allow known upstream URLs.
     if override_header and override_header in _ALLOWED_UPSTREAMS:
         return override_header
+
+    # A SUPPLIED-BUT-REJECTED override is refused, not ignored. Silently falling
+    # back re-routes the request to a DIFFERENT company than the caller named --
+    # and _passthrough_headers forwards `authorization` for every non-Anthropic
+    # provider, so the caller's credential goes with it. A customer aiming at
+    # their own Azure resource and mistyping the host would have had their Entra
+    # bearer transmitted to api.openai.com, with a 200 back and nothing to see.
+    #
+    # Ignoring an override is only safe when an override cannot carry a secret
+    # somewhere new. It can.
+    if override_header:
+        raise HTTPException(
+            status_code=400,
+            detail=("x-brevitas-upstream is not an allowed upstream. Refusing "
+                    "rather than routing this request, and the credential it "
+                    "carries, to a different provider."),
+        )
 
     return _UPSTREAMS[_provider_for(model, provider)]
 
@@ -1199,6 +1254,20 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
         forward = {"authorization", "openai-organization", "openai-project",
                    "openai-beta", "idempotency-key", "http-referer", "x-title",
                    "x-client-request-id",
+                   # `api-key` is DELIBERATELY ABSENT here, and it was briefly
+                   # added by mistake. It is Azure's native credential header, and
+                   # this set is shared by the four OpenAI-FAMILY call sites --
+                   # /v1/chat/completions, /openai/responses, /openai/embeddings,
+                   # /openai/completions -- whose upstreams are OpenAI, DeepSeek,
+                   # Groq, xAI and the resellers. Forwarding it here sends an
+                   # Azure customer's key to whichever of those companies the
+                   # model prefix routes to: a credential reaching a company the
+                   # caller never named, which is a worse failure than the 401 it
+                   # was meant to fix.
+                   #
+                   # The Azure lane forwards `api-key` itself, to a host built
+                   # from a validated resource label. That is the only place it
+                   # belongs.
                    # xAI replica-affinity hint; a caller-supplied value always
                    # beats Brevitas's injected one (_apply_xai_affinity).
                    "x-grok-conv-id"}
@@ -1733,6 +1802,689 @@ async def proxy_openai_embeddings(request: Request) -> Response:
 @proxy_app.post("/v1/completions")
 async def proxy_openai_completions(request: Request) -> Response:
     return await _proxy_openai_plain(request, "completions")
+
+
+# ── Amazon Bedrock: POST /bedrock/model/{model_id}/invoke ────────────────────
+#
+# CREDENTIAL MODEL. Bedrock API keys authenticate bedrock-runtime with
+# `Authorization: Bearer <key>` and NO SigV4 signing (AWS docs, api-keys.html and
+# api-keys-use.html), which is the only reason this lane can exist: Brevitas
+# forwards the caller's own bearer and never holds, stores, or mints an AWS
+# credential. Nothing here writes the token anywhere -- not to the cache (the
+# cache body carries only a salted digest via _cache_body), not to a log, not to
+# the receipt.
+#
+# THIS IS A PASSTHROUGH LANE. Round 1 forwards the caller's request bytes
+# VERBATIM (`content=raw`, never a re-serialized body) and injects no
+# cache_control breakpoints. So `optimized=False`, `cache_attributable=False` and
+# `optimized_tokens=None`: the receipt reports a zero transformation delta, which
+# is the true number, because Brevitas transformed nothing. What the lane does
+# earn is real: rows are authoritative and PRICED, so provider-native cache
+# activity is measured (native_cache_discount_usd) and a semantic-cache hit --
+# which touches no upstream at all -- bills as it does on every other route.
+# Turning on breakpoint injection requires first verifying that Bedrock accepts
+# Brevitas-owned cache_control markers on the Anthropic-native body; until that
+# is verified, injecting would risk 400-ing live customer traffic.
+#
+# NO PREDICTIVE WARMING. _observe_warm_prefix is deliberately not called: a warm
+# ping is a request Brevitas originates, and originating one here would require
+# holding the customer's AWS credential. The whole point of this lane is that we
+# do not.
+
+#: Caller header naming the AWS region to reach. Falls back to
+#: BREVITAS_BEDROCK_REGION, then us-east-1. Validated by normalize_bedrock_region
+#: before it can reach a hostname.
+BEDROCK_REGION_HEADER = "x-brevitas-bedrock-region"
+
+# Exactly what is forwarded to AWS, as a positive allowlist rather than a
+# blocklist. _passthrough_headers' non-Anthropic branch forwards a broad set and
+# would be nearly right here, but "nearly right" on the header that carries a
+# credential is not a property worth reusing: this list is what guarantees the
+# tenant's own `x-brevitas-key` never leaves Brevitas, and that no stale
+# `x-amz-date`/`x-amz-content-sha256` from a half-signed client reaches Bedrock
+# and makes it try to verify a signature over bytes we did not sign.
+_BEDROCK_FORWARD_HEADERS = frozenset({
+    "authorization",
+    "accept",
+    "content-type",
+    "x-amzn-bedrock-accept",
+    "x-amzn-bedrock-guardrailidentifier",
+    "x-amzn-bedrock-guardrailversion",
+    "x-amzn-bedrock-trace",
+    "x-amzn-bedrock-performanceconfig-latency",
+})
+
+_BEDROCK_STREAM_MEDIA_TYPE = "application/vnd.amazon.eventstream"
+
+_BEDROCK_CONVERSE_REFUSAL = (
+    "The Bedrock Converse API is not supported by this proxy. Brevitas cannot "
+    "measure Converse traffic honestly: its usage object reports cache reads and "
+    "writes under cacheReadInputTokens/cacheWriteInputTokens, which the receipt "
+    "parser drops, and its content blocks are not recognised by the request "
+    "token counter -- so every Converse call would be recorded as zero measured "
+    "savings while still being charged by AWS. Use InvokeModel with the "
+    "Anthropic-native body instead: POST /bedrock/model/{modelId}/invoke."
+)
+
+_BEDROCK_BODY_REFUSAL = (
+    "This lane accepts only the Anthropic-native Bedrock InvokeModel body: a "
+    "JSON object with \"anthropic_version\" and a non-empty \"messages\" array. "
+    "Other Bedrock request schemas (Converse, and the Amazon/Meta/Mistral "
+    "InvokeModel bodies) are refused rather than forwarded, because their token "
+    "receipts are not parsed here and the call would be measured as zero savings."
+)
+
+_BEDROCK_SIGV4_REFUSAL = (
+    "SigV4-signed requests are not supported. A SigV4 signature covers the exact "
+    "bytes, path and headers the client signed, and a proxy cannot preserve it. "
+    "Use a Bedrock API key instead and send it as `Authorization: Bearer "
+    "$AWS_BEARER_TOKEN_BEDROCK`."
+)
+
+_BEDROCK_MISSING_KEY = (
+    "Bedrock requires an API key. Send the caller's own Bedrock API key as "
+    "`Authorization: Bearer $AWS_BEARER_TOKEN_BEDROCK`; Brevitas forwards it and "
+    "never stores an AWS credential."
+)
+
+
+def _bedrock_headers(request: Request) -> dict[str, str]:
+    """The caller's own headers, filtered to _BEDROCK_FORWARD_HEADERS.
+
+    Keys are lower-cased before they go in the dict, and content-type is only
+    DEFAULTED. Seeding the dict with "Content-Type" and then copying the caller's
+    "content-type" over the top would leave both keys present -- a dict is not
+    case-insensitive -- and httpx would put two Content-Type headers on the wire.
+    """
+    headers = {name.lower(): value for name, value in request.headers.items()
+               if name.lower() in _BEDROCK_FORWARD_HEADERS and value}
+    headers.setdefault("content-type", "application/json")
+    return headers
+
+
+def _bedrock_region(request: Request) -> str:
+    """The validated region for this request, or "" if it is not a region id."""
+    declared = (request.headers.get(BEDROCK_REGION_HEADER, "")
+                or os.getenv("BREVITAS_BEDROCK_REGION", "")
+                or "us-east-1")
+    return normalize_bedrock_region(declared)
+
+
+def _bedrock_body_refusal(body: dict) -> str:
+    """"" when the body is an Anthropic-native InvokeModel body, else why not.
+
+    `anthropic_version` is the discriminator because it is the one field the
+    Anthropic-native Bedrock body always carries and no other Bedrock schema has
+    -- a Converse body posted to /invoke is caught here rather than forwarded and
+    then measured as zero.
+    """
+    if not isinstance(body.get("anthropic_version"), str) or not body["anthropic_version"]:
+        return _BEDROCK_BODY_REFUSAL
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return _BEDROCK_BODY_REFUSAL
+    return ""
+
+
+@proxy_app.post("/bedrock/model/{model_id}/converse")
+@proxy_app.post("/bedrock/model/{model_id}/converse-stream")
+async def proxy_bedrock_converse(request: Request, model_id: str) -> Any:
+    """Refuse Converse loudly. Registered ON PURPOSE rather than left to 404.
+
+    The path is inside the gated /bedrock/ namespace either way, so this changes
+    no security property -- it changes the answer a customer gets from a bare
+    "Not Found" into the reason, which is what stops someone from concluding the
+    lane is broken and re-pointing at an unmetered path.
+    """
+    raise HTTPException(status_code=400, detail=_BEDROCK_CONVERSE_REFUSAL)
+
+
+@proxy_app.post("/bedrock/model/{model_id}/invoke")
+async def proxy_bedrock_invoke(request: Request, model_id: str) -> Any:
+    return await _proxy_bedrock(request, model_id, stream=False)
+
+
+@proxy_app.post("/bedrock/model/{model_id}/invoke-with-response-stream")
+async def proxy_bedrock_invoke_stream(request: Request, model_id: str) -> Any:
+    return await _proxy_bedrock(request, model_id, stream=True)
+
+
+async def _proxy_bedrock(request: Request, model_id: str, *, stream: bool) -> Any:
+    # Destination first, body second. Everything below rejects without reading
+    # the request stream, so a request aimed at a bad region or carrying no
+    # credential is refused before Brevitas buffers a megabyte of prompt.
+    if not valid_bedrock_model_id(model_id):
+        raise HTTPException(
+            status_code=400,
+            detail=("Bedrock model id must be 1-128 characters of "
+                    "[A-Za-z0-9._:-] starting with a letter or digit. Full "
+                    "inference-profile and custom-model ARNs are not supported "
+                    "by this lane."))
+    region = _bedrock_region(request)
+    if not region:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{BEDROCK_REGION_HEADER} must be an AWS region id such as "
+                    "us-east-1."))
+    provider_auth = request.headers.get("authorization", "")
+    if not provider_auth:
+        raise HTTPException(status_code=401, detail=_BEDROCK_MISSING_KEY)
+    if provider_auth.strip().lower().startswith("aws4-"):
+        raise HTTPException(status_code=400, detail=_BEDROCK_SIGV4_REFUSAL)
+    # Raises rather than falls back, and is called before anything is read from
+    # the network: this is the single line that decides where the caller's
+    # bearer token is about to be sent.
+    endpoint = bedrock_runtime_endpoint(
+        region, model_id, BEDROCK_INVOKE_STREAM if stream else BEDROCK_INVOKE)
+
+    raw, body = await _json_object(request)
+    refusal = _bedrock_body_refusal(body)
+    if refusal:
+        raise HTTPException(status_code=400, detail=refusal)
+
+    # Two labels, deliberately. `cache_model` keeps the raw id AND the region so
+    # a cached Bedrock answer can never replay for an Anthropic-direct call or
+    # across regions.
+    #
+    # `receipt_model` is the bare alias MODEL_PRICES is keyed on. When this
+    # id/region pair has NO verified price it must be something that cannot
+    # resolve to one -- and falling back to the RAW ID does not satisfy that,
+    # which is the defect this replaces.
+    #
+    # `or model_id` undid the refusal one frame above it: a namespace-free id
+    # like "claude-opus-5" is refused by normalize_bedrock_model precisely so a
+    # caller cannot smuggle an arbitrary model into this lane and have it priced,
+    # but handed to calculate_costs raw, canonical_provider reads "claude…" off
+    # the model string, resolves to anthropic, and prices it at Anthropic list.
+    # The same holds for "gpt-…" and "deepseek…". So the lane would have billed
+    # for exactly the ids the mapper exists to reject.
+    #
+    # The sentinel keeps the asked-for id visible for diagnostics while being
+    # unresolvable: no MODEL_PRICES key starts with "unverified:", and
+    # canonical_provider's model-name rules do not match it either, so
+    # calculate_costs returns pricing_status="unpriced" with
+    # measured_savings_usd=None and settlement evidence excludes the row. The row
+    # is still written and still authoritative -- we record that the traffic
+    # happened, we simply decline to price it. Truncated to the receipt's own
+    # 128-character limit, because exceeding it raises inside
+    # _hosted_proxy_receipt and drops the row entirely.
+    priced_alias = bedrock_priced_model(model_id, region)
+    receipt_model = priced_alias or f"unverified:{model_id}"[:128]
+    cache_model = f"{model_id}@{region}"
+    billing_provider = bedrock_provider_label(model_id)
+
+    labels = parse_brevitas_headers(request.headers)
+    baseline = count_request_tokens(body, "messages")
+    brevitas_key = request.headers.get("x-brevitas-key", "")
+    gate_key, state_key = _tenant_context(request, provider_auth)
+    sess_key = (f"bed:{state_key}:bedrock:{cache_model}:"
+                f"{'invoke_stream' if stream else 'invoke'}:{_agent_label(labels, body)}")
+    session = _session_for(sess_key)
+    # "anthropic" is the ECONOMICS family, not the billing label: the router
+    # reasons about the Anthropic Messages cache model, which is what Bedrock
+    # serves. The billing label stays "bedrock" all the way to the receipt.
+    router = _router_for(sess_key, "anthropic")
+
+    cache = _cache_for_request(request)
+    # `not stream` on both halves: cacheable() already refuses streams, and a
+    # replay would hand JSON to a client waiting for event-stream frames. Skipping
+    # the deepcopy on the streaming path is the visible half of that.
+    cache_body = (_cache_body(body, request, brevitas_key, provider_auth)
+                  if cache is not None and not stream else None)
+    if cache is not None and not stream and lever_allowed("cache", gate_key):
+        hit = _cache_lookup(cache, cache_body, "bedrock", cache_model, gate_key)
+        if hit is not None:
+            await _report_cache_hit(request, "bedrock", receipt_model, hit, session,
+                                    labels, billing_provider=billing_provider)
+            session.advance()
+            return JSONResponse(content=hit.response, status_code=200)
+
+    fleet_pipe, _fleet_agent = _auto_fleet_labels(labels, provider_auth, body)
+    headers = _bedrock_headers(request)
+
+    async def record(receipt: TokenReceipt, response_id: str) -> None:
+        # provider="anthropic" is the WIRE SHAPE (see _record_receipt's contract:
+        # it drives the receipt shape, the meter and the router's economics);
+        # billing_provider="bedrock" is what reaches usage_log, so pricing follows
+        # the bytes. optimized_tokens is omitted on purpose -- a passthrough lane
+        # must report exactly zero transformation delta.
+        await _record_receipt(
+            request, "anthropic", receipt_model, "messages", baseline, receipt,
+            session, router, labels, False, response_id, "passthrough", fleet_pipe,
+            cache_attributable=False, tenant_key=gate_key,
+            billing_provider=billing_provider,
+        )
+        session.advance()
+
+    if stream:
+        upstream = await _provider_request(
+            "bedrock", "messages", "POST", endpoint, headers=headers,
+            stream=True, content=raw)
+        if not _upstream_ok(upstream):
+            content = await upstream.aread()
+            response_headers = _response_headers(upstream)
+            await upstream.aclose()
+            return Response(content=content, status_code=upstream.status_code,
+                            headers=response_headers)
+        decoder = BedrockEventStreamDecoder()
+        parser = SSEUsageParser("anthropic")
+
+        async def stream_gen():
+            completed = False
+            try:
+                async for chunk in provider_http.iter_bytes("bedrock", upstream):
+                    if _admission_canceled(request):
+                        break
+                    # Decoding is metering, and metering never gets to alter the
+                    # bytes: the decoder is contractually raise-free and the
+                    # chunk is yielded unchanged either way.
+                    for event in decoder.feed(chunk):
+                        parser.feed(event + b"\n")
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
+            finally:
+                await upstream.aclose()
+                if completed:
+                    await record(parser.finish(), parser.response_id)
+
+        return StreamingResponse(stream_gen(), status_code=upstream.status_code,
+                                 headers=_response_headers(upstream),
+                                 media_type=_BEDROCK_STREAM_MEDIA_TYPE)
+
+    upstream = await _provider_request(
+        "bedrock", "messages", "POST", endpoint, headers=headers, content=raw)
+    try:
+        data = upstream.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if _upstream_ok(upstream):
+        try:
+            session.record_response(data["content"][0]["text"])
+        except (KeyError, IndexError, TypeError):
+            pass
+        if cache is not None and data:
+            _cache_store(cache, cache_body, "bedrock", cache_model, data,
+                         _request_id(request, str(data.get("id") or "")))
+        await record(normalize_usage(data.get("usage"), "anthropic"),
+                     str(data.get("id") or ""))
+    return Response(content=_response_content(upstream, data),
+                    status_code=upstream.status_code,
+                    headers=_response_headers(upstream))
+
+
+# ── Azure OpenAI: POST /azure/{resource}/openai/deployments/{deployment}/chat/completions ──
+#
+# THE DROP-IN. openai-python's AzureOpenAI builds its base URL as
+# `{azure_endpoint}/openai/deployments/{azure_deployment}` and appends
+# `/chat/completions`, so a customer points `azure_endpoint` at
+# `https://api.brevitassystems.com/azure/<their-resource>` and every existing
+# call routes through Brevitas unchanged. The resource label they would have put
+# in the hostname moves into the first path segment, which is the ONLY reason
+# this lane can build a destination host without ever trusting a caller-supplied
+# hostname: `normalize_azure_resource` reduces that segment to a DNS label and
+# `azure_chat_endpoint` interpolates it into one fixed suffix.
+#
+# CREDENTIAL MODEL. Azure accepts either `api-key: <key>` (what
+# `AzureOpenAI(api_key=...)` sends) or `Authorization: Bearer <token>` (Entra ID
+# and managed identity). Brevitas forwards whichever one the caller sent and
+# holds neither. Nothing here writes the credential anywhere -- not to the cache
+# (the cache body carries only a salted digest via _cache_body), not to a log,
+# not to the receipt.
+#
+# THIS IS A PASSTHROUGH LANE, and unlike Bedrock that is not only a caution
+# about breaking traffic -- it is forced by the pricing story. The optimizer sets
+# `router.model = body["model"]` (token_efficiency_model/lossless/engine.py), and
+# on Azure `body["model"]` is the customer's DEPLOYMENT name. So a router asked
+# to optimise Azure traffic would choose lossy strategies from a cost model
+# keyed on a name MODEL_PRICES cannot resolve: a quality risk taken for an
+# unquantifiable gain. The model only becomes known when the RESPONSE arrives,
+# by which time every routing decision has already been made. So `optimized=
+# False`, `cache_attributable=False`, `optimized_tokens=None` -- the receipt
+# reports a zero transformation delta, which is the true number.
+#
+# What the lane does earn is real: rows are authoritative, provider-native cache
+# activity is measured, and a semantic-cache hit -- which touches no upstream at
+# all -- bills as it does on every other route.
+#
+# NO PREDICTIVE WARMING. `_observe_warm_prefix` is deliberately not called.
+# api/worker.py refuses to ping any prefix whose recorded `upstream` differs from
+# its provider's single spec endpoint, and WARM_PROVIDER_SPECS has no Azure entry
+# at all -- so every Azure observation would be stored, claimed, and then
+# permanently marked `prefix_invalid`. Recording work that is guaranteed to be
+# thrown away is worse than not recording it.
+
+#: Caller header declaring the Azure deployment type. See brevitas/azure.py for
+#: why this cannot be read from the response and why declaring the wrong one can
+#: only ever cost Brevitas money rather than the customer.
+AZURE_SKU_HEADER = "x-brevitas-azure-sku"
+
+#: Query parameters this lane will carry to Azure. Azure's deployments data plane
+#: documents exactly one, and it is mandatory.
+_AZURE_QUERY_PARAMS = frozenset({"api-version"})
+
+# Exactly what is forwarded to Azure, as a positive allowlist rather than a
+# blocklist -- this list is what guarantees the tenant's own `x-brevitas-key`
+# never leaves Brevitas. `_passthrough_headers`' non-Anthropic branch forwards a
+# broad OpenAI-shaped set (openai-organization, openai-project, x-stainless-*)
+# that Azure does not read, and "nearly right" is not a property worth reusing on
+# the request that carries a credential.
+_AZURE_FORWARD_HEADERS = frozenset({
+    "api-key",
+    "authorization",
+    "accept",
+    "content-type",
+    "x-ms-client-request-id",
+})
+
+_AZURE_MISSING_KEY = (
+    "Azure OpenAI requires a credential. Send your own resource key as "
+    "`api-key: $AZURE_OPENAI_API_KEY`, or an Entra ID token as `Authorization: "
+    "Bearer $TOKEN`. Brevitas forwards whichever you send and stores neither."
+)
+
+_AZURE_RESPONSES_REFUSAL = (
+    "The Azure Responses API is not supported by this proxy. Brevitas cannot "
+    "price Responses traffic honestly: Azure documents that `response.model` on "
+    "that endpoint returns the DEPLOYMENT name rather than the underlying model, "
+    "and the deployment name is customer-chosen -- so every Responses call would "
+    "either bill nothing or bill against a label the customer invented. Use Chat "
+    "Completions instead: POST /azure/{resource}/openai/deployments/{deployment}"
+    "/chat/completions?api-version=YYYY-MM-DD, whose response carries the real "
+    "dated model snapshot."
+)
+
+
+def _azure_headers(request: Request) -> dict[str, str]:
+    """The caller's own headers, filtered to _AZURE_FORWARD_HEADERS.
+
+    Keys are lower-cased before they go in the dict, and content-type is only
+    DEFAULTED. Seeding the dict with "Content-Type" and then copying the caller's
+    "content-type" over the top would leave both keys present -- a dict is not
+    case-insensitive -- and httpx would put two Content-Type headers on the wire.
+    """
+    headers = {name.lower(): value for name, value in request.headers.items()
+               if name.lower() in _AZURE_FORWARD_HEADERS and value}
+    headers.setdefault("content-type", "application/json")
+    return headers
+
+
+def _azure_credential(request: Request) -> str:
+    """The caller's Azure credential: the native `api-key`, else a bearer token."""
+    return request.headers.get("api-key", "") or request.headers.get("authorization", "")
+
+
+def _azure_api_version(request: Request) -> str:
+    """The validated api-version for this request, or raise 400.
+
+    THIS IS THE FIRST QUERY STRING BREVITAS FORWARDS ANYWHERE. Every other route
+    builds its upstream URL from a literal and drops `request.url.query` on the
+    floor -- invisible everywhere else, because no other supported upstream reads
+    a query parameter, and fatal here: Azure's deployments data plane requires
+    `api-version`, so without this the lane would 404 for every caller while
+    looking like it had been wired up.
+
+    The value is not concatenated from caller bytes. It is parsed, matched
+    against a strict dated pattern, and RE-MINTED into the URL by
+    azure_chat_endpoint, so the only thing that can ever reach Azure's query
+    string is `YYYY-MM-DD` with an optional `-preview`. Anything else -- a second
+    api-version, an unknown parameter, an encoded separator, a fragment -- is a
+    400. Refusing is deliberate: silently dropping a parameter the caller sent
+    would forward a request that is not the request they made.
+    """
+    pairs = parse_qsl(request.url.query, keep_blank_values=True)
+    unknown = sorted({name for name, _value in pairs} - _AZURE_QUERY_PARAMS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Unsupported query parameter(s) {', '.join(unknown)}. This "
+                    "lane forwards api-version and nothing else, so a parameter "
+                    "it does not recognise is refused rather than dropped."))
+    values = [value for name, value in pairs if name == "api-version"]
+    if len(values) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=("Exactly one api-version query parameter is required, e.g. "
+                    "?api-version=2024-10-21."))
+    api_version = normalize_azure_api_version(values[0])
+    if not api_version:
+        raise HTTPException(
+            status_code=400,
+            detail=("api-version must be a dated Azure API version such as "
+                    "2024-10-21 or 2025-04-01-preview."))
+    return api_version
+
+
+def _azure_sku(request: Request) -> str:
+    """The declared Azure deployment type, or "" to leave every row unpriced.
+
+    A PRESENT-but-unrecognised header is a 400, because a typo that silently
+    unprices every row a customer meant to declare is a revenue leak with no
+    signal anywhere. An unrecognised env default only warns: a whole fleet
+    400-ing on one operator typo would be a worse failure than billing zero.
+    """
+    declared = request.headers.get(AZURE_SKU_HEADER, "")
+    if declared:
+        sku = normalize_azure_sku(declared)
+        if not sku:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{AZURE_SKU_HEADER} must name an Azure deployment type, "
+                        "e.g. GlobalStandard, DataZoneStandard, Standard or "
+                        "ProvisionedManaged."))
+        return sku
+    fallback = os.getenv("BREVITAS_AZURE_SKU", "")
+    if not fallback:
+        return ""
+    sku = normalize_azure_sku(fallback)
+    if not sku:
+        logger.warning(
+            "BREVITAS_AZURE_SKU does not name a known Azure deployment type; "
+            "Azure rows will be recorded unpriced")
+    return sku
+
+
+def _azure_receipt_model(response_model: Any, deployment: str, sku: str) -> str:
+    """The model this row bills against: the RESPONSE's, never the deployment's.
+
+    `azure_priced_model` returns "" whenever the SKU is not a declared parity
+    type or the response named nothing we recognise, and the fallback is a
+    namespaced label that MODEL_PRICES cannot resolve -- so an unresolvable
+    request prices as "unpriced" and bills nothing, rather than being quietly
+    charged at the rate of whatever model the customer happened to name their
+    deployment after.
+    """
+    value = response_model if isinstance(response_model, str) else ""
+    return azure_priced_model(value, sku) or azure_unpriced_model(deployment)
+
+
+@proxy_app.post("/azure/{resource}/openai/responses")
+@proxy_app.post("/azure/{resource}/openai/v1/responses")
+async def proxy_azure_responses(request: Request, resource: str) -> Any:
+    """Refuse the Responses API loudly. Registered ON PURPOSE rather than 404'd.
+
+    The path is inside the gated /azure/ namespace either way, so this changes no
+    security property -- it changes the answer from a bare "Not Found" into the
+    reason, which is what stops a customer concluding the lane is broken and
+    re-pointing at an unmetered endpoint.
+    """
+    raise HTTPException(status_code=400, detail=_AZURE_RESPONSES_REFUSAL)
+
+
+@proxy_app.post("/azure/{resource}/openai/deployments/{deployment}/chat/completions")
+async def proxy_azure_chat(request: Request, resource: str, deployment: str) -> Any:
+    # Destination first, body second. Everything below rejects without reading
+    # the request stream, so a request aimed at a bad resource or carrying no
+    # credential is refused before Brevitas buffers a megabyte of prompt.
+    normalized_resource = normalize_azure_resource(resource)
+    if not normalized_resource:
+        raise HTTPException(
+            status_code=400,
+            detail=("The Azure resource segment must be the resource NAME alone "
+                    "(the leftmost label of <resource>.openai.azure.com): 1-63 "
+                    "characters of [a-z0-9-], starting and ending alphanumeric. "
+                    "Send a name, not a hostname or a URL."))
+    if not valid_azure_deployment(deployment):
+        raise HTTPException(
+            status_code=400,
+            detail=("The Azure deployment segment must be 1-64 characters of "
+                    "[A-Za-z0-9._-] starting with a letter or digit."))
+    api_version = _azure_api_version(request)
+    sku = _azure_sku(request)
+    provider_auth = _azure_credential(request)
+    if not provider_auth:
+        raise HTTPException(status_code=401, detail=_AZURE_MISSING_KEY)
+    # Raises rather than falls back, and is called before anything is read from
+    # the network: this is the single line that decides where the caller's Azure
+    # credential is about to be sent.
+    endpoint = azure_chat_endpoint(normalized_resource, deployment, api_version)
+
+    raw, body = await _json_object(request)
+
+    billing_provider = azure_provider_label()
+    # Two labels, deliberately. `cache_model` isolates the response cache by
+    # deployment AND resource AND api-version, so a cached answer can never
+    # replay for a different deployment, a different Azure resource, or an
+    # api-version whose response shape differs. The RECEIPT model is decided far
+    # below, from the response, because that is the only place the real model
+    # appears.
+    cache_model = f"{deployment}@{normalized_resource}@{api_version}"
+
+    labels = parse_brevitas_headers(request.headers)
+    baseline = count_request_tokens(body, "chat.completions")
+    brevitas_key = request.headers.get("x-brevitas-key", "")
+    gate_key, state_key = _tenant_context(request, provider_auth)
+    sess_key = (f"azure:{state_key}:{normalized_resource}:{deployment}:"
+                f"chat.completions:{_agent_label(labels, body)}")
+    session = _session_for(sess_key)
+    # "openai" is the ECONOMICS family, not the billing label: the router reasons
+    # about the OpenAI automatic-prefix cache model, which is what Azure serves.
+    # The billing label stays "azure_openai" all the way to the receipt.
+    router = _router_for(sess_key, "openai")
+
+    is_stream = bool(body.get("stream"))
+    cache = _cache_for_request(request)
+    # `not is_stream` on both halves: cacheable() already refuses streams, and a
+    # replay would hand JSON to a client waiting for SSE frames.
+    cache_body = (_cache_body(body, request, brevitas_key, provider_auth)
+                  if cache is not None and not is_stream else None)
+    if cache is not None and not is_stream and lever_allowed("cache", gate_key):
+        hit = _cache_lookup(cache, cache_body, billing_provider, cache_model, gate_key)
+        if hit is not None:
+            # Price the replay off the model recorded in the response that was
+            # PAID for, so a hit and its paid ancestor resolve to the same row in
+            # MODEL_PRICES. Reading the deployment name here instead would make
+            # every replay unpriced and silently drop the highest-savings rows
+            # this lane produces.
+            stored = hit.response if isinstance(getattr(hit, "response", None), dict) else {}
+            await _report_cache_hit(
+                request, "openai",
+                _azure_receipt_model(stored.get("model"), deployment, sku),
+                hit, session, labels, billing_provider)
+            session.advance()
+            return JSONResponse(content=hit.response, status_code=200)
+
+    fleet_pipe, _fleet_agent = _auto_fleet_labels(labels, provider_auth, body)
+    headers = _azure_headers(request)
+
+    async def record(model: str, receipt: TokenReceipt, response_id: str) -> None:
+        # provider="openai" is the WIRE SHAPE (it drives the receipt shape, the
+        # meter and the router's economics); billing_provider="azure_openai" is
+        # what reaches usage_log, so pricing follows the bytes. optimized_tokens
+        # is omitted on purpose -- a passthrough lane must report exactly zero
+        # transformation delta.
+        await _record_receipt(
+            request, "openai", model, "chat.completions", baseline, receipt,
+            session, router, labels, False, response_id, "passthrough", fleet_pipe,
+            cache_attributable=False, tenant_key=gate_key,
+            billing_provider=billing_provider,
+        )
+        session.advance()
+
+    if is_stream:
+        # Ask Azure to append its usage chunk -- but ONLY on an api-version that
+        # understands the parameter. Azure added stream_options/include_usage in
+        # 2024-09-01-preview; on anything older it is an unrecognised request
+        # argument, so injecting blindly would 400 a paying customer's request in
+        # order to improve our own metering. Where it cannot be asked for, the
+        # stream simply carries no usage and the row records
+        # `passthrough:missing_receipt`, which is the honest outcome.
+        inject = (_stream_usage_inject_enabled()
+                  and "stream_options" not in body
+                  and azure_stream_usage_supported(api_version))
+        if inject:
+            body["stream_options"] = {"include_usage": True}
+        upstream = await _provider_request(
+            billing_provider, "chat.completions", "POST", endpoint, headers=headers,
+            stream=True,
+            # Byte-verbatim unless Brevitas actually changed something.
+            **({"json_body": body} if inject else {"content": raw}))
+        if not _upstream_ok(upstream):
+            content = await upstream.aread()
+            response_headers = _response_headers(upstream)
+            await upstream.aclose()
+            return Response(content=content, status_code=upstream.status_code,
+                            headers=response_headers)
+        parser = SSEUsageParser("openai")
+        sniffer = AzureStreamModelSniffer()
+
+        async def stream_gen():
+            completed = False
+            try:
+                async for chunk in provider_http.iter_bytes(billing_provider, upstream):
+                    if _admission_canceled(request):
+                        break
+                    # Parsing is metering, and metering never gets to alter the
+                    # bytes: both readers are contractually raise-free and the
+                    # chunk is yielded unchanged either way.
+                    parser.feed(chunk)
+                    sniffer.feed(chunk)
+                    if not _admission_canceled(request):
+                        yield chunk
+                completed = not _admission_canceled(request)
+            finally:
+                await upstream.aclose()
+                if completed:
+                    await record(
+                        _azure_receipt_model(sniffer.model, deployment, sku),
+                        parser.finish(), parser.response_id)
+
+        return StreamingResponse(stream_gen(), status_code=upstream.status_code,
+                                 headers=_response_headers(upstream),
+                                 media_type="text/event-stream")
+
+    upstream = await _provider_request(
+        billing_provider, "chat.completions", "POST", endpoint, headers=headers,
+        content=raw)
+    try:
+        data = upstream.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if _upstream_ok(upstream):
+        try:
+            session.record_response(data["choices"][0]["message"]["content"] or "")
+        except (KeyError, IndexError, TypeError):
+            pass
+        # `cache_body is not None` is the real invariant, not `not is_stream`:
+        # the body is built only on the non-streaming path, so this cannot store
+        # under a None key even if the early return above is ever restructured.
+        if cache is not None and cache_body is not None and data:
+            # Mint the metering id HERE, with the same provider response id
+            # record() passes below, so the id written onto the cache entry and
+            # the id on this request's paid receipt are the same string by
+            # construction (see proxy_openai_chat for the full argument).
+            _cache_store(cache, cache_body, billing_provider, cache_model, data,
+                         _request_id(request, str(data.get("id") or "")))
+        await record(_azure_receipt_model(data.get("model"), deployment, sku),
+                     normalize_usage(data.get("usage"), "openai"),
+                     str(data.get("id") or ""))
+    return Response(content=_response_content(upstream, data),
+                    status_code=upstream.status_code,
+                    headers=_response_headers(upstream))
 
 
 @proxy_app.get("/health")
