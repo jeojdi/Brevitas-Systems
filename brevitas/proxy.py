@@ -72,7 +72,10 @@ from .bedrock import (
 from .identity import CUSTOMER_ID_HEADER, normalize_customer_id, short_tenant_key, tenant_key
 from .labels import _git_root_name
 from .provider_reliability import ProviderCircuitOpen, provider_http
-from .receipts import SSEUsageParser, TokenReceipt, _int as _usage_int, count_request_tokens, normalize_usage
+from .receipts import (
+    SSEUsageParser, TokenReceipt, _int as _usage_int, count_request_tokens,
+    normalize_usage, provider_reported_cost,
+)
 from .resource_bounds import (
     BoundedTTLMap,
     ResourceBounds,
@@ -103,7 +106,13 @@ _BG_ON = os.environ.get("BREVITAS_BATCH_GROUP", "1") not in ("0", "false", "no")
 # Providers whose streamed responses omit usage unless the request opts in.
 # DeepSeek is deliberately absent: it reports usage on the final chunk by
 # default and its request bodies stay byte-identical end to end.
-_STREAM_USAGE_PROVIDERS = {"openai", "xai"}
+#
+# OpenRouter is included so a streamed reseller call always terminates with a
+# usage chunk carrying `cost`. OpenRouter now returns usage on the final chunk
+# regardless (stream_options.include_usage is a documented no-op there), so this
+# is belt-and-braces rather than load-bearing — but it costs nothing and keeps a
+# missing_receipt from ever depending on an OpenRouter default we do not control.
+_STREAM_USAGE_PROVIDERS = {"openai", "xai", "openrouter"}
 
 
 def _stream_usage_inject_enabled() -> bool:
@@ -596,20 +605,30 @@ def _cache_store(cache, body: dict, provider: str, model: str, data: dict,
         if not _response_complete(data, provider):
             return                 # never cache a truncated / incomplete response
         p, c = _usage_tokens(data, provider)
+        # Remember what the paid call cost so a future replay bills against it
+        # (resellers only; None for first-party providers). Cheap to compute and
+        # harmless to store as 0 elsewhere.
+        cost = provider_reported_cost(data.get("usage"), provider) or 0.0
     except Exception:
         return
-    try:
-        cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c,
-                    origin_request_id=origin_request_id)
-        return
-    except TypeError:
-        pass                       # older/foreign cache object: store unanchored
-    except Exception:
-        return
-    try:
-        cache.store(body, provider, model, data, prompt_tokens=p, completion_tokens=c)
-    except Exception:
-        pass
+    # Degrade one keyword at a time, most-complete first: a cache that predates
+    # reported_cost_usd must still ANCHOR (keep origin_request_id), and one that
+    # predates both must still WRITE (dropping a store costs a real upstream call
+    # on every future repeat). Only a TypeError steps down; any other store fault
+    # aborts, exactly as before, and never reaches the caller.
+    for extra in (
+        {"origin_request_id": origin_request_id, "reported_cost_usd": cost},
+        {"origin_request_id": origin_request_id},
+        {},
+    ):
+        try:
+            cache.store(body, provider, model, data,
+                        prompt_tokens=p, completion_tokens=c, **extra)
+            return
+        except TypeError:
+            continue
+        except Exception:
+            return
 
 
 def _cache_body(body: dict, request: Request, *credentials: str) -> dict:
@@ -712,12 +731,19 @@ async def _report_cache_hit(request: Request, provider: str, model: str, hit,
         # predates the column returns hits without one — those replay unanchored,
         # which bills zero.
         anchor = str(getattr(hit, "origin_request_id", "") or "")[:128]
+        # The dollars the ORIGINAL paid call cost, if a reseller reported them.
+        # This replay touched no upstream, so its measured savings ARE this number
+        # (reseller_authoritative_costs with zero_spend=True). 0/absent → the
+        # replay prices unpriced/$0, exactly as an un-costed reseller entry did
+        # before. getattr for cache objects that predate the column.
+        reported_cost = float(getattr(hit, "reported_cost_usd", 0.0) or 0.0)
         await _emit_usage(request, {"provider": billing_provider or provider, "model": model,
             "operation": "chat", "baseline_tokens": int(hit.prompt_tokens),
             "baseline_output_tokens": int(hit.completion_tokens), "compressed_tokens": 0,
             "fresh_input_tokens": 0, "cached_input_tokens": 0, "cache_write_tokens": 0,
             "output_tokens": 0, "quality_score": session.last_quality,
             "cache_attributable": True,
+            **({"provider_reported_cost_usd": reported_cost} if reported_cost > 0 else {}),
             # Labels first: server-minted fields must always win. See _record_receipt.
             **labels,
             "request_id": _request_id(request), "strategy": strategy,
@@ -1016,7 +1042,8 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
                           response_id: str = "", strategy: str = "native_cache",
                           fleet_pipe: str = "", cache_attributable: bool = False,
                           optimized_tokens: int | None = None,
-                          tenant_key: str = "", billing_provider: str = "") -> None:
+                          tenant_key: str = "", billing_provider: str = "",
+                          reported_cost_usd: float | None = None) -> None:
     # `provider` stays the header-derived routing label — it drives the receipt
     # shape, the meter, and the router's economics. `billing_provider` is the
     # label implied by the resolved destination host and is used ONLY for the
@@ -1059,6 +1086,11 @@ async def _record_receipt(request: Request, provider: str, model: str, operation
         "request_id": _request_id(request, response_id),
         "strategy": (strategy if has_receipt else f"{strategy}:missing_receipt")[:64],
         "session_id": session.session_id, "receipt_source": "proxy",
+        # Reseller authoritative cost (OpenRouter usage.cost). None for first-party
+        # providers, where the row prices from MODEL_PRICES as before. See
+        # api/server.py's reseller-cost branch in _record_usage_report.
+        **({"provider_reported_cost_usd": reported_cost_usd}
+           if reported_cost_usd is not None else {}),
     })
 
 
@@ -1549,6 +1581,11 @@ async def proxy_openai_chat(request: Request) -> Any:
                         cache_attributable=cache_attributable,
                         optimized_tokens=optimized_tokens,
                         tenant_key=gate_key, billing_provider=billing_provider,
+                        # parser.reported_cost_usd is the `cost` off the final usage
+                        # chunk; gate it through the reseller check on billing_provider.
+                        reported_cost_usd=provider_reported_cost(
+                            {"cost": parser.reported_cost_usd}, billing_provider)
+                        if parser.reported_cost_usd is not None else None,
                     )
                     session.advance()
 
@@ -1598,6 +1635,9 @@ async def proxy_openai_chat(request: Request) -> Any:
             cache_attributable=cache_attributable,
             optimized_tokens=optimized_tokens,
             tenant_key=gate_key, billing_provider=billing_provider,
+            # Gate on billing_provider: the reported cost is authoritative for the
+            # host the bytes went to, which is also what the row is billed under.
+            reported_cost_usd=provider_reported_cost(data.get("usage"), billing_provider),
         )
         session.advance()
     return Response(content=_response_content(upstream, data), status_code=upstream.status_code,

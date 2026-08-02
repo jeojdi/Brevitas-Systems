@@ -127,7 +127,9 @@ def _optimize_message_logged(text: str) -> dict:
 from .auth import generate_api_key, hash_key
 from .build_info import build_identity, validate_production_build_identity
 from brevitas.receipts import (TokenReceipt, calculate_costs, normalize_usage,
-                               MODEL_PRICES, PRICING_VERSION, model_price)
+                               MODEL_PRICES, PRICING_VERSION, model_price,
+                               canonical_provider, reseller_authoritative_costs,
+                               _RESELLER_PROVIDERS)
 from brevitas.identity import CUSTOMER_ID_HEADER, normalize_customer_id, tenant_key
 from .store import make_store, PROVIDER_COSTS_PER_1M
 from brevitas.semantic_cache import make_semantic_cache
@@ -4547,6 +4549,14 @@ class UsageReportRequest(BaseModel):
     # paired control arm supplied an authoritative provider cost.
     control_cost_usd: Optional[float] = Field(default=None, ge=0)
     transport_bytes_avoided: int = Field(default=0, ge=0)
+    # A reseller's OWN reported USD cost for this call (OpenRouter usage.cost),
+    # set by the in-process proxy. It prices rows where MODEL_PRICES is silent
+    # (resellers), so a live call records real spend and a cache replay bills the
+    # anchored real cost instead of $0. Analytics-only over POST /v1/usage: only
+    # authoritative proxy receipts create billable savings regardless (see the
+    # `verified` gate), and the reseller branch that reads this checks the
+    # provider is actually a reseller before trusting it.
+    provider_reported_cost_usd: Optional[float] = Field(default=None, ge=0)
 
     @field_validator("provider", "model", "operation", "strategy", "session_id", "project",
                      "environment", "source", "repo", "client", "pipeline", "agent",
@@ -4835,6 +4845,21 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
                  "actual_cost_usd": None, "measured_savings_usd": None,
                  "pricing_version": "", "prices": {},
              })
+    # Reseller authoritative cost. MODEL_PRICES is deliberately silent for
+    # resellers (OpenRouter et al. bill their own rates), so those rows price as
+    # unpriced/$0 above. When the reseller reported the dollars THIS call cost,
+    # price from that instead of leaving it $0: a live call books it as real
+    # actual spend with zero savings, and a zero-spend cache replay books the
+    # whole reported cost as measured savings (see reseller_authoritative_costs).
+    # Guarded on the provider actually being a reseller so the field can never
+    # re-price a first-party row that already has a MODEL_PRICES rate.
+    if (body.provider_reported_cost_usd is not None
+            and costs["pricing_status"] != "priced"
+            and canonical_provider(body.provider, body.model) in _RESELLER_PROVIDERS):
+        _replay = (body.strategy or "").strip().lower().startswith(
+            ("exact_cache", "semantic_cache"))
+        costs = reseller_authoritative_costs(
+            body.provider_reported_cost_usd, zero_spend=_replay)
     measured = costs["measured_savings_usd"]
     provider_input_tokens_avoided = max(0, baseline_tokens - receipt.input_tokens)
     strategy_name = (body.strategy or "").strip().lower()

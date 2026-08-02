@@ -209,6 +209,12 @@ class SSEUsageParser:
         self.provider = provider
         self.receipt = TokenReceipt()
         self.response_id = ""
+        # Resellers (OpenRouter) put the dollars a call actually cost on the final
+        # usage chunk. Captured here so a streamed reseller call can be priced from
+        # its own reported cost rather than a rate card we do not have. None until a
+        # numeric `cost` is seen; only trusted for _RESELLER_PROVIDERS at the call
+        # site via provider_reported_cost().
+        self.reported_cost_usd: float | None = None
         self._buffer = b""
 
     def feed(self, chunk: bytes) -> None:
@@ -250,6 +256,11 @@ class SSEUsageParser:
                 self.receipt = merge_receipts(
                     self.receipt, normalize_usage(usage, self.provider)
                 )
+                cost = usage.get("cost")
+                if not isinstance(cost, bool) and isinstance(cost, (int, float)) and cost >= 0:
+                    # Keep the largest seen: usage arrives cumulatively across
+                    # chunks, and the final chunk carries the authoritative total.
+                    self.reported_cost_usd = max(self.reported_cost_usd or 0.0, float(cost))
 
 
 # Standard/global on-demand USD per million tokens, verified 2026-07-27. Costs are
@@ -436,6 +447,54 @@ def calculate_costs(provider: str, model: str, baseline_input_tokens: int,
         "measured_savings_usd": round(baseline - actual, 10),
         "pricing_version": PRICING_VERSION,
         "prices": dict(price),
+    }
+
+
+def provider_reported_cost(usage: Any, provider: str) -> float | None:
+    """The provider's own reported USD cost for this call — resellers only.
+
+    OpenRouter reports ``usage.cost`` (the dollars charged for the call). First-
+    party providers do not, and where MODEL_PRICES HAS a per-token rate we must
+    price from it, so this returns None outside ``_RESELLER_PROVIDERS``: the
+    reported field is consulted only where the price table is deliberately silent
+    (see the _RESELLER_PROVIDERS note). None is also returned for an absent,
+    non-numeric, boolean, or negative value, which routes the row to its normal
+    unpriced/$0 fate rather than to a guessed number.
+    """
+    if (provider or "").lower() not in _RESELLER_PROVIDERS:
+        return None
+    data = usage if isinstance(usage, dict) else _as_dict(usage)
+    cost = data.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
+        return None
+    return round(float(cost), 10)
+
+
+def reseller_authoritative_costs(reported_cost_usd: float, *, zero_spend: bool) -> dict[str, Any]:
+    """Price a reseller row from the provider's OWN reported USD cost.
+
+    Resellers publish no per-token rate we trust, but they report the exact
+    dollars a call cost, and that number is authoritative for the call that RAN.
+    So it becomes actual spend. It says nothing about the larger, un-optimized
+    baseline that never ran, so a LIVE call books zero measured savings
+    (``baseline == actual``): real recorded spend, no invented savings, no fee.
+
+    A ``zero_spend`` replay — a cache hit that touched no upstream — is the one
+    place the number becomes savings. The replay itself cost $0, and the
+    authoritative cost it carries is what the ORIGINAL paid call cost, so
+    ``baseline`` is that cost and the whole of it is measured savings. This is the
+    same direction every other lane errs: nothing is billed that a provider did
+    not actually charge.
+    """
+    cost = round(max(0.0, float(reported_cost_usd)), 10)
+    actual = 0.0 if zero_spend else cost
+    return {
+        "pricing_status": "priced",
+        "baseline_cost_usd": cost,
+        "actual_cost_usd": actual,
+        "measured_savings_usd": round(cost - actual, 10),
+        "pricing_version": PRICING_VERSION,
+        "prices": {},
     }
 
 

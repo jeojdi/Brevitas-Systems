@@ -58,6 +58,7 @@ const INSTALL_NAV = [
   { id: 'requirements',    label: 'Requirements' },
   { id: 'install',         label: 'Install' },
   { id: 'setup',           label: 'First-time setup' },
+  { id: 'providers',       label: 'Providers' },
   { id: 'verify',          label: 'Verify it works' },
   { id: 'service',         label: 'Background service' },
   { id: 'update',          label: 'Updating' },
@@ -88,6 +89,17 @@ const COMMANDS = [
   ['bvx serve / optimizer', 'Run the proxy or optimization adapter in the foreground'],
   ['bvx update',    'Check for BVX and optimization-engine updates'],
   ['bvx version',   'Print version information'],
+]
+
+const PROVIDERS = [
+  ['Anthropic', 'Auto-detected', 'Claude traffic is routed through the Anthropic endpoint. Your Anthropic key is forwarded upstream unchanged.'],
+  ['OpenAI', 'Auto-detected', 'Any model BVX does not recognize as another provider goes to OpenAI. Your OpenAI key is forwarded upstream.'],
+  ['DeepSeek', 'Auto-detected', 'Recognized from the model name (deepseek-*). OpenAI-compatible; your DeepSeek key is forwarded.'],
+  ['Groq', 'Auto-detected', 'Recognized from grok-* / groq-* model names. OpenAI-compatible.'],
+  ['xAI (Grok)', 'Auto-detected', 'Recognized from grok-* / xai-* model names. OpenAI-compatible.'],
+  ['Mistral', 'Auto-detected', 'Recognized from mistral-* / codestral-* model names.'],
+  ['OpenRouter', 'Set provider explicitly', 'OpenRouter model ids are vendor-prefixed (anthropic/claude-…, openai/gpt-…), so they can’t be auto-detected. Set BREVITAS_PROVIDER=openrouter (or the x-brevitas-provider header) so the call reaches OpenRouter instead of OpenAI. Your OpenRouter key is forwarded.'],
+  ['Together / Fireworks / Perplexity', 'Set provider explicitly', 'Same as OpenRouter — vendor-prefixed model ids, so name each one with BREVITAS_PROVIDER / x-brevitas-provider.'],
 ]
 
 const TROUBLESHOOTING = [
@@ -261,6 +273,58 @@ Installing...
           <CodeBlock lang="bash" code={`bvx install repo                 # choose a codebase, scan, and open its AI-call map
 bvx install repo --apply         # also write a .env.agentmap you can source
 bvx install repo --apply --auto  # also rewrite hardcoded provider URLs`} />
+        </Section>
+
+        <Section id="providers" title="Providers">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            <span className="text-brand-navy dark:text-brand-dark-navy font-medium">Onboarding is the same no matter which
+            provider you use.</span> You do not connect providers to Brevitas — Brevitas sits in front of the provider your
+            tools <span className="italic">already</span> call. The proxy forwards each request to that provider unchanged and
+            passes your existing provider API key straight upstream; Brevitas never stores or replaces it. There is no
+            per-provider signup, key exchange, or separate setup step.
+          </p>
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            The proxy figures out where a request is headed automatically. Anthropic (Claude) traffic and standard OpenAI
+            model names are detected on their own. A handful of OpenAI-compatible providers are recognized from the model
+            name; the rest you name explicitly.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr>
+                  <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal pr-4">Provider</th>
+                  <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal pr-4">Routing</th>
+                  <th className="pb-2 text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted font-normal">Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {PROVIDERS.map(([name, routing, notes]) => (
+                  <tr key={name} className="border-t border-brand-border dark:border-brand-dark-border align-top">
+                    <td className="py-2.5 pr-4 font-mono text-brand-blue whitespace-nowrap">{name}</td>
+                    <td className="py-2.5 pr-4 text-brand-navy-mid dark:text-brand-dark-navy-mid whitespace-nowrap">{routing}</td>
+                    <td className="py-2.5 text-brand-navy-mid dark:text-brand-dark-navy-mid">{notes}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            <span className="text-brand-navy dark:text-brand-dark-navy font-medium">Using OpenRouter</span> (or Together,
+            Fireworks, Perplexity)? Their model ids are vendor-prefixed — <code className="font-mono text-brand-blue text-xs">anthropic/claude-…</code>,
+            {' '}<code className="font-mono text-brand-blue text-xs">openai/gpt-…</code> — so there is no reliable prefix to
+            detect. Name the provider once so the proxy routes there instead of defaulting to OpenAI:
+          </p>
+          <CodeBlock lang="bash" code={`# Process-wide: all traffic through this proxy is OpenRouter
+export BREVITAS_PROVIDER=openrouter
+
+# Point your OpenAI-compatible client at the proxy and forward your OpenRouter key
+export OPENAI_BASE_URL=http://127.0.0.1:8080/openai
+export OPENAI_API_KEY=sk-or-...   # your OpenRouter key, forwarded upstream unchanged`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            To choose the provider per request instead of for the whole proxy, send the{' '}
+            <code className="font-mono text-brand-blue text-xs">x-brevitas-provider: openrouter</code> header on that call.
+            Everything else — install, the local proxy, stats, and savings reporting — is identical to any other provider.
+          </p>
         </Section>
 
         <Section id="verify" title="Verify it works">

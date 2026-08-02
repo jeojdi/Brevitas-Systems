@@ -114,6 +114,12 @@ class CacheHit:
     similarity: float = 1.0
     # Metering id of the PAID request whose response this entry stores. See above.
     origin_request_id: str = ""
+    # Dollars the ORIGINAL paid call cost, as reported by a reseller provider
+    # (OpenRouter usage.cost). It is what a zero-spend replay of this entry is
+    # billed against: the replay touched no upstream, so its measured savings ARE
+    # this number. 0.0 means "not reported" (first-party providers, or an entry
+    # written before this column) and replays unpriced/$0 — never guessed.
+    reported_cost_usd: float = 0.0
 
 
 class SemanticCache:
@@ -219,7 +225,8 @@ class SemanticCache:
                     created_at       REAL NOT NULL,
                     expires_at       REAL NOT NULL,
                     hit_count        INTEGER NOT NULL DEFAULT 0,
-                    origin_request_id TEXT NOT NULL DEFAULT ''
+                    origin_request_id TEXT NOT NULL DEFAULT '',
+                    reported_cost_usd REAL NOT NULL DEFAULT 0
                 )
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(semantic_cache)")}
@@ -231,6 +238,10 @@ class SemanticCache:
                 # Entries written before this column stay readable and keep
                 # serving hits; they simply replay UNANCHORED (see CacheHit).
                 db.execute("ALTER TABLE semantic_cache ADD COLUMN origin_request_id TEXT NOT NULL DEFAULT ''")
+            if "reported_cost_usd" not in columns:
+                # Entries written before this column replay at reported_cost_usd=0,
+                # i.e. unpriced/$0 — the same safe default as a first-party entry.
+                db.execute("ALTER TABLE semantic_cache ADD COLUMN reported_cost_usd REAL NOT NULL DEFAULT 0")
             db.execute("CREATE INDEX IF NOT EXISTS sc_ctx ON semantic_cache (context_hash, expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS sc_tenant ON semantic_cache (tenant_namespace, expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS sc_created ON semantic_cache (created_at, exact_hash)")
@@ -473,7 +484,7 @@ class SemanticCache:
             with self._db_lock, self._conn() as db:
                 row = db.execute(
                     "SELECT response_ciphertext, prompt_tokens, completion_tokens, "
-                    "origin_request_id "
+                    "origin_request_id, reported_cost_usd "
                     "FROM semantic_cache WHERE exact_hash=? AND tenant_namespace=? "
                     "AND model_id=? AND expires_at>?",
                     (exact, tenant_namespace, model_id, now),
@@ -493,7 +504,8 @@ class SemanticCache:
             self._bump(exact)
             _record_cache("hit")
             return CacheHit("exact", response, row[1], row[2],
-                            origin_request_id=_origin_id(row[3]))
+                            origin_request_id=_origin_id(row[3]),
+                            reported_cost_usd=float(row[4] or 0.0))
 
         # Layer 2 — semantic (only if enabled AND opted-in/untripped AND embeddings available)
         if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
@@ -512,7 +524,8 @@ class SemanticCache:
             with self._db_lock, self._conn() as db:
                 cursor = db.execute(
                     "SELECT exact_hash, response_ciphertext, prompt_tokens, "
-                    "completion_tokens, embedding, origin_request_id FROM semantic_cache "
+                    "completion_tokens, embedding, origin_request_id, reported_cost_usd "
+                    "FROM semantic_cache "
                     "WHERE context_hash=? AND tenant_namespace=? AND model_id=? "
                     "AND expires_at>? AND embedding IS NOT NULL "
                     "ORDER BY created_at DESC, exact_hash DESC LIMIT ?",
@@ -540,13 +553,14 @@ class SemanticCache:
             self._bump(best[0])
             _record_cache("hit")
             return CacheHit("semantic", response, best[2], best[3], best_sim,
-                            origin_request_id=_origin_id(best[5]))
+                            origin_request_id=_origin_id(best[5]),
+                            reported_cost_usd=float(best[6] or 0.0))
         _record_cache("miss")
         return None
 
     def store(self, body: dict, provider: str, model: str, response: dict, *,
               prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None,
-              origin_request_id: str = "") -> None:
+              origin_request_id: str = "", reported_cost_usd: float = 0.0) -> None:
         if not self.cacheable(body):
             _record_cache("disabled")
             return
@@ -591,12 +605,12 @@ class SemanticCache:
                     "INSERT OR REPLACE INTO semantic_cache "
                     "(exact_hash, context_hash, model_id, embedding, response_json, "
                     "response_ciphertext, tenant_namespace, prompt_tokens, completion_tokens, "
-                    "created_at, expires_at, hit_count, origin_request_id) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)",
+                    "created_at, expires_at, hit_count, origin_request_id, reported_cost_usd) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
                     (exact, ctx, f"{provider}:{model}", emb_bytes, "", ciphertext,
                      tenant_namespace, min(2_000_000_000, max(0, int(prompt_tokens or 0))),
                      min(2_000_000_000, max(0, int(completion_tokens or 0))), now, expires,
-                     _origin_id(origin_request_id)),
+                     _origin_id(origin_request_id), max(0.0, float(reported_cost_usd or 0.0))),
                 )
                 cursor = db.execute(
                     "DELETE FROM semantic_cache WHERE exact_hash IN ("
@@ -727,7 +741,7 @@ class SupabaseSemanticCache(SemanticCache):
         if self._anchor_supported:
             try:
                 return (self._c.table("semantic_cache")
-                        .select(f"{columns}, origin_request_id")
+                        .select(f"{columns}, origin_request_id, reported_cost_usd")
                         .eq("exact_hash", exact).eq("tenant_namespace", tenant_namespace)
                         .eq("model_id", model_id).gt("expires_at", now_iso)
                         .limit(1).execute())
@@ -759,7 +773,8 @@ class SupabaseSemanticCache(SemanticCache):
                 _record_cache("hit")
                 return CacheHit("exact", response,
                                 row["prompt_tokens"], row["completion_tokens"],
-                                origin_request_id=_origin_id(row.get("origin_request_id")))
+                                origin_request_id=_origin_id(row.get("origin_request_id")),
+                                reported_cost_usd=float(row.get("reported_cost_usd") or 0.0))
             if not self.semantic_enabled or np is None or not _semantic_allowed(gate_key):
                 _record_cache("miss")
                 return None
@@ -785,7 +800,8 @@ class SupabaseSemanticCache(SemanticCache):
                 _record_cache("hit")
                 return CacheHit("semantic", response, row["prompt_tokens"],
                                 row["completion_tokens"], float(row.get("similarity", 1.0)),
-                                origin_request_id=_origin_id(row.get("origin_request_id")))
+                                origin_request_id=_origin_id(row.get("origin_request_id")),
+                                reported_cost_usd=float(row.get("reported_cost_usd") or 0.0))
         except Exception:
             _record_cache("error")
             return None  # cache never breaks the request path
@@ -794,7 +810,7 @@ class SupabaseSemanticCache(SemanticCache):
 
     def store(self, body: dict, provider: str, model: str, response: dict, *,
               prompt_tokens: int, completion_tokens: int, ttl_s: int | None = None,
-              origin_request_id: str = "") -> None:
+              origin_request_id: str = "", reported_cost_usd: float = 0.0) -> None:
         if not self.cacheable(body):
             _record_cache("disabled")
             return
@@ -854,8 +870,14 @@ class SupabaseSemanticCache(SemanticCache):
             # an idempotent upsert, so the retry cannot double-write either.
             if self._anchor_supported:
                 try:
+                    # p_reported_cost_usd rides the SAME extended overload as the
+                    # anchor: both are added with DEFAULTs (migration
+                    # 202608010001), so a DB that has the anchor overload but not
+                    # the cost param fails to resolve and falls back to the base
+                    # args below — unanchored, unpriced, safe. Never the reverse.
                     self._c.rpc("semantic_cache_store_bounded", {
                         **args, "p_origin_request_id": _origin_id(origin_request_id),
+                        "p_reported_cost_usd": max(0.0, float(reported_cost_usd or 0.0)),
                     }).execute()
                     _record_cache("write")
                     return
