@@ -1310,6 +1310,28 @@ def _passthrough_headers(request: Request, provider: str) -> dict[str, str]:
     return headers
 
 
+def _is_anthropic_subscription(request: Request) -> bool:
+    """True when the caller is a Claude Pro/Max subscription (OAuth login), not a
+    pay-as-you-go API key.
+
+    Claude Code authenticates a subscription with an OAuth access token
+    (`Authorization: Bearer sk-ant-oat…`) and sets an `anthropic-beta: oauth-…`
+    flag; an API key rides `x-api-key` instead. Subscription traffic carries NO
+    per-token cost, so there is nothing to optimize — and Anthropic rejects an
+    OAuth-authenticated request whose body was modified in flight, which is the
+    error a subscriber sees the moment their tool is pointed at this proxy. Both
+    facts point the same way: forward it byte-for-byte, never touching the body
+    or the cache. Metering still runs (a zero-savings receipt) for visibility.
+    """
+    if request.headers.get("x-api-key"):
+        return False  # API-key billing — optimize as normal
+    if "oauth" in (request.headers.get("anthropic-beta", "") or "").lower():
+        return True
+    auth = request.headers.get("authorization", "") or ""
+    token = auth[7:].lstrip() if auth[:7].lower() == "bearer " else ""
+    return token.startswith("sk-ant-oat")
+
+
 # ── Anthropic: POST /v1/messages ──────────────────────────────────────────────
 
 @proxy_app.post("/v1/messages")
@@ -1318,6 +1340,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     model: str = body.get("model", "")
     api_key = request.headers.get("x-api-key", "")
     provider_auth = api_key or request.headers.get("authorization", "")
+    # Pro/Max subscription (OAuth) traffic must be forwarded untouched: it has no
+    # per-token cost to optimize, and Anthropic rejects a modified OAuth body.
+    subscription = _is_anthropic_subscription(request)
     labels = parse_brevitas_headers(request.headers)
     baseline = count_request_tokens(body, "messages")
     brevitas_key = request.headers.get("x-brevitas-key", "")
@@ -1328,7 +1353,9 @@ async def proxy_anthropic_messages(request: Request) -> Any:
     session = _session_for(sess_key)
     router = _router_for(sess_key, "anthropic")
 
-    cache = _cache_for_request(request)
+    # Subscription traffic is never cached — a stored/served response would not be
+    # the byte-faithful passthrough Anthropic's OAuth path requires.
+    cache = None if subscription else _cache_for_request(request)
     cache_body = (_cache_body(body, request, brevitas_key, provider_auth)
                   if cache is not None else None)
     if cache is not None and lever_allowed("cache", gate_key):
@@ -1338,9 +1365,11 @@ async def proxy_anthropic_messages(request: Request) -> Any:
             session.advance()
             return JSONResponse(content=hit.response, status_code=200)
 
-    optimized = not _passthrough_mode()
+    # A subscription request is forced through the passthrough arm just like
+    # BREVITAS_PASSTHROUGH: body untouched, receipt still emitted (zero savings).
+    optimized = not (_passthrough_mode() or subscription)
     fleet_pipe, fleet_agent = _auto_fleet_labels(labels, provider_auth, body)
-    strategy = "passthrough"
+    strategy = "subscription_passthrough" if subscription else "passthrough"
     cache_attributable = False
     meta: dict[str, Any] = {}
     # Faithful means the request we forward is byte-faithful to the original, so its
