@@ -216,8 +216,10 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
             </div>
           </details>
           <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
-            <code className="font-mono text-brand-blue">bvx install</code> includes browser authentication. Use{' '}
-            <code className="font-mono text-brand-blue">bvx login</code> only when you need to reconnect the stored account.
+            <code className="font-mono text-brand-blue">bvx login</code> authorizes this device in your browser and stores
+            the key securely; <code className="font-mono text-brand-blue">bvx install</code> reuses it (and includes browser
+            authentication on its own when no key is stored). Re-run{' '}
+            <code className="font-mono text-brand-blue">bvx login</code> when you need to reconnect the stored account.
           </p>
         </section>
       )}
