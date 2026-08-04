@@ -898,7 +898,11 @@ async def run() -> None:
     global _BILLING_CONFIGURED, _BILLING_LOOP_RUNNING
     worker_id = os.getenv("BREVITAS_WORKER_ID") or f"worker_{uuid.uuid4().hex[:16]}"
     concurrency = max(1, min(100, int(os.getenv("BREVITAS_WORKER_CONCURRENCY", "10"))))
-    poll_seconds = max(0.05, float(os.getenv("BREVITAS_JOB_POLL_SECONDS", "0.25")))
+    # Redis (dispatcher.wait_for_notification) is the low-latency wake-up for
+    # new jobs; this interval only paces the Postgres fallback poll that covers
+    # missed notifications and expired-lease reclaims. At 0.25s the idle fleet
+    # was ~50 claim_ai_job RPCs/sec (~4.3M/day) against the shared database.
+    poll_seconds = max(0.05, float(os.getenv("BREVITAS_JOB_POLL_SECONDS", "5")))
     stop = asyncio.Event()
     validate_production_build_identity(_production_runtime())
     _configure_managed_kms_from_deployment()

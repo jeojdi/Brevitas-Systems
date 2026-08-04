@@ -863,6 +863,9 @@ class RedisJobDispatcher:
         try:
             events = await self.redis.xread({self.stream: last_id}, count=100, block=block_ms)
         except Exception:
+            # Without this pause a failing Redis makes every consume loop spin
+            # at claim-RPC latency, hammering Postgres until Redis recovers.
+            await asyncio.sleep(max(0.05, block_ms / 1000))
             return last_id
         if not events or not events[0][1]:
             return last_id
