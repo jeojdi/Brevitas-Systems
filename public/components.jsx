@@ -525,6 +525,7 @@ function CodeBlockPy({ source, filename, copyable = true }) {
 // `commands`: [{ label, prompt, command }]. Falls back to a single `command` prop.
 const DEFAULT_INSTALL_COMMANDS = [
   { label: 'macOS',   prompt: '$', command: 'brew install Brevitas-ai/brevitas/bvx && bvx login && bvx install' },
+  { label: 'Linux',   prompt: '$', command: 'brew install Brevitas-ai/brevitas/bvx && bvx login && bvx install' },
   { label: 'Windows', prompt: '>', command: 'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex; if ($?) { bvx login; if ($?) { bvx install } }' },
 ];
 
@@ -914,8 +915,8 @@ function Nav({ current }) {
       <nav className={`nav ${scrolled ? 'scrolled' : ''}`} aria-label="Primary">
         <div className="nav-inner">
           <a href="/" style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--fg)' }} aria-label="Brevitas Systems — home">
-            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" className="nav-logo logo-for-dark" style={{ height: 29, width: 'auto' }} />
-            <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" className="nav-logo logo-for-light" style={{ height: 29, width: 'auto' }} />
+            <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" width={678} height={117} className="nav-logo logo-for-dark" style={{ height: 29, width: 'auto' }} />
+            <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" width={330} height={56} className="nav-logo logo-for-light" style={{ height: 29, width: 'auto' }} />
           </a>
           <div className="nav-links desktop">
             {links.map(l => (
@@ -923,7 +924,7 @@ function Nav({ current }) {
             ))}
           </div>
           <ThemeToggle />
-          <Button variant="primary" href="/login" className="nav-cta">Sign up</Button>
+          <Button variant="primary" href="/signup" className="nav-cta">Sign up</Button>
           <button
             type="button"
             className="nav-hamburger"
@@ -941,7 +942,7 @@ function Nav({ current }) {
           <button ref={sheetCloseRef} type="button" className="nav-sheet-close" onClick={() => setSheet(false)} aria-label="Close menu">×</button>
           <div className="nav-sheet-links">
             {links.map(l => <a key={l.k} href={l.href}>{l.label}</a>)}
-            <a href="/login" style={{ color: 'var(--bronze)' }}>Sign up →</a>
+            <a href="/signup" style={{ color: 'var(--bronze)' }}>Sign up →</a>
           </div>
         </div>
       )}
@@ -969,8 +970,8 @@ function Footer() {
         <div className="footer-main">
           <div className="footer-brand">
             <a href="/" aria-label="Brevitas Systems — home" style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" className="logo-for-dark" style={{ height: 26, width: 'auto' }} />
-              <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" className="logo-for-light" style={{ height: 26, width: 'auto' }} />
+              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas Systems" width={678} height={117} className="logo-for-dark" style={{ height: 26, width: 'auto' }} />
+              <img src="/assets/b-logo-tight.png" alt="" aria-hidden="true" width={330} height={56} className="logo-for-light" style={{ height: 26, width: 'auto' }} />
             </a>
             <div className="footer-social">
               {social.map(s => (

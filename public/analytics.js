@@ -183,7 +183,10 @@
 
   function renderPrivacyControls() {
     var existing = document.getElementById('brevitas-privacy-controls');
-    if (existing) existing.remove();
+    if (existing) {
+      if (existing._bvtCleanup) existing._bvtCleanup();
+      existing.remove();
+    }
 
     var signal = privacySignalEnabled();
     var preference = storedPreference();
@@ -219,6 +222,23 @@
       }
     }
     button.addEventListener('click', function () { toggle(panel.hidden); });
+    // Escape and click-outside both close the panel; without them the dialog
+    // reads as unresponsive to visitors who expect either.
+    function onDocumentPointerDown(event) {
+      if (!panel.hidden && !wrapper.contains(event.target)) toggle(false);
+    }
+    function onDocumentKeydown(event) {
+      if (event.key === 'Escape' && !panel.hidden) {
+        toggle(false);
+        button.focus();
+      }
+    }
+    document.addEventListener('pointerdown', onDocumentPointerDown);
+    document.addEventListener('keydown', onDocumentKeydown);
+    wrapper._bvtCleanup = function () {
+      document.removeEventListener('pointerdown', onDocumentPointerDown);
+      document.removeEventListener('keydown', onDocumentKeydown);
+    };
     wrapper.querySelectorAll('[data-open]').forEach(function (node) {
       node.addEventListener('click', function () { toggle(true); });
     });
