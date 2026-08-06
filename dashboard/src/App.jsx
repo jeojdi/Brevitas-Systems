@@ -758,6 +758,16 @@ export default function App() {
     )
   }
 
+  // A pending device connect always leaves the dashboard for the DeviceConnect
+  // screen, so rendering the skeleton shell here would only flash for the beat
+  // until company context resolves. Hold the boot screen for that beat instead.
+  // needsOnboarding and error are excluded so their branches below still win —
+  // without that, a workspace-less or errored context (activeCompanyId '') would
+  // leave this branch up forever.
+  if (deviceCode && !companyContext.activeCompanyId && !companyContext.error && !companyContext.needsOnboarding) {
+    return <BootScreen step={1} label="Loading your workspace…" />
+  }
+
   if (deviceCode && companyContext.activeCompanyId && !companyContext.loading) {
     const done = () => {
       sessionStorage.removeItem('bvx_device_code')
@@ -916,13 +926,17 @@ export default function App() {
             className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
             aria-label="Dashboard sections"
           >
+            {/* Highlight follows renderTab, not activeTab: while data is pending
+                the panel is pinned to Overview, and a nav that highlights a tab
+                the main area is not showing reads as a bug. The two converge
+                again the moment the key lands. */}
             {visibleTabs.map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                aria-current={activeTab === tab ? 'page' : undefined}
+                aria-current={renderTab === tab ? 'page' : undefined}
                 className={`shrink-0 min-h-11 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
-                  activeTab === tab
+                  renderTab === tab
                     ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
                     : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy hover:bg-brand-bg dark:hover:bg-brand-dark-elevated'
                 }`}
