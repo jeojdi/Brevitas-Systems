@@ -115,6 +115,49 @@ function pendingDeviceCode() {
   return sessionStorage.getItem('bvx_device_code') || ''
 }
 
+// Auth, company context, and key provisioning resolve sequentially, so a signed-in
+// user crosses three loading branches before content renders. Each used to paint its
+// own 11px caption on the bare page background — in dark mode that read as a black
+// screen, and the three screens in a row read as being stuck rather than progressing.
+// One shared screen with a persistent logo, a real spinner, and a fixed three-step
+// trail makes the same waits read as a single boot that is visibly moving forward.
+const BOOT_STEPS = ['Signing you in', 'Loading workspace', 'Preparing dashboard']
+
+function BootScreen({ step, label }) {
+  return (
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center gap-6 px-6 text-center">
+      <a href="/" aria-label="Brevitas Systems home">
+        <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-8 w-auto dark:hidden" />
+        <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-8 w-auto hidden dark:block" />
+      </a>
+      {/* The spinner stays hidden from assistive tech: the aria-live paragraph
+          below already carries the label, and a second live region (role="status")
+          announcing the same text would double-speak every stage change. */}
+      <div className="boot-spinner" aria-hidden="true" />
+      {/* aria-live so screen-reader users hear the stage change without the three
+          branches having to manage focus across unmounts. */}
+      <p aria-live="polite" className="text-sm text-brand-navy dark:text-brand-dark-navy">{label}</p>
+      <ol className="flex flex-wrap items-center justify-center gap-2 font-mono text-[11px] tracking-wide">
+        {BOOT_STEPS.map((name, index) => (
+          <li key={name} className="flex items-center gap-2">
+            {index > 0 && <span aria-hidden="true" className="text-brand-muted dark:text-brand-dark-muted">→</span>}
+            <span
+              aria-current={index === step ? 'step' : undefined}
+              className={index < step
+                ? 'text-brand-teal'
+                : index === step
+                  ? 'text-brand-blue'
+                  : 'text-brand-muted dark:text-brand-dark-muted'}
+            >
+              {name}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 function MoonIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -648,13 +691,7 @@ export default function App() {
   }
 
   if (authLoading) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          Loading…
-        </span>
-      </div>
-    )
+    return <BootScreen step={0} label="Signing you in…" />
   }
 
   if (recoveringPassword) {
@@ -741,23 +778,11 @@ export default function App() {
   }
 
   if (!companyContext.activeCompanyId || companyContext.loading || companySwitching) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          {companySwitching ? 'Switching workspace…' : 'Loading your workspace…'}
-        </span>
-      </div>
-    )
+    return <BootScreen step={1} label={companySwitching ? 'Switching workspace…' : 'Loading your workspace…'} />
   }
 
   if (keyLoading) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          Setting up your dashboard…
-        </span>
-      </div>
-    )
+    return <BootScreen step={2} label="Setting up your dashboard…" />
   }
 
   if (keyError) {

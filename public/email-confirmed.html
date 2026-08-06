@@ -20,6 +20,13 @@
     p { margin: 16px 0 30px; color: #687092; line-height: 1.6; }
     a { display: block; padding: 14px 20px; border-radius: 12px; background: #4f5fc4; color: #fff; text-decoration: none; font-weight: 600; }
     a:hover { opacity: .9; }
+    .spinner { width: 22px; height: 22px; margin: -12px auto 26px; border: 3px solid #e2e4f0; border-top-color: #4f5fc4; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* A motionless ring reads as a hang, which is worse than no indicator, so
+       under reduced motion the message text alone carries the "in progress" state. */
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { display: none; }
+    }
     @media (max-width: 520px) {
       body { padding: 16px; }
       main { padding: 32px 22px; border-radius: 16px; }
@@ -31,6 +38,7 @@
       body { background: #0c0c0c; color: #eee; }
       main { background: #141414; border-color: #242424; box-shadow: none; }
       p { color: #aaa; }
+      .spinner { border-color: #2e2e2e; border-top-color: #4f5fc4; }
     }
   </style>
 </head>
@@ -40,6 +48,7 @@
     <div class="check" aria-hidden="true">✓</div>
     <h1 id="title">Your email is confirmed.</h1>
     <p id="message">Your account is ready. Sign in to open your token tracking dashboard.</p>
+    <div class="spinner" id="spinner" hidden aria-hidden="true"></div>
     <a id="continue" href="/login">Continue to sign in →</a>
   </main>
   <script>
@@ -78,7 +87,16 @@
     if (hasSession && !failed) {
       target += location.hash;
       continueLink.textContent = 'Continue to your dashboard →';
-      document.querySelector('#message').textContent = 'Your account is ready. Continue to open your token tracking dashboard.';
+      document.querySelector('#message').textContent = 'Your email is confirmed. Taking you to your dashboard…';
+      document.querySelector('#spinner').hidden = false;
+      // Continue automatically: users read the extra click on this page as the
+      // flow stalling. The delay is just long enough for the confirmation to
+      // visibly land before the redirect, and the button stays in place as the
+      // immediate/manual path in case the timer never fires (throttled
+      // background tab, script error after this point). `location.replace` keeps
+      // this token-bearing URL out of session history, so Back from the
+      // dashboard cannot bounce through it and re-surface the fragment.
+      setTimeout(() => location.replace(target), 1200);
     }
     continueLink.href = target;
 

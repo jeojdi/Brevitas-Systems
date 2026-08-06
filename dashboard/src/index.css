@@ -39,6 +39,29 @@ body,
 .dark ::-webkit-scrollbar-track { background: #0c0c0c; }
 .dark ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 9999px; }
 
+/* Boot screen spinner. A hand-rolled ring rather than a Tailwind animate-spin div
+   because the accent quadrant has to stay visible when prefers-reduced-motion
+   suppresses the rotation — a fully uniform static ring would look like a decoration,
+   not an in-progress load. */
+.boot-spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  border: 2px solid #e2e4f0;
+  border-top-color: #4f5fc4;
+  animation: boot-spin 0.8s linear infinite;
+}
+.dark .boot-spinner {
+  border-color: #2a2a2a;
+  border-top-color: #4f5fc4;
+}
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-spinner { animation: none; }
+}
+
 /* Cormorant italic accents */
 .accent-blue { @apply font-serif italic text-brand-blue; }
 .accent-teal { @apply font-serif italic text-brand-teal; }

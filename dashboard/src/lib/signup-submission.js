@@ -16,6 +16,7 @@ import { normalizeAuthEmail, PASSWORD_MISMATCH_MESSAGE } from './auth-credential
 
 export const SIGNUP_CONFIRMATION_NOTICE =
   'We sent a confirmation link to your email, and you need to click it to activate your account. '
+  + 'Delivery can take a minute or two, so check your spam folder if it has not arrived. '
   + 'If you already have an account with this address, use "Forgot password" instead of signing up '
   + 'again, because a second signup will not change your password.'
 
