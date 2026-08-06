@@ -46,7 +46,7 @@ test('the dashboard asks for the remaining setup instead of gating on it', async
   assert.match(app, /onComplete=\{finishWorkspaceSetup\}/)
   // The button has to reach the tab that actually carries the install commands.
   assert.match(app, /onOpenSetup=\{\(\) => setActiveTab\('Connect'\)\}/)
-  assert.match(app, /activeTab === 'Connect' && <ConnectionPage/)
+  assert.match(app, /renderTab === 'Connect' && <ConnectionPage/)
 })
 
 test('platform install commands match the distributed BVX installation paths', () => {
