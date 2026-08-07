@@ -120,7 +120,8 @@
   }
   h1 em {
     font-style: italic;
-    color: var(--bronze);
+    color: #6f84e8;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85), 0 1px 18px rgba(0, 0, 0, 0.75);
   }
 
   /* same input / same output */
@@ -142,7 +143,11 @@
     text-wrap: balance;
   }
   .parity .line strong { color: #fff; font-weight: 400; }
-  .parity .line em { font-style: italic; color: var(--bronze); }
+  .parity .line em {
+    font-style: italic;
+    color: #6f84e8;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85), 0 1px 18px rgba(0, 0, 0, 0.75);
+  }
 
   /* money */
   .money-block { animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.7s both; }
@@ -152,15 +157,6 @@
     font-size: clamp(12px, 1.5vh, 26px);
     color: var(--stone-2);
     margin-bottom: 1.6vh;
-  }
-  .live-dot {
-    display: inline-block;
-    width: 0.55em;
-    height: 0.55em;
-    border-radius: 50%;
-    background: var(--signal);
-    margin-right: 0.5em;
-    animation: pulse 2s ease-in-out infinite;
   }
   .money {
     font-variant-numeric: tabular-nums;
@@ -310,11 +306,6 @@
     from { opacity: 0; transform: translateY(-20px); }
     to   { opacity: 1; transform: translateY(0); }
   }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(141, 216, 198, 0.5); }
-    50%      { opacity: 0.6; box-shadow: 0 0 0 0.4em rgba(141, 216, 198, 0); }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; }
   }
@@ -345,7 +336,7 @@
     </div>
 
     <div class="money-block">
-      <div class="money-label"><span class="live-dot"></span>saved for our customers</div>
+      <div class="money-label">saved for our customers</div>
       <div class="money mono" id="money"></div>
       <div class="money-sub">over the last <strong>4 days</strong> — and counting</div>
     </div>
