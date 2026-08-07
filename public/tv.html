@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brevitas — make your models cheaper</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link href="/fonts/fonts.css" rel="stylesheet">
+<style>
+  :root {
+    --ink: #06070b;
+    --line: rgba(255, 255, 255, 0.18);
+    --stone: rgba(255, 255, 255, 0.55);
+    --stone-2: rgba(255, 255, 255, 0.65);
+    --bone: #f5f7ff;
+    --bone-dim: rgba(255, 255, 255, 0.78);
+    --bronze: #8ea6ff;
+    --signal: #8dd8c6;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--ink);
+    color: var(--bone);
+    font-family: 'Inter Tight', system-ui, sans-serif;
+    cursor: none;
+  }
+
+  .serif {
+    font-family: 'Newsreader', Georgia, serif;
+    font-variation-settings: "opsz" 36;
+  }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* background — same artwork as the dark-mode landing hero */
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+  .backdrop img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 68% 28%;
+  }
+  /* quiet ASCII drift over the artwork, under the scrim */
+  #ascii {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    opacity: 0.8;
+    pointer-events: none;
+  }
+  /* same scrim idea as the landing hero: light at top, dark at bottom */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(to bottom,
+      rgba(0, 0, 0, 0.30) 0%,
+      rgba(0, 0, 0, 0.18) 30%,
+      rgba(0, 0, 0, 0.38) 62%,
+      rgba(0, 0, 0, 0.78) 100%);
+  }
+
+  .stage {
+    position: relative;
+    z-index: 2;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    text-align: center;
+    padding: 5.5vh 6vw 5vh;
+    text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+  }
+
+  /* top: wordmark, same as the site nav */
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.9vw;
+    animation: fadeDown 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .brand img { height: clamp(26px, 3vh, 56px); width: auto; }
+  .brand span {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-size: clamp(24px, 3vh, 54px);
+    color: #fff;
+  }
+
+  .center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4.5vh;
+  }
+
+  h1 {
+    font-family: 'Newsreader', Georgia, serif;
+    font-variation-settings: "opsz" 36;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 0.98;
+    text-wrap: balance;
+    font-size: clamp(52px, 8.4vh, 180px);
+    max-width: 90vw;
+    color: #fff;
+    animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
+  }
+  h1 em {
+    font-style: italic;
+    color: var(--bronze);
+  }
+
+  /* same input / same output */
+  .parity {
+    display: flex;
+    flex-direction: column;
+    gap: 2.2vh;
+    align-items: center;
+    animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.5s both;
+  }
+  .parity .line {
+    font-family: 'Newsreader', Georgia, serif;
+    font-variation-settings: "opsz" 36;
+    font-weight: 300;
+    font-size: clamp(28px, 4.3vh, 90px);
+    line-height: 1.12;
+    color: var(--bone-dim);
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .parity .line strong { color: #fff; font-weight: 400; }
+  .parity .line em { font-style: italic; color: var(--bronze); }
+
+  /* money */
+  .money-block { animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.7s both; }
+  .money-label {
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    font-size: clamp(12px, 1.5vh, 26px);
+    color: var(--stone-2);
+    margin-bottom: 1.6vh;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 0.55em;
+    height: 0.55em;
+    border-radius: 50%;
+    background: var(--signal);
+    margin-right: 0.5em;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .money {
+    font-variant-numeric: tabular-nums;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    font-size: clamp(56px, min(10vh, 14vw), 240px);
+    color: #fff;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .money .cents {
+    font-size: 0.42em;
+    color: var(--bone-dim);
+    display: inline-flex;
+    align-items: flex-end;
+  }
+  /* odometer digits — each digit is a window onto a rolling 0-9 strip */
+  .roll {
+    display: inline-block;
+    height: 1em;
+    overflow: hidden;
+  }
+  .strip {
+    display: block;
+    transition: transform 700ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .strip.notrans { transition: none; }
+  .dig {
+    display: block;
+    height: 1em;
+    line-height: 1;
+    text-align: center;
+  }
+
+  /* partner logo carousel */
+  .partners {
+    width: 100%;
+    animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.85s both;
+  }
+  .partners-label {
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    font-size: clamp(11px, 1.3vh, 22px);
+    color: var(--stone);
+    margin-bottom: 2vh;
+  }
+  .marquee {
+    overflow: hidden;
+    width: 100%;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  }
+  .marquee-track {
+    display: flex;
+    align-items: center;
+    gap: clamp(44px, 7vw, 110px);
+    width: max-content;
+    animation: marquee 30s linear infinite;
+  }
+  .marquee-track img {
+    height: clamp(24px, 3.2vh, 60px);
+    width: auto;
+    max-width: 24vw;
+    object-fit: contain;
+    opacity: 0.92;
+  }
+  /* icon-only marks get their name set beside them */
+  .partner-lockup {
+    display: flex;
+    align-items: center;
+    gap: 0.55em;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    font-size: clamp(18px, 2.4vh, 46px);
+    color: rgba(255, 255, 255, 0.92);
+  }
+  .partner-lockup img { height: clamp(22px, 2.9vh, 54px); }
+  /* colored logos designed for white sites sit in a white chip */
+  .partner-chip {
+    background: #fff;
+    border-radius: clamp(6px, 0.8vh, 14px);
+    padding: clamp(5px, 0.7vh, 12px) clamp(10px, 1.2vh, 20px);
+    display: flex;
+    align-items: center;
+  }
+  .partner-chip img { height: clamp(20px, 2.6vh, 48px); }
+  /* Native: serif wordmark + gold star, rebuilt as a vector lockup */
+  .partner-serif {
+    font-family: 'Newsreader', Georgia, serif;
+    font-variation-settings: "opsz" 36;
+    font-weight: 400;
+    color: #f2ead6;
+    font-size: clamp(22px, 3vh, 56px);
+  }
+  .partner-serif svg { height: 0.8em; width: 0.8em; fill: #e3b54e; }
+  .round { border-radius: 50%; }
+  @keyframes marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  .money-sub {
+    margin-top: 1.8vh;
+    font-size: clamp(16px, 2.2vh, 42px);
+    color: var(--bone-dim);
+    font-weight: 300;
+  }
+  .money-sub strong { color: #fff; font-weight: 500; }
+
+  /* bottom */
+  .cta {
+    display: flex;
+    flex-direction: column;
+    gap: 2vh;
+    align-items: center;
+    animation: fadeUp 1.2s cubic-bezier(0.16, 1, 0.3, 1) 0.9s both;
+  }
+  .qr-card {
+    background: #fff;
+    border-radius: clamp(10px, 1.4vh, 24px);
+    padding: clamp(8px, 1vh, 18px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+  .qr-card svg {
+    display: block;
+    width: clamp(110px, 13vh, 260px);
+    height: clamp(110px, 13vh, 260px);
+  }
+  .qr-label {
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    font-size: clamp(11px, 1.4vh, 24px);
+    color: var(--stone-2);
+  }
+  .cta .url {
+    font-size: clamp(18px, 2.3vh, 46px);
+    letter-spacing: 0.06em;
+    color: #fff;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(28px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(141, 216, 198, 0.5); }
+    50%      { opacity: 0.6; box-shadow: 0 0 0 0.4em rgba(141, 216, 198, 0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="backdrop">
+  <picture>
+    <source type="image/avif" srcset="/assets/brevitas.avif">
+    <img src="/assets/brevitas.jpg" alt="">
+  </picture>
+</div>
+<canvas id="ascii"></canvas>
+<div class="scrim"></div>
+
+<div class="stage">
+  <div class="brand">
+    <img src="/brevitas-mark.svg" alt=""><span>brevitas</span>
+  </div>
+
+  <div class="center">
+    <h1>make your models <em>cheaper.</em></h1>
+
+    <div class="parity">
+      <div class="line"><strong>same input.</strong> <strong>same output.</strong></div>
+      <div class="line">you just <em>stop overpaying.</em></div>
+    </div>
+
+    <div class="money-block">
+      <div class="money-label"><span class="live-dot"></span>saved for our customers</div>
+      <div class="money mono" id="money"></div>
+      <div class="money-sub">over the last <strong>4 days</strong> — and counting</div>
+    </div>
+  </div>
+
+  <div class="partners">
+    <div class="partners-label">partnering with</div>
+    <div class="marquee">
+      <div class="marquee-track" id="partner-track">
+        <img src="/assets/ycombinator-logo.png" alt="Y Combinator">
+        <img src="/assets/deepmind-logo.svg" alt="Google DeepMind">
+        <img src="/assets/trusted-nvidia-dark-brevitas.svg" alt="NVIDIA">
+        <img src="/assets/phia-logo.png" alt="Phia">
+        <img src="/assets/trusted-anthropic-coral-brevitas.svg" alt="Anthropic">
+        <img src="/assets/tv-partners/venehealth.svg" alt="Vene Health">
+        <span class="partner-chip"><img src="/assets/tv-partners/vivirion.svg" alt="Vivirion Solutions"></span>
+        <span class="partner-lockup"><img src="/assets/tv-partners/my-future-self.png" alt="" style="border-radius: 22%;">MyFutureSelf</span>
+        <span class="partner-lockup partner-serif"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0l1.8 8.1 5.7-5.6-2.7 7.8 8.2-1.3-7 4.5 7.5 3.7-8.3-.3 4.2 7.2-6.7-5-.7 8.2-2-8-5.5 6.2 2.4-8-8 2 6.7-4.9L0 10.9l8.2-.3-4.6-6.9 6.6 4.9z"/></svg>Native</span>
+        <span class="partner-lockup"><img src="/assets/tv-partners/arkor-mark.png" alt="" class="round">Arkor</span>
+        <img src="/assets/tv-partners/vovy.png" alt="Vovy AI">
+      </div>
+    </div>
+  </div>
+
+  <div class="cta">
+    <div class="qr-card">
+      <!-- QR → https://brevitassystems.com/signup -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 37 37" shape-rendering="crispEdges" role="img" aria-label="QR code to brevitassystems.com/signup"><path stroke="#06070b" d="M4 4.5h7m5 0h2m2 0h1m2 0h1m2 0h7M4 5.5h1m5 0h1m1 0h5m1 0h3m2 0h2m1 0h1m5 0h1M4 6.5h1m1 0h3m1 0h1m3 0h1m2 0h2m1 0h1m5 0h1m1 0h3m1 0h1M4 7.5h1m1 0h3m1 0h1m2 0h1m1 0h5m6 0h1m1 0h3m1 0h1M4 8.5h1m1 0h3m1 0h1m1 0h1m1 0h3m1 0h1m2 0h3m2 0h1m1 0h3m1 0h1M4 9.5h1m5 0h1m3 0h4m4 0h3m1 0h1m5 0h1M4 10.5h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7M13 11.5h6m1 0h2m1 0h2M4 12.5h1m1 0h1m1 0h1m1 0h1m7 0h4m2 0h1m3 0h1m2 0h1M7 13.5h1m1 0h1m1 0h1m2 0h2m2 0h2m1 0h1m2 0h3m2 0h1m2 0h1M4 14.5h3m3 0h2m1 0h1m1 0h3m2 0h3m1 0h1m5 0h3M4 15.5h2m5 0h5m3 0h1m1 0h4m6 0h1M6 16.5h3m1 0h1m4 0h2m4 0h1m3 0h3m1 0h1m1 0h2M8 17.5h1m4 0h1m2 0h2m2 0h1m3 0h1m1 0h1m2 0h1m2 0h1M5 18.5h1m2 0h5m1 0h2m2 0h1m2 0h1m3 0h5m1 0h2M5 19.5h1m5 0h3m3 0h6m2 0h1m3 0h1m1 0h1M4 20.5h3m3 0h2m3 0h1m2 0h1m2 0h1m3 0h2m2 0h1m1 0h2M7 21.5h1m3 0h6m1 0h1m1 0h1m3 0h3m2 0h2m1 0h1M4 22.5h1m2 0h1m2 0h3m3 0h2m2 0h1m5 0h1m4 0h2M5 23.5h2m1 0h2m1 0h3m1 0h2m3 0h4m3 0h1m1 0h1m1 0h1M4 24.5h1m3 0h9m2 0h10M12 25.5h2m1 0h3m2 0h1m3 0h1m3 0h1m1 0h3M4 26.5h7m2 0h2m1 0h1m1 0h1m2 0h1m1 0h2m1 0h1m1 0h2m1 0h2M4 27.5h1m5 0h1m5 0h3m1 0h3m1 0h1m3 0h2m1 0h2M4 28.5h1m1 0h3m1 0h1m1 0h5m1 0h1m1 0h2m2 0h5m3 0h1M4 29.5h1m1 0h3m1 0h1m2 0h4m1 0h1m1 0h3m1 0h1m3 0h1m1 0h3M4 30.5h1m1 0h3m1 0h1m1 0h7m2 0h2m1 0h2m1 0h3m2 0h1M4 31.5h1m5 0h1m2 0h4m1 0h2m1 0h2m1 0h2m1 0h2m2 0h1M4 32.5h7m1 0h10m1 0h3m2 0h1m2 0h2"/></svg>
+    </div>
+    <div class="qr-label">scan to get started</div>
+    <div class="url mono">brevitassystems.com</div>
+  </div>
+</div>
+
+<script>
+/* quiet ASCII drift: a few sparse glyph columns sinking slowly with a short
+   fading tail. ~10fps, low alpha, dimmed further by the scrim above it. */
+(function () {
+  const canvas = document.getElementById('ascii');
+  const ctx = canvas.getContext('2d');
+  const CHARS = '01<>{}[]=+/\\|:·$';
+  let cols = [], fs;
+
+  function resize() {
+    canvas.width = innerWidth * devicePixelRatio;
+    canvas.height = innerHeight * devicePixelRatio;
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    fs = Math.max(13, Math.round(innerHeight / 70));
+    const n = Math.ceil(innerWidth / (fs * 2.2));
+    cols = Array.from({ length: n }, (_, i) => ({
+      x: i * fs * 2.2 + Math.random() * fs,
+      y: Math.random() * innerHeight,
+      v: 0.35 + Math.random() * 0.7,
+      trail: 5 + (Math.random() * 7 | 0),
+    }));
+  }
+  resize();
+  addEventListener('resize', resize);
+
+  function frame() {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    ctx.font = fs + "px 'JetBrains Mono', monospace";
+    for (const col of cols) {
+      for (let k = 0; k < col.trail; k++) {
+        const a = (1 - k / col.trail) * 0.5;
+        ctx.fillStyle = (k === 0 && Math.random() > 0.92)
+          ? 'rgba(141, 216, 198, ' + a + ')'
+          : 'rgba(142, 166, 255, ' + a + ')';
+        ctx.fillText(CHARS[Math.random() * CHARS.length | 0], col.x, col.y - k * fs);
+      }
+      col.y += col.v * fs * 0.35;
+      if (col.y - col.trail * fs > innerHeight) col.y = -Math.random() * innerHeight * 0.25;
+    }
+  }
+
+  frame();
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    let last = 0;
+    (function tick(t) {
+      if (t - last > 100) { last = t; frame(); }
+      requestAnimationFrame(tick);
+    })(0);
+  }
+})();
+
+/* seamless marquee: the track animates to -50%, so its content must appear twice */
+(function () {
+  const track = document.getElementById('partner-track');
+  track.innerHTML += track.innerHTML;
+})();
+
+/* live dollar counter. Starts at $6,391.28 and climbs sporadically — mostly
+   20-60¢ nudges at irregular intervals, occasional multi-dollar bursts,
+   averaging ≈ $0.14/s (≈ +$2,060 over 4 hours). State persists in
+   localStorage so a page reload doesn't reset the number; while the page
+   was closed the total advances at the average rate. Digits roll
+   odometer-style: each digit is a window onto a 0-9 strip that only ever
+   rolls forward. */
+(function () {
+  const START = 6391.28;
+  const AVG_RATE = 0.14;                      // $/second, catch-up pace
+  const el = document.getElementById('money');
+
+  let total = START;
+  try {
+    const saved = JSON.parse(localStorage.getItem('tv_saved_counter'));
+    if (saved && saved.total >= START) {
+      total = saved.total + ((Date.now() - saved.t) / 1000) * AVG_RATE;
+    }
+  } catch (e) {}
+
+  function persist() {
+    try {
+      localStorage.setItem('tv_saved_counter',
+        JSON.stringify({ total, t: Date.now() }));
+    } catch (e) {}
+  }
+  let slots = [];        // rolling digit slots, dollars first then 2 cents
+  let dollarLen = 0;     // digit count the current DOM was built for
+
+  function makeRoll() {
+    const roll = document.createElement('span');
+    roll.className = 'roll';
+    const strip = document.createElement('span');
+    strip.className = 'strip';
+    // two 0-9 cycles so a 9→0 wrap can keep rolling forward, then snap back
+    for (let k = 0; k < 2; k++) {
+      for (let i = 0; i < 10; i++) {
+        const d = document.createElement('span');
+        d.className = 'dig';
+        d.textContent = i;
+        strip.appendChild(d);
+      }
+    }
+    roll.appendChild(strip);
+    slots.push({ strip, pos: 0 });
+    return roll;
+  }
+
+  function build(dollarStr) {
+    slots = [];
+    el.textContent = '';
+    const sym = document.createElement('span');
+    sym.textContent = '$';
+    el.appendChild(sym);
+    for (const ch of dollarStr) {
+      if (ch === ',') {
+        const c = document.createElement('span');
+        c.textContent = ',';
+        el.appendChild(c);
+      } else {
+        el.appendChild(makeRoll());
+      }
+    }
+    const cents = document.createElement('span');
+    cents.className = 'cents';
+    const dot = document.createElement('span');
+    dot.textContent = '.';
+    cents.appendChild(dot);
+    cents.appendChild(makeRoll());
+    cents.appendChild(makeRoll());
+    el.appendChild(cents);
+    dollarLen = dollarStr.replace(/,/g, '').length;
+  }
+
+  function setDigit(slot, target) {
+    const cur = slot.pos % 10;
+    if (cur === target) return;
+    slot.pos += (target - cur + 10) % 10;   // always roll forward
+    slot.strip.style.transform = 'translateY(-' + slot.pos + 'em)';
+    if (slot.pos >= 10) {
+      // after the roll lands in the second cycle, snap back invisibly
+      setTimeout(() => {
+        slot.strip.classList.add('notrans');
+        slot.pos -= 10;
+        slot.strip.style.transform = 'translateY(-' + slot.pos + 'em)';
+        void slot.strip.offsetHeight;
+        slot.strip.classList.remove('notrans');
+      }, 760);
+    }
+  }
+
+  function render() {
+    const dollars = Math.floor(total);
+    const cents = Math.floor((total - dollars) * 100);
+    const dollarStr = dollars.toLocaleString('en-US');
+    const digits = (dollarStr.replace(/,/g, '') + String(cents).padStart(2, '0')).split('');
+    if (digits.length - 2 !== dollarLen) build(dollarStr);
+    digits.forEach((d, i) => setDigit(slots[i], +d));
+  }
+
+  /* sporadic ticks: random 0.5-6.5s waits, then a jump —
+     ~20% tiny drip (2-10¢), ~76% typical 20-60¢, ~4% burst ($2-8) */
+  function tick() {
+    setTimeout(() => {
+      const r = Math.random();
+      if (r < 0.04)      total += 2 + Math.random() * 6;
+      else if (r < 0.24) total += 0.02 + Math.random() * 0.08;
+      else               total += 0.20 + Math.random() * 0.40;
+      render();
+      persist();
+      tick();
+    }, 500 + Math.random() * 6000);
+  }
+
+  build(Math.floor(total).toLocaleString('en-US'));
+  // entrance: strips sit at 0, then roll up to the live value
+  setTimeout(render, 900);
+  tick();
+})();
+</script>
+</body>
+</html>
