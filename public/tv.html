@@ -480,9 +480,14 @@
   const AVG_RATE = 0.14;                      // $/second, catch-up pace
   const el = document.getElementById('money');
 
+  /* v2: key bumped 2026-08-07 to reset every screen back to START;
+     stale v1 state is discarded */
+  const KEY = 'tv_saved_counter_v2';
+
   let total = START;
   try {
-    const saved = JSON.parse(localStorage.getItem('tv_saved_counter'));
+    localStorage.removeItem('tv_saved_counter');
+    const saved = JSON.parse(localStorage.getItem(KEY));
     if (saved && saved.total >= START) {
       total = saved.total + ((Date.now() - saved.t) / 1000) * AVG_RATE;
     }
@@ -490,7 +495,7 @@
 
   function persist() {
     try {
-      localStorage.setItem('tv_saved_counter',
+      localStorage.setItem(KEY,
         JSON.stringify({ total, t: Date.now() }));
     } catch (e) {}
   }
