@@ -51,6 +51,17 @@
     }
   }
 
+  // PostHog's own bot filtering is user-agent based, and the crawler that polluted
+  // the numbers presents a normal Chrome UA (rotating versions 109-149+) with a fresh
+  // anonymous id per visit, so neither the SDK nor a PostHog cohort can catch it
+  // after the fact. What automation stacks cannot cheaply hide is the WebDriver flag:
+  // ChromeDriver, Puppeteer, Playwright, and headless Chrome all set
+  // navigator.webdriver=true, and no human-driven browser does. Diagnosed 2026-08-08:
+  // three such hits fully determined /login/personal's bounce rate.
+  function isAutomatedBrowser() {
+    try { return navigator.webdriver === true; } catch (_) { return false; }
+  }
+
   function privacySignalEnabled() {
     // GPC only. It is legally binding under CCPA/CPRA (California) and the Colorado and
     // Connecticut privacy acts, so it must be honoured. Do Not Track is deliberately NOT
@@ -67,6 +78,7 @@
 
   function analyticsEnabled() {
     if (isDevelopmentHost()) return false;
+    if (isAutomatedBrowser()) return false;
     if (privacySignalEnabled()) return false;
     return storedPreference() !== 'off';
   }
@@ -262,7 +274,7 @@
     // Belt and braces with the analyticsEnabled() guard: opting out still loads and
     // initializes the SDK, and a developer clicking "Allow analytics" on localhost
     // would then opt straight back in. Declining to initialize at all removes that path.
-    if (!config.enabled || !config.projectToken || isDevelopmentHost()) return;
+    if (!config.enabled || !config.projectToken || isDevelopmentHost() || isAutomatedBrowser()) return;
     // PostHog's queueing bootstrap lets calls made during initial page render wait
     // safely for the asynchronously loaded SDK.
     (function (documentObject, posthog) {
