@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Coroutine, Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -62,6 +63,12 @@ from .billing_settlement_sweep import (
 )
 from .build_info import build_identity, validate_production_build_identity
 from .jobs import PermanentJobError
+from .store import (
+    _WARM_TTL_MAX_GAP_SECONDS,
+    warm_holdout_fraction,
+    warm_model_class,
+    warm_ttl_tier,
+)
 from .observability import (
     BillingTelemetryAdapter,
     graceful_observability_shutdown,
@@ -541,7 +548,69 @@ def _warm_claim_kwargs() -> dict[str, Any]:
             "BREVITAS_WARM_CLAIM_LEASE_SECONDS",
             max(900, int(_warm_bound("BREVITAS_WARM_CLAIM_LIMIT", 50, 1, 500)) * 30),
             60, 7200)),
+        # Control arm, default 0 (off). Parsed by the store rather than
+        # _warm_bound because api/server.py's warm_status has to report the
+        # same number from the same env var, and two parsers of one knob is
+        # how the advertised share and the applied share drift apart.
+        "holdout_fraction": warm_holdout_fraction(),
     }
+
+
+# Transport failures that provably happen before any request byte can be
+# accepted by the provider — the same set brevitas/provider_reliability.py:590-594
+# retries unconditionally, and for the same reason. Everything else (read/write
+# timeouts, resets, protocol errors) is ambiguous after a POST: the provider may
+# already have run and billed the ping. UnsupportedProtocol never opens a
+# connection at all. The terminal exception classifies the whole call
+# because KNOWN_IDEMPOTENT_OPERATIONS is empty, so the pool only ever retries
+# these pre-send failures — an ambiguous failure is never followed by another
+# attempt whose type could mask it.
+_WARM_PRE_SEND_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+    httpx.ProxyError, httpx.UnsupportedProtocol,
+)
+
+
+def _warm_touch_gap_seconds(row: Mapping[str, Any]) -> float | None:
+    """Seconds since the claimed prefix was last provably touched.
+
+    warm_due_claim reports the PRE-claim touch, so this is the interval the ping
+    actually tested. None when the claim carries no usable timestamp or the gap
+    falls outside the physics table's own bound, in which case no observation is
+    recorded rather than a fabricated one.
+    """
+    raw = str(row.get("last_touch_at") or "")
+    if not raw:
+        return None
+    try:
+        touched = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if touched.tzinfo is None:
+        touched = touched.replace(tzinfo=timezone.utc)
+    gap = (datetime.now(timezone.utc) - touched).total_seconds()
+    return gap if 0 <= gap <= _WARM_TTL_MAX_GAP_SECONDS else None
+
+
+def _warm_ttl_outcome(receipt: Any) -> str | None:
+    """Read the free TTL sensor off a ping receipt.
+
+    Cached-input tokens mean the provider served the prefix from a live entry;
+    cache-write tokens mean it had to create the entry, so the previous one was
+    gone. A receipt with neither (unparseable body, or a provider that reports
+    no cache legs) is not an observation and must not be invented.
+    """
+    if int(getattr(receipt, "cached_input_tokens", 0) or 0) > 0:
+        return "warm"
+    if int(getattr(receipt, "cache_write_tokens", 0) or 0) > 0:
+        return "expired"
+    return None
+
+
+def _warm_error_is_pre_send(exc: BaseException) -> bool:
+    """True when no request bytes can have reached the provider, so the ping
+    cost nothing and its reservation is released rather than booked."""
+    return isinstance(exc, _WARM_PRE_SEND_ERRORS)
 
 
 def _send_warm_ping(provider: str, spec: dict, body: dict,
@@ -640,14 +709,18 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
         except ProviderCircuitOpen:
             # Fires before any request is issued, so nothing was spent.
             return
-        except httpx.HTTPError:
-            # Known residual gap: a read timeout or reset after the provider
-            # already accepted the request settles 'release', which books no
-            # spend. Booking it needs a settle outcome that releases the
-            # reservation while recording spend ('spent_unknown'), which has to
-            # be added to warm_ping_settle and its RPC whitelist together — a
-            # forward migration plus api/store.py, neither of which can change
-            # here. Until then this is capped by max_pings_per_customer_day.
+        except httpx.HTTPError as exc:
+            # A transport failure is only free when the request never left. Once
+            # bytes are on the wire the provider may have accepted, cached and
+            # billed the ping, and settling 'release' would book $0 — spend the
+            # org really paid, missing from the ledger that computes the fee
+            # ceiling. 'spent_unknown' books the full reservation instead.
+            if not _warm_error_is_pre_send(exc):
+                outcome = "spent_unknown"
+            logger.warning(
+                "warm_ping_transport_error", provider=provider,
+                error_type=type(exc).__name__, outcome=outcome,
+            )
             return
         if status in (401, 403):
             outcome = "auth_failed"
@@ -678,6 +751,23 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
                 "warm_ping_usage_unreadable", provider=provider,
                 pricing_status=str(costs.get("pricing_status") or "unpriced"),
             )
+        # The free TTL sensor. This receipt was already parsed to price the
+        # ping; its cache legs say whether the entry survived the gap since the
+        # prefix was last provably touched, which is the one measurement the
+        # warming schedule currently has to guess. Best-effort and isolated:
+        # a failure here must never change the settle that follows.
+        try:
+            ttl_outcome = _warm_ttl_outcome(receipt)
+            gap_seconds = _warm_touch_gap_seconds(row)
+            if ttl_outcome and gap_seconds is not None:
+                await asyncio.to_thread(
+                    _store.warm_ttl_observe, provider, warm_model_class(model),
+                    warm_ttl_tier(int(row.get("provider_ttl_seconds")
+                                      or spec["ttl_seconds"])),
+                    gap_seconds, ttl_outcome, "ping")
+        except Exception as exc:
+            logger.warning("warm_ttl_observation_failed",
+                           error_type=type(exc).__name__)
         await asyncio.to_thread(
             _safe_record_usage,
             auth_context=AuthContext(
@@ -703,6 +793,19 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
             pricing_status=costs.get("pricing_status") or "unpriced",
             pricing_version=costs.get("pricing_version") or "",
         )
+        # Stamp this ping's own receipt with the prefix it warmed, so the reward
+        # join can find its cost. Same reason it is not a column on the insert
+        # above: an unknown column there drops the whole row. Strictly after the
+        # write, in its own guard -- the settle in `finally` has already been
+        # committed to by `outcome`, and an analytics stamp must not be able to
+        # divert this function into its error path.
+        try:
+            await asyncio.to_thread(
+                _store.warm_usage_stamp_prefix, organization_id, recorded_by,
+                f"warm:{prefix_hash[:16]}:{cycle_ts}", prefix_hash)
+        except Exception as exc:
+            logger.warning("warm_usage_stamp_failed",
+                           error_type=type(exc).__name__)
     except Exception as exc:
         # outcome/spent_usd are already committed above for any ping the provider
         # answered, so a failure after that point still books the spend. This also
@@ -721,6 +824,9 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
                 organization_id, customer_id, provider, prefix_hash,
                 str(row.get("budget_day") or ""),
                 float(row.get("reserved_usd") or 0.0),
+                # Only 'warmed' carries a priced receipt. 'spent_unknown' has
+                # none by definition, and the store books the reservation for
+                # it rather than trusting anything sent here.
                 spent_usd if outcome == "warmed" else 0.0, outcome,
                 int(row.get("provider_ttl_seconds")
                     or (spec["ttl_seconds"] if spec else 300)),
@@ -731,6 +837,18 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
             )
         except Exception as exc:
             logger.error("warm_settle_failed", error_type=type(exc).__name__)
+        # Close the loop on the logged decision. Strictly after the settle and
+        # in its own guard: the decision log is analytics, and nothing about it
+        # may delay, precede or fail the money path. A claim whose decision row
+        # was never written (or has since aged out) updates nothing.
+        claim_token = str(row.get("claim_token") or "")
+        if claim_token:
+            try:
+                await asyncio.to_thread(
+                    _store.warm_decision_settle_outcome, claim_token, outcome)
+            except Exception as exc:
+                logger.warning("warm_decision_outcome_failed",
+                               error_type=type(exc).__name__)
 
 
 async def warming(stop: asyncio.Event) -> None:
@@ -753,6 +871,57 @@ async def warming(stop: asyncio.Event) -> None:
                             row, cycle_ts, claim_kwargs["safety_margin_seconds"])
             except Exception as exc:
                 logger.error("warming_cycle_error", error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+def _warm_reward_join_enabled() -> bool:
+    """ON by default, unlike warming itself.
+
+    The join is read-only over usage_log and writes two analytics columns of
+    warm_decision_log. It cannot ping, cannot spend, cannot bill and cannot
+    settle, so the "new behavior ships OFF" rule that guards the warming loop
+    does not apply -- but it is still a single env var away from silent, because
+    a job nobody can stop is its own hazard.
+    """
+    return os.getenv("BREVITAS_WARM_REWARD_JOIN", "true").lower() not in (
+        "0", "false", "no")
+
+
+async def warm_reward_join(stop: asyncio.Event) -> None:
+    """Hourly: credit each closed warm ping with what it actually earned.
+
+    Gated on warming being on at all -- with no warming there are no decisions
+    to score, and running the query anyway is pure load. Every cycle is
+    independent: the RPC only ever fills a null realized_net_usd, so a missed
+    hour is picked up by the next one for as long as the row stays inside the
+    lookback window.
+    """
+    if not _warming_enabled() or not _warm_reward_join_enabled():
+        return
+    interval = _warm_bound("BREVITAS_WARM_REWARD_JOIN_INTERVAL_SECONDS",
+                           3600, 60, 86_400)
+    lookback = int(_warm_bound("BREVITAS_WARM_REWARD_JOIN_LOOKBACK_HOURS",
+                               48, 1, 720))
+    limit = int(_warm_bound("BREVITAS_WARM_REWARD_JOIN_LIMIT", 5000, 1, 50_000))
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                result = await asyncio.to_thread(
+                    _store.warm_reward_join, lookback, limit)
+                logger.info(
+                    "warm_reward_join_cycle",
+                    scanned=int(result.get("scanned") or 0),
+                    joined=int(result.get("joined") or 0),
+                    attributed=int(result.get("attributed") or 0),
+                    organic=int(result.get("organic") or 0),
+                    unpriced=int(result.get("unpriced") or 0),
+                )
+            except Exception as exc:
+                logger.error("warm_reward_join_error",
+                             error_type=type(exc).__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except TimeoutError:
@@ -1074,6 +1243,7 @@ async def run() -> None:
         asyncio.create_task(dependency_monitor(), name="worker-dependency-monitor"),
         asyncio.create_task(maintenance(), name="worker-maintenance"),
         asyncio.create_task(warming(stop), name="worker-warming"),
+        asyncio.create_task(warm_reward_join(stop), name="worker-warm-reward-join"),
         asyncio.create_task(settlement_sweep(stop), name="worker-settlement-sweep"),
         *(asyncio.create_task(consume(slot), name=f"worker-consumer-{slot}")
           for slot in range(concurrency)),

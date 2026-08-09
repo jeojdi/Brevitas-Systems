@@ -70,7 +70,142 @@ _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 # per-provider endpoint allowlist), so admitting a provider here never
 # enables spend on its own.
 _WARM_PROVIDERS = frozenset({"anthropic", "openai", "deepseek"})
-_WARM_SETTLE_OUTCOMES = frozenset({"warmed", "release", "prefix_invalid", "auth_failed"})
+# 'spent_unknown' is the conservative arm of 'warmed': the request left the
+# process, so the provider may have accepted and charged for it, but no readable
+# response proves what it cost. It books the FULL reservation as spend (never
+# understate warm spend — understated warm spend inflates the fee ceiling in
+# billing_period_settlement_evidence and overcharges the org) and otherwise
+# schedules exactly like 'warmed'. Mirrored by migration 202608080001.
+_WARM_SETTLE_OUTCOMES = frozenset({
+    "warmed", "spent_unknown", "release", "prefix_invalid", "auth_failed"})
+# Decision-log vocabulary, mirroring migration 202608090001's CHECK. 'holdout'
+# is produced by the control arm (202608100001) whenever BREVITAS_WARM_HOLDOUT_PCT
+# is nonzero. 'stopped' still has no producer: stop-losses are a candidate-query
+# filter, so a stopped row is never scored and never logged.
+_WARM_DECISIONS = frozenset({
+    "pinged", "skipped_roi", "budget_denied", "cap_denied", "stopped", "holdout"})
+_WARM_TTL_TIERS = frozenset({"5m", "1h", "auto"})
+_WARM_TTL_OUTCOMES = frozenset({"warm", "expired"})
+_WARM_TTL_SOURCES = frozenset({"ping", "arrival"})
+# Absolute bound on a recorded TTL gap (30 days), so a clock jump cannot write
+# nonsense into the physics table. Mirrors the table's own CHECK.
+_WARM_TTL_MAX_GAP_SECONDS = 2_592_000
+# Aggregate physics horizon for warm_ttl_observations, matching migration
+# 202608090001's purge_warm_state. Tenant-free rows, so no compliance retention
+# class and no tenant erasure applies to them.
+_WARM_OBSERVATION_RETENTION_DAYS = 365
+# warm_decision_log has NO horizon here on purpose. In Postgres it is a
+# compliance_run_retention class (90 days, preservation-hold aware, and it
+# writes an immutable evidence row); this store has no compliance surface at
+# all, so purging it from purge_warm_state would be mirror drift in the other
+# direction — the RPC deliberately does not touch that table.
+
+
+_WARM_MODEL_SNAPSHOT = re.compile(r"[-@](\d{8}|\d{4}-\d{2}-\d{2}|latest)$")
+
+
+def warm_model_class(model: str) -> str:
+    """Coarsen a provider model id to the family the TTL physics belong to.
+
+    'claude-sonnet-4-5-20260514' and 'claude-sonnet-4-5-latest' are the same
+    cache, priced the same way, with the same TTL behaviour; keeping the
+    snapshot suffix would split every aggregate in warm_ttl_observations along
+    an axis that carries no physics. Provider catalog metadata only — never
+    customer data, which is why it may sit in a table with no tenant keys.
+
+    Clamped by BYTES, not characters: every downstream validator counts
+    octet_length, and model is tenant-controlled — a >=65-multibyte-char model
+    id must degrade to a truncated class, never raise inside the live observe
+    transaction (which would roll back the whole arrival).
+    """
+    cleaned = _WARM_MODEL_SNAPSHOT.sub("", str(model or "").strip().lower())
+    return cleaned.encode("utf-8")[:128].decode("utf-8", errors="ignore")
+
+
+def warm_ttl_tier(provider_ttl_seconds: int) -> str:
+    """Mirror of public.warm_ttl_tier: one definition of what '5m' means.
+
+    Anthropic's two cache tiers are exactly 300 and 3600 seconds; a
+    provider-managed automatic cache (deepseek, 14400) is not a tier the caller
+    chose, so it is reported as 'auto'.
+    """
+    seconds = int(provider_ttl_seconds or 0)
+    if seconds <= 300:
+        return "5m"
+    return "1h" if seconds <= 3600 else "auto"
+
+
+# --- (org, prefix) control arm -------------------------------------------
+# The holdout share is process configuration, not stored state: it is read from
+# the environment by whichever process needs it, and the authoritative record of
+# what was actually held out is warm_decision_log (decision='holdout', with the
+# fraction in force stamped into propensity). A worker and an API server whose
+# environments disagree therefore disagree about the *advertised* fraction while
+# the *applied* fraction is always the worker's -- documented in
+# docs/WARMING_HOLDOUT.md, and the reason warm_status reports it at all.
+_WARM_HOLDOUT_PCT_ENV = "BREVITAS_WARM_HOLDOUT_PCT"
+# 2**32: the first four bytes of the digest, read big-endian. Four bytes is
+# ~2.3e-10 of resolution on the fraction, far finer than any share worth
+# running, and it keeps the Postgres mirror to four get_byte() terms with no
+# signed-cast games (a bit(64)::bigint round trip is negative half the time).
+_WARM_HOLDOUT_SPACE = 4_294_967_296.0
+
+
+def warm_holdout_fraction() -> float:
+    """Configured control-arm share, as a fraction in [0, 1]. 0 disables it.
+
+    BREVITAS_WARM_HOLDOUT_PCT is a *percent* (5 means 5%), matching how the
+    share is described in org-facing terms. Anything unparseable, negative,
+    infinite or NaN reads as 0 -- the failure direction that keeps warming
+    behaving exactly as it did before the arm existed.
+    """
+    try:
+        percent = float(os.getenv(_WARM_HOLDOUT_PCT_ENV, "0") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    # NaN and +/-inf both fail this comparison, so both fall through to 0.
+    if not 0.0 <= percent <= 100.0:
+        return 0.0
+    return min(1.0, percent / 100.0)
+
+
+def warm_holdout_bucket(organization_id: str, prefix_hash: str, day: str) -> int:
+    """Deterministic uint32 for one (organization, prefix, UTC day) unit.
+
+    Mirror of the same four get_byte() terms in public.warm_due_claim. The unit
+    is (org, prefix) and NOT (org, customer, prefix): provider caches are keyed
+    by the org's provider credential, so a prefix held out for one customer is
+    kept warm by any sibling customer sharing it and the control arm measures
+    nothing. Randomizing per day rather than once per prefix means assignment is
+    re-drawn against the same eligibility test every day, which is what keeps the
+    two arms exchangeable as prefixes age.
+
+    The inputs are fixed width (36-char uuid, 64-char hex digest, 10-char date),
+    so plain concatenation is unambiguous. Both text inputs are lower-cased
+    because Postgres renders uuid::text lower-case and constrains prefix_hash to
+    lower-case hex; without that, the two backends would bucket differently.
+    """
+    digest = hashlib.sha256(
+        f"{str(organization_id or '').lower()}"
+        f"{str(prefix_hash or '').lower()}"
+        f"{str(day or '')}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+def warm_is_held_out(organization_id: str, prefix_hash: str, day: str,
+                     fraction: float) -> bool:
+    """True when this (org, prefix, day) falls in the control arm.
+
+    The comparison is done in IEEE-754 double space in both backends
+    (`bucket < fraction * 2**32`) rather than by dividing the bucket down, so
+    the two implementations cannot disagree on a boundary unit.
+    """
+    if not float(fraction) > 0.0:
+        return False
+    return (warm_holdout_bucket(organization_id, prefix_hash, day)
+            < float(fraction) * _WARM_HOLDOUT_SPACE)
+
+
 # In-process stand-in for warm_due_claim's pg_try_advisory_xact_lock. Fidelity
 # gap: it fences worker threads inside one process only; concurrent dev
 # processes sharing a SQLite file are serialized by BEGIN IMMEDIATE instead,
@@ -163,12 +298,33 @@ _USAGE_COLUMNS: dict[str, str] = {
     # Non-empty only on a Brevitas cache replay; '' means UNANCHORED, which is
     # the fail-closed value (excluded from the fee basis). See _usage_row.
     "savings_anchor_request_id": "TEXT NOT NULL DEFAULT ''",
+    # Analytics join key for cache warming (202608090002). Deliberately absent
+    # from _usage_row and therefore from every receipt INSERT: naming a column
+    # PostgREST does not know is a 400 that drops the WHOLE receipt (see
+    # SupabaseUsageStore._insert_usage_rows), and this column is worth exactly
+    # zero receipts. It is stamped after the fact by warm_usage_stamp_prefix and
+    # is null whenever that stamp did not run.
+    "warm_prefix_hash": "TEXT",
     "usage_raw": "TEXT NOT NULL DEFAULT ''",
 }
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    """Best-effort ISO-8601 -> aware UTC datetime; None when unparseable.
+
+    The reward join compares timestamps written by different code paths (the
+    proxy receipt, the worker ping, warm_due_claim). A row whose timestamp
+    cannot be read is skipped, never guessed.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _audit_identity(actor_id: str, request_id: str,
@@ -1604,11 +1760,31 @@ class UsageStore:
             # methods below implement the same contracts in Python. claimed_at is
             # SQLite-only observability for the emulated claim lease.
             db.execute("CREATE TABLE IF NOT EXISTS warm_credentials (organization_id TEXT NOT NULL, provider TEXT NOT NULL, credential_ciphertext TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, consent_actor_id TEXT NOT NULL DEFAULT '', consent_at TEXT NOT NULL DEFAULT '', daily_budget_usd REAL NOT NULL DEFAULT 0, max_warm_customers INTEGER NOT NULL DEFAULT 100, max_pings_per_customer_day INTEGER NOT NULL DEFAULT 288, credential_state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider))")
-            db.execute("CREATE TABLE IF NOT EXISTS warm_prefixes (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, payload_ciphertext TEXT NOT NULL, prefix_tokens INTEGER NOT NULL DEFAULT 0, provider_ttl_seconds INTEGER NOT NULL DEFAULT 300, arrival_count INTEGER NOT NULL DEFAULT 0, ewma_interarrival_s REAL, hour_histogram TEXT NOT NULL DEFAULT '{}', warm_pings INTEGER NOT NULL DEFAULT 0, warm_hits INTEGER NOT NULL DEFAULT 0, warm_misses INTEGER NOT NULL DEFAULT 0, consecutive_misses INTEGER NOT NULL DEFAULT 0, pings_today INTEGER NOT NULL DEFAULT 0, pings_today_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, next_due_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT NOT NULL DEFAULT '', ping_reserve_usd REAL NOT NULL DEFAULT 0, claim_token TEXT NOT NULL DEFAULT '', PRIMARY KEY(organization_id,customer_id,provider,prefix_hash))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_prefixes (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, payload_ciphertext TEXT NOT NULL, prefix_tokens INTEGER NOT NULL DEFAULT 0, provider_ttl_seconds INTEGER NOT NULL DEFAULT 300, arrival_count INTEGER NOT NULL DEFAULT 0, ewma_interarrival_s REAL, hour_histogram TEXT NOT NULL DEFAULT '{}', warm_pings INTEGER NOT NULL DEFAULT 0, warm_hits INTEGER NOT NULL DEFAULT 0, warm_misses INTEGER NOT NULL DEFAULT 0, consecutive_misses INTEGER NOT NULL DEFAULT 0, pings_today INTEGER NOT NULL DEFAULT 0, pings_today_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, next_due_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT NOT NULL DEFAULT '', ping_reserve_usd REAL NOT NULL DEFAULT 0, claim_token TEXT NOT NULL DEFAULT '', last_touch_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(organization_id,customer_id,provider,prefix_hash))")
             db.execute("CREATE TABLE IF NOT EXISTS warm_budget_ledger (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, reserved_usd REAL NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day))")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_due_idx ON warm_prefixes(next_due_at) WHERE state='active'")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_expiry_idx ON warm_prefixes(expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_org_idx ON warm_prefixes(organization_id, provider, last_seen_at DESC)")
+            if "last_touch_at" not in {
+                    r[1] for r in db.execute("PRAGMA table_info(warm_prefixes)")}:
+                db.execute(
+                    "ALTER TABLE warm_prefixes ADD COLUMN last_touch_at TEXT NOT NULL DEFAULT ''")
+            # Dev/test mirror of migration 202608090001_warm_instrumentation_tables.sql.
+            # warm_decision_log is per-customer behavioral evidence (erased with
+            # the tenant); warm_ttl_observations is Plane G and deliberately
+            # carries no tenant key, so tenant erasure must NOT touch it.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT)")
+            # Dev/test mirror of 202608090002_warm_reward_join.sql.
+            if "organic_counterfactual" not in {
+                    r[1] for r in db.execute("PRAGMA table_info(warm_decision_log)")}:
+                db.execute("ALTER TABLE warm_decision_log ADD COLUMN "
+                           "organic_counterfactual INTEGER NOT NULL DEFAULT 0")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_ttl_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model_class TEXT NOT NULL DEFAULT '', ttl_tier TEXT NOT NULL, gap_seconds REAL NOT NULL, outcome TEXT NOT NULL, source TEXT NOT NULL, observed_at TEXT NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_tenant_idx ON warm_decision_log(organization_id, ts)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_subject_idx ON warm_decision_log(organization_id, customer_id, ts)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_retention_idx ON warm_decision_log(ts, id)")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS warm_decision_log_claim_token_idx ON warm_decision_log(claim_token) WHERE claim_token IS NOT NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_ttl_observations_retention_idx ON warm_ttl_observations(observed_at, id)")
             db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
             db.execute("CREATE TABLE IF NOT EXISTS key_repositories (key_hash TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'bvx', installed_at TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (key_hash, repo))")
             device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
@@ -1691,6 +1867,12 @@ class UsageStore:
             db.execute("CREATE INDEX IF NOT EXISTS usage_org_customer_page_idx ON usage_log(organization_id, customer_id, ts DESC, id DESC)")
             for column in ("project", "client", "provider", "model", "pipeline", "agent", "run_id"):
                 db.execute(f"CREATE INDEX IF NOT EXISTS usage_org_{column}_idx ON usage_log(organization_id, {column}, ts DESC, id DESC)")
+            # Dev/test mirror of 202608090002_warm_reward_join.sql's
+            # usage_log_warm_prefix_idx: the reward join's only access path.
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS usage_log_warm_prefix_idx ON "
+                "usage_log(organization_id, customer_id, provider, "
+                "warm_prefix_hash, ts) WHERE warm_prefix_hash IS NOT NULL")
             db.execute("UPDATE usage_log SET measured_savings_usd=cost_saved_usd, verified_savings_usd=cost_saved_usd WHERE measured_savings_usd IS NULL")
 
     def ensure_organization(self, user_id: str, name: str = "",
@@ -3253,12 +3435,251 @@ class UsageStore:
                 "AND credential_state='active' LIMIT 1",
                 (organization_id,)).fetchone() is not None
 
+    @staticmethod
+    def _warm_ttl_observe_locked(db: Any, provider: str, model_class: str,
+                                 ttl_tier: str, gap_seconds: float,
+                                 outcome: str, source: str,
+                                 now: datetime) -> None:
+        """Mirror of public.warm_ttl_observe, on an already-open transaction.
+
+        Plane G: the row carries no organization, customer or prefix hash, so
+        there is nothing tenant-scoped to erase and the table may be pooled
+        across organizations. Callers on a live request path must bound
+        gap_seconds themselves before calling.
+        """
+        if (provider not in _WARM_PROVIDERS
+                or len((model_class or "").encode()) > 128
+                or ttl_tier not in _WARM_TTL_TIERS
+                or outcome not in _WARM_TTL_OUTCOMES
+                or source not in _WARM_TTL_SOURCES
+                or not 0 <= float(gap_seconds) <= _WARM_TTL_MAX_GAP_SECONDS):
+            raise ValueError("warm ttl observation arguments are invalid")
+        db.execute(
+            "INSERT INTO warm_ttl_observations(provider,model_class,ttl_tier,"
+            "gap_seconds,outcome,source,observed_at) VALUES(?,?,?,?,?,?,?)",
+            (provider, str(model_class or ""), ttl_tier,
+             round(float(gap_seconds), 3), outcome, source, now.isoformat()))
+
+    def warm_ttl_observe(self, provider: str, model_class: str, ttl_tier: str,
+                         gap_seconds: float, outcome: str,
+                         source: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._warm_ttl_observe_locked(db, provider, model_class, ttl_tier,
+                                          gap_seconds, outcome, source, now)
+        return {"schema": "brevitas.warm-ttl-observation.v1", "status": "recorded"}
+
+    @staticmethod
+    def _warm_decision_record_locked(
+            db: Any, organization_id: str, customer_id: str, provider: str,
+            prefix_hash: str, decision: str, p_return: float, roi_floor: float,
+            reserve_usd: float, prefix_tokens: int,
+            ewma_interarrival_s: float | None, arrival_count: int,
+            pings_today: int | None, claim_token: str | None,
+            now: datetime, *, rng_seed: int | None = None,
+            propensity: float | None = None) -> None:
+        """Mirror of public.warm_decision_record, on an open transaction.
+
+        Called from inside warm_due_claim's critical section, so its checks are
+        exactly the table's own constraints and nothing more: a stricter check
+        here than in Postgres would abort a claim the RPC would have allowed.
+        """
+        if (not organization_id or not customer_id
+                or provider not in _WARM_PROVIDERS
+                or not _SHA256_DIGEST.fullmatch(str(prefix_hash or ""))
+                or decision not in _WARM_DECISIONS
+                or not 0 <= float(p_return) <= 1
+                or not 0 <= float(roi_floor) <= 1
+                or not 0 <= float(reserve_usd) <= 99_999_999
+                or not 0 <= int(prefix_tokens) <= 2_000_000_000
+                or int(arrival_count) < 0
+                or (ewma_interarrival_s is not None and float(ewma_interarrival_s) < 0)
+                or (pings_today is not None and int(pings_today) < 0)
+                or (propensity is not None and not 0 <= float(propensity) <= 1)
+                or (claim_token is not None and decision != "pinged")):
+            raise ValueError("warm decision arguments are invalid")
+        db.execute(
+            "INSERT INTO warm_decision_log(organization_id,customer_id,provider,"
+            "prefix_hash,ts,decision,p_return,roi_floor,reserve_usd,prefix_tokens,"
+            "ewma_interarrival_s,arrival_count,pings_today,claim_token,rng_seed,"
+            "propensity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (organization_id, customer_id, provider, prefix_hash, now.isoformat(),
+             decision, float(p_return), float(roi_floor), float(reserve_usd),
+             int(prefix_tokens),
+             None if ewma_interarrival_s is None else float(ewma_interarrival_s),
+             int(arrival_count),
+             None if pings_today is None else int(pings_today),
+             claim_token or None,
+             None if rng_seed is None else int(rng_seed),
+             None if propensity is None else float(propensity)))
+
+    def warm_usage_stamp_prefix(self, organization_id: str, key_hash: str,
+                                request_id: str,
+                                prefix_hash: str) -> dict[str, Any]:
+        """Mirror of public.warm_usage_stamp_prefix (202608090002).
+
+        Write-once by construction (`warm_prefix_hash IS NULL` in the predicate)
+        and scoped by (key_hash, request_id) so it rides the receipt dedupe
+        index, with organization_id as a tenant fence.
+        """
+        if (not organization_id or not key_hash or not request_id
+                or not _SHA256_DIGEST.fullmatch(str(prefix_hash or ""))):
+            raise ValueError("warm usage stamp arguments are invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE usage_log SET warm_prefix_hash=? WHERE key_hash=? "
+                "AND request_id=? AND organization_id=? "
+                "AND warm_prefix_hash IS NULL",
+                (str(prefix_hash), str(key_hash), str(request_id),
+                 str(organization_id)))
+        return {"schema": "brevitas.warm-usage-stamp.v1", "status": "recorded",
+                "updated": max(0, int(cursor.rowcount or 0))}
+
+    def warm_reward_join(self, lookback_hours: int = 48,
+                         limit: int = 5000) -> dict[str, Any]:
+        """Mirror of public.warm_reward_join (202608090002). Analytics only.
+
+        Reads usage_log, writes realized_net_usd/organic_counterfactual on
+        warm_decision_log. Touches no ledger, no settlement and no fee.
+        """
+        lookback = min(max(int(lookback_hours or 48), 1), 720)
+        row_limit = min(max(int(limit or 5000), 1), 50_000)
+        now = datetime.now(timezone.utc)
+        scanned = joined = attributed = organic = unpriced = 0
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidates = db.execute(
+                "SELECT entry.id AS id, entry.organization_id AS organization_id,"
+                " entry.customer_id AS customer_id, entry.provider AS provider,"
+                " entry.prefix_hash AS prefix_hash, entry.ts AS ts,"
+                # A prefix already purged leaves its decisions behind; 300 is the
+                # provider floor every WARM_PROVIDER_SPECS entry shares.
+                " COALESCE(prefix.provider_ttl_seconds,300) AS ttl_seconds "
+                "FROM warm_decision_log entry LEFT JOIN warm_prefixes prefix ON "
+                "prefix.organization_id=entry.organization_id AND "
+                "prefix.customer_id=entry.customer_id AND "
+                "prefix.provider=entry.provider AND "
+                "prefix.prefix_hash=entry.prefix_hash "
+                "WHERE entry.decision='pinged' AND entry.settle_outcome='warmed' "
+                "AND entry.realized_net_usd IS NULL "
+                "AND datetime(entry.ts)>=datetime(?) "
+                # The attribution horizon: a window still open has an arrival
+                # that has not happened yet.
+                "AND datetime(entry.ts,'+'||COALESCE(prefix.provider_ttl_seconds,300)"
+                "||' seconds')<datetime(?) "
+                "ORDER BY entry.ts, entry.id LIMIT ?",
+                ((now - timedelta(hours=lookback)).isoformat(), now.isoformat(),
+                 row_limit)).fetchall()
+            for row in candidates:
+                scanned += 1
+                ttl = int(row["ttl_seconds"] or 300)
+                keys = (row["organization_id"], row["customer_id"],
+                        row["provider"], row["prefix_hash"])
+                decided = _parse_iso(row["ts"])
+                if decided is None:
+                    unpriced += 1
+                    continue
+                next_ts = db.execute(
+                    "SELECT MIN(ts) AS ts FROM warm_decision_log WHERE "
+                    "organization_id=? AND customer_id=? AND provider=? AND "
+                    "prefix_hash=? AND decision='pinged' AND datetime(ts)>datetime(?)",
+                    (*keys, row["ts"])).fetchone()
+                # Bound the ping search by the NEXT logged ping on this prefix
+                # (and by ten minutes, whichever is sooner): without it a
+                # decision whose own usage row never landed would adopt the
+                # following cycle's ping, which on a 5-minute tier is only
+                # ttl-minus-margin away.
+                bound = decided + timedelta(seconds=600)
+                following = _parse_iso(next_ts["ts"]) if next_ts else None
+                if following is not None and following < bound:
+                    bound = following
+                ping = db.execute(
+                    "SELECT ts AS ts, COALESCE(actual_cost_usd,0) AS cost_usd "
+                    "FROM usage_log WHERE organization_id=? AND customer_id=? "
+                    "AND provider=? AND warm_prefix_hash=? AND "
+                    "strategy='cache_warm' AND datetime(ts)>=datetime(?) "
+                    "AND datetime(ts)<datetime(?) ORDER BY ts, id LIMIT 1",
+                    (*keys, row["ts"], bound.isoformat())).fetchone()
+                if ping is None:
+                    # No priced ping row: the receipt write or the stamp failed.
+                    # Leave it unscored rather than invent a cost.
+                    unpriced += 1
+                    continue
+                pinged_at = _parse_iso(ping["ts"])
+                if pinged_at is None:
+                    unpriced += 1
+                    continue
+                arrival = db.execute(
+                    "SELECT cache_attributable AS attributable, "
+                    "COALESCE(native_cache_discount_usd,0) AS discount_usd "
+                    "FROM usage_log WHERE organization_id=? AND customer_id=? "
+                    "AND provider=? AND warm_prefix_hash=? AND "
+                    "strategy<>'cache_warm' AND authoritative "
+                    "AND datetime(ts)>datetime(?) AND datetime(ts)<=datetime(?) "
+                    "ORDER BY ts, id LIMIT 1",
+                    (*keys, ping["ts"],
+                     (pinged_at + timedelta(seconds=ttl)).isoformat())).fetchone()
+                benefit = (float(arrival["discount_usd"] or 0.0)
+                           if arrival is not None and arrival["attributable"]
+                           else 0.0)
+                previous = db.execute(
+                    "SELECT ts FROM usage_log WHERE organization_id=? AND "
+                    "customer_id=? AND provider=? AND warm_prefix_hash=? AND "
+                    "strategy<>'cache_warm' AND authoritative AND "
+                    "datetime(ts)<=datetime(?) ORDER BY ts DESC, id DESC LIMIT 2",
+                    (*keys, ping["ts"])).fetchall()
+                organic_flag = False
+                if len(previous) == 2:
+                    recent = _parse_iso(previous[0]["ts"])
+                    prior = _parse_iso(previous[1]["ts"])
+                    organic_flag = (recent is not None and prior is not None
+                                    and (recent - prior).total_seconds() < ttl)
+                cost = float(ping["cost_usd"] or 0.0)
+                if organic_flag:
+                    # Conservative v0: the session was refreshing itself, so the
+                    # ping is credited nothing and charged in full.
+                    net = -cost
+                    organic += 1
+                else:
+                    net = benefit - cost
+                    if benefit > 0:
+                        attributed += 1
+                cursor = db.execute(
+                    "UPDATE warm_decision_log SET realized_net_usd=?, "
+                    "organic_counterfactual=? WHERE id=? AND "
+                    "realized_net_usd IS NULL",
+                    (round(net, 10), 1 if organic_flag else 0, int(row["id"])))
+                joined += max(0, int(cursor.rowcount or 0))
+        return {"schema": "brevitas.warm-reward-join.v1", "status": "ok",
+                "scanned": scanned, "joined": joined, "attributed": attributed,
+                "organic": organic, "unpriced": unpriced}
+
+    def warm_decision_settle_outcome(self, claim_token: str,
+                                     settle_outcome: str) -> dict[str, Any]:
+        """Stamp a settle outcome onto the decision that produced a claim token.
+
+        A token with no logged decision is a no-op, not an error: decisions
+        predating the log, or already aged out by retention, have none.
+        """
+        if not claim_token or settle_outcome not in _WARM_SETTLE_OUTCOMES:
+            raise ValueError("warm decision outcome arguments are invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE warm_decision_log SET settle_outcome=? WHERE claim_token=?",
+                (settle_outcome, str(claim_token)))
+        return {"schema": "brevitas.warm-decision-outcome.v1", "status": "recorded",
+                "updated": max(0, int(cursor.rowcount or 0))}
+
     def warm_prefix_observe(self, organization_id: str, customer_id: str,
                             provider: str, prefix_hash: str, payload_ciphertext: str,
                             prefix_tokens: int, provider_ttl_seconds: int,
                             safety_margin_seconds: int,
                             cache_read: bool, *,
-                            ping_reserve_usd: float | None = None) -> dict[str, Any]:
+                            ping_reserve_usd: float | None = None,
+                            model_class: str = "") -> dict[str, Any]:
         if not organization_id or not customer_id:
             raise ValueError("warm observation requires an organization and customer")
         if provider not in _WARM_PROVIDERS:
@@ -3284,7 +3705,8 @@ class UsageStore:
             db.execute("DELETE FROM warm_prefixes WHERE organization_id=? AND expires_at<=?",
                        (organization_id, now.isoformat()))
             existing = db.execute(
-                "SELECT ewma_interarrival_s,hour_histogram,warm_pings,last_seen_at "
+                "SELECT ewma_interarrival_s,hour_histogram,warm_pings,last_seen_at,"
+                "last_touch_at "
                 "FROM warm_prefixes WHERE organization_id=? AND customer_id=? "
                 "AND provider=? AND prefix_hash=?",
                 (organization_id, customer_id, provider, prefix_hash)).fetchone()
@@ -3302,6 +3724,8 @@ class UsageStore:
             next_due = (now + timedelta(seconds=max(
                 1, int(provider_ttl_seconds) - int(safety_margin_seconds)))).isoformat()
             expires = (now + timedelta(days=7)).isoformat()
+            # Snapshot the provable-touch clock before the write overwrites it.
+            prior_touch = str(existing["last_touch_at"] or "") if existing else ""
             if existing:
                 gap = round((now - datetime.fromisoformat(
                     existing["last_seen_at"])).total_seconds(), 3)
@@ -3320,27 +3744,44 @@ class UsageStore:
                     "ewma_interarrival_s=?,hour_histogram=?,warm_hits=warm_hits+?,"
                     "warm_misses=warm_misses+?,"
                     "consecutive_misses=CASE WHEN ? THEN 0 ELSE consecutive_misses END,"
-                    "state='active',last_seen_at=?,next_due_at=?,expires_at=? "
+                    # An arrival provably wrote or refreshed the provider-side
+                    # entry, whether it read the cache or missed it.
+                    "state='active',last_seen_at=?,last_touch_at=?,next_due_at=?,"
+                    "expires_at=? "
                     "WHERE organization_id=? AND customer_id=? AND provider=? AND prefix_hash=?",
                     (payload_ciphertext, int(prefix_tokens), int(provider_ttl_seconds),
                      None if ping_reserve_usd is None else float(ping_reserve_usd),
                      ewma, json.dumps(histogram),
                      1 if cache_read and pinged else 0,
                      1 if not cache_read and pinged else 0,
-                     int(bool(cache_read)), now.isoformat(), next_due, expires,
+                     int(bool(cache_read)), now.isoformat(), now.isoformat(),
+                     next_due, expires,
                      organization_id, customer_id, provider, prefix_hash))
             else:
                 db.execute(
                     "INSERT INTO warm_prefixes(organization_id,customer_id,provider,"
                     "prefix_hash,payload_ciphertext,prefix_tokens,provider_ttl_seconds,"
                     "ping_reserve_usd,arrival_count,ewma_interarrival_s,hour_histogram,"
-                    "created_at,last_seen_at,next_due_at,expires_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,1,NULL,?,?,?,?,?)",
+                    "created_at,last_seen_at,last_touch_at,next_due_at,expires_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,1,NULL,?,?,?,?,?,?)",
                     (organization_id, customer_id, provider, prefix_hash,
                      payload_ciphertext, int(prefix_tokens), int(provider_ttl_seconds),
                      float(ping_reserve_usd or 0.0),
                      json.dumps({bucket: 1}), now.isoformat(), now.isoformat(),
-                     next_due, expires))
+                     now.isoformat(), next_due, expires))
+            # The free sensor: a real arrival against a prefix we have already
+            # touched is a censored TTL observation at zero cost, and cache_read
+            # is the provider's own verdict on whether the entry survived the
+            # gap. Guarded rather than validated-and-raised — this runs inside a
+            # live request, so an out-of-bounds gap skips the observation instead
+            # of failing the observation call the response path depends on.
+            if prior_touch:
+                gap = (now - datetime.fromisoformat(prior_touch)).total_seconds()
+                if 0 <= gap <= _WARM_TTL_MAX_GAP_SECONDS:
+                    self._warm_ttl_observe_locked(
+                        db, provider, model_class,
+                        warm_ttl_tier(provider_ttl_seconds), gap,
+                        "warm" if cache_read else "expired", "arrival", now)
         return {"schema": "brevitas.warm-observe.v1", "status": "observed",
                 "cache_read": bool(cache_read)}
 
@@ -3351,8 +3792,10 @@ class UsageStore:
                        safety_margin_seconds: int,
                        claim_lease_seconds: int = 900,
                        roi_break_even_by_provider: dict[str, float] | None = None,
+                       holdout_fraction: float = 0.0,
                        ) -> dict[str, Any]:
-        if (not 1 <= int(claim_limit) <= 500
+        if (not 0 <= float(holdout_fraction) <= 1
+                or not 1 <= int(claim_limit) <= 500
                 or not 0 <= float(reserve_usd_per_mtok) <= 1000
                 or not 1 <= int(roi_min_arrivals) <= 1000
                 or not 0 <= float(roi_min_p) <= 1
@@ -3404,7 +3847,36 @@ class UsageStore:
                              if int(row["arrival_count"]) < int(roi_min_arrivals)
                              else float(by_provider.get(row["provider"],
                                                         roi_break_even_p)))
+                    # Pure arithmetic on the candidate row, hoisted above the
+                    # gates so a denied candidate can record what warming it
+                    # would have cost. Value and use below are unchanged: the
+                    # reservation must upper-bound actual spend for the daily
+                    # ceiling to hold, so reserve the larger of the
+                    # observer-priced worst case and the flat caller floor.
+                    reserve = max(
+                        float(row["ping_reserve_usd"] or 0.0),
+                        round(float(reserve_usd_per_mtok)
+                              * int(row["prefix_tokens"]) / 1_000_000.0, 10))
+
+                    def _record(decision: str, pings: int | None = None,
+                                token: str | None = None,
+                                propensity: float | None = None,
+                                _row: Any = row, _p: float = p_return,
+                                _floor: float = floor,
+                                _reserve: float = reserve) -> None:
+                        self._warm_decision_record_locked(
+                            db, _row["organization_id"], _row["customer_id"],
+                            _row["provider"], _row["prefix_hash"], decision,
+                            _p, _floor, _reserve, int(_row["prefix_tokens"]),
+                            _row["ewma_interarrival_s"],
+                            int(_row["arrival_count"]), pings, token, now,
+                            propensity=propensity)
+
                     if p_return < floor:
+                        # pings_today is deliberately not read for a candidate
+                        # the ROI gate rejects: that costs a query per candidate
+                        # for a nullable column. Null means "not read yet".
+                        _record("skipped_roi")
                         continue
                     customer_key = f"{row['organization_id']}:{row['customer_id']}"
                     pings_today = db.execute(
@@ -3415,15 +3887,8 @@ class UsageStore:
                          day)).fetchone()[0]
                     if int(pings_today) + claimed_counts[customer_key] >= int(
                             row["max_pings_per_customer_day"]):
+                        _record("cap_denied", int(pings_today))
                         continue
-                    # The reservation must upper-bound actual spend for the
-                    # daily ceiling to hold: settle books real receipt cost,
-                    # so reserve the larger of the observer-priced worst case
-                    # and the flat caller floor.
-                    reserve = max(
-                        float(row["ping_reserve_usd"] or 0.0),
-                        round(float(reserve_usd_per_mtok)
-                              * int(row["prefix_tokens"]) / 1_000_000.0, 10))
                     db.execute(
                         "INSERT INTO warm_budget_ledger(organization_id,provider,day,updated_at) "
                         "VALUES(?,?,?,?) ON CONFLICT(organization_id,provider,day) DO NOTHING",
@@ -3434,6 +3899,34 @@ class UsageStore:
                         (row["organization_id"], row["provider"], day)).fetchone()
                     if float(ledger[0]) + float(ledger[1]) + reserve > float(
                             row["daily_budget_usd"]):
+                        _record("budget_denied", int(pings_today))
+                        continue
+                    # Control arm, drawn at the last possible moment: every gate
+                    # has passed, so this row was certain to be pinged and the
+                    # two arms are separated by nothing but the coin. Held out,
+                    # it reserves nothing, spends nothing, consumes no ping cap
+                    # and takes no claim token -- only next_due_at moves, by the
+                    # same TTL horizon warm_ping_settle would have set, so the
+                    # counterfactual is "the ping did not happen" rather than
+                    # "the ping happened a cycle later". Counters (warm_pings,
+                    # consecutive_misses, pings_today) deliberately do not move:
+                    # consecutive_misses is the stop-loss evidence that pings
+                    # are not converting, and a holdout day produces no such
+                    # evidence -- incrementing it would retire control prefixes
+                    # for a ping nobody sent.
+                    if warm_is_held_out(row["organization_id"], row["prefix_hash"],
+                                        day, float(holdout_fraction)):
+                        db.execute(
+                            "UPDATE warm_prefixes SET next_due_at=? "
+                            "WHERE organization_id=? AND customer_id=? "
+                            "AND provider=? AND prefix_hash=?",
+                            ((now + timedelta(seconds=max(
+                                1, int(row["provider_ttl_seconds"])
+                                - int(safety_margin_seconds)))).isoformat(),
+                             row["organization_id"], row["customer_id"],
+                             row["provider"], row["prefix_hash"]))
+                        _record("holdout", int(pings_today),
+                                propensity=float(holdout_fraction))
                         continue
                     db.execute(
                         "UPDATE warm_budget_ledger SET reserved_usd=reserved_usd+?,"
@@ -3457,6 +3950,13 @@ class UsageStore:
                          now.isoformat(), claim_token, row["organization_id"],
                          row["customer_id"], row["provider"], row["prefix_hash"]))
                     claimed_counts[customer_key] += 1
+                    # The treatment arm's own action probability, so an IPS
+                    # estimator does not have to infer it from the other arm.
+                    # Null while the arm is off: with no randomization there is
+                    # no propensity, and 1.0 would read as one.
+                    _record("pinged", int(pings_today), claim_token,
+                            (1.0 - float(holdout_fraction))
+                            if float(holdout_fraction) > 0 else None)
                     claimed.append({
                         "schema": "brevitas.warm-claim.v1", "status": "claimed",
                         "organization_id": row["organization_id"],
@@ -3470,6 +3970,12 @@ class UsageStore:
                         "reserved_usd": reserve,
                         "budget_day": day,
                         "claim_token": claim_token,
+                        # The worker turns its ping receipt into a TTL
+                        # observation against this. Rows written before the
+                        # touch clock existed fall back to last_seen_at, which
+                        # is what the clock was seeded from.
+                        "last_touch_at": (str(row["last_touch_at"] or "")
+                                          or str(row["last_seen_at"] or "")),
                     })
             return {"status": "ok", "rows": claimed}
         finally:
@@ -3491,14 +3997,22 @@ class UsageStore:
             raise ValueError("warm settle arguments are invalid")
         now = datetime.now(timezone.utc)
         day = now.date().isoformat()
+        # 'spent_unknown' ignores the caller's spent_usd on purpose: there is no
+        # receipt to price the ping, so the reservation — warm_due_claim's
+        # observer-priced upper bound, already admitted against
+        # daily_budget_usd — is the only defensible booking. Deriving it here
+        # rather than trusting the argument means a buggy caller cannot book
+        # less than it reserved.
+        booked_usd = (float(spent_usd) if outcome == "warmed"
+                      else float(reserved_usd) if outcome == "spent_unknown"
+                      else 0.0)
         with self._conn() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "UPDATE warm_budget_ledger SET reserved_usd=MAX(0, reserved_usd-?),"
                 "spent_usd=spent_usd+?,updated_at=? WHERE organization_id=? "
                 "AND provider=? AND day=?",
-                (float(reserved_usd),
-                 float(spent_usd) if outcome == "warmed" else 0.0,
+                (float(reserved_usd), booked_usd,
                  now.isoformat(), organization_id, provider, str(budget_day)))
             # Ledger money always books (the reservation and the ping were
             # both real), but the prefix row only mutates while the caller's
@@ -3506,19 +4020,44 @@ class UsageStore:
             # double-count pings/misses or clobber the schedule the row's new
             # owner set. NULL token keeps legacy unfenced behavior.
             token = str(claim_token) if claim_token else None
-            if outcome == "warmed":
+            # 'spent_unknown' takes the same prefix arm as 'warmed': the ping
+            # counts (it may have cost money, so it must count against
+            # max_pings_per_customer_day), consecutive_misses follows the
+            # existing pre-charge convention where a ping is a miss until an
+            # arrival clears it, and next_due_at moves to the TTL horizon so a
+            # flapping transport cannot re-ping — and re-charge — immediately.
+            if outcome in ("warmed", "spent_unknown"):
                 next_due = (now + timedelta(seconds=max(
                     1, int(provider_ttl_seconds) - int(safety_margin_seconds)))).isoformat()
                 db.execute(
                     "UPDATE warm_prefixes SET warm_pings=warm_pings+1,"
                     "consecutive_misses=consecutive_misses+1,"
                     "pings_today=CASE WHEN pings_today_date=? THEN pings_today+1 ELSE 1 END,"
-                    "pings_today_date=?,next_due_at=?,claim_token='' "
+                    # Only 'warmed' advances the provable-touch clock: it means
+                    # the provider answered 2xx, so the entry was written or
+                    # refreshed for certain. 'spent_unknown' exists precisely
+                    # because we do not know whether the provider processed the
+                    # ping, and a fabricated touch would poison the TTL physics.
+                    "pings_today_date=?,next_due_at=?,claim_token='',"
+                    "last_touch_at=CASE WHEN ? THEN ? ELSE last_touch_at END "
                     "WHERE organization_id=? "
                     "AND customer_id=? AND provider=? AND prefix_hash=? "
                     "AND (? IS NULL OR claim_token=?)",
-                    (day, day, next_due, organization_id, customer_id, provider,
+                    (day, day, next_due, 1 if outcome == "warmed" else 0,
+                     now.isoformat(), organization_id, customer_id, provider,
                      prefix_hash, token, token))
+            elif outcome == "release":
+                # Mirror of the Postgres release arm (202607280018): the claim
+                # is over, so drop the token and hand the row back to live
+                # traffic instead of pinning it at the lease horizon. Same
+                # token fence as every other arm.
+                db.execute(
+                    "UPDATE warm_prefixes SET claim_token='' "
+                    "WHERE organization_id=? "
+                    "AND customer_id=? AND provider=? AND prefix_hash=? "
+                    "AND (? IS NULL OR claim_token=?)",
+                    (organization_id, customer_id, provider, prefix_hash,
+                     token, token))
             elif outcome == "prefix_invalid":
                 db.execute(
                     "UPDATE warm_prefixes SET state='stopped',claim_token='' "
@@ -3662,7 +4201,11 @@ class UsageStore:
                     "next_due_at": stats[5],
                 })
         return {"schema": "brevitas.warm-status.v1",
-                "organization_id": organization_id, "providers": providers}
+                "organization_id": organization_id, "providers": providers,
+                # Disclosed, not derived: the control arm is a share of the
+                # org's own prefixes that Brevitas deliberately does not warm,
+                # so the org must be able to read it without asking.
+                "holdout_fraction": warm_holdout_fraction()}
 
     def purge_warm_state(self, retention_days: int = 7) -> dict[str, Any]:
         if not 1 <= int(retention_days) <= 365:
@@ -3674,9 +4217,19 @@ class UsageStore:
                                   (now.isoformat(),)).rowcount
             ledger = db.execute("DELETE FROM warm_budget_ledger WHERE day<?",
                                 (cutoff,)).rowcount
+            # Aggregate physics horizon, fixed at 365 days and deliberately NOT
+            # tied to retention_days: that argument is the operator's
+            # prefix-payload window, and letting a 7-day default erase the TTL
+            # evidence is the mistake 202607280017 fixed for the budget ledger.
+            observations = db.execute(
+                "DELETE FROM warm_ttl_observations WHERE observed_at<?",
+                ((now - timedelta(days=_WARM_OBSERVATION_RETENTION_DAYS)).isoformat(),)
+            ).rowcount
         return {"schema": "brevitas.warm-purge.v1", "status": "purged",
                 "prefixes_deleted": max(0, int(prefixes or 0)),
-                "ledger_deleted": max(0, int(ledger or 0))}
+                "ledger_deleted": max(0, int(ledger or 0)),
+                "observation_retention_days": _WARM_OBSERVATION_RETENTION_DAYS,
+                "observations_deleted": max(0, int(observations or 0))}
 
 
 class SupabaseUsageStore:
@@ -4949,7 +5502,8 @@ class SupabaseUsageStore:
                             prefix_tokens: int, provider_ttl_seconds: int,
                             safety_margin_seconds: int,
                             cache_read: bool, *,
-                            ping_reserve_usd: float | None = None) -> dict[str, Any]:
+                            ping_reserve_usd: float | None = None,
+                            model_class: str = "") -> dict[str, Any]:
         return _rpc_object(self._request("POST", "rpc/warm_prefix_observe", data={
             "p_organization_id": organization_id, "p_customer_id": customer_id,
             "p_provider": provider, "p_prefix_hash": prefix_hash,
@@ -4961,6 +5515,10 @@ class SupabaseUsageStore:
             # null keeps the stored reserve; the RPC treats it the same way.
             "p_ping_reserve_usd": (None if ping_reserve_usd is None
                                    else float(ping_reserve_usd)),
+            # Coarsened model family for the arrival TTL sensor. The model is
+            # inside payload_ciphertext, which SQL cannot read; '' means unknown
+            # and the observation is still recorded.
+            "p_model_class": str(model_class or "")[:128],
         }))
 
     def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
@@ -4970,6 +5528,7 @@ class SupabaseUsageStore:
                        safety_margin_seconds: int,
                        claim_lease_seconds: int = 900,
                        roi_break_even_by_provider: dict[str, float] | None = None,
+                       holdout_fraction: float = 0.0,
                        ) -> dict[str, Any]:
         rows = self._request("POST", "rpc/warm_due_claim", data={
             "p_claim_limit": int(claim_limit),
@@ -4987,6 +5546,9 @@ class SupabaseUsageStore:
                 {provider: float(break_even) for provider, break_even
                  in roi_break_even_by_provider.items()}
                 if roi_break_even_by_provider else None),
+            # 0 is the RPC's own default and the arm's off state: no digest is
+            # computed and the loop is byte-identical to 202608090001's.
+            "p_holdout_fraction": float(holdout_fraction),
         }) or []
         if rows and rows[0].get("status") == "lease_unavailable":
             return {"status": "lease_unavailable", "rows": []}
@@ -5009,6 +5571,44 @@ class SupabaseUsageStore:
             "p_safety_margin_seconds": int(safety_margin_seconds),
             # null keeps legacy unfenced behavior in the RPC.
             "p_claim_token": str(claim_token) if claim_token else None,
+        }))
+
+    def warm_ttl_observe(self, provider: str, model_class: str, ttl_tier: str,
+                         gap_seconds: float, outcome: str,
+                         source: str) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_ttl_observe", data={
+            "p_provider": provider,
+            "p_model_class": str(model_class or "")[:128],
+            "p_ttl_tier": ttl_tier,
+            "p_gap_seconds": round(float(gap_seconds), 3),
+            "p_outcome": outcome,
+            "p_source": source,
+        }))
+
+    def warm_decision_settle_outcome(self, claim_token: str,
+                                     settle_outcome: str) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_decision_settle_outcome", data={
+                "p_claim_token": str(claim_token),
+                "p_settle_outcome": settle_outcome,
+            }))
+
+    def warm_usage_stamp_prefix(self, organization_id: str, key_hash: str,
+                                request_id: str,
+                                prefix_hash: str) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_usage_stamp_prefix", data={
+                "p_organization_id": organization_id,
+                "p_key_hash": str(key_hash),
+                "p_request_id": str(request_id),
+                "p_prefix_hash": str(prefix_hash),
+            }))
+
+    def warm_reward_join(self, lookback_hours: int = 48,
+                         limit: int = 5000) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_reward_join", data={
+            "p_lookback_hours": int(lookback_hours),
+            "p_limit": int(limit),
         }))
 
     def warm_credentials_get(self, organization_id: str,
@@ -5046,9 +5646,17 @@ class SupabaseUsageStore:
         }))
 
     def warm_status(self, organization_id: str) -> dict[str, Any]:
-        return _rpc_object(self._request("POST", "rpc/warm_read_status", data={
+        status = _rpc_object(self._request("POST", "rpc/warm_read_status", data={
             "p_organization_id": organization_id,
         }))
+        # Decorated here rather than inside warm_read_status: the control-arm
+        # share is process configuration the database does not know. It is the
+        # reading of whichever process answers the org's request, while the
+        # applied share is always the warming worker's -- see the note on
+        # warm_holdout_fraction and docs/WARMING_HOLDOUT.md.
+        if isinstance(status, dict):
+            status["holdout_fraction"] = warm_holdout_fraction()
+        return status
 
     def purge_warm_state(self, retention_days: int = 7) -> dict[str, Any]:
         return _rpc_object(self._request("POST", "rpc/purge_warm_state", data={

@@ -564,3 +564,118 @@ def test_nonstream_survives_malformed_openai_compat_usage(monkeypatch):
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── the reward-join receipt id (202608090002) ────────────────────────────────
+
+
+def test_five_argument_observer_receives_the_receipts_metering_id():
+    """The sink needs the id of the usage row THIS request wrote, so it can
+    stamp the join key onto it after the fact."""
+    calls: list = []
+    warming.set_warm_observer(
+        lambda org, cust, prefix, cache_read, request_id:
+            calls.append((org, cust, request_id)))
+    try:
+        async def run():
+            request = _StateReq()
+            request.state.brevitas_receipt_id = "brv_receipt_abc"
+            proxy._observe_warm_prefix(request, _marked_body(), "claude-fable-5",
+                                       _meta(), {}, cache_read=False,
+                                       response_faithful=True)
+            await asyncio.gather(*proxy._warm_tasks)
+        asyncio.run(run())
+    finally:
+        warming.set_warm_observer(None)
+    assert calls == [("org-1", "cust-1", "brv_receipt_abc")]
+
+
+def test_observer_is_never_the_one_to_mint_a_metering_id():
+    """The receipt id is the billing dedupe key. Minting it here would replace
+    a provider-borrowed id with a uuid4 on every observable request; an unset
+    id simply means there is no receipt to join to."""
+    calls: list = []
+    warming.set_warm_observer(
+        lambda org, cust, prefix, cache_read, request_id:
+            calls.append(request_id))
+    try:
+        async def run():
+            request = _StateReq()          # no brevitas_receipt_id at all
+            proxy._observe_warm_prefix(request, _marked_body(), "claude-fable-5",
+                                       _meta(), {}, cache_read=False,
+                                       response_faithful=True)
+            await asyncio.gather(*proxy._warm_tasks)
+            assert not hasattr(request.state, "brevitas_receipt_id")
+        asyncio.run(run())
+    finally:
+        warming.set_warm_observer(None)
+    assert calls == [""]
+
+
+def test_four_argument_observers_keep_working_unchanged():
+    """A TypeError inside the delivery task is swallowed, so an arity mismatch
+    would silently disable observation instead of failing loudly. The proxy
+    inspects the signature rather than probing it."""
+    calls: list = []
+
+    def legacy(organization_id, customer_id, prefix, cache_read):
+        calls.append((organization_id, cache_read))
+
+    warming.set_warm_observer(legacy)
+    try:
+        async def run():
+            request = _StateReq()
+            request.state.brevitas_receipt_id = "brv_receipt_abc"
+            proxy._observe_warm_prefix(request, _marked_body(), "claude-fable-5",
+                                       _meta(), {}, cache_read=True,
+                                       response_faithful=True)
+            await asyncio.gather(*proxy._warm_tasks)
+        asyncio.run(run())
+    finally:
+        warming.set_warm_observer(None)
+    assert calls == [("org-1", True)]
+
+
+def test_observer_arity_detection_covers_the_shapes_sinks_actually_take():
+    async def coroutine_sink(org, cust, prefix, cache_read, request_id):
+        return None
+
+    assert proxy._observer_takes_request_id(lambda *args: None) is True
+    assert proxy._observer_takes_request_id(coroutine_sink) is True
+    assert proxy._observer_takes_request_id(
+        lambda a, b, c, d: None) is False
+    # Keyword-only extras are not the fifth positional argument.
+    assert proxy._observer_takes_request_id(
+        lambda a, b, c, d, *, request_id="": None) is False
+    # Unintrospectable callables fall back to the four-argument contract.
+    assert proxy._observer_takes_request_id(len) is False
+
+
+def test_observer_arity_detection_tolerates_an_unhashable_sink():
+    """A callable class instance that defines __eq__ is unhashable; caching the
+    arity check would turn that sink into a swallowed TypeError."""
+    class Sink:
+        def __init__(self):
+            self.calls = []
+
+        def __eq__(self, other):          # kills the default __hash__
+            return self is other
+
+        def __call__(self, org, cust, prefix, cache_read, request_id):
+            self.calls.append(request_id)
+
+    sink = Sink()
+    assert proxy._observer_takes_request_id(sink) is True
+    warming.set_warm_observer(sink)
+    try:
+        async def run():
+            request = _StateReq()
+            request.state.brevitas_receipt_id = "brv_receipt_unhashable"
+            proxy._observe_warm_prefix(request, _marked_body(), "claude-fable-5",
+                                       _meta(), {}, cache_read=False,
+                                       response_faithful=True)
+            await asyncio.gather(*proxy._warm_tasks)
+        asyncio.run(run())
+    finally:
+        warming.set_warm_observer(None)
+    assert sink.calls == ["brv_receipt_unhashable"]

@@ -960,17 +960,45 @@ def _observe_warm_prefix(request: Request, body: dict, model: str, meta: dict,
             return                     # shed rather than queue behind a slow store
         task = asyncio.get_running_loop().create_task(_deliver_warm_prefix(
             organization_id, customer_id, body, model, headers, meta, cache_read,
-            provider, upstream))
+            provider, upstream, request))
         _warm_tasks.add(task)
         task.add_done_callback(_warm_tasks.discard)
     except Exception:
         pass
 
 
+def _observer_takes_request_id(observer: Callable) -> bool:
+    """Does this observer accept the optional 5th argument?
+
+    The receipt id lets a sink join its observation to the usage row the same
+    request wrote. Sinks predating that argument -- and test doubles with fixed
+    arity -- must keep working, and a TypeError here would be swallowed by the
+    best-effort wrapper and turn every observation into a silent no-op, so the
+    signature is inspected rather than probed. Anything unintrospectable
+    (builtins, C callables) is treated as 4-argument, which is the safe answer.
+
+    Deliberately uncached: a cache keyed on the callable would require it to be
+    hashable (a callable class instance defining __eq__ is not) and would pin a
+    strong reference to a sink the caller has since replaced. One
+    inspect.signature per observation is microseconds on a path that already
+    encrypts a payload and makes two round trips.
+    """
+    try:
+        parameters = inspect.signature(observer).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    if any(parameter.kind is inspect.Parameter.VAR_POSITIONAL
+           for parameter in parameters):
+        return True
+    return len([parameter for parameter in parameters
+                if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                      inspect.Parameter.POSITIONAL_OR_KEYWORD)]) >= 5
+
+
 async def _deliver_warm_prefix(organization_id: str, customer_id: str, body: dict,
                                model: str, headers: dict[str, str], meta: dict,
                                cache_read: bool, provider: str = "anthropic",
-                               upstream: str = "") -> None:
+                               upstream: str = "", request: Request | None = None) -> None:
     """Best effort only: observation errors never surface to the caller."""
     try:
         observer = get_warm_observer()
@@ -980,8 +1008,20 @@ async def _deliver_warm_prefix(organization_id: str, customer_id: str, body: dic
                                      upstream=upstream)
         if prefix is None:
             return
+        # Read, never mint. _record_receipt mints this id synchronously before
+        # its first await, and this task cannot run until that await, so by the
+        # time we get here the id is the one on this request's receipt. Minting
+        # it ourselves would replace a provider-borrowed metering id with a
+        # uuid4 on every observable request -- a change to the billing dedupe
+        # key, bought for an analytics column. Empty means "no receipt to join
+        # to", which the sink treats as nothing to stamp.
+        receipt_id = str(getattr(getattr(request, "state", None),
+                                 "brevitas_receipt_id", "") or "")
+        arguments = (organization_id, customer_id, prefix, cache_read)
+        if _observer_takes_request_id(observer):
+            arguments = (*arguments, receipt_id)
         if inspect.iscoroutinefunction(observer):
-            await observer(organization_id, customer_id, prefix, cache_read)
+            await observer(*arguments)
         else:
             # run_in_executor does NOT copy the caller's contextvars, and the
             # hosted observer (_hosted_warm_observe) reads the request's auth
@@ -990,8 +1030,7 @@ async def _deliver_warm_prefix(organization_id: str, customer_id: str, body: dic
             # asyncio.to_thread: the default executor is forbidden here.
             ctx = contextvars.copy_context()
             await asyncio.get_running_loop().run_in_executor(
-                _get_warm_executor(), ctx.run, observer,
-                organization_id, customer_id, prefix, cache_read)
+                _get_warm_executor(), ctx.run, observer, *arguments)
     except Exception:
         pass
 

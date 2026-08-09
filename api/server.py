@@ -131,7 +131,7 @@ from brevitas.receipts import (TokenReceipt, calculate_costs, normalize_usage,
                                canonical_provider, reseller_authoritative_costs,
                                _RESELLER_PROVIDERS)
 from brevitas.identity import CUSTOMER_ID_HEADER, normalize_customer_id, tenant_key
-from .store import make_store, PROVIDER_COSTS_PER_1M
+from .store import make_store, warm_model_class, PROVIDER_COSTS_PER_1M
 from brevitas.semantic_cache import make_semantic_cache
 from brevitas.warming import WarmPrefix, set_warm_observer
 
@@ -6340,7 +6340,8 @@ def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
 
 
 def _hosted_warm_observe(organization_id: str, customer_id: str,
-                         prefix: WarmPrefix, cache_read: bool) -> None:
+                         prefix: WarmPrefix, cache_read: bool,
+                         request_id: str = "") -> None:
     """In-process bridge: encrypt an observed warm prefix and record its arrival.
 
     Best-effort by contract — every failure is logged type-only and swallowed,
@@ -6402,13 +6403,48 @@ def _hosted_warm_observe(organization_id: str, customer_id: str,
                                 price.get("write", price["input"]))
             ping_reserve_usd = round(
                 ping_rate * prefix.prefix_tokens / 1_000_000.0, 10)
-        _store.warm_prefix_observe(
+        observation = _store.warm_prefix_observe(
             organization_id, customer_id, prefix.provider, prefix.prefix_hash,
             payload_ciphertext, prefix.prefix_tokens, prefix.provider_ttl_seconds,
             int(os.getenv("BREVITAS_WARM_SAFETY_MARGIN_SECONDS", "60")),
-            cache_read, ping_reserve_usd=ping_reserve_usd)
+            cache_read, ping_reserve_usd=ping_reserve_usd,
+            # Coarsened provider catalog model family, for the arrival-sourced
+            # TTL observation the store records. Provider metadata, not customer
+            # data: the encrypted payload is the only place the model otherwise
+            # exists, and SQL cannot read it.
+            model_class=warm_model_class(prefix.model))
     except Exception as exc:
         logger.warning("warm prefix observation failed error_type=%s",
+                       type(exc).__name__)
+        return
+    # The reward join's key (202608090002). Deliberately a SEPARATE statement
+    # after the observation rather than a field on the receipt INSERT: an
+    # unknown column in that insert is a 400 that drops the whole billable row
+    # (api/store.py:_insert_usage_rows), and this column is worth zero receipts.
+    #
+    # Ordering, not luck: _record_receipt dispatches the receipt write to a
+    # thread before this task is even resumed, and this call additionally sits
+    # behind an envelope encryption and the observation RPC. The receipt row is
+    # therefore already written in the ordinary case. When it is not, the stamp
+    # updates nothing, the usage row keeps a null hash, and the reward join
+    # simply never scores that ping -- the loss is independent of the ping's
+    # outcome, so it costs coverage and biases nothing.
+    #
+    # Its own guard: a failure here must not be reported as a failed
+    # observation, because the observation already succeeded.
+    #
+    # Only stamp a prefix the store actually recorded. An org that is not
+    # warming, or one already at its customer cap, will never produce a
+    # decision row for this prefix, so the hash would be a write nobody reads.
+    if not request_id or str(
+            (observation or {}).get("status") or "") != "observed":
+        return
+    try:
+        _store.warm_usage_stamp_prefix(
+            organization_id, auth_context.key_hash, request_id,
+            prefix.prefix_hash)
+    except Exception as exc:
+        logger.warning("warm prefix usage stamp failed error_type=%s",
                        type(exc).__name__)
 
 

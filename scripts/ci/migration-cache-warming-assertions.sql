@@ -19,11 +19,19 @@ declare
 begin
     -- The RPC surface the API and worker call must exist with these exact
     -- signatures (a plpgsql syntax error in the migration would have rolled
-    -- every one of them back). warm_due_claim is the ten-argument
-    -- 202607280003 overload; that migration drops the nine-argument
-    -- 202607280001 signature so the call below can never be ambiguous.
-    if to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric)') is null
-       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is null
+    -- every one of them back). warm_due_claim is the eleven-argument
+    -- 202608100001 form (trailing p_holdout_fraction for the control arm);
+    -- that migration drops the ten-argument 202607280003/202608090001
+    -- signature, which itself dropped the nine-argument 202607280001 one, so
+    -- the ten positional arguments the calls below pass can never be ambiguous.
+    -- warm_prefix_observe is likewise the eleven-argument 202608090001 form
+    -- (trailing p_model_class for the TTL sensor); that migration drops the
+    -- ten-argument 202607280003/202607280018 signature, so this asserts the new
+    -- one is present AND the old one is gone.
+    if to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric,text)') is null
+       or to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric)') is not null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)') is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer)') is not null
        or to_regprocedure('public.warm_ping_settle(uuid,uuid,text,text,date,numeric,numeric,text,integer,integer,uuid)') is null
        or to_regprocedure('public.warm_credentials_upsert(uuid,text,text,boolean,uuid,numeric,integer,integer)') is null

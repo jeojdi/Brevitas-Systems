@@ -93,7 +93,15 @@ _warm_observer: Callable | None = None
 
 
 def set_warm_observer(callback: Callable | None) -> None:
-    """Install the hosted API's warm-prefix sink; local proxies leave it unset."""
+    """Install the hosted API's warm-prefix sink; local proxies leave it unset.
+
+    Called as `(organization_id, customer_id, prefix, cache_read)`, or with a
+    fifth `request_id` -- the metering id of the receipt this same request
+    wrote -- when the callable's signature accepts one. Four-argument sinks
+    keep working unchanged; the proxy inspects rather than probes, because a
+    TypeError inside the delivery task is swallowed and would silently disable
+    observation entirely.
+    """
     global _warm_observer
     _warm_observer = callback
 

@@ -209,6 +209,11 @@ export const expectedFreshMigrationOrder = [
   // untouched -- so it may sit anywhere after 202607170001, which defines the
   // column. Placed last because it is the newest.
   'supabase/migrations/202607280038_new_organizations_cache_by_default.sql',
+  'supabase/migrations/202608010001_openrouter_reported_cost.sql',
+  'supabase/migrations/202608080001_warm_spent_unknown_settle.sql',
+  'supabase/migrations/202608090001_warm_instrumentation_tables.sql',
+  'supabase/migrations/202608090002_warm_reward_join.sql',
+  'supabase/migrations/202608100001_warm_holdout_arm.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)

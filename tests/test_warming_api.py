@@ -330,7 +330,7 @@ def test_hosted_warm_observe_reserves_provider_aware_ping_cost(tmp_path, monkeyp
         def __init__(self):
             self.reserves = []
 
-        def warm_prefix_observe(self, *args, ping_reserve_usd=None):
+        def warm_prefix_observe(self, *args, ping_reserve_usd=None, model_class=""):
             self.reserves.append(ping_reserve_usd)
             return {"status": "observed"}
 
@@ -387,7 +387,7 @@ def test_hosted_warm_observe_reserve_upper_bounds_full_miss_settle(
     reserves = []
 
     class Recorder:
-        def warm_prefix_observe(self, *args, ping_reserve_usd=None):
+        def warm_prefix_observe(self, *args, ping_reserve_usd=None, model_class=""):
             reserves.append(ping_reserve_usd)
             return {"status": "observed"}
 
@@ -646,3 +646,116 @@ def test_stats_cache_per_provider_is_additive_and_normalized(tmp_path, monkeypat
          "native_cache_discount_usd": 0.01, "attributable_discount_usd": None,
          "warm_pings": None, "warm_spend_usd": None, "warm_hits": None},
     ]
+
+
+def test_hosted_warm_observe_stamps_the_receipt_it_was_given(tmp_path, monkeypatch):
+    """The join key rides a separate UPDATE, never the receipt INSERT: an
+    unknown column in that insert is a 400 that drops the whole billable row."""
+    server, store, organization, client = _setup(tmp_path, monkeypatch,
+                                                 "warm-stamp")
+    assert _enroll(client).status_code == 200
+    customer = store.upsert_customer(organization["id"], "customer-1")
+    prefix = WarmPrefix(
+        provider="anthropic", model="claude-sonnet-4-6", prefix_hash="c" * 64,
+        prefix_tokens=2048, provider_ttl_seconds=300,
+        payload={"model": "claude-sonnet-4-6", "tools": [], "system": None,
+                 "messages_prefix": [], "ttl": "", "vary": {}})
+    store.create_key("kh_warm_service", "svc", owner_id="owner-1",
+                     organization_id=organization["id"])
+    assert store.record_usage(
+        "kh_warm_service", 100, 100, organization_id=organization["id"],
+        customer_id=str(customer["id"]), provider="anthropic",
+        authoritative=True, request_id="brv_receipt_stamp")
+
+    server._proxy_auth_context.set(server.AuthContext(
+        key_hash="kh_warm_service", organization_id=organization["id"],
+        customer_id=str(customer["id"]), key_type="organization_service"))
+    server._hosted_warm_observe(
+        organization["id"], str(customer["id"]), prefix, False,
+        "brv_receipt_stamp")
+
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT warm_prefix_hash FROM usage_log WHERE request_id=?",
+            ("brv_receipt_stamp",)).fetchone()[0] == "c" * 64
+
+    # No receipt id (the observation ran before one was minted, or the request
+    # emitted none): the observation still lands, the stamp is simply skipped.
+    other = WarmPrefix(provider="anthropic", model="claude-sonnet-4-6",
+                       prefix_hash="d" * 64, prefix_tokens=2048,
+                       provider_ttl_seconds=300, payload=prefix.payload)
+    server._hosted_warm_observe(
+        organization["id"], str(customer["id"]), other, False, "")
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM warm_prefixes WHERE prefix_hash=?",
+            ("d" * 64,)).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM usage_log WHERE warm_prefix_hash=?",
+            ("d" * 64,)).fetchone()[0] == 0
+
+
+def test_hosted_warm_observe_stamp_failure_does_not_undo_the_observation(
+        tmp_path, monkeypatch, caplog):
+    server, store, organization, client = _setup(tmp_path, monkeypatch,
+                                                 "warm-stamp-fail")
+    assert _enroll(client).status_code == 200
+    customer = store.upsert_customer(organization["id"], "customer-1")
+    prefix = WarmPrefix(
+        provider="anthropic", model="claude-sonnet-4-6", prefix_hash="e" * 64,
+        prefix_tokens=2048, provider_ttl_seconds=300,
+        payload={"model": "claude-sonnet-4-6", "tools": [], "system": None,
+                 "messages_prefix": [], "ttl": "", "vary": {}})
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("stamp down")
+
+    monkeypatch.setattr(store, "warm_usage_stamp_prefix", explode)
+    server._proxy_auth_context.set(server.AuthContext(
+        key_hash="kh_warm_service", organization_id=organization["id"],
+        customer_id=str(customer["id"]), key_type="organization_service"))
+    with caplog.at_level("WARNING"):
+        server._hosted_warm_observe(
+            organization["id"], str(customer["id"]), prefix, False, "brv_x")
+
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM warm_prefixes WHERE prefix_hash=?",
+            ("e" * 64,)).fetchone()[0] == 1
+    assert "warm prefix usage stamp failed" in caplog.text
+    assert "warm prefix observation failed" not in caplog.text
+
+
+def test_hosted_warm_observe_does_not_stamp_an_unrecorded_prefix(
+        tmp_path, monkeypatch):
+    """An org past its customer cap never produces a decision row for this
+    prefix, so the hash would be a write nobody reads."""
+    server, store, organization, client = _setup(tmp_path, monkeypatch,
+                                                 "warm-stamp-cap")
+    assert _enroll(client).status_code == 200
+    customer = store.upsert_customer(organization["id"], "customer-1")
+    store.create_key("kh_warm_service", "svc", owner_id="owner-1",
+                     organization_id=organization["id"])
+    assert store.record_usage(
+        "kh_warm_service", 100, 100, organization_id=organization["id"],
+        customer_id=str(customer["id"]), provider="anthropic",
+        authoritative=True, request_id="brv_receipt_uncapped")
+    monkeypatch.setattr(store, "warm_prefix_observe",
+                        lambda *a, **k: {"schema": "brevitas.warm-observe.v1",
+                                         "status": "customer_cap"})
+    prefix = WarmPrefix(
+        provider="anthropic", model="claude-sonnet-4-6", prefix_hash="f" * 64,
+        prefix_tokens=2048, provider_ttl_seconds=300,
+        payload={"model": "claude-sonnet-4-6", "tools": [], "system": None,
+                 "messages_prefix": [], "ttl": "", "vary": {}})
+    server._proxy_auth_context.set(server.AuthContext(
+        key_hash="kh_warm_service", organization_id=organization["id"],
+        customer_id=str(customer["id"]), key_type="organization_service"))
+    server._hosted_warm_observe(
+        organization["id"], str(customer["id"]), prefix, False,
+        "brv_receipt_uncapped")
+
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT warm_prefix_hash FROM usage_log WHERE request_id=?",
+            ("brv_receipt_uncapped",)).fetchone()[0] is None

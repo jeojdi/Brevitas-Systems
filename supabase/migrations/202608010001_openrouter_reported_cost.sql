@@ -21,6 +21,10 @@
 -- untouched and they replay at reported_cost_usd = 0 (unpriced/$0), which is the
 -- safe direction.
 
+
+-- REVERSE: DDL: drop the 12-argument public.semantic_cache_store_bounded overload, then alter table public.semantic_cache drop column if exists reported_cost_usd; the 11- and 10-argument overloads from 202607280031/202607170002 remain untouched, so callers resolve and degrade to un-costed (replays bill $0) exactly as before this migration
+
+begin;
 alter table public.semantic_cache
     add column if not exists reported_cost_usd numeric(18,10) not null default 0;
 
@@ -122,3 +126,5 @@ comment on function public.semantic_cache_store_bounded(
     'ten-argument versions are deliberately retained so an un-restarted process '
     'still resolves its call and degrades to un-costed (replay bills $0) rather '
     'than losing the write.';
+
+commit;
