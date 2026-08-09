@@ -214,6 +214,10 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202608090001_warm_instrumentation_tables.sql',
   'supabase/migrations/202608090002_warm_reward_join.sql',
   'supabase/migrations/202608100001_warm_holdout_arm.sql',
+  'supabase/migrations/202608100002_warm_index_claim_ordering.sql',
+  'supabase/migrations/202608100003_warm_customer_state_hazard.sql',
+  'supabase/migrations/202608100004_warm_customer_budget_envelopes.sql',
+  'supabase/migrations/202608100005_warm_beta_cap_guardrail.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -997,7 +1001,19 @@ function verifyUpgradeHarnessCoverage() {
 // Note 202607280028 is NOT in this chain and never will be -- it is quarantined
 // in docs/quarantine/ -- so the numbering has a deliberate hole at 0028 and the
 // cutoff tracks the head of what actually ships, not the highest number written.
-const REVERSE_POSTURE_CUTOFF = '202607280039'
+// Advanced to 202608100003 when the Phase 1 index/claim-ordering migration
+// consumed 202608100002. The warming chain (202608010001 through 202608100002)
+// had moved the head past the cutoff without moving the cutoff, which left
+// tests/release_security.test.mjs's "cutoff must stay ahead of the applied
+// chain" assertion red -- the control had silently stopped being the NEXT
+// UNUSED number it is defined to be. Every one of those migrations does carry a
+// REVERSE: header, so nothing was ungoverned; only the invariant was.
+// Advanced again to 202608100005 when 202608100004 (per-customer spend
+// envelopes) consumed 202608100004. Same rule as every bump above it: the
+// cutoff is the next UNUSED number, so it keeps governing the head.
+// Advanced again to 202608100006 when 202608100005 (the beta spend cap, the
+// conservative guardrail and the TTL canary) consumed 202608100005.
+const REVERSE_POSTURE_CUTOFF = '202608100006'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

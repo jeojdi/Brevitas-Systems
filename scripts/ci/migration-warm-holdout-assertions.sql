@@ -29,16 +29,23 @@ declare
 begin
     -- The signature is replaced, never overloaded: two candidates make every
     -- existing ten-argument call ambiguous, and PostgREST would 300.
-    if to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)') is null
+    -- The holdout argument is now carried by 202608100002's fourteen-argument
+    -- form; the eleven- and fourteen-argument forms this file was written
+    -- against are gone, and the eleven positional arguments every call below
+    -- passes still resolve because every later argument has a default.
+    if to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric)') is not null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb)') is not null then
-        raise exception 'warm_due_claim must be the eleven-argument holdout form only';
+        raise exception 'warm_due_claim must be the sixteen-argument beta form only';
     end if;
     if has_function_privilege('anon',
-        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)', 'execute')
+        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)', 'execute')
        or has_function_privilege('authenticated',
-        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)', 'execute')
+        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)', 'execute')
        or not has_function_privilege('service_role',
-        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)', 'execute') then
+        'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)', 'execute') then
         raise exception 'warm_due_claim privileges are wrong after the signature change';
     end if;
 

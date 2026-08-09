@@ -14,6 +14,7 @@ import inspect
 import json
 import math
 import os
+import random
 import signal
 import socket
 import threading
@@ -67,6 +68,7 @@ from .store import (
     _WARM_TTL_MAX_GAP_SECONDS,
     warm_holdout_fraction,
     warm_model_class,
+    warm_regime_classify,
     warm_ttl_tier,
 )
 from .observability import (
@@ -553,6 +555,45 @@ def _warm_claim_kwargs() -> dict[str, Any]:
         # same number from the same env var, and two parsers of one knob is
         # how the advertised share and the applied share drift apart.
         "holdout_fraction": warm_holdout_fraction(),
+        # The dollar index and its pacing dual (202608100002), default OFF.
+        # Unlike the reward join and the regime scan -- which only write
+        # analytics columns and are therefore default-on -- this flag changes
+        # which candidates are claimed and in what order, so it is opt-in. At
+        # off the RPC computes no index, touches no lambda row and behaves
+        # exactly as 202608100001's did.
+        "index_enabled": os.getenv("BREVITAS_WARM_INDEX", "false").lower()
+                         in ("1", "true", "yes"),
+        # Pacing gain: how hard lambda reacts to being off the linear intraday
+        # spend target. Only read when the index is on.
+        "lambda_eta": _warm_bound("BREVITAS_WARM_LAMBDA_ETA", 0.2, 0.01, 2.0),
+        # Ceiling on the dual. lambda is in index units, and an index of 1000
+        # means "a thousand times break-even", so this is effectively "deny
+        # everything" without being unbounded.
+        "lambda_max": _warm_bound(
+            "BREVITAS_WARM_LAMBDA_MAX", 1000.0, 0.0, 1_000_000.0),
+        # The decayed hierarchical hazard, P(alive) and the keep-alive chain
+        # (202608100003), default OFF. Like the index and unlike the reward
+        # join and the regime scan, this changes what gets claimed: p_return
+        # stops being the lifetime histogram ratio and the stop-loss predicate
+        # stops filtering candidates. At off no state row is read and the RPC
+        # is 202608100002's. State WRITES are unconditional and happen in
+        # warm_prefix_observe regardless, so the model has history the day
+        # this is turned on.
+        # INERT WITHOUT BREVITAS_WARM_INDEX. hazard_v2 is an EXTENSION of the
+        # index policy, not an independent one: P(alive) and the keep-alive
+        # chain only ever reach a decision through the index block, so the
+        # claim requires BOTH flags before it retires the churn stop-loss.
+        # Set alone it would otherwise drop the stop-loss with nothing in its
+        # place, and a dead prefix would be re-claimed forever.
+        "hazard_v2": os.getenv("BREVITAS_WARM_HAZARD_V2", "false").lower()
+                     in ("1", "true", "yes"),
+        # THE BETA SPEND CAP (202608100005), default 0. 0 means the cap does
+        # not RUN, not that the cap is zero: a zero cap denies every candidate,
+        # which is the right answer for an operator who armed the cap with no
+        # control data and the wrong answer for one who never armed it. Above
+        # zero, trailing 28-day warm spend may not exceed beta times the
+        # control-verified savings in warm_control_savings_daily.
+        "beta": _warm_bound("BREVITAS_WARM_SPEND_BETA", 0.0, 0.0, 100.0),
     }
 
 
@@ -928,6 +969,526 @@ async def warm_reward_join(stop: asyncio.Event) -> None:
             pass
 
 
+def _warm_regime_enabled() -> bool:
+    """ON by default, on the reward join's precedent and for its reason.
+
+    The regime scan reads authoritative usage_log rows and writes two analytics
+    columns of warm_customer_state. It cannot ping, spend, bill or settle, and
+    NOTHING READS THE LABEL IT WRITES in Phase 1 -- the deterministic fast-path
+    scheduler for periodic customers is plan section 4.3 and lands under its own
+    flag. So the "new behavior ships OFF" rule that guards the warming loop does
+    not apply; the label accumulates so that scheduler starts with data. Still a
+    single env var away from silent, because a job nobody can stop is its own
+    hazard.
+    """
+    return os.getenv("BREVITAS_WARM_REGIME", "true").lower() not in (
+        "0", "false", "no")
+
+
+async def warm_regime_refresh(stop: asyncio.Event) -> None:
+    """Daily: label each learned customer periodic-daily, -weekly or aperiodic.
+
+    Gated on warming being on at all -- with no warming there are no state rows
+    to classify, and running the scan anyway is pure load. Every cycle is
+    independent: only rows whose label is null or older than seven days are
+    returned, so a missed day is picked up by the next one.
+    """
+    if not _warming_enabled() or not _warm_regime_enabled():
+        return
+    interval = _warm_bound("BREVITAS_WARM_REGIME_INTERVAL_SECONDS",
+                           86_400, 3_600, 604_800)
+    limit = int(_warm_bound("BREVITAS_WARM_REGIME_LIMIT", 500, 1, 10_000))
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                series = await asyncio.to_thread(
+                    _store.warm_customer_arrival_buckets, 28, limit)
+                labelled = 0
+                for entry in series or []:
+                    regime, score = warm_regime_classify(
+                        list(entry.get("counts") or []))
+                    await asyncio.to_thread(
+                        _store.warm_customer_state_set_regime,
+                        str(entry.get("organization_id") or ""),
+                        str(entry.get("customer_id") or ""),
+                        str(entry.get("provider") or ""), regime, float(score))
+                    labelled += 1
+                logger.info("warm_regime_cycle", scanned=len(series or []),
+                            labelled=labelled)
+            except Exception as exc:
+                logger.error("warm_regime_error", error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+def _warm_envelope_allocator_enabled() -> bool:
+    """OFF by default, unlike the reward join and the regime scan.
+
+    Those two only write analytics columns nothing gates on. This one WRITES A
+    HARD SPEND GATE: once warm_customer_budget rows exist for an (org, provider,
+    month), the claim path denies any candidate whose reservation would carry
+    its customer past that envelope. An organization that never asked for
+    per-customer fairness must not silently acquire per-customer ceilings
+    because a worker was deployed, so the allocator is opt-in and the gate stays
+    vacuous -- no row, no constraint -- until it runs or an operator PUTs a row.
+    """
+    return os.getenv("BREVITAS_WARM_ENVELOPE_ALLOCATOR", "false").lower() in (
+        "1", "true", "yes")
+
+
+async def warm_envelope_allocator(stop: asyncio.Event) -> None:
+    """Daily: split each organization's monthly warming budget across its
+    customers in proportion to trailing 28-day positive index mass.
+
+    Gated on warming being on at all -- with no warming there is nothing to
+    apportion. Every cycle is independent and idempotent in the direction that
+    matters: the upsert is raise-only and skips org_override rows, so a missed
+    day costs nothing and a double run changes nothing.
+    """
+    if not _warming_enabled() or not _warm_envelope_allocator_enabled():
+        return
+    interval = _warm_bound("BREVITAS_WARM_ENVELOPE_INTERVAL_SECONDS",
+                           86_400, 3_600, 604_800)
+    limit = int(_warm_bound("BREVITAS_WARM_ENVELOPE_ORG_LIMIT", 200, 1, 10_000))
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                result = await asyncio.to_thread(
+                    _store.warm_customer_budget_allocate, limit)
+                logger.info("warm_envelope_allocator_cycle",
+                            pairs=int(result.get("pairs") or 0),
+                            written=int(result.get("written") or 0),
+                            period_start=str(result.get("period_start") or ""))
+            except Exception as exc:
+                logger.error("warm_envelope_allocator_error",
+                             error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+def _warm_learned_flags_on() -> bool:
+    """True when anything LEARNED is actually running.
+
+    The guardrail freezes a pair back to flat priors. With neither the index nor
+    the hazard model on there is nothing learned to freeze -- flat priors are
+    already what the claim path uses -- so the guardrail loop exits and its
+    default-on flag has zero default behaviour change.
+    """
+    return (os.getenv("BREVITAS_WARM_INDEX", "false").lower() in ("1", "true", "yes")
+            or os.getenv("BREVITAS_WARM_HAZARD_V2", "false").lower()
+            in ("1", "true", "yes"))
+
+
+async def warm_control_savings(stop: asyncio.Event) -> None:
+    """Refresh the treated-versus-control comparison the beta cap reads.
+
+    Default ON, on the reward-join precedent (api/worker.py:880-890): this
+    writes an analytics table and nothing gates on it until an operator sets
+    BREVITAS_WARM_SPEND_BETA above zero. Writing it by default is what makes the
+    cap armable at all -- a cap switched on with an empty producer table denies
+    everything, and the fix for that must not be "wait 28 days".
+    """
+    if not _warming_enabled() or os.getenv(
+            "BREVITAS_WARM_CONTROL_SAVINGS", "true").lower() not in (
+                "1", "true", "yes"):
+        return
+    interval = _warm_bound("BREVITAS_WARM_CONTROL_SAVINGS_INTERVAL_SECONDS",
+                           21_600, 600, 86_400)
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                result = await asyncio.to_thread(
+                    _store.warm_control_savings_refresh, 28)
+                logger.info("warm_control_savings_cycle",
+                            days_scanned=int(result.get("days_scanned") or 0),
+                            rows_written=int(result.get("rows_written") or 0),
+                            mixed_units=int(result.get("mixed_units") or 0))
+            except Exception as exc:
+                logger.error("warm_control_savings_error",
+                             error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+async def warm_guardrail(stop: asyncio.Event) -> None:
+    """Freeze any (organization, provider) whose learned policy is losing money.
+
+    Default ON, but see _warm_learned_flags_on: with nothing learned running the
+    loop returns before reading anything, so the default costs nothing and
+    changes nothing.
+
+    THE NET IS MEASURED, NOT SELF-REPORTED. warm_guardrail_scan differences the
+    randomized control arm's lift against what warming actually cost; it does
+    not read the policy's own realized_net_usd attribution, which comes back
+    only as the policy_net_7d_usd diagnostic logged beside it.
+
+    AND IT NEEDS EVIDENCE. A pair with no control rows differences zero lift
+    against real spend and looks catastrophic when it is simply unmeasured, so
+    a freeze requires at least three control-measured days
+    (BREVITAS_WARM_GUARDRAIL_MIN_CONTROL_DAYS, default 3). Below that the pair
+    is skipped, which is the conservative direction for a switch that only a
+    human can undo.
+
+    THE BASELINE IS A PLACEHOLDER, and deliberately a visible one. The plan's
+    gate is `net_7d < (1 - alpha) * baseline_v1`, where baseline_v1 is the v1
+    policy's own control-measured trailing net. That number does not exist until
+    the holdout arm has run long enough to produce it, so the comparison
+    degenerates to a ZERO FLOOR: freeze when the measured net is worse than
+    losing BREVITAS_WARM_GUARDRAIL_MIN_USD. That is strictly more conservative
+    than the plan's gate whenever baseline_v1 >= 0 and strictly less
+    conservative when it is negative -- i.e. it under-freezes only when v1 was
+    ALSO losing money, which is a decision for a human, not this loop.
+
+    Unfreezing is manual: call warm_org_mode_set. A guardrail that unfreezes
+    itself oscillates.
+    """
+    if not _warming_enabled() or not _warm_learned_flags_on():
+        return
+    if os.getenv("BREVITAS_WARM_GUARDRAIL", "true").lower() not in (
+            "1", "true", "yes"):
+        return
+    interval = _warm_bound("BREVITAS_WARM_GUARDRAIL_INTERVAL_SECONDS",
+                           3_600, 60, 86_400)
+    min_usd = _warm_bound("BREVITAS_WARM_GUARDRAIL_MIN_USD", 0.10, 0.0, 1_000_000.0)
+    min_control_days = int(_warm_bound(
+        "BREVITAS_WARM_GUARDRAIL_MIN_CONTROL_DAYS", 3, 1, 90))
+    baseline_v1 = 0.0
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                for pair in await asyncio.to_thread(_store.warm_guardrail_scan, 7):
+                    organization_id = str(pair.get("organization_id") or "")
+                    provider = str(pair.get("provider") or "")
+                    net7 = float(pair.get("net_7d_usd") or 0.0)
+                    control_days = int(pair.get("control_days") or 0)
+                    if str(pair.get("mode") or "learned") == "frozen":
+                        logger.info("warm_guardrail_already_frozen",
+                                    organization_id=organization_id,
+                                    provider=provider, net_7d_usd=net7)
+                        continue
+                    if net7 >= baseline_v1 - min_usd:
+                        continue
+                    # No experiment, no freeze. An unmeasured pair reads as a
+                    # total loss (zero measured lift against real spend), and
+                    # freezing on that would punish a pair for not having run
+                    # the holdout long enough yet.
+                    if control_days < min_control_days:
+                        logger.info("warm_guardrail_unmeasured",
+                                    organization_id=organization_id,
+                                    provider=provider, net_7d_usd=net7,
+                                    control_days=control_days)
+                        continue
+                    await asyncio.to_thread(
+                        _store.warm_org_mode_set, organization_id, provider,
+                        "frozen",
+                        f"guardrail net7={net7:.4f} control_days={control_days}")
+                    logger.error("warm_guardrail_frozen",
+                                 organization_id=organization_id,
+                                 provider=provider, net_7d_usd=net7,
+                                 control_days=control_days,
+                                 policy_net_7d_usd=float(
+                                     pair.get("policy_net_7d_usd") or 0.0))
+            except Exception as exc:
+                logger.error("warm_guardrail_error", error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+# The canary's vocabulary. Sixty-four ordinary English words, fixed forever, so
+# a probe prefix is a pure function of its seed and CANNOT contain customer data
+# by construction rather than by policy. Nothing here is read from a request, a
+# database or an environment variable.
+_CANARY_WORDS: tuple[str, ...] = (
+    "harbor", "lantern", "meadow", "cobalt", "thistle", "quarry", "ember",
+    "willow", "cinder", "marble", "trellis", "pebble", "aurora", "compass",
+    "gallery", "hollow", "juniper", "kettle", "lattice", "mosaic", "nectar",
+    "obsidian", "plateau", "quiver", "ribbon", "saffron", "tundra", "umbrella",
+    "velvet", "wander", "yonder", "zephyr", "anchor", "beacon", "canyon",
+    "driftwood", "estuary", "fathom", "granite", "heather", "island", "jasper",
+    "kindling", "lagoon", "mariner", "northerly", "orchard", "prairie",
+    "quartz", "rivulet", "seagrass", "timber", "upland", "vessel", "waterway",
+    "yarrow", "almanac", "bramble", "cascade", "dunes", "eddy", "foghorn",
+    "glacier", "highland",
+)
+# Minimum cacheable prefix per provider. Anthropic's haiku tier will not create
+# a cache entry below 4096 tokens at all, so a shorter probe measures nothing;
+# 4600 leaves headroom over the words x 1.35 estimate. DeepSeek's automatic
+# prefix cache works from 512.
+_CANARY_MIN_TOKENS: dict[str, int] = {"anthropic": 4600, "deepseek": 512}
+# The gap ladder, as multiples of the believed TTL. Straddling 1.0 is the point:
+# a censored observation below the belief and one above it bound the true TTL
+# from both sides, which one-sided probing never does.
+_CANARY_LADDER: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+# A LITERAL PAIR, asserted at the top of the loop. OpenAI stays
+# measurement-only, so no BREVITAS_PROBE_OPENAI_KEY in the environment can make
+# the canary reach it.
+_CANARY_PROVIDERS: tuple[str, str] = ("anthropic", "deepseek")
+# Believed TTL and the tier warm_ttl_observations records it under.
+_CANARY_TTL: dict[str, tuple[int, str]] = {
+    "anthropic": (300, "5m"),
+    "deepseek": (14_400, "auto"),
+}
+
+
+def _canary_prefix(provider: str, seed: str) -> tuple[str, int]:
+    """Build a probe prefix and its estimated token count from a seed.
+
+    Deterministic: the same seed always yields the same text, which is what lets
+    the probe leg rebuild the write leg's exact bytes without storing them.
+    """
+    rng = random.Random(seed)
+    target_tokens = _CANARY_MIN_TOKENS.get(provider, 512)
+    # ~1.35 tokens per word is the conservative direction: it UNDER-counts, so
+    # the prefix ends up longer than the minimum rather than shorter, and a
+    # prefix below the provider minimum caches nothing and measures nothing.
+    words_needed = int(target_tokens / 1.35) + 1
+    lines: list[str] = []
+    used = 0
+    index = 0
+    while used < words_needed:
+        span = rng.sample(_CANARY_WORDS, 12)
+        lines.append(f"Brevitas TTL canary block {index}: " + " ".join(span) + ".")
+        used += len(span) + 5
+        index += 1
+    text = "\n".join(lines)
+    return text, int(len(text.split()) * 1.35)
+
+
+def _canary_body(provider: str, model: str, prefix: str) -> dict:
+    if provider == "anthropic":
+        return {
+            "model": model,
+            "max_tokens": 1,
+            "system": [{"type": "text", "text": prefix,
+                        "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": "."}]}],
+            "metadata": {"user_id": "brevitas-ttl-canary"},
+        }
+    return {
+        "model": model,
+        "max_tokens": 1,
+        "stream": False,
+        "messages": [{"role": "system", "content": prefix},
+                     {"role": "user", "content": "."}],
+    }
+
+
+def _canary_headers(provider: str, key: str) -> dict:
+    if provider == "anthropic":
+        return {"x-api-key": key, "anthropic-version": "2023-06-01",
+                "content-type": "application/json"}
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+def _canary_key(provider: str) -> str:
+    return os.getenv(f"BREVITAS_PROBE_{provider.upper()}_KEY", "").strip()
+
+
+def _canary_model(provider: str) -> str:
+    default = "claude-haiku-4-5" if provider == "anthropic" else "deepseek-chat"
+    return os.getenv(
+        f"BREVITAS_TTL_CANARY_MODEL_{provider.upper()}", default).strip() or default
+
+
+def _canary_estimate_usd(provider: str, model: str, prefix_tokens: int) -> float | None:
+    """Pessimistic cost of one probe call: the whole prefix at input price with a
+    1.5x write-premium margin. None when the model is unpriced, which disables
+    that provider's canary rather than spending blind."""
+    price = model_price(provider, model)
+    if not price:
+        return None
+    return round(float(price.get("input") or 0.0) * prefix_tokens / 1_000_000.0
+                 * 1.5, 10)
+
+
+def _canary_actual_usd(provider: str, model: str, receipt: Any,
+                       estimate: float) -> float:
+    """What the call actually cost, or the reservation when the receipt cannot
+    say. Refining downward on an unreadable body would release the whole
+    reservation and the daily cap would stop binding on exactly the calls it
+    cannot account for -- the rule _warm_one already applies to tenant pings."""
+    costs = calculate_costs(provider, model, receipt.input_tokens, receipt)
+    if receipt.total_tokens and str(costs.get("pricing_status")) == "priced":
+        return float(costs.get("actual_cost_usd") or 0.0)
+    return float(estimate)
+
+
+async def _canary_send(provider: str, model: str, prefix: str) -> tuple[int, dict]:
+    spec = WARM_PROVIDER_SPECS[provider]
+    return await asyncio.to_thread(
+        _send_warm_ping, provider,
+        {"endpoint_url": spec["endpoint_url"], "operation": spec["operation"]},
+        _canary_body(provider, model, prefix),
+        _canary_headers(provider, _canary_key(provider)))
+
+
+async def warm_ttl_canary(stop: asyncio.Event) -> None:
+    """Measure provider cache TTL on Brevitas's own dime.
+
+    OFF by default. The job writes a synthetic prefix with a Brevitas-owned
+    probe key, waits a gap drawn from a ladder around the believed TTL, replays
+    the identical bytes and reads the provider's cache legs back: a cache-read
+    leg means the entry survived the gap ('warm'), a cache-write leg means it
+    did not ('expired'). Both are censored observations of the same unknown, and
+    warm_ttl_observations already knows how to hold them.
+
+    WHAT IT MAY TOUCH: warm_ttl_observations (source 'canary') and the two
+    canary tables. Nothing else -- no usage_log row, no warm_budget_ledger, no
+    warm_customer_budget, no tenant credential. It spends Brevitas's money
+    against Brevitas's account, fenced by a daily dollar cap that is reserved
+    before the request leaves.
+
+    OPENAI IS STRUCTURALLY UNREACHABLE: the provider tuple is a literal pair, so
+    no environment variable can widen it.
+    """
+    if not _warming_enabled() or os.getenv(
+            "BREVITAS_TTL_CANARY", "false").lower() not in ("1", "true", "yes"):
+        return
+    assert _CANARY_PROVIDERS == ("anthropic", "deepseek")
+    interval = _warm_bound("BREVITAS_TTL_CANARY_INTERVAL_SECONDS", 300, 30, 3_600)
+    daily_cap = _warm_bound("BREVITAS_TTL_CANARY_DAILY_USD", 0.25, 0.0, 100.0)
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            for provider in _CANARY_PROVIDERS:
+                try:
+                    await _canary_cycle(provider, daily_cap)
+                except Exception as exc:
+                    logger.error("warm_ttl_canary_error", provider=provider,
+                                 error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+async def _canary_cycle(provider: str, daily_cap: float) -> None:
+    """One provider's turn: fire every due probe, then start one experiment if
+    none is in flight."""
+    if not _canary_key(provider):
+        # No probe key is not an error: the canary is Brevitas-funded and a
+        # deployment that has not been given a key simply does not run it.
+        return
+    model = _canary_model(provider)
+    day = datetime.now(timezone.utc).date().isoformat()
+    ttl_seconds, ttl_tier = _CANARY_TTL[provider]
+
+    for probe in await asyncio.to_thread(_store.warm_canary_probe_due, provider, 50):
+        prefix, _tokens = _canary_prefix(provider, str(probe.get("prefix_seed") or ""))
+        estimate = _canary_estimate_usd(
+            provider, model, int(probe.get("prefix_tokens") or 0))
+        if estimate is None:
+            logger.warning("warm_ttl_canary_unpriced_model", provider=provider,
+                           model=model)
+            return
+        reservation = await asyncio.to_thread(
+            _store.warm_canary_reserve, provider, day, estimate, daily_cap)
+        if not reservation.get("allowed"):
+            # Left pending on purpose: the experiment is still valid, it just
+            # has to wait for tomorrow's cap. A probe fired late measures a
+            # longer gap than it targeted, which is why the gap recorded below
+            # is the MEASURED one, never the target.
+            return
+        try:
+            status, data = await _canary_send(provider, model, prefix)
+        except Exception as exc:
+            # The estimate stays booked. A transport failure after a POST is
+            # ambiguous -- the provider may have run and billed it -- and the
+            # conservative reading of an ambiguous spend is that it happened.
+            await asyncio.to_thread(
+                _store.warm_canary_probe_mark, int(probe.get("id") or 0), "failed")
+            logger.warning("warm_ttl_canary_send_failed", provider=provider,
+                           error_type=type(exc).__name__)
+            return
+        if not 200 <= int(status) < 300:
+            await asyncio.to_thread(
+                _store.warm_canary_probe_mark, int(probe.get("id") or 0), "failed")
+            logger.warning("warm_ttl_canary_http_error", provider=provider,
+                           status=int(status))
+            return
+        receipt = normalize_usage(data.get("usage"), provider)
+        outcome = _warm_ttl_outcome(receipt)
+        gap = _canary_gap_seconds(probe)
+        if outcome and gap is not None:
+            await asyncio.to_thread(
+                _store.warm_ttl_observe, provider, warm_model_class(model),
+                ttl_tier, gap, outcome, "canary")
+        await asyncio.to_thread(
+            _store.warm_canary_probe_mark, int(probe.get("id") or 0), "done")
+        # Refine the estimate DOWNWARD only on a parseable, priced receipt --
+        # the same rule _warm_one applies for the same reason. Booking 0 for an
+        # unreadable 2xx body would release the whole reservation, so the daily
+        # cap would never bind on exactly the calls it cannot account for.
+        await asyncio.to_thread(
+            _store.warm_canary_settle, provider, day, estimate,
+            _canary_actual_usd(provider, model, receipt, estimate))
+
+    stats = await asyncio.to_thread(_store.warm_canary_probe_stats, provider)
+    if int(stats.get("pending") or 0) > 0:
+        return
+    # A new experiment. The ladder index advances on MEASUREMENT, not on
+    # attempts, so a run of failures cannot walk the ladder past the gaps that
+    # actually bound the TTL.
+    done = int(stats.get("done") or 0)
+    gap_target = _CANARY_LADDER[done % len(_CANARY_LADDER)] * ttl_seconds
+    seed = f"{provider}:{day}:{done}"
+    prefix, prefix_tokens = _canary_prefix(provider, seed)
+    estimate = _canary_estimate_usd(provider, model, prefix_tokens)
+    if estimate is None:
+        logger.warning("warm_ttl_canary_unpriced_model", provider=provider,
+                       model=model)
+        return
+    reservation = await asyncio.to_thread(
+        _store.warm_canary_reserve, provider, day, estimate, daily_cap)
+    if not reservation.get("allowed"):
+        return
+    written_at = datetime.now(timezone.utc)
+    try:
+        status, data = await _canary_send(provider, model, prefix)
+    except Exception as exc:
+        logger.warning("warm_ttl_canary_write_failed", provider=provider,
+                       error_type=type(exc).__name__)
+        return
+    if not 200 <= int(status) < 300:
+        logger.warning("warm_ttl_canary_write_http_error", provider=provider,
+                       status=int(status))
+        return
+    receipt = normalize_usage(data.get("usage"), provider)
+    await asyncio.to_thread(
+        _store.warm_canary_settle, provider, day, estimate,
+        _canary_actual_usd(provider, model, receipt, estimate))
+    await asyncio.to_thread(
+        _store.warm_canary_probe_insert, provider, model, seed, prefix_tokens,
+        written_at.isoformat(), float(gap_target))
+    logger.info("warm_ttl_canary_started", provider=provider,
+                gap_target_s=float(gap_target), prefix_tokens=prefix_tokens)
+
+
+def _canary_gap_seconds(probe: Mapping[str, Any]) -> float | None:
+    """The gap the probe ACTUALLY measured, not the one it targeted. A probe
+    fired late by a cap denial or a slow cycle tested a longer gap, and the
+    physics table must record what happened."""
+    raw = str(probe.get("written_at") or "")
+    if not raw:
+        return None
+    try:
+        written = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if written.tzinfo is None:
+        written = written.replace(tzinfo=timezone.utc)
+    gap = (datetime.now(timezone.utc) - written).total_seconds()
+    return gap if 0 <= gap <= _WARM_TTL_MAX_GAP_SECONDS else None
+
+
 async def settlement_sweep(stop: asyncio.Event) -> None:
     """Draft-only period-settlement sweep. OFF unless explicitly armed.
 
@@ -1244,6 +1805,13 @@ async def run() -> None:
         asyncio.create_task(maintenance(), name="worker-maintenance"),
         asyncio.create_task(warming(stop), name="worker-warming"),
         asyncio.create_task(warm_reward_join(stop), name="worker-warm-reward-join"),
+        asyncio.create_task(warm_regime_refresh(stop), name="worker-warm-regime"),
+        asyncio.create_task(warm_envelope_allocator(stop),
+                            name="worker-warm-envelope-allocator"),
+        asyncio.create_task(warm_control_savings(stop),
+                            name="worker-warm-control-savings"),
+        asyncio.create_task(warm_guardrail(stop), name="worker-warm-guardrail"),
+        asyncio.create_task(warm_ttl_canary(stop), name="worker-warm-ttl-canary"),
         asyncio.create_task(settlement_sweep(stop), name="worker-settlement-sweep"),
         *(asyncio.create_task(consume(slot), name=f"worker-consumer-{slot}")
           for slot in range(concurrency)),

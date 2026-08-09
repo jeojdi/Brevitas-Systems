@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import atexit
 import base64
+import calendar
 import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -64,6 +66,12 @@ _ONBOARDING_STATUS_FIELDS = frozenset({
 })
 _AUDIT_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+# The two shapes public.warm_customer_budget.customer_ref admits (202608100004):
+# a live customer id, or the random tombstone compliance_delete_subject leaves
+# behind so the dollars survive an erasure with an unlinkable key.
+_WARM_CUSTOMER_REF = re.compile(
+    r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|erased:[0-9a-f]{64})$")
 # Parity with migration 202607280003's provider CHECKs: the storage layer
 # admits exactly the providers where warming is honest. Runtime activation
 # stays separately gated (server._WARM_ACTIVE_PROVIDERS and the worker's
@@ -78,15 +86,38 @@ _WARM_PROVIDERS = frozenset({"anthropic", "openai", "deepseek"})
 # schedules exactly like 'warmed'. Mirrored by migration 202608080001.
 _WARM_SETTLE_OUTCOMES = frozenset({
     "warmed", "spent_unknown", "release", "prefix_invalid", "auth_failed"})
-# Decision-log vocabulary, mirroring migration 202608090001's CHECK. 'holdout'
+# Decision-log vocabulary, mirroring migration 202608100002's CHECK. 'holdout'
 # is produced by the control arm (202608100001) whenever BREVITAS_WARM_HOLDOUT_PCT
-# is nonzero. 'stopped' still has no producer: stop-losses are a candidate-query
-# filter, so a stopped row is never scored and never logged.
+# is nonzero. 'skipped_lambda' is produced by the pacing dual (202608100002)
+# whenever BREVITAS_WARM_INDEX is on. 'envelope_denied' is produced by the
+# per-customer spend envelope (202608100004) and 'beta_denied' by the beta spend
+# cap (202608100005), both in this file's claim loop. 'stopped' still has no
+# producer and by design: stop-losses are a candidate-query filter, so a stopped
+# row is never scored and never reaches a decision.
 _WARM_DECISIONS = frozenset({
-    "pinged", "skipped_roi", "budget_denied", "cap_denied", "stopped", "holdout"})
+    "pinged", "skipped_roi", "budget_denied", "cap_denied", "stopped", "holdout",
+    "skipped_lambda", "envelope_denied", "beta_denied"})
 _WARM_TTL_TIERS = frozenset({"5m", "1h", "auto"})
 _WARM_TTL_OUTCOMES = frozenset({"warm", "expired"})
-_WARM_TTL_SOURCES = frozenset({"ping", "arrival"})
+# 'canary' (202608100005) is a Brevitas-funded probe against a synthetic prefix
+# on Brevitas's own account. Kept distinguishable from 'ping' (a keep-alive the
+# worker sent on a tenant's behalf) and 'arrival' (real traffic, free) because a
+# TTL curve fitted across sources must be able to say which observations cost a
+# tenant money and which did not.
+_WARM_TTL_SOURCES = frozenset({"ping", "arrival", "canary"})
+# Guardrail modes, mirroring migration 202608100005's CHECK. 'frozen' pins a
+# pair to flat priors inside warm_due_claim; it is not an off switch.
+_WARM_ORG_MODES = frozenset({"learned", "frozen"})
+# The canary is two providers, both Brevitas-owned probe keys. OpenAI is
+# structurally absent: it stays measurement-only, and this literal is what makes
+# the exclusion unreachable rather than merely unconfigured.
+_WARM_CANARY_PROVIDERS = ("anthropic", "deepseek")
+_WARM_CANARY_STATES = frozenset({"pending", "done", "failed"})
+# Canary retention horizons, mirroring 202608100005's purge_warm_state. Probes
+# are operational state; the dollar ledger and the control comparison are both
+# financial evidence and retain on the 400-day evidence horizon.
+_WARM_CANARY_PROBE_RETENTION_DAYS = 30
+_WARM_CANARY_EVIDENCE_RETENTION_DAYS = 400
 # Absolute bound on a recorded TTL gap (30 days), so a clock jump cannot write
 # nonsense into the physics table. Mirrors the table's own CHECK.
 _WARM_TTL_MAX_GAP_SECONDS = 2_592_000
@@ -204,6 +235,398 @@ def warm_is_held_out(organization_id: str, prefix_hash: str, day: str,
         return False
     return (warm_holdout_bucket(organization_id, prefix_hash, day)
             < float(fraction) * _WARM_HOLDOUT_SPACE)
+
+
+# The index is clamped to this magnitude in both backends, so a degenerate
+# break-even (a provider whose reads are free) cannot push a value the column
+# would accept but nobody would read. Mirrors 202608100002's 1000000 literals.
+_WARM_INDEX_CLAMP = 1_000_000.0
+# Below this, b = f/(1-f) is treated as zero rather than divided by.
+_WARM_BREAK_EVEN_FLOOR = 1e-9
+# Density denominator floor, so a zero-reserve prefix cannot divide by zero.
+_WARM_RESERVE_FLOOR = 1e-10
+
+
+def warm_write_multiplier(provider: str, provider_ttl_seconds: int) -> float:
+    """The provider's cache-write premium over its base input price.
+
+    Mirrors the ping_rate CASE in api/server.py that PRODUCES
+    warm_prefixes.ping_reserve_usd, which is exactly why dividing that
+    reservation by this number recovers the prefix's base input dollars.
+    anthropic writes at 2.0x on the 1h tier and 1.25x on 5m; automatic-cache
+    providers (deepseek) carry no write premium, so their worst case is priced
+    at 1.0x. Mirrored again by the same CASE inside public.warm_due_claim
+    (202608100002).
+    """
+    if str(provider) == "anthropic":
+        return 2.0 if int(provider_ttl_seconds or 0) > 300 else 1.25
+    return 1.0
+
+
+def warm_index_components(p_return: float, break_even: float, reserve_usd: float,
+                          *, ping_reserve_usd: float = 0.0,
+                          write_multiplier: float = 1.0,
+                          p_alive: float = 1.0,
+                          organic_multiplier: float = 1.0,
+                          n_chain: int = 0) -> dict[str, float | None]:
+    """The dimensionless dollar index and its logged dollar components.
+
+    Mirror of the index block in public.warm_due_claim (202608100002). With
+    prefix BASE dollar value V, provider read-cost fraction f and break-even
+    return probability b = f/(1-f):
+
+        V_hit    = V * (1 - f)          c_belief = V * f
+        index    = [p_eff*V_hit - n_chain*c_belief - c_belief] / c_belief
+                 = p_eff / b - 1 - n_chain
+
+    The prefix dollar value cancels (V_hit/c_belief = (1-f)/f = 1/b), which is
+    what makes the index comparable across providers and prefix sizes.
+    index >= 0 is exactly "this ping pays for itself in expectation".
+
+    V IS NOT THE LEDGER RESERVATION. It is ping_reserve_usd / write_multiplier:
+    the observer-priced worst case for one keep-alive, divided back down by the
+    same write premium api/server.py priced it at, which recovers the prefix's
+    base input dollars. ``reserve_usd`` -- max(ping_reserve_usd, the flat
+    anthropic-calibrated per-Mtok floor) -- is money safety for the daily
+    ceiling, not economics: pricing the index from it overstated v_hit_usd
+    12-100x in the compliance exports and ranked providers by how badly a flat
+    floor missed them (deepseek over-reserves ~14x). It enters here only as the
+    denominator of the DIAGNOSTIC index_density, and is logged separately and
+    unchanged as warm_decision_log.reserve_usd.
+
+    f is recovered from the per-provider break-even the caller already gates on:
+    api/worker.py derives b = f/(1-f), which inverts to f = b/(1+b) exactly, so
+    the dollars and the gate cannot drift apart.
+
+    p_alive and organic_multiplier are 1.0 in Phase 1 (no producer yet), and
+    pinning them at 1.0 can only OVERSTATE the index. The index gates spending,
+    never billing.
+    """
+    p_eff = float(p_return) * float(p_alive) * float(organic_multiplier)
+    reserve = float(reserve_usd)
+    v_hit: float | None
+    c_belief: float | None
+    chain_cost: float | None
+    if float(break_even) <= _WARM_BREAK_EVEN_FLOOR:
+        # A provider whose reads are free: every ping pays for itself and the
+        # ratio is unbounded. Clamped rather than divided, and no dollar
+        # component is derivable, so all three stay None rather than invented.
+        index = _WARM_INDEX_CLAMP
+        v_hit = c_belief = chain_cost = None
+    else:
+        read_fraction = float(break_even) / (1.0 + float(break_even))
+        price_base = float(ping_reserve_usd or 0.0) / float(write_multiplier)
+        v_hit = min(99_999_999.0, round(price_base * (1.0 - read_fraction), 10))
+        c_belief = round(price_base * read_fraction, 10)
+        chain_cost = round(int(n_chain) * c_belief, 10)
+        # Written in ratio form, which is the identical number: an unpriced
+        # model carries ping_reserve_usd = 0, and a row with no dollars must
+        # still rank by its beliefs rather than divide zero by zero.
+        index = min(_WARM_INDEX_CLAMP, max(
+            -_WARM_INDEX_CLAMP, p_eff / float(break_even) - 1 - int(n_chain)))
+    return {
+        "index_score": index,
+        # DIAGNOSTIC ONLY, and deliberately NOT the ordering key. index_score
+        # already divides by c_belief, so it is already value per belief-dollar;
+        # dividing it again by the reservation prefers cheap arms over valuable
+        # ones under a binding budget. Kept so the two rankings stay comparable.
+        "index_density": index / max(reserve, _WARM_RESERVE_FLOOR),
+        "v_hit_usd": v_hit,
+        "chain_cost_usd": chain_cost,
+        "c_belief_usd": c_belief,
+        "p_alive": float(p_alive),
+        "organic_multiplier": float(organic_multiplier),
+    }
+
+
+def warm_lambda_update(lambda_old: float, spend_usd: float, budget_usd: float,
+                       day_fraction: float, eta: float,
+                       lambda_max: float) -> float:
+    """One step of the pacing dual, in index units.
+
+        lambda' = min(cap, max(0, (1 + lambda) * exp(eta*(S - B*u)/max(B, 0.01)) - 1))
+
+    Multiplicative in (1 + lambda) space so lambda can rise from exactly 0; on
+    pace or under pace (S <= B*u) the factor is <= 1 and the max(0, .) floor
+    holds it at 0, which IS the provider break-even floor (index = 0 <=>
+    p_eff = f/(1-f)). B*u is a LINEAR intraday target -- the Phase-1
+    instantiation; forecast-aware pacing is out of scope.
+
+    The exponent is clamped only to keep exp() finite. That is outcome-identical
+    under the outer clamps: at +50 the result exceeds any admissible cap (<= 1e6)
+    and is clamped by it, and at -50 the factor drives (1 + lambda)*f - 1 below 0
+    for any lambda <= 1e6, which the floor takes to 0. Mirrors 202608100002.
+    """
+    exponent = min(50.0, max(-50.0, float(eta)
+                             * (float(spend_usd)
+                                - float(budget_usd) * float(day_fraction))
+                             / max(float(budget_usd), 0.01)))
+    return min(float(lambda_max),
+               max(0.0, (1.0 + float(lambda_old)) * math.exp(exponent) - 1.0))
+
+
+def warm_day_fraction(now: datetime) -> float:
+    """Fraction of the UTC day elapsed, the pacing dual's linear target clock.
+
+    Mirror of extract(epoch from ts - date_trunc('day', ts)) / 86400 on the
+    UTC-shifted timestamp.
+    """
+    utc = now.astimezone(timezone.utc)
+    return ((utc.hour * 3600 + utc.minute * 60 + utc.second
+             + utc.microsecond / 1_000_000.0) / 86400.0)
+
+
+def warm_budget_period(day: str) -> str:
+    """First day of the UTC calendar month `day` falls in, as YYYY-MM-DD.
+
+    Mirror of date_trunc('month', <day>)::date (202608100004). The period is
+    DERIVED from a day already in hand at every call site -- the claim's UTC
+    day, warm_ping_settle's budget_day -- and never accepted from a caller, so
+    a claim and its settle cannot land on different rows, including when the
+    ping is claimed on the 31st and settles on the 1st.
+    """
+    text = str(day or "")[:10]
+    if len(text) != 10:
+        raise ValueError("warm budget period day is invalid")
+    return text[:8] + "01"
+
+
+# --- the decayed hierarchical hazard (202608100003) -----------------------
+# Every constant below is a LITERAL in both backends and deliberately not an
+# environment knob: a posterior is only comparable across replicas when every
+# writer decays it identically, and an operator who changed a half-life
+# mid-flight would silently rewrite the meaning of every stored number.
+_WARM_HAZARD_T_HALF_S = 1_209_600.0        # 14 days
+# T_HALF / (3600 * ln 2): the supremum of exponentially decayed exposure, in
+# hours. No amount of accrual can decay to more than this.
+_WARM_HAZARD_E_CAP_HOURS = 484.8
+_WARM_HAZARD_MAX_WALK_HOURS = 672
+_WARM_HAZARD_SPARSITY = 1e-6
+# Uniform prior of one arrival per week per bucket-hour: 0.25/42 = 1/168. This
+# IS the "global" level of the customer -> org -> global shrinkage, and it is a
+# CONSTANT on purpose -- content-free, identical for every tenant, so no
+# cross-organization behaviour is ever pooled into a tenant's estimate.
+_WARM_HAZARD_ALPHA0 = 0.25
+_WARM_HAZARD_BETA0 = 42.0
+# Pseudo-exposure hours of organization-prior weight on the customer estimate.
+_WARM_HAZARD_KAPPA = 8.0
+# BG/NBD churn hyperparameters, fixed: purchase rate gamma(r, alpha days),
+# dropout beta(a, b).
+_WARM_BG_R = 0.5
+_WARM_BG_ALPHA_DAYS = 7.0
+_WARM_BG_A = 1.0
+_WARM_BG_B = 2.5
+# P(alive) never reaches 0: a floor of 1% keeps a long-silent customer scorable
+# (the index multiplies by it) instead of permanently unscorable, which is the
+# failure mode of the stop-loss counter this replaces.
+_WARM_P_ALIVE_FLOOR = 0.01
+# exp() domain guard. Outcome-identical under the clamps that follow it: at -50
+# the survival term is 1 to twenty digits and at +50 it is 0 to the same.
+_WARM_EXP_CLAMP = 50.0
+# The organization-aggregate row's customer key. Not a customer: it is the sum
+# over every customer of one (organization, provider), and it is what a
+# customer's own posterior shrinks toward.
+WARM_ORG_AGGREGATE_CUSTOMER_ID = "00000000-0000-0000-0000-000000000000"
+_WARM_REGIMES = frozenset({
+    "unknown", "periodic_daily", "periodic_weekly", "aperiodic"})
+# Autocorrelation a series must reach to be called periodic, and the minimum
+# number of populated hours before a label means anything at all.
+_WARM_REGIME_MIN_R = 0.4
+_WARM_REGIME_MIN_NONZERO = 20
+
+
+def warm_hazard_touch(state: dict[str, Any] | None,
+                      ts: datetime) -> dict[str, Any]:
+    """Fold one arrival into the decayed hour-of-week maps.
+
+    Mirror of public.warm_customer_state_touch (202608100003). `state` is None
+    for a first observation, otherwise a dict of hazard_n, hazard_e,
+    events_total, first_seen_at, last_seen_at, last_update_at; the same shape
+    comes back.
+
+    hazard_n counts arrivals per hour-of-week bucket; hazard_e counts the HOURS
+    the customer was observed at all in that bucket. Their ratio is a rate in
+    1/hour rather than a share, so a bucket nobody has been exposed to is not
+    evidence of a low rate -- it is no evidence.
+
+    TWO APPROXIMATIONS, both documented in the migration and both in the same
+    direction. A gap of at most 672 hours is walked hour by hour and each hour
+    is credited its full duration, ignoring decay WITHIN the gap (overstates
+    exposure by at most 2x). A longer gap credits every bucket the decayed
+    supremum spread uniformly. Exposure is the DENOMINATOR, so overstating it
+    understates the hazard, which understates p_return, which warms less.
+    """
+    moment = ts.astimezone(timezone.utc)
+    bucket = _utc_hour_bucket(moment)
+    if not state:
+        # A first arrival has no exposure history: hazard_e stays empty and the
+        # shrinkage prior carries the whole estimate until a second observation
+        # gives the walk something to accrue over.
+        return {"hazard_n": {bucket: 1.0}, "hazard_e": {},
+                "events_total": 1, "first_seen_at": moment,
+                "last_seen_at": moment, "last_update_at": moment}
+    last_update = state["last_update_at"].astimezone(timezone.utc)
+    # A clock that went backwards decays nothing rather than amplifying.
+    delta = max(0.0, (moment - last_update).total_seconds())
+    decay = 0.5 ** (delta / _WARM_HAZARD_T_HALF_S)
+    counts = {key: round(float(value) * decay, 12)
+              for key, value in (state.get("hazard_n") or {}).items()
+              if float(value) * decay >= _WARM_HAZARD_SPARSITY}
+    exposure = {key: round(float(value) * decay, 12)
+                for key, value in (state.get("hazard_e") or {}).items()
+                if float(value) * decay >= _WARM_HAZARD_SPARSITY}
+    if delta / 3600.0 > _WARM_HAZARD_MAX_WALK_HOURS:
+        share = _WARM_HAZARD_E_CAP_HOURS / 168.0
+        for index in range(168):
+            key = str(index)
+            exposure[key] = round(exposure.get(key, 0.0) + share, 12)
+    else:
+        cursor = last_update
+        while cursor < moment:
+            nxt = min(moment,
+                      cursor.replace(minute=0, second=0, microsecond=0)
+                      + timedelta(hours=1))
+            key = _utc_hour_bucket(cursor)
+            exposure[key] = round(
+                exposure.get(key, 0.0)
+                + (nxt - cursor).total_seconds() / 3600.0, 12)
+            cursor = nxt
+    counts[bucket] = round(counts.get(bucket, 0.0) + 1.0, 12)
+    return {"hazard_n": counts, "hazard_e": exposure,
+            # Deliberately undecayed: BG/NBD's x is a function of the whole
+            # observed history, not of what the hazard maps still remember.
+            "events_total": int(state.get("events_total") or 0) + 1,
+            "first_seen_at": state["first_seen_at"],
+            "last_seen_at": moment, "last_update_at": moment}
+
+
+def warm_hazard_rate(n_b: float, e_b: float, org_n_b: float,
+                     org_e_b: float) -> float:
+    """Shrunken arrival rate for one hour-of-week bucket, in 1/hour.
+
+        h_org_b = (N_b + 0.25) / (E_b + 42.0)
+        h_b     = (n_b + 8.0 * h_org_b) / (e_b + 8.0)
+
+    Customer shrinks toward its own ORGANIZATION's aggregate; the organization
+    shrinks toward a content-free constant. That is the whole hierarchy -- there
+    is no fleet-level pooled term and none is planned (plan Part 0's two-plane
+    rule). Mirror of the same two lines in public.warm_due_claim.
+    """
+    h_org = ((float(org_n_b) + _WARM_HAZARD_ALPHA0)
+             / (float(org_e_b) + _WARM_HAZARD_BETA0))
+    return ((float(n_b) + _WARM_HAZARD_KAPPA * h_org)
+            / (float(e_b) + _WARM_HAZARD_KAPPA))
+
+
+def warm_p_return_v2(n_b: float, e_b: float, org_n_b: float, org_e_b: float,
+                     ttl_seconds: float) -> float:
+    """P(at least one arrival inside the TTL window), from the shrunken rate.
+
+    1 - exp(-h * W/3600) for an exponential inter-arrival time at rate h. This
+    REPLACES the lifetime histogram ratio everywhere: in the v1 ROI gate and in
+    the index alike, and the decision log records the value actually used.
+
+    Single-bucket approximation: a window spanning more than one hour-of-week
+    bucket is priced entirely at the bucket it starts in. Phase 2 integrates the
+    rate across the window.
+    """
+    rate = warm_hazard_rate(n_b, e_b, org_n_b, org_e_b)
+    return min(1.0, max(0.0, 1.0 - math.exp(max(
+        -_WARM_EXP_CLAMP, -rate * float(ttl_seconds) / 3600.0))))
+
+
+def warm_p_alive(events_total: int, t_x_days: float, t_days: float) -> float:
+    """BG/NBD P(customer still active), the replacement for the stop-loss.
+
+        z = ln(a / (b + max(x-1, 0))) + min(50, r + x) * ln((alpha+T)/(alpha+t_x))
+        P = clamp(1 / (1 + exp(min(z, 50))), 0.01, 1.0)
+
+    The survival ratio raised to (r + x) is how unlikely a customer this active
+    would have gone this quiet by chance: the more arrivals on record, the less
+    forgiving the silence. Unlike a consecutive-miss counter it RECOVERS the
+    moment the customer returns, which is the whole reason it replaces one.
+    """
+    x = float(events_total or 0)
+    t_x = max(0.0, float(t_x_days))
+    horizon = max(t_x, float(t_days))
+    z = (math.log(_WARM_BG_A / (_WARM_BG_B + max(x - 1.0, 0.0)))
+         + min(50.0, _WARM_BG_R + x)
+         * math.log((_WARM_BG_ALPHA_DAYS + horizon)
+                    / (_WARM_BG_ALPHA_DAYS + t_x)))
+    exponent = min(_WARM_EXP_CLAMP, max(-_WARM_EXP_CLAMP, z))
+    return max(_WARM_P_ALIVE_FLOOR,
+               min(1.0, 1.0 / (1.0 + math.exp(exponent))))
+
+
+def warm_chain_pings(hazard_rate: float, age_seconds: float,
+                     ttl_seconds: float, safety_margin_seconds: float,
+                     break_even: float) -> int:
+    """Keep-alives this ping commits the org to before the expected arrival.
+
+        E_gap = clamp(3600/h - age, 0, 30 days)
+        tau   = max(1, ttl - safety_margin)
+        f     = b / (1 + b)          -- read-cost fraction, from b = f/(1-f)
+        I_max = tau * (1/f - 1)
+        n     = max(0, ceil(min(E_gap, I_max)/tau) - 1)
+
+    The truncation at I_max is what makes "never warm a dead session"
+    ARITHMETIC rather than policy: past it the chain alone drives
+    index = p_eff/b - 1 - n below zero for every p <= 1.
+    """
+    gap = min(2_592_000.0, max(
+        0.0, 3600.0 / max(float(hazard_rate), 1e-6) - max(0.0, float(age_seconds))))
+    tau = max(1.0, float(ttl_seconds) - float(safety_margin_seconds))
+    fraction = float(break_even) / (1.0 + float(break_even))
+    i_max = tau * max(0.0, 1.0 / max(fraction, 1e-9) - 1.0)
+    return max(0, math.ceil(min(gap, i_max) / tau) - 1)
+
+
+def warm_regime_classify(counts: list[int]) -> tuple[str, float]:
+    """Label an hourly arrival series periodic-daily, -weekly, or aperiodic.
+
+    INFORMATIONAL IN PHASE 1. The label is written and nothing reads it: the
+    deterministic fast-path scheduler for periodic customers is plan section 4.3
+    and lands under its own flag in a later task. The flag accumulates now so
+    that scheduler starts with data rather than with an empty column.
+
+    Winsorizing at the 95th percentile is what keeps one traffic spike from
+    manufacturing a correlation at every lag. A series with fewer than 20
+    populated hours is 'unknown' rather than 'aperiodic': absence of evidence.
+
+    A CONSEQUENCE worth stating, because it is not obvious and is asserted in
+    tests/test_warm_hazard.py: a series active in under 5% of its hours has a
+    95th percentile of ZERO, so winsorizing clips every value to zero, the
+    variance vanishes and the label is 'aperiodic' with score 0 however regular
+    the spikes are. The effective floor for being called periodic is therefore
+    "active in at least 5% of hours". Nothing reads the label in Phase 1, so
+    this costs nothing today; the fast-path scheduler that will read it must not
+    read 'aperiodic' on a sparse series as evidence of aperiodicity.
+    """
+    series = [float(value or 0) for value in (counts or [])]
+    if sum(1 for value in series if value > 0) < _WARM_REGIME_MIN_NONZERO:
+        return ("unknown", 0.0)
+    ordered = sorted(series)
+    cap = ordered[min(len(ordered) - 1, int(0.95 * (len(ordered) - 1)))]
+    series = [min(value, cap) for value in series]
+    mean = sum(series) / len(series)
+    centered = [value - mean for value in series]
+    variance = sum(value * value for value in centered)
+    if variance <= 0:
+        return ("aperiodic", 0.0)
+
+    def _autocorrelation(lag: int) -> float:
+        if lag >= len(centered):
+            return 0.0
+        return sum(centered[index] * centered[index + lag]
+                   for index in range(len(centered) - lag)) / variance
+
+    r_daily = _autocorrelation(24)
+    r_weekly = _autocorrelation(168)
+    if r_daily >= _WARM_REGIME_MIN_R and r_daily >= r_weekly:
+        return ("periodic_daily", r_daily)
+    if r_weekly >= _WARM_REGIME_MIN_R:
+        return ("periodic_weekly", r_weekly)
+    return ("aperiodic", max(r_daily, r_weekly))
 
 
 # In-process stand-in for warm_due_claim's pg_try_advisory_xact_lock. Fidelity
@@ -1761,7 +2184,18 @@ class UsageStore:
             # SQLite-only observability for the emulated claim lease.
             db.execute("CREATE TABLE IF NOT EXISTS warm_credentials (organization_id TEXT NOT NULL, provider TEXT NOT NULL, credential_ciphertext TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, consent_actor_id TEXT NOT NULL DEFAULT '', consent_at TEXT NOT NULL DEFAULT '', daily_budget_usd REAL NOT NULL DEFAULT 0, max_warm_customers INTEGER NOT NULL DEFAULT 100, max_pings_per_customer_day INTEGER NOT NULL DEFAULT 288, credential_state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider))")
             db.execute("CREATE TABLE IF NOT EXISTS warm_prefixes (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, payload_ciphertext TEXT NOT NULL, prefix_tokens INTEGER NOT NULL DEFAULT 0, provider_ttl_seconds INTEGER NOT NULL DEFAULT 300, arrival_count INTEGER NOT NULL DEFAULT 0, ewma_interarrival_s REAL, hour_histogram TEXT NOT NULL DEFAULT '{}', warm_pings INTEGER NOT NULL DEFAULT 0, warm_hits INTEGER NOT NULL DEFAULT 0, warm_misses INTEGER NOT NULL DEFAULT 0, consecutive_misses INTEGER NOT NULL DEFAULT 0, pings_today INTEGER NOT NULL DEFAULT 0, pings_today_date TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, next_due_at TEXT NOT NULL, expires_at TEXT NOT NULL, claimed_at TEXT NOT NULL DEFAULT '', ping_reserve_usd REAL NOT NULL DEFAULT 0, claim_token TEXT NOT NULL DEFAULT '', last_touch_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(organization_id,customer_id,provider,prefix_hash))")
-            db.execute("CREATE TABLE IF NOT EXISTS warm_budget_ledger (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, reserved_usd REAL NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_budget_ledger (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, reserved_usd REAL NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, lambda_index REAL NOT NULL DEFAULT 0, lambda_updated_at TEXT, PRIMARY KEY(organization_id,provider,day))")
+            # Dev/test mirror of 202608100002: the pacing dual's state, per
+            # (organization, provider, day). 0 is the provider break-even floor
+            # and the no-op value, so an existing row upgrades truthfully.
+            ledger_columns = {
+                r[1] for r in db.execute("PRAGMA table_info(warm_budget_ledger)")}
+            if "lambda_index" not in ledger_columns:
+                db.execute("ALTER TABLE warm_budget_ledger ADD COLUMN "
+                           "lambda_index REAL NOT NULL DEFAULT 0")
+            if "lambda_updated_at" not in ledger_columns:
+                db.execute("ALTER TABLE warm_budget_ledger ADD COLUMN "
+                           "lambda_updated_at TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_due_idx ON warm_prefixes(next_due_at) WHERE state='active'")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_expiry_idx ON warm_prefixes(expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_org_idx ON warm_prefixes(organization_id, provider, last_seen_at DESC)")
@@ -1773,13 +2207,60 @@ class UsageStore:
             # warm_decision_log is per-customer behavioral evidence (erased with
             # the tenant); warm_ttl_observations is Plane G and deliberately
             # carries no tenant key, so tenant erasure must NOT touch it.
-            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT, index_score REAL, index_density REAL, v_hit_usd REAL, chain_cost_usd REAL, c_belief_usd REAL, p_alive REAL, organic_multiplier REAL, lambda_index REAL)")
+            decision_columns = {
+                r[1] for r in db.execute("PRAGMA table_info(warm_decision_log)")}
             # Dev/test mirror of 202608090002_warm_reward_join.sql.
-            if "organic_counterfactual" not in {
-                    r[1] for r in db.execute("PRAGMA table_info(warm_decision_log)")}:
+            if "organic_counterfactual" not in decision_columns:
                 db.execute("ALTER TABLE warm_decision_log ADD COLUMN "
                            "organic_counterfactual INTEGER NOT NULL DEFAULT 0")
+            # Dev/test mirror of 202608100002_warm_index_claim_ordering.sql. All
+            # eight are nullable and NULL means "the index machinery was off for
+            # this row", so an upgraded row stays indistinguishable from the
+            # pre-Phase-1 row it was.
+            for index_column in ("index_score", "index_density", "v_hit_usd",
+                                 "chain_cost_usd", "c_belief_usd", "p_alive",
+                                 "organic_multiplier", "lambda_index"):
+                if index_column not in decision_columns:
+                    db.execute("ALTER TABLE warm_decision_log ADD COLUMN "
+                               f"{index_column} REAL")
             db.execute("CREATE TABLE IF NOT EXISTS warm_ttl_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model_class TEXT NOT NULL DEFAULT '', ttl_tier TEXT NOT NULL, gap_seconds REAL NOT NULL, outcome TEXT NOT NULL, source TEXT NOT NULL, observed_at TEXT NOT NULL)")
+            # Dev/test mirror of 202608100003_warm_customer_state_hazard.sql.
+            # Plane B: the learned behavioural profile, per (organization,
+            # customer, provider), with the nil-uuid customer row carrying the
+            # organization aggregate the customer posterior shrinks toward.
+            # warm_modeling_suppression is the erasure memory the observer
+            # consults before it writes anything; it has no retention horizon
+            # here for the same reason it has none in Postgres.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_customer_state (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, customer_key_hmac TEXT NOT NULL DEFAULT '', hazard_n TEXT NOT NULL DEFAULT '{}', hazard_e TEXT NOT NULL DEFAULT '{}', events_total INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_update_at TEXT NOT NULL, regime TEXT NOT NULL DEFAULT 'unknown', regime_score REAL, regime_updated_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,customer_id,provider))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_modeling_suppression (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, suppressed_at TEXT NOT NULL, PRIMARY KEY(organization_id,customer_id))")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_customer_state_tenant_idx ON warm_customer_state(organization_id, provider)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_customer_state_retention_idx ON warm_customer_state(last_seen_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_customer_state_regime_idx ON warm_customer_state(regime_updated_at)")
+            # Dev/test mirror of 202608100004_warm_customer_budget_envelopes.sql.
+            # Per-(organization, provider, UTC month, customer) spend envelope.
+            # No CHECK constraints here (SQLite mirrors carry none anywhere in
+            # this file); the shape of customer_ref and the non-negativity of
+            # the dollar columns are enforced by the store methods below, which
+            # are the only writers.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_customer_budget (organization_id TEXT NOT NULL, provider TEXT NOT NULL, period_start TEXT NOT NULL, customer_ref TEXT NOT NULL, envelope_usd REAL NOT NULL DEFAULT 0, reserved_usd REAL NOT NULL DEFAULT 0, reserved_day TEXT NOT NULL DEFAULT '', spent_usd REAL NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'auto', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,period_start,customer_ref))")
+            # Idempotent for a database created before the self-heal column
+            # existed, mirroring 202608100004's `add column if not exists`.
+            if "reserved_day" not in {column[1] for column in db.execute(
+                    "PRAGMA table_info(warm_customer_budget)").fetchall()}:
+                db.execute("ALTER TABLE warm_customer_budget ADD COLUMN "
+                           "reserved_day TEXT NOT NULL DEFAULT ''")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_customer_budget_period_idx ON warm_customer_budget(organization_id, provider, period_start)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_customer_budget_retention_idx ON warm_customer_budget(period_start)")
+            # 202608100005. warm_control_savings_daily and warm_org_mode are
+            # organization-keyed; the two canary tables are Plane G and carry no
+            # tenant key of any kind (see the migration).
+            db.execute("CREATE TABLE IF NOT EXISTS warm_control_savings_daily (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, treated_units INTEGER NOT NULL DEFAULT 0, control_units INTEGER NOT NULL DEFAULT 0, treated_mean_cost_usd REAL NOT NULL DEFAULT 0, control_mean_cost_usd REAL NOT NULL DEFAULT 0, control_lift_usd REAL NOT NULL DEFAULT 0, computed_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day))")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_control_savings_daily_window_idx ON warm_control_savings_daily(organization_id, provider, day)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_org_mode (organization_id TEXT NOT NULL, provider TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'learned', reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_canary_probes (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', prefix_seed TEXT NOT NULL DEFAULT '', prefix_tokens INTEGER NOT NULL DEFAULT 0, written_at TEXT NOT NULL, probe_due_at TEXT NOT NULL, gap_target_s REAL NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_canary_probes_due_idx ON warm_canary_probes(state, probe_due_at)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_canary_ledger (day TEXT NOT NULL, provider TEXT NOT NULL, probes INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day,provider))")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_tenant_idx ON warm_decision_log(organization_id, ts)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_subject_idx ON warm_decision_log(organization_id, customer_id, ts)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_retention_idx ON warm_decision_log(ts, id)")
@@ -3478,12 +3959,24 @@ class UsageStore:
             ewma_interarrival_s: float | None, arrival_count: int,
             pings_today: int | None, claim_token: str | None,
             now: datetime, *, rng_seed: int | None = None,
-            propensity: float | None = None) -> None:
+            propensity: float | None = None,
+            index_score: float | None = None,
+            index_density: float | None = None,
+            v_hit_usd: float | None = None,
+            chain_cost_usd: float | None = None,
+            c_belief_usd: float | None = None,
+            p_alive: float | None = None,
+            organic_multiplier: float | None = None,
+            lambda_index: float | None = None) -> None:
         """Mirror of public.warm_decision_record, on an open transaction.
 
         Called from inside warm_due_claim's critical section, so its checks are
         exactly the table's own constraints and nothing more: a stricter check
         here than in Postgres would abort a claim the RPC would have allowed.
+
+        The eight index arguments default to None, which is what a caller that
+        predates 202608100002 produces and what the claim loop passes whenever
+        the index machinery is off.
         """
         if (not organization_id or not customer_id
                 or provider not in _WARM_PROVIDERS
@@ -3497,13 +3990,21 @@ class UsageStore:
                 or (ewma_interarrival_s is not None and float(ewma_interarrival_s) < 0)
                 or (pings_today is not None and int(pings_today) < 0)
                 or (propensity is not None and not 0 <= float(propensity) <= 1)
+                or (v_hit_usd is not None and not 0 <= float(v_hit_usd) <= 99_999_999)
+                or (chain_cost_usd is not None and float(chain_cost_usd) < 0)
+                or (c_belief_usd is not None and float(c_belief_usd) < 0)
+                or (p_alive is not None and not 0 <= float(p_alive) <= 1)
+                or (organic_multiplier is not None and float(organic_multiplier) < 0)
+                or (lambda_index is not None and float(lambda_index) < 0)
                 or (claim_token is not None and decision != "pinged")):
             raise ValueError("warm decision arguments are invalid")
         db.execute(
             "INSERT INTO warm_decision_log(organization_id,customer_id,provider,"
             "prefix_hash,ts,decision,p_return,roi_floor,reserve_usd,prefix_tokens,"
             "ewma_interarrival_s,arrival_count,pings_today,claim_token,rng_seed,"
-            "propensity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "propensity,index_score,index_density,v_hit_usd,chain_cost_usd,"
+            "c_belief_usd,p_alive,organic_multiplier,lambda_index) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (organization_id, customer_id, provider, prefix_hash, now.isoformat(),
              decision, float(p_return), float(roi_floor), float(reserve_usd),
              int(prefix_tokens),
@@ -3512,7 +4013,15 @@ class UsageStore:
              None if pings_today is None else int(pings_today),
              claim_token or None,
              None if rng_seed is None else int(rng_seed),
-             None if propensity is None else float(propensity)))
+             None if propensity is None else float(propensity),
+             None if index_score is None else float(index_score),
+             None if index_density is None else float(index_density),
+             None if v_hit_usd is None else float(v_hit_usd),
+             None if chain_cost_usd is None else float(chain_cost_usd),
+             None if c_belief_usd is None else float(c_belief_usd),
+             None if p_alive is None else float(p_alive),
+             None if organic_multiplier is None else float(organic_multiplier),
+             None if lambda_index is None else float(lambda_index)))
 
     def warm_usage_stamp_prefix(self, organization_id: str, key_hash: str,
                                 request_id: str,
@@ -3782,8 +4291,231 @@ class UsageStore:
                         db, provider, model_class,
                         warm_ttl_tier(provider_ttl_seconds), gap,
                         "warm" if cache_read else "expired", "arrival", now)
+            # Plane B state (202608100003), written UNCONDITIONALLY. Nothing
+            # reads warm_customer_state unless the claim is given hazard_v2, so
+            # these writes change no admission decision -- pure instrumentation
+            # in the same sense the decision log's writes are. The flag day is
+            # not the day the model starts learning, it is the day the model
+            # starts being read, and a posterior with a 14-day half-life needs
+            # the history to already exist.
+            #
+            # Suppression fences BOTH touches on the REAL customer: an erased
+            # subject must not reach the organization aggregate either, or the
+            # aggregate becomes where their behaviour survives erasure.
+            if not db.execute(
+                    "SELECT 1 FROM warm_modeling_suppression WHERE "
+                    "organization_id=? AND customer_id=?",
+                    (organization_id, customer_id)).fetchone():
+                self._warm_customer_state_touch_locked(
+                    db, organization_id, customer_id, provider, now)
+                self._warm_customer_state_touch_locked(
+                    db, organization_id, WARM_ORG_AGGREGATE_CUSTOMER_ID,
+                    provider, now)
         return {"schema": "brevitas.warm-observe.v1", "status": "observed",
                 "cache_read": bool(cache_read)}
+
+    @staticmethod
+    def _warm_customer_state_touch_locked(db: Any, organization_id: str,
+                                          customer_id: str, provider: str,
+                                          now: datetime) -> None:
+        """Mirror of public.warm_customer_state_touch, on an open transaction.
+
+        Called from inside warm_prefix_observe's critical section. The decay and
+        accrual arithmetic itself lives in the pure warm_hazard_touch so the two
+        backends cannot drift on it; this function is only the row round trip.
+        """
+        row = db.execute(
+            "SELECT hazard_n,hazard_e,events_total,first_seen_at,last_seen_at,"
+            "last_update_at FROM warm_customer_state WHERE organization_id=? "
+            "AND customer_id=? AND provider=?",
+            (organization_id, customer_id, provider)).fetchone()
+        state = None
+        if row:
+            state = {
+                "hazard_n": json.loads(row["hazard_n"] or "{}"),
+                "hazard_e": json.loads(row["hazard_e"] or "{}"),
+                "events_total": int(row["events_total"] or 0),
+                "first_seen_at": datetime.fromisoformat(row["first_seen_at"]),
+                "last_seen_at": datetime.fromisoformat(row["last_seen_at"]),
+                "last_update_at": datetime.fromisoformat(row["last_update_at"]),
+            }
+        touched = warm_hazard_touch(state, now)
+        if row:
+            db.execute(
+                "UPDATE warm_customer_state SET hazard_n=?,hazard_e=?,"
+                "events_total=?,last_seen_at=?,last_update_at=?,updated_at=? "
+                "WHERE organization_id=? AND customer_id=? AND provider=?",
+                (json.dumps(touched["hazard_n"]), json.dumps(touched["hazard_e"]),
+                 int(touched["events_total"]),
+                 touched["last_seen_at"].isoformat(),
+                 touched["last_update_at"].isoformat(), now.isoformat(),
+                 organization_id, customer_id, provider))
+        else:
+            db.execute(
+                "INSERT INTO warm_customer_state(organization_id,customer_id,"
+                "provider,hazard_n,hazard_e,events_total,first_seen_at,"
+                "last_seen_at,last_update_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (organization_id, customer_id, provider,
+                 json.dumps(touched["hazard_n"]), json.dumps(touched["hazard_e"]),
+                 int(touched["events_total"]),
+                 touched["first_seen_at"].isoformat(),
+                 touched["last_seen_at"].isoformat(),
+                 touched["last_update_at"].isoformat(),
+                 now.isoformat(), now.isoformat()))
+
+    def warm_customer_state_get(self, organization_id: str, customer_id: str,
+                                provider: str) -> dict[str, Any] | None:
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT * FROM warm_customer_state WHERE organization_id=? "
+                "AND customer_id=? AND provider=?",
+                (organization_id, customer_id, provider)).fetchone()
+        if not row:
+            return None
+        entry = dict(row)
+        entry["hazard_n"] = json.loads(entry.get("hazard_n") or "{}")
+        entry["hazard_e"] = json.loads(entry.get("hazard_e") or "{}")
+        return entry
+
+    def warm_customer_state_set_regime(self, organization_id: str,
+                                       customer_id: str, provider: str,
+                                       regime: str,
+                                       regime_score: float | None = None
+                                       ) -> dict[str, Any]:
+        """Mirror of public.warm_customer_state_set_regime. UPDATE only: a label
+        with no state row behind it describes a customer nobody has seen."""
+        if (not organization_id or not customer_id
+                or provider not in _WARM_PROVIDERS or regime not in _WARM_REGIMES):
+            raise ValueError("warm customer regime arguments are invalid")
+        now = datetime.now(timezone.utc)
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "UPDATE warm_customer_state SET regime=?,regime_score=?,"
+                "regime_updated_at=?,updated_at=? WHERE organization_id=? "
+                "AND customer_id=? AND provider=?",
+                (regime, None if regime_score is None else float(regime_score),
+                 now.isoformat(), now.isoformat(), organization_id, customer_id,
+                 provider))
+        return {"schema": "brevitas.warm-customer-regime.v1",
+                "status": "recorded" if (cursor.rowcount or 0) > 0 else "missing"}
+
+    def warm_customer_arrival_buckets(self, lookback_days: int = 28,
+                                      limit: int = 500) -> list[dict[str, Any]]:
+        """Mirror of public.warm_customer_arrival_series.
+
+        Hourly arrival counts for state rows whose regime label is stale. Counts
+        come from AUTHORITATIVE usage_log rows that are not themselves
+        keep-alives -- the same predicate the reward join uses -- so a warming
+        ping can never be mistaken for the customer traffic it anticipates.
+        """
+        days = min(max(int(lookback_days or 28), 1), 90)
+        row_limit = min(max(int(limit or 500), 1), 10_000)
+        hours = days * 24
+        now = datetime.now(timezone.utc)
+        start = now.replace(minute=0, second=0, microsecond=0) - timedelta(
+            hours=hours - 1)
+        stale = (now - timedelta(days=7)).isoformat()
+        series: list[dict[str, Any]] = []
+        with self._conn() as db:
+            candidates = db.execute(
+                "SELECT state.organization_id AS organization_id,"
+                " state.customer_id AS customer_id, state.provider AS provider "
+                "FROM warm_customer_state state WHERE state.customer_id<>? "
+                "AND (state.regime_updated_at IS NULL OR state.regime_updated_at<?) "
+                "AND NOT EXISTS (SELECT 1 FROM warm_modeling_suppression s "
+                "WHERE s.organization_id=state.organization_id "
+                "AND s.customer_id=state.customer_id) "
+                "ORDER BY state.regime_updated_at IS NOT NULL,"
+                " state.regime_updated_at, state.organization_id,"
+                " state.customer_id, state.provider LIMIT ?",
+                (WARM_ORG_AGGREGATE_CUSTOMER_ID, stale, row_limit)).fetchall()
+            for candidate in candidates:
+                counts = [0] * hours
+                for row in db.execute(
+                        "SELECT ts FROM usage_log WHERE organization_id=? "
+                        "AND customer_id=? AND provider=? AND strategy<>'cache_warm' "
+                        "AND authoritative=1 AND ts>=?",
+                        (candidate["organization_id"], candidate["customer_id"],
+                         candidate["provider"], start.isoformat())).fetchall():
+                    try:
+                        moment = datetime.fromisoformat(str(row["ts"]))
+                    except (TypeError, ValueError):
+                        continue
+                    if moment.tzinfo is None:
+                        moment = moment.replace(tzinfo=timezone.utc)
+                    slot = int((moment - start).total_seconds() // 3600)
+                    if 0 <= slot < hours:
+                        counts[slot] += 1
+                series.append({
+                    "organization_id": candidate["organization_id"],
+                    "customer_id": candidate["customer_id"],
+                    "provider": candidate["provider"],
+                    "counts": counts})
+        return series
+
+    def warm_suppression_add(self, organization_id: str,
+                             customer_id: str) -> dict[str, Any]:
+        """Record an erased subject the scorer must never model again.
+
+        In Postgres this row is written by compliance_delete_subject; this store
+        has no compliance surface, so the method is the mirror's only writer and
+        exists so the suppression path is executable on both backends.
+        """
+        if not organization_id or not customer_id:
+            raise ValueError("warm suppression arguments are invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO warm_modeling_suppression(organization_id,"
+                "customer_id,suppressed_at) VALUES(?,?,?) "
+                "ON CONFLICT(organization_id,customer_id) DO NOTHING",
+                (organization_id, customer_id,
+                 datetime.now(timezone.utc).isoformat()))
+            # The state this subject already accumulated goes with the request;
+            # the suppression row is what stops the next arrival rebuilding it.
+            db.execute(
+                "DELETE FROM warm_customer_state WHERE organization_id=? "
+                "AND customer_id=?", (organization_id, customer_id))
+        return {"schema": "brevitas.warm-suppression.v1", "status": "recorded"}
+
+    def warm_suppression_list(self, organization_id: str) -> list[dict[str, Any]]:
+        with self._conn() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT * FROM warm_modeling_suppression WHERE organization_id=? "
+                "ORDER BY customer_id", (organization_id,)).fetchall()]
+
+    @staticmethod
+    def _warm_sort_index(row: Any, bucket: str,
+                         by_provider: dict[str, float],
+                         roi_break_even_p: float) -> float:
+        """The candidate window's ordering key: THE INDEX ITSELF.
+
+        Mirror of the inline expression in 202608100002's candidate SELECT.
+        Computed from the same row columns the loop rescores, so the window's
+        ranking and the loop's logged index_score cannot disagree.
+
+        NOT index per reserved dollar. The index already divides by c_belief, so
+        it is already value per belief-dollar; dividing it a second time by the
+        reservation makes the key value-per-dollar-squared, which under a
+        binding budget systematically prefers small cheap arms over the large
+        valuable ones the budget exists to allocate. The reservation enters the
+        claim exactly once, at the budget gate.
+
+        202608100003: this stays the LIFETIME-HISTOGRAM index even under
+        hazard_v2, matching the RPC. The window is a recall heuristic over
+        claim_limit*4 rows and the loop rescores every row it visits with the
+        hazard model; that rescore is what gates. Phase 2 can revisit it with
+        the state row joined once rather than read per candidate in a sort key.
+        """
+        histogram = json.loads(row["hour_histogram"] or "{}")
+        p_return = min(1.0, float(histogram.get(bucket, 0))
+                       / max(int(row["arrival_count"]), 1))
+        return float(warm_index_components(
+            p_return,
+            float(by_provider.get(row["provider"], roi_break_even_p)),
+            0.0)["index_score"])
 
     def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
                        roi_min_arrivals: int, roi_min_p: float,
@@ -3793,7 +4525,20 @@ class UsageStore:
                        claim_lease_seconds: int = 900,
                        roi_break_even_by_provider: dict[str, float] | None = None,
                        holdout_fraction: float = 0.0,
+                       index_enabled: bool = False,
+                       lambda_eta: float | None = 0.2,
+                       lambda_max: float | None = 1000.0,
+                       hazard_v2: bool = False,
+                       beta: float | None = 0.0,
                        ) -> dict[str, Any]:
+        # Nulls coalesce to the RPC's own defaults, so a caller that predates
+        # Phase 1 and a caller that passes None land on the same numbers.
+        eta = 0.2 if lambda_eta is None else float(lambda_eta)
+        lambda_ceiling = 1000.0 if lambda_max is None else float(lambda_max)
+        # 0 means the cap does not RUN, not that the cap is zero -- a zero cap
+        # denies everything, which is right for an operator who armed the cap
+        # with no control data and wrong for one who never armed it.
+        beta_multiple = 0.0 if beta is None else float(beta)
         if (not 0 <= float(holdout_fraction) <= 1
                 or not 1 <= int(claim_limit) <= 500
                 or not 0 <= float(reserve_usd_per_mtok) <= 1000
@@ -3803,7 +4548,10 @@ class UsageStore:
                 or not 1 <= int(stop_loss) <= 100
                 or not 1 <= int(max_gap_seconds) <= 604_800
                 or not 0 <= int(safety_margin_seconds) <= 3_600
-                or not 60 <= int(claim_lease_seconds) <= 7_200):
+                or not 60 <= int(claim_lease_seconds) <= 7_200
+                or not 0.01 <= eta <= 2.0
+                or not 0 <= lambda_ceiling <= 1_000_000
+                or not 0 <= beta_multiple <= 100):
             raise ValueError("warm claim bounds are invalid")
         # Mirrors the warm_due_claim RPC's jsonb validation (migration
         # 202607280003): provider -> break-even probability, providers not in
@@ -3820,33 +4568,172 @@ class UsageStore:
         try:
             now = datetime.now(timezone.utc)
             day = now.date().isoformat()
+            # Derived from the same UTC day the ledger uses, so the envelope a
+            # claim reserves against and the one warm_ping_settle books against
+            # are the same row even across a month boundary (202608100004).
+            period = warm_budget_period(day)
             bucket = _utc_hour_bucket(now)
             claimed: list[dict[str, Any]] = []
             claimed_counts: dict[str, int] = defaultdict(int)
+            lambda_by_pair: dict[str, float] = {}
+            # (cap_usd, running trailing-window spend) per (org, provider), the
+            # beta cap's per-invocation cache (202608100005).
+            beta_by_pair: dict[str, tuple[float, float]] = {}
             with self._conn() as db:
                 db.execute("BEGIN IMMEDIATE")
-                candidates = db.execute(
+                # CANDIDATE WINDOW. The predicate is unchanged; only the order
+                # within the window moves. prefix_hash is the documented
+                # tiebreak on next_due_at -- previously resolved by whatever
+                # order SQLite produced, which is not a decision anybody made,
+                # and determinism is what makes the flag-on/flag-off equivalence
+                # executable. It cannot change WHICH rows are claimed, only the
+                # order among simultaneously-due ones.
+                #
+                # STOP-LOSS RETIREMENT (202608100003): under hazard_v2 the
+                # consecutive-miss predicate is dropped from the candidate
+                # query. The counter and every writer of it are untouched --
+                # only this gate is bypassed, because P(alive) answers the same
+                # question continuously and RECOVERS when the customer returns,
+                # which a monotone counter cannot.
+                #
+                # 202608100005 SUPERSEDES that predicate: the stop-loss is
+                # retired in favour of P(alive) only while the pair is LEARNED.
+                # A frozen pair is scored at flat priors, and flat priors have
+                # no P(alive) to retire it with, so the counter comes back with
+                # them. An absent warm_org_mode row means 'learned', so an empty
+                # table makes the LEFT JOIN and everything downstream a no-op.
+                candidate_sql = (
                     "SELECT prefix.*, cred.credential_ciphertext, cred.daily_budget_usd,"
-                    " cred.max_pings_per_customer_day FROM warm_prefixes prefix "
+                    " cred.max_pings_per_customer_day,"
+                    " COALESCE(mode.mode,'learned')='frozen' AS warm_frozen "
+                    "FROM warm_prefixes prefix "
                     "JOIN warm_credentials cred ON cred.organization_id=prefix.organization_id "
                     "AND cred.provider=prefix.provider "
+                    "LEFT JOIN warm_org_mode mode ON mode.organization_id=prefix.organization_id "
+                    "AND mode.provider=prefix.provider "
                     "WHERE prefix.state='active' AND prefix.next_due_at<=? "
-                    "AND prefix.expires_at>? AND prefix.consecutive_misses<? "
-                    "AND (prefix.ewma_interarrival_s IS NULL OR prefix.ewma_interarrival_s<=?) "
-                    "AND cred.enabled=1 AND cred.credential_state='active' "
-                    "ORDER BY prefix.next_due_at LIMIT ?",
-                    (now.isoformat(), now.isoformat(), int(stop_loss),
-                     int(max_gap_seconds), int(claim_limit) * 4)).fetchall()
+                    "AND prefix.expires_at>? "
+                    # STOP-LOSS RETIREMENT (202608100003), and it takes
+                    # BOTH flags. P(alive) -- the thing that replaces the
+                    # counter -- only ever reaches a decision through the index
+                    # block, which runs under index_enabled. With hazard on and
+                    # the index off, retiring the counter here would remove the
+                    # churn stop-loss and put NOTHING in its place: a dead
+                    # prefix would be re-claimed forever. hazard_v2 is an
+                    # EXTENSION of the index policy and is inert without it.
+                    + ("AND (COALESCE(mode.mode,'learned')='learned' "
+                       "OR prefix.consecutive_misses<?) "
+                       if (hazard_v2 and index_enabled)
+                       else "AND prefix.consecutive_misses<? ")
+                    + "AND (prefix.ewma_interarrival_s IS NULL OR prefix.ewma_interarrival_s<=?) "
+                    "AND cred.enabled=1 AND cred.credential_state='active' ")
+                candidate_args = (now.isoformat(), now.isoformat(),
+                                  int(stop_loss), int(max_gap_seconds))
+                if index_enabled:
+                    # Flag on, the window itself is index-selected: fetch
+                    # every row the predicate admits, rank by the index, THEN
+                    # truncate. Truncating first would leave the soonest-due
+                    # claim_limit*4 rows, which is the FIFO window this
+                    # replaces.
+                    candidates = sorted(
+                        db.execute(candidate_sql, candidate_args).fetchall(),
+                        key=lambda candidate: (
+                            -self._warm_sort_index(
+                                candidate, bucket, by_provider,
+                                roi_break_even_p),
+                            str(candidate["next_due_at"] or ""),
+                            str(candidate["prefix_hash"] or "")),
+                    )[:int(claim_limit) * 4]
+                else:
+                    candidates = db.execute(
+                        candidate_sql
+                        + "ORDER BY prefix.next_due_at, prefix.prefix_hash LIMIT ?",
+                        (*candidate_args, int(claim_limit) * 4)).fetchall()
                 for row in candidates:
                     if len(claimed) >= int(claim_limit):
                         break
                     histogram = json.loads(row["hour_histogram"] or "{}")
                     p_return = min(1.0, float(histogram.get(bucket, 0))
                                    / max(int(row["arrival_count"]), 1))
+                    break_even = float(by_provider.get(row["provider"],
+                                                       roi_break_even_p))
+
+                    # THE HAZARD MODEL (202608100003). Read only under the flag,
+                    # and only when this customer HAS a state row that is not
+                    # suppressed. With no row -- a new customer, or one erased
+                    # and suppressed -- p_return stays the lifetime histogram
+                    # ratio, p_alive stays 1 and n_chain stays 0, which is the
+                    # flat-prior form Task A proved equal to v1. That fallback
+                    # IS the cold-start story: turning this flag on cannot move
+                    # a decision for a customer the model has never seen.
+                    #
+                    # FROZEN IS FLAT PRIORS, NOT A SECOND SYSTEM
+                    # (202608100005). The state row is not read at all, so
+                    # p_return stays the lifetime histogram, p_alive stays 1 and
+                    # the chain stays 0 -- exactly the fallback a customer the
+                    # model has never seen gets, which Task A proved equal to
+                    # v1. The index and the pacing dual keep running on top.
+                    hazard_p_alive: float | None = None
+                    hazard_chain = 0
+                    frozen = bool(row["warm_frozen"])
+                    hazard_state = db.execute(
+                        "SELECT hazard_n,hazard_e,events_total,first_seen_at,"
+                        "last_seen_at FROM warm_customer_state WHERE "
+                        "organization_id=? AND customer_id=? AND provider=?",
+                        (row["organization_id"], row["customer_id"],
+                         row["provider"])).fetchone() if (
+                             hazard_v2 and not frozen) else None
+                    if hazard_state and db.execute(
+                            "SELECT 1 FROM warm_modeling_suppression WHERE "
+                            "organization_id=? AND customer_id=?",
+                            (row["organization_id"],
+                             row["customer_id"])).fetchone():
+                        # An erased subject is scored as if the model had never
+                        # seen them -- the same treatment a new customer gets.
+                        hazard_state = None
+                    if hazard_state:
+                        aggregate = db.execute(
+                            "SELECT hazard_n,hazard_e FROM warm_customer_state "
+                            "WHERE organization_id=? AND customer_id=? AND "
+                            "provider=?",
+                            (row["organization_id"],
+                             WARM_ORG_AGGREGATE_CUSTOMER_ID,
+                             row["provider"])).fetchone()
+                        n_b = float(json.loads(
+                            hazard_state["hazard_n"] or "{}").get(bucket, 0.0))
+                        e_b = float(json.loads(
+                            hazard_state["hazard_e"] or "{}").get(bucket, 0.0))
+                        org_n = float(json.loads(
+                            (aggregate["hazard_n"] if aggregate else "") or "{}"
+                        ).get(bucket, 0.0))
+                        org_e = float(json.loads(
+                            (aggregate["hazard_e"] if aggregate else "") or "{}"
+                        ).get(bucket, 0.0))
+                        rate = warm_hazard_rate(n_b, e_b, org_n, org_e)
+                        # Replaces p_return in BOTH the v1 ROI gate below and
+                        # the index, and the decision log records the value
+                        # actually used -- a row is never scored on one number
+                        # and logged with another.
+                        p_return = warm_p_return_v2(
+                            n_b, e_b, org_n, org_e,
+                            int(row["provider_ttl_seconds"]))
+                        first_seen = datetime.fromisoformat(
+                            hazard_state["first_seen_at"])
+                        last_seen = datetime.fromisoformat(
+                            hazard_state["last_seen_at"])
+                        hazard_p_alive = warm_p_alive(
+                            int(hazard_state["events_total"] or 0),
+                            max(0.0, (last_seen - first_seen).total_seconds())
+                            / 86400.0,
+                            max(0.0, (now - first_seen).total_seconds()) / 86400.0)
+                        hazard_chain = warm_chain_pings(
+                            rate, (now - last_seen).total_seconds(),
+                            int(row["provider_ttl_seconds"]),
+                            int(safety_margin_seconds), break_even)
+
                     floor = (float(roi_min_p)
                              if int(row["arrival_count"]) < int(roi_min_arrivals)
-                             else float(by_provider.get(row["provider"],
-                                                        roi_break_even_p)))
+                             else break_even)
                     # Pure arithmetic on the candidate row, hoisted above the
                     # gates so a denied candidate can record what warming it
                     # would have cost. Value and use below are unchanged: the
@@ -3858,26 +4745,111 @@ class UsageStore:
                         round(float(reserve_usd_per_mtok)
                               * int(row["prefix_tokens"]) / 1_000_000.0, 10))
 
+                    # THE INDEX, computed above the first gate so even a
+                    # candidate the ROI floor rejects records what the index
+                    # thought of it. p_alive and the organic-netting multiplier
+                    # are pinned to 1.0 and n_chain to 0 in Phase 1 (no producer
+                    # yet); pinned that way they can only OVERSTATE the index,
+                    # and the index gates spending, never billing. None means
+                    # "the machinery was off", which is what makes a flag-off row
+                    # indistinguishable from a pre-Phase-1 row.
+                    #
+                    # 202608100003 fills the p_alive and n_chain slots. Passed,
+                    # not branched: with the hazard flag off, or on with no
+                    # state row, they are exactly the 1.0 and 0 Task A pinned,
+                    # so the index is unchanged and a p_alive < 1 or a non-zero
+                    # chain_cost_usd in the log is the mark of a v2-scored row.
+                    #
+                    # The DOLLARS come from ping_reserve_usd and the provider's
+                    # write premium, never from `reserve` (which carries the
+                    # flat anthropic-calibrated floor). `reserve` is passed only
+                    # as the denominator of the diagnostic index_density; it is
+                    # money safety for the daily ceiling, not economics.
+                    index = (warm_index_components(
+                                 p_return, break_even, reserve,
+                                 ping_reserve_usd=float(
+                                     row["ping_reserve_usd"] or 0.0),
+                                 write_multiplier=warm_write_multiplier(
+                                     row["provider"],
+                                     int(row["provider_ttl_seconds"] or 0)),
+                                 p_alive=(1.0 if hazard_p_alive is None
+                                          else hazard_p_alive),
+                                 n_chain=hazard_chain)
+                             if index_enabled else None)
+
                     def _record(decision: str, pings: int | None = None,
                                 token: str | None = None,
                                 propensity: float | None = None,
+                                lambda_index: float | None = None,
                                 _row: Any = row, _p: float = p_return,
                                 _floor: float = floor,
-                                _reserve: float = reserve) -> None:
+                                _reserve: float = reserve,
+                                _index: dict[str, Any] | None = index) -> None:
                         self._warm_decision_record_locked(
                             db, _row["organization_id"], _row["customer_id"],
                             _row["provider"], _row["prefix_hash"], decision,
                             _p, _floor, _reserve, int(_row["prefix_tokens"]),
                             _row["ewma_interarrival_s"],
                             int(_row["arrival_count"]), pings, token, now,
-                            propensity=propensity)
+                            propensity=propensity,
+                            lambda_index=lambda_index,
+                            **(_index or {}))
 
                     if p_return < floor:
                         # pings_today is deliberately not read for a candidate
                         # the ROI gate rejects: that costs a query per candidate
                         # for a nullable column. Null means "not read yet".
+                        #
+                        # lambda is logged NULL here on purpose: the pacing block
+                        # below has not run for this (org, provider) yet, so no
+                        # dual was in force for this candidate.
                         _record("skipped_roi")
                         continue
+
+                    # THE PACING DUAL, updated at most once per (org, provider)
+                    # per invocation -- at the first candidate of that pair to
+                    # reach this gate. Recomputing per candidate would compound
+                    # one intraday reading once per row. The whole block is
+                    # inside the flag: at index_enabled=False it must not create
+                    # the ledger row one gate earlier than v1 does.
+                    lam: float | None = None
+                    if index_enabled:
+                        pair_key = f"{row['organization_id']}:{row['provider']}"
+                        if pair_key in lambda_by_pair:
+                            lam = lambda_by_pair[pair_key]
+                        else:
+                            db.execute(
+                                "INSERT INTO warm_budget_ledger(organization_id,provider,"
+                                "day,updated_at) VALUES(?,?,?,?) "
+                                "ON CONFLICT(organization_id,provider,day) DO NOTHING",
+                                (row["organization_id"], row["provider"], day,
+                                 now.isoformat()))
+                            pacing = db.execute(
+                                "SELECT reserved_usd,spent_usd,lambda_index FROM "
+                                "warm_budget_ledger WHERE organization_id=? AND "
+                                "provider=? AND day=?",
+                                (row["organization_id"], row["provider"],
+                                 day)).fetchone()
+                            lam = warm_lambda_update(
+                                float(pacing[2] or 0.0),
+                                float(pacing[0] or 0.0) + float(pacing[1] or 0.0),
+                                float(row["daily_budget_usd"] or 0.0),
+                                warm_day_fraction(now), eta, lambda_ceiling)
+                            db.execute(
+                                "UPDATE warm_budget_ledger SET lambda_index=?,"
+                                "lambda_updated_at=? WHERE organization_id=? AND "
+                                "provider=? AND day=?",
+                                (lam, now.isoformat(), row["organization_id"],
+                                 row["provider"], day))
+                            lambda_by_pair[pair_key] = lam
+                        # lambda = 0 IS the provider break-even floor
+                        # (index = 0 <=> p_eff = f/(1-f)), so this gate can only
+                        # ever be stricter than the ROI floor above it, never
+                        # looser -- and it never raises a budget.
+                        if float(index["index_score"]) < lam:
+                            _record("skipped_lambda", lambda_index=lam)
+                            continue
+
                     customer_key = f"{row['organization_id']}:{row['customer_id']}"
                     pings_today = db.execute(
                         "SELECT COALESCE(SUM(pings_today),0) FROM warm_prefixes "
@@ -3887,7 +4859,7 @@ class UsageStore:
                          day)).fetchone()[0]
                     if int(pings_today) + claimed_counts[customer_key] >= int(
                             row["max_pings_per_customer_day"]):
-                        _record("cap_denied", int(pings_today))
+                        _record("cap_denied", int(pings_today), lambda_index=lam)
                         continue
                     db.execute(
                         "INSERT INTO warm_budget_ledger(organization_id,provider,day,updated_at) "
@@ -3899,8 +4871,91 @@ class UsageStore:
                         (row["organization_id"], row["provider"], day)).fetchone()
                     if float(ledger[0]) + float(ledger[1]) + reserve > float(
                             row["daily_budget_usd"]):
-                        _record("budget_denied", int(pings_today))
+                        _record("budget_denied", int(pings_today), lambda_index=lam)
                         continue
+                    # PER-CUSTOMER ENVELOPE (202608100004). After the
+                    # organization budget, before the control arm: a hard spend
+                    # gate of the same kind as the budget above it, and the
+                    # holdout coin stays the LAST thing before the reservation.
+                    #
+                    # NO ROW MEANS NO CONSTRAINT, which is the default-off story
+                    # rather than a loophole: a spend ceiling cannot take a
+                    # boolean argument without giving a caller a way to switch
+                    # it off, so the check is unconditional and simply vacuous
+                    # until a row exists. Rows exist only because an operator
+                    # PUT one or because the (default-off) allocator ran.
+                    envelope = db.execute(
+                        "SELECT envelope_usd,reserved_usd,spent_usd,reserved_day "
+                        "FROM warm_customer_budget WHERE organization_id=? AND "
+                        "provider=? AND period_start=? AND customer_ref=?",
+                        (row["organization_id"], row["provider"], period,
+                         row["customer_id"])).fetchone()
+                    # STALE-RESERVATION SELF-HEAL. A reservation written before
+                    # today was never released -- the worker holding it died, or
+                    # its customer was erased and settle can no longer name the
+                    # row. warm_budget_ledger survives the same exposure because
+                    # it is DAY-keyed (tomorrow is a different row); this table
+                    # is MONTH-keyed, so the stranded dollars would hold the
+                    # customer's envelope hostage until the 1st. So a
+                    # reservation from a previous UTC day is zeroed BEFORE the
+                    # check reads it, exactly as if the day had rolled the row
+                    # over. SPENT is untouched: spent dollars are settled money
+                    # and the envelope is a monthly ceiling on them.
+                    envelope_reserved = (0.0 if envelope is None
+                                         else float(envelope[1]))
+                    if envelope is not None and str(envelope[3] or "") < day:
+                        db.execute(
+                            "UPDATE warm_customer_budget SET reserved_usd=0,"
+                            "reserved_day=?,updated_at=? WHERE organization_id=? "
+                            "AND provider=? AND period_start=? AND customer_ref=?",
+                            (day, now.isoformat(), row["organization_id"],
+                             row["provider"], period, row["customer_id"]))
+                        envelope_reserved = 0.0
+                    if envelope is not None and (
+                            envelope_reserved + float(envelope[2]) + reserve
+                            > float(envelope[0])):
+                        _record("envelope_denied", int(pings_today),
+                                lambda_index=lam)
+                        continue
+                    # THE BETA CAP (202608100005). Trailing 28-day warm spend
+                    # may not exceed beta x the control-verified savings
+                    # measured over the same window. After every per-org and
+                    # per-customer ceiling, before the control arm, because the
+                    # holdout coin stays the LAST thing before a reservation.
+                    #
+                    #   C28 = sum of control_lift_usd over [day-28, day-2]
+                    #         (the closed days the refresher has scored)
+                    #   W28 = sum of reserved+spent over [day-27, day]
+                    #         (the open window the spend actually landed in)
+                    #
+                    # The windows deliberately do not line up: savings can only
+                    # be measured on days whose usage has settled, and spend has
+                    # to be counted the moment it is reserved.
+                    if beta_multiple > 0:
+                        beta_key = f"{row['organization_id']}:{row['provider']}"
+                        if beta_key not in beta_by_pair:
+                            c28 = db.execute(
+                                "SELECT COALESCE(SUM(control_lift_usd),0) FROM "
+                                "warm_control_savings_daily WHERE organization_id=? "
+                                "AND provider=? AND day>=? AND day<=?",
+                                (row["organization_id"], row["provider"],
+                                 (now.date() - timedelta(days=28)).isoformat(),
+                                 (now.date() - timedelta(days=2)).isoformat(),
+                                 )).fetchone()[0]
+                            w28 = db.execute(
+                                "SELECT COALESCE(SUM(reserved_usd+spent_usd),0) FROM "
+                                "warm_budget_ledger WHERE organization_id=? AND "
+                                "provider=? AND day>=? AND day<=?",
+                                (row["organization_id"], row["provider"],
+                                 (now.date() - timedelta(days=27)).isoformat(),
+                                 day)).fetchone()[0]
+                            beta_by_pair[beta_key] = (
+                                beta_multiple * float(c28 or 0.0), float(w28 or 0.0))
+                        beta_cap, beta_spend = beta_by_pair[beta_key]
+                        if beta_spend + reserve > beta_cap:
+                            _record("beta_denied", int(pings_today),
+                                    lambda_index=lam)
+                            continue
                     # Control arm, drawn at the last possible moment: every gate
                     # has passed, so this row was certain to be pinged and the
                     # two arms are separated by nothing but the coin. Held out,
@@ -3926,13 +4981,36 @@ class UsageStore:
                              row["organization_id"], row["customer_id"],
                              row["provider"], row["prefix_hash"]))
                         _record("holdout", int(pings_today),
-                                propensity=float(holdout_fraction))
+                                propensity=float(holdout_fraction),
+                                lambda_index=lam)
                         continue
                     db.execute(
                         "UPDATE warm_budget_ledger SET reserved_usd=reserved_usd+?,"
                         "updated_at=? WHERE organization_id=? AND provider=? AND day=?",
                         (reserve, now.isoformat(), row["organization_id"],
                          row["provider"], day))
+                    # The envelope reservation is written IMMEDIATELY ADJACENT
+                    # to the organization ledger's: they are the same dollars
+                    # seen at two granularities, and any code between them would
+                    # be code that could reserve one without the other.
+                    if envelope is not None:
+                        db.execute(
+                            "UPDATE warm_customer_budget SET "
+                            "reserved_usd=reserved_usd+?,reserved_day=?,"
+                            "updated_at=? "
+                            "WHERE organization_id=? AND provider=? AND "
+                            "period_start=? AND customer_ref=?",
+                            (reserve, day, now.isoformat(),
+                             row["organization_id"],
+                             row["provider"], period, row["customer_id"]))
+                    # The cap's in-invocation accounting. The ledger sum above
+                    # was read once for this pair; without this line a batch of
+                    # candidates would each be measured against the same
+                    # pre-batch W28 and the batch as a whole could walk straight
+                    # past the cap.
+                    if beta_multiple > 0:
+                        beta_cap, beta_spend = beta_by_pair[beta_key]
+                        beta_by_pair[beta_key] = (beta_cap, beta_spend + reserve)
                     # Claim lease mirrors the RPC: it must outlive a full
                     # sequential worker batch or another replica re-claims the
                     # tail mid-flight; the rotated token fences settle so a
@@ -3956,7 +5034,8 @@ class UsageStore:
                     # no propensity, and 1.0 would read as one.
                     _record("pinged", int(pings_today), claim_token,
                             (1.0 - float(holdout_fraction))
-                            if float(holdout_fraction) > 0 else None)
+                            if float(holdout_fraction) > 0 else None,
+                            lambda_index=lam)
                     claimed.append({
                         "schema": "brevitas.warm-claim.v1", "status": "claimed",
                         "organization_id": row["organization_id"],
@@ -4014,6 +5093,37 @@ class UsageStore:
                 "AND provider=? AND day=?",
                 (float(reserved_usd), booked_usd,
                  now.isoformat(), organization_id, provider, str(budget_day)))
+            # PER-CUSTOMER ENVELOPE (202608100004). Mirrors the organization
+            # ledger one-for-one, for EVERY outcome, with the identical
+            # booked_usd -- copied rather than re-derived, because two spellings
+            # of the same booking rule is exactly how a release and a charge
+            # drift apart. The period comes from budget_day, so a ping claimed
+            # on the 31st and settled on the 1st still settles against the month
+            # it was claimed in. No row is a no-op, including after erasure
+            # tombstoned the key: the reservation then strands for the rest of
+            # THAT DAY and is zeroed by the claim's self-heal on the next one.
+            #
+            # SAME-DAY RELEASE ONLY. reserved_day names the day the reservation
+            # being released was written on; the claim resets reserved_usd to 0
+            # whenever it finds an older one. Without the guard, a settle
+            # arriving after that reset would subtract its reservation from a
+            # reservation somebody else made today -- releasing dollars that
+            # were never held and opening the envelope by exactly that much.
+            # MAX(0, ...) is kept for the reason the ledger keeps it, but it
+            # clamps a negative, it does not prevent a misattributed release.
+            # SPENT always books: spent dollars are settled money and the
+            # envelope is a monthly ceiling on them, day-independent.
+            db.execute(
+                "UPDATE warm_customer_budget SET "
+                "reserved_usd=CASE WHEN reserved_day=? "
+                "THEN MAX(0, reserved_usd-?) ELSE reserved_usd END,"
+                "spent_usd=spent_usd+?,"
+                "updated_at=? WHERE organization_id=? AND provider=? AND "
+                "period_start=? AND customer_ref=?",
+                (str(budget_day), float(reserved_usd), booked_usd,
+                 now.isoformat(),
+                 organization_id, provider, warm_budget_period(str(budget_day)),
+                 customer_id))
             # Ledger money always books (the reservation and the ping were
             # both real), but the prefix row only mutates while the caller's
             # claim token is current: a claimant whose lease lapsed cannot
@@ -4073,6 +5183,492 @@ class UsageStore:
                     (now.isoformat(), organization_id, provider))
         return {"schema": "brevitas.warm-settle.v1", "status": "settled",
                 "outcome": outcome}
+
+    # --- per-customer spend envelopes (202608100004) ---------------------
+    def warm_customer_budget_list(self, organization_id: str,
+                                  provider: str | None = None,
+                                  period_start: str | None = None,
+                                  ) -> list[dict[str, Any]]:
+        """Mirror of public.warm_customer_budget_list."""
+        if provider is not None and provider not in _WARM_PROVIDERS:
+            raise ValueError("warm customer budget arguments are invalid")
+        period = warm_budget_period(
+            period_start or datetime.now(timezone.utc).date().isoformat())
+        clause = "" if provider is None else " AND provider=?"
+        params: list[Any] = [organization_id, period]
+        if provider is not None:
+            params.insert(1, provider)
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT organization_id,provider,period_start,customer_ref,"
+                "envelope_usd,reserved_usd,spent_usd,source,created_at,updated_at "
+                f"FROM warm_customer_budget WHERE organization_id=?{clause} "
+                "AND period_start=? ORDER BY provider,customer_ref",
+                tuple(params)).fetchall()
+        return [{
+            "organization_id": row[0], "provider": row[1],
+            "period_start": row[2], "customer_ref": row[3],
+            "envelope_usd": float(row[4]), "reserved_usd": float(row[5]),
+            "spent_usd": float(row[6]), "source": row[7],
+            "erased": str(row[3]).startswith("erased:"),
+            "created_at": row[8], "updated_at": row[9],
+        } for row in rows]
+
+    def warm_customer_budget_put(self, organization_id: str, provider: str,
+                                 customer_id: str,
+                                 period_start: str | None = None,
+                                 envelope_usd: float = 0.0) -> dict[str, Any]:
+        """Mirror of public.warm_customer_budget_put.
+
+        Sets a ceiling; deliberately does NOT restate reserved_usd/spent_usd.
+        Lowering below reserved+spent is allowed -- the organization is
+        sovereign over its own knob -- and simply denies further claims for the
+        rest of the period without moving money that is already booked.
+        """
+        if (provider not in _WARM_PROVIDERS
+                or not _WARM_CUSTOMER_REF.fullmatch(str(customer_id or ""))
+                or str(customer_id or "").startswith("erased:")
+                or not 0 <= float(envelope_usd) <= 99_999_999):
+            raise ValueError("warm customer budget arguments are invalid")
+        period = warm_budget_period(
+            period_start or datetime.now(timezone.utc).date().isoformat())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            # The table carries no FK on purpose (tombstones outlive their
+            # customer), so existence is checked here instead. A customer of
+            # another organization is as unknown as one that does not exist.
+            known = db.execute(
+                "SELECT 1 FROM customers WHERE id=? AND organization_id=?",
+                (customer_id, organization_id)).fetchone()
+            if known is None:
+                raise LookupError("warm customer budget customer is unknown")
+            db.execute(
+                "INSERT INTO warm_customer_budget(organization_id,provider,"
+                "period_start,customer_ref,envelope_usd,reserved_day,source,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,'org_override',?,?) "
+                "ON CONFLICT(organization_id,provider,period_start,customer_ref) "
+                "DO UPDATE SET envelope_usd=excluded.envelope_usd,"
+                "source='org_override',updated_at=excluded.updated_at",
+                (organization_id, provider, period, customer_id,
+                 round(float(envelope_usd), 10),
+                 datetime.now(timezone.utc).date().isoformat(), now, now))
+            row = db.execute(
+                "SELECT envelope_usd,reserved_usd,spent_usd,source FROM "
+                "warm_customer_budget WHERE organization_id=? AND provider=? "
+                "AND period_start=? AND customer_ref=?",
+                (organization_id, provider, period, customer_id)).fetchone()
+        return {"schema": "brevitas.warm-customer-budget.v1", "status": "set",
+                "organization_id": organization_id, "provider": provider,
+                "period_start": period, "customer_ref": customer_id,
+                "envelope_usd": float(row[0]), "reserved_usd": float(row[1]),
+                "spent_usd": float(row[2]), "source": row[3]}
+
+    def warm_customer_budget_allocate(self, org_limit: int = 200) -> dict[str, Any]:
+        """Mirror of public.warm_customer_budget_allocate.
+
+        Splits each enabled organization's MONTHLY budget (daily_budget_usd x
+        days in month) across its customers in proportion to trailing 28-day
+        positive index mass, falling back to an equal split over customers with
+        an active prefix when there is no index history at all. Raise-only and
+        override-immune: it never lowers an envelope mid-period and never
+        touches a row an operator set by hand.
+        """
+        if not 1 <= int(org_limit) <= 10_000:
+            raise ValueError("warm customer budget allocate bounds are invalid")
+        now = datetime.now(timezone.utc)
+        period = warm_budget_period(now.date().isoformat())
+        days = calendar.monthrange(now.year, now.month)[1]
+        since = (now - timedelta(days=28)).isoformat()
+        written = 0
+        pairs = 0
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            credentials = db.execute(
+                "SELECT organization_id,provider,daily_budget_usd FROM "
+                "warm_credentials WHERE enabled=1 AND credential_state='active' "
+                "ORDER BY organization_id,provider LIMIT ?",
+                (int(org_limit),)).fetchall()
+            for cred in credentials:
+                pairs += 1
+                budget_month = round(float(cred[2] or 0.0) * days, 10)
+                if budget_month <= 0:
+                    continue
+                masses = db.execute(
+                    "SELECT customer_id,SUM(MAX(COALESCE(index_score,0),0)) FROM "
+                    "warm_decision_log WHERE organization_id=? AND provider=? "
+                    "AND ts>=? GROUP BY customer_id",
+                    (cred[0], cred[1], since)).fetchall()
+                total = sum(float(entry[1] or 0.0) for entry in masses)
+                if total > 0:
+                    targets = [(entry[0],
+                                round(budget_month * (float(entry[1] or 0.0) / total), 10))
+                               for entry in masses if float(entry[1] or 0.0) > 0]
+                else:
+                    customers = [entry[0] for entry in db.execute(
+                        "SELECT DISTINCT customer_id FROM warm_prefixes WHERE "
+                        "organization_id=? AND provider=? AND state='active'",
+                        (cred[0], cred[1])).fetchall()]
+                    if not customers:
+                        continue
+                    share = round(budget_month / len(customers), 10)
+                    targets = [(customer, share) for customer in customers]
+                for customer, target in targets:
+                    # Raise-only, override-immune. Lowering an envelope
+                    # mid-period would retroactively invalidate reservations
+                    # already admitted against it, and a background job
+                    # overwriting an operator's hand-set ceiling is the exact
+                    # behaviour a hard budget gate must not have.
+                    cursor = db.execute(
+                        "INSERT INTO warm_customer_budget(organization_id,"
+                        "provider,period_start,customer_ref,envelope_usd,"
+                        "reserved_day,source,"
+                        "created_at,updated_at) VALUES(?,?,?,?,?,?,'auto',?,?) "
+                        "ON CONFLICT(organization_id,provider,period_start,"
+                        "customer_ref) DO UPDATE SET "
+                        "envelope_usd=MAX(warm_customer_budget.envelope_usd,"
+                        "excluded.envelope_usd),updated_at=excluded.updated_at "
+                        "WHERE warm_customer_budget.source='auto'",
+                        (cred[0], cred[1], period, customer, target,
+                         now.date().isoformat(),
+                         now.isoformat(), now.isoformat()))
+                    written += int(cursor.rowcount or 0)
+        return {"schema": "brevitas.warm-customer-budget-allocate.v1",
+                "status": "allocated", "period_start": period,
+                "pairs": pairs, "written": written}
+
+    # --- beta cap, guardrail and canary (202608100005) --------------------
+    def warm_control_savings_refresh(self, max_days: int = 28) -> dict[str, Any]:
+        """Mirror of public.warm_control_savings_refresh.
+
+        For every closed UTC day in the trailing window with no row yet, and
+        every (organization, provider) that scored anything that day, difference
+        the treated arm against the control arm on authoritative non-warm usage
+        cost per prefix-hash unit.
+
+        The `and no 'pinged' row` half of the control predicate is written out
+        rather than assumed. The daily-stable hash assignment cannot produce a
+        mixed unit, but an operator who moves the holdout fraction mid-day can,
+        and a mixed unit counted as control would understate treated cost and
+        MANUFACTURE savings -- which raises a spend ceiling. Mixed units are
+        counted and reported rather than raised on: raising here would abort the
+        sweep for every other day and organization too.
+        """
+        if not 1 <= int(max_days) <= 28:
+            raise ValueError("warm control savings bounds are invalid")
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        written = 0
+        days = 0
+        mixed = 0
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for offset in range(int(max_days) + 1, 1, -1):
+                day = today - timedelta(days=offset)
+                days += 1
+                start = datetime(day.year, day.month, day.day,
+                                 tzinfo=timezone.utc).isoformat()
+                end = (datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+                       + timedelta(days=1)).isoformat()
+                units = db.execute(
+                    "SELECT organization_id,provider,prefix_hash,"
+                    "MAX(CASE WHEN decision='pinged' THEN 1 ELSE 0 END),"
+                    "MAX(CASE WHEN decision='holdout' THEN 1 ELSE 0 END) "
+                    "FROM warm_decision_log WHERE ts>=? AND ts<? "
+                    "GROUP BY organization_id,provider,prefix_hash",
+                    (start, end)).fetchall()
+                arms: dict[tuple[str, str], tuple[list[float], list[float]]] = {}
+                for organization_id, provider, prefix_hash, treated, held_out in units:
+                    if not treated and not held_out:
+                        continue
+                    if treated and held_out:
+                        mixed += 1
+                    cost = db.execute(
+                        "SELECT COALESCE(SUM(actual_cost_usd),0) FROM usage_log "
+                        "WHERE organization_id=? AND provider=? AND "
+                        "warm_prefix_hash=? AND strategy<>'cache_warm' AND "
+                        "authoritative=1 AND ts>=? AND ts<?",
+                        (organization_id, provider, prefix_hash, start,
+                         end)).fetchone()[0]
+                    treated_costs, control_costs = arms.setdefault(
+                        (organization_id, provider), ([], []))
+                    if treated:
+                        treated_costs.append(float(cost or 0.0))
+                    else:
+                        control_costs.append(float(cost or 0.0))
+                for (organization_id, provider), (treated_costs,
+                                                  control_costs) in arms.items():
+                    treated_mean = (sum(treated_costs) / len(treated_costs)
+                                    if treated_costs else 0.0)
+                    control_mean = (sum(control_costs) / len(control_costs)
+                                    if control_costs else 0.0)
+                    # Under-powered comparisons are written as ZERO savings with
+                    # their counts intact. Zero can only shrink a spend ceiling.
+                    savings = (
+                        round(max(0.0, control_mean - treated_mean)
+                              * len(treated_costs), 10)
+                        if len(treated_costs) >= 3 and len(control_costs) >= 3
+                        else 0.0)
+                    # REVISABLE FOR 14 DAYS, FROZEN AFTER. `DO NOTHING` froze
+                    # every day at the first sweep that saw it -- two days after
+                    # the fact -- so an authoritative usage row that settled
+                    # late (a retried receipt, a backfill) never reached the arm
+                    # means at all, silently starving the beta cap's
+                    # denominator. Inside a 14-day revision horizon the row is
+                    # recomputed; outside it the WHERE is false, the row is
+                    # untouched, and history the cap has already priced against
+                    # stays stable.
+                    cursor = db.execute(
+                        "INSERT INTO warm_control_savings_daily(organization_id,"
+                        "provider,day,treated_units,control_units,"
+                        "treated_mean_cost_usd,control_mean_cost_usd,"
+                        "control_lift_usd,computed_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(organization_id,provider,day) DO UPDATE SET "
+                        "treated_units=excluded.treated_units,"
+                        "control_units=excluded.control_units,"
+                        "treated_mean_cost_usd=excluded.treated_mean_cost_usd,"
+                        "control_mean_cost_usd=excluded.control_mean_cost_usd,"
+                        "control_lift_usd=excluded.control_lift_usd,"
+                        "computed_at=excluded.computed_at "
+                        "WHERE warm_control_savings_daily.day>=?",
+                        (organization_id, provider, day.isoformat(),
+                         len(treated_costs), len(control_costs),
+                         round(treated_mean, 10), round(control_mean, 10),
+                         savings, now.isoformat(),
+                         (today - timedelta(days=14)).isoformat()))
+                    written += int(cursor.rowcount or 0)
+        return {"schema": "brevitas.warm-control-savings.v1",
+                "status": "refreshed", "days_scanned": days,
+                "rows_written": written, "mixed_units": mixed}
+
+    def warm_org_mode_set(self, organization_id: str, provider: str,
+                          mode: str, reason: str = "") -> dict[str, Any]:
+        """Mirror of public.warm_org_mode_set. The guardrail's only writer, and
+        the only way back out of 'frozen' -- which is manual by design."""
+        if (not organization_id or provider not in _WARM_PROVIDERS
+                or mode not in _WARM_ORG_MODES
+                or len((reason or "").encode()) > 512):
+            raise ValueError("warm org mode arguments are invalid")
+        now = datetime.now(timezone.utc)
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO warm_org_mode(organization_id,provider,mode,reason,"
+                "updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(organization_id,provider) DO UPDATE SET "
+                "mode=excluded.mode,reason=excluded.reason,"
+                "updated_at=excluded.updated_at",
+                (organization_id, provider, mode, str(reason or ""),
+                 now.isoformat()))
+        return {"schema": "brevitas.warm-org-mode.v1", "status": "set",
+                "organization_id": organization_id, "provider": provider,
+                "mode": mode, "reason": str(reason or ""),
+                "updated_at": now.isoformat()}
+
+    def warm_org_mode_list(self) -> list[dict[str, Any]]:
+        with self._conn() as db:
+            return [{"organization_id": row[0], "provider": row[1],
+                     "mode": row[2], "reason": row[3], "updated_at": row[4]}
+                    for row in db.execute(
+                        "SELECT organization_id,provider,mode,reason,updated_at "
+                        "FROM warm_org_mode ORDER BY organization_id,provider"
+                    ).fetchall()]
+
+    def warm_guardrail_scan(self, lookback_days: int = 7) -> list[dict[str, Any]]:
+        """Mirror of public.warm_guardrail_scan.
+
+        One row per (organization, provider) that spent anything in the window,
+        carrying the CONTROL-MEASURED net and the pair's current mode.
+
+        NOT THE POLICY'S OWN ATTRIBUTION. net_7d_usd used to sum
+        warm_decision_log.realized_net_usd -- the number the learned policy
+        assigns to its own pings. A guardrail whose input is produced by the
+        thing it guards cannot catch the failure that matters: a policy that
+        mis-attributes its savings reports a healthy net exactly while it is
+        losing money, and the freeze never fires. The plan forbids policy
+        attribution as a guardrail input, so the net is differenced from the
+        randomized holdout experiment instead:
+
+            net_7d_usd = sum(warm_control_savings_daily.control_lift_usd)
+                       - sum(warm_budget_ledger.reserved_usd + spent_usd)
+
+        over the same trailing window -- measured lift minus what warming
+        actually cost to produce it. Both terms come from outside the policy.
+
+        control_days COUNTS THE EVIDENCE and is the freeze's licence: a pair
+        with no control rows differences zero lift against real spend and looks
+        catastrophic when it is merely unmeasured, so the caller must require at
+        least three control-measured days before acting. Only powered days count
+        (control_units >= 3, the same threshold the refresher forces the lift to
+        zero below).
+
+        policy_net_7d_usd carries the old sum forward as a LOGGED DIAGNOSTIC, so
+        the divergence between what the policy claims and what the experiment
+        measures is observable rather than arguable.
+        """
+        bound = min(90, max(1, int(lookback_days)))
+        now = datetime.now(timezone.utc)
+        since_day = (now.date() - timedelta(days=bound)).isoformat()
+        since_ts = (now - timedelta(days=bound)).isoformat()
+        with self._conn() as db:
+            pairs = db.execute(
+                "SELECT DISTINCT organization_id,provider FROM warm_budget_ledger "
+                "WHERE day>=? ORDER BY organization_id,provider",
+                (since_day,)).fetchall()
+            scanned = []
+            for organization_id, provider in pairs:
+                measured = db.execute(
+                    "SELECT COALESCE(SUM(control_lift_usd),0),"
+                    "COALESCE(SUM(CASE WHEN control_units>=3 THEN 1 ELSE 0 END),0),"
+                    "COALESCE(SUM(control_units),0) "
+                    "FROM warm_control_savings_daily WHERE organization_id=? "
+                    "AND provider=? AND day>=?",
+                    (organization_id, provider, since_day)).fetchone()
+                spend = db.execute(
+                    "SELECT COALESCE(SUM(reserved_usd+spent_usd),0) FROM "
+                    "warm_budget_ledger WHERE organization_id=? AND provider=? "
+                    "AND day>=?",
+                    (organization_id, provider, since_day)).fetchone()[0]
+                policy_net = db.execute(
+                    "SELECT COALESCE(SUM(realized_net_usd),0) FROM "
+                    "warm_decision_log WHERE organization_id=? AND provider=? "
+                    "AND decision='pinged' AND realized_net_usd IS NOT NULL "
+                    "AND ts>=?",
+                    (organization_id, provider, since_ts)).fetchone()[0]
+                mode = db.execute(
+                    "SELECT mode FROM warm_org_mode WHERE organization_id=? "
+                    "AND provider=?", (organization_id, provider)).fetchone()
+                lift = float(measured[0] or 0.0)
+                spent = float(spend or 0.0)
+                scanned.append({
+                    "organization_id": organization_id, "provider": provider,
+                    "mode": (mode[0] if mode else "learned"),
+                    "net_7d_usd": round(lift - spent, 10),
+                    "control_lift_usd": round(lift, 10),
+                    "warm_spend_usd": round(spent, 10),
+                    "control_days": int(measured[1] or 0),
+                    "control_units": int(measured[2] or 0),
+                    "policy_net_7d_usd": float(policy_net or 0.0)})
+        return scanned
+
+    def warm_canary_reserve(self, provider: str, day: str, est_usd: float,
+                            cap_usd: float) -> dict[str, Any]:
+        """Mirror of public.warm_canary_reserve. Reserve BEFORE sending: the
+        conditional update is what stops two replicas racing the last cents of
+        the daily cap from both winning."""
+        if (provider not in _WARM_CANARY_PROVIDERS or not day
+                or not 0 <= float(est_usd) <= 1000
+                or not 0 <= float(cap_usd) <= 1000):
+            raise ValueError("warm canary reserve arguments are invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO warm_canary_ledger(day,provider) VALUES(?,?) "
+                "ON CONFLICT(day,provider) DO NOTHING", (day, provider))
+            cursor = db.execute(
+                "UPDATE warm_canary_ledger SET spent_usd=spent_usd+?,"
+                "probes=probes+1 WHERE day=? AND provider=? AND spent_usd+?<=?",
+                (float(est_usd), day, provider, float(est_usd), float(cap_usd)))
+            allowed = int(cursor.rowcount or 0) > 0
+            spent = db.execute(
+                "SELECT spent_usd FROM warm_canary_ledger WHERE day=? AND provider=?",
+                (day, provider)).fetchone()
+        return {"schema": "brevitas.warm-canary-reserve.v1",
+                "allowed": allowed,
+                "spent_usd": float(spent[0] if spent else 0.0)}
+
+    def warm_canary_settle(self, provider: str, day: str, est_usd: float,
+                           actual_usd: float) -> dict[str, Any]:
+        """Mirror of public.warm_canary_settle. Floored at zero: an
+        over-estimate lands at 0, it never hands back headroom that never was."""
+        if (provider not in _WARM_CANARY_PROVIDERS or not day
+                or not 0 <= float(est_usd) <= 1000
+                or not 0 <= float(actual_usd) <= 1000):
+            raise ValueError("warm canary settle arguments are invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE warm_canary_ledger SET spent_usd=MAX(0,spent_usd+?-?) "
+                "WHERE day=? AND provider=?",
+                (float(actual_usd), float(est_usd), day, provider))
+            spent = db.execute(
+                "SELECT spent_usd FROM warm_canary_ledger WHERE day=? AND provider=?",
+                (day, provider)).fetchone()
+        return {"schema": "brevitas.warm-canary-settle.v1", "status": "settled",
+                "spent_usd": float(spent[0] if spent else 0.0)}
+
+    def warm_canary_probe_insert(self, provider: str, model: str,
+                                 prefix_seed: str, prefix_tokens: int,
+                                 written_at: str,
+                                 gap_target_s: float) -> dict[str, Any]:
+        if (provider not in _WARM_CANARY_PROVIDERS
+                or len((model or "").encode()) > 128
+                or len((prefix_seed or "").encode()) > 128
+                or not 0 <= int(prefix_tokens) <= 2_000_000
+                or not written_at
+                or not 0 <= float(gap_target_s) <= _WARM_TTL_MAX_GAP_SECONDS):
+            raise ValueError("warm canary probe arguments are invalid")
+        written = datetime.fromisoformat(written_at)
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        due = written + timedelta(seconds=float(gap_target_s))
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute(
+                "INSERT INTO warm_canary_probes(provider,model,prefix_seed,"
+                "prefix_tokens,written_at,probe_due_at,gap_target_s,state,"
+                "created_at) VALUES(?,?,?,?,?,?,?,'pending',?)",
+                (provider, str(model or ""), str(prefix_seed or ""),
+                 int(prefix_tokens), written.isoformat(), due.isoformat(),
+                 round(float(gap_target_s), 3),
+                 datetime.now(timezone.utc).isoformat()))
+            probe_id = int(cursor.lastrowid or 0)
+        return {"schema": "brevitas.warm-canary-probe.v1", "status": "pending",
+                "id": probe_id}
+
+    def warm_canary_probe_due(self, provider: str | None = None,
+                              limit: int = 50) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc).isoformat()
+        bound = min(500, max(1, int(limit)))
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT id,provider,model,prefix_seed,prefix_tokens,written_at,"
+                "probe_due_at,gap_target_s FROM warm_canary_probes WHERE "
+                "state='pending' AND probe_due_at<=? "
+                + ("AND provider=? " if provider else "")
+                + "ORDER BY probe_due_at,id LIMIT ?",
+                ((now, provider, bound) if provider else (now, bound))).fetchall()
+        return [{"id": row[0], "provider": row[1], "model": row[2],
+                 "prefix_seed": row[3], "prefix_tokens": row[4],
+                 "written_at": row[5], "probe_due_at": row[6],
+                 "gap_target_s": row[7]} for row in rows]
+
+    def warm_canary_probe_mark(self, probe_id: int, state: str) -> dict[str, Any]:
+        if state not in ("done", "failed"):
+            raise ValueError("warm canary probe state is invalid")
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE warm_canary_probes SET state=? WHERE id=? AND state='pending'",
+                (state, int(probe_id)))
+        return {"schema": "brevitas.warm-canary-probe.v1", "status": state,
+                "id": int(probe_id)}
+
+    def warm_canary_probe_stats(self, provider: str) -> dict[str, Any]:
+        """The gap ladder's index. 'done' probes are the ones that produced an
+        observation, so the ladder advances only on measurement, never on
+        failure."""
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT "
+                "SUM(CASE WHEN state='pending' THEN 1 ELSE 0 END),"
+                "SUM(CASE WHEN state='done' THEN 1 ELSE 0 END),"
+                "SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) "
+                "FROM warm_canary_probes WHERE provider=?",
+                (provider,)).fetchone()
+        return {"provider": provider, "pending": int(row[0] or 0),
+                "done": int(row[1] or 0), "failed": int(row[2] or 0)}
 
     def warm_credentials_get(self, organization_id: str,
                              provider: str) -> dict[str, Any] | None:
@@ -4225,11 +5821,30 @@ class UsageStore:
                 "DELETE FROM warm_ttl_observations WHERE observed_at<?",
                 ((now - timedelta(days=_WARM_OBSERVATION_RETENTION_DAYS)).isoformat(),)
             ).rowcount
+            # 202608100005, same rule: none of these three carries a tenant key,
+            # so no compliance retention class applies and they age here.
+            # Probes are operational state; the canary dollar ledger and the
+            # control comparison are financial evidence on the 400-day horizon.
+            canary_probes = db.execute(
+                "DELETE FROM warm_canary_probes WHERE created_at<?",
+                ((now - timedelta(
+                    days=_WARM_CANARY_PROBE_RETENTION_DAYS)).isoformat(),)).rowcount
+            evidence_cutoff = (now.date() - timedelta(
+                days=_WARM_CANARY_EVIDENCE_RETENTION_DAYS)).isoformat()
+            canary_ledger = db.execute(
+                "DELETE FROM warm_canary_ledger WHERE day<?",
+                (evidence_cutoff,)).rowcount
+            control_savings = db.execute(
+                "DELETE FROM warm_control_savings_daily WHERE day<?",
+                (evidence_cutoff,)).rowcount
         return {"schema": "brevitas.warm-purge.v1", "status": "purged",
                 "prefixes_deleted": max(0, int(prefixes or 0)),
                 "ledger_deleted": max(0, int(ledger or 0)),
                 "observation_retention_days": _WARM_OBSERVATION_RETENTION_DAYS,
-                "observations_deleted": max(0, int(observations or 0))}
+                "observations_deleted": max(0, int(observations or 0)),
+                "canary_probes_deleted": max(0, int(canary_probes or 0)),
+                "canary_ledger_deleted": max(0, int(canary_ledger or 0)),
+                "control_savings_deleted": max(0, int(control_savings or 0))}
 
 
 class SupabaseUsageStore:
@@ -5529,6 +7144,11 @@ class SupabaseUsageStore:
                        claim_lease_seconds: int = 900,
                        roi_break_even_by_provider: dict[str, float] | None = None,
                        holdout_fraction: float = 0.0,
+                       index_enabled: bool = False,
+                       lambda_eta: float | None = 0.2,
+                       lambda_max: float | None = 1000.0,
+                       hazard_v2: bool = False,
+                       beta: float | None = 0.0,
                        ) -> dict[str, Any]:
         rows = self._request("POST", "rpc/warm_due_claim", data={
             "p_claim_limit": int(claim_limit),
@@ -5549,6 +7169,22 @@ class SupabaseUsageStore:
             # 0 is the RPC's own default and the arm's off state: no digest is
             # computed and the loop is byte-identical to 202608090001's.
             "p_holdout_fraction": float(holdout_fraction),
+            # false is the RPC's own default and the index's off state: no
+            # index is computed, no lambda row is touched, the ordering key is
+            # all-NULL and the loop is 202608100001's.
+            "p_index_enabled": bool(index_enabled),
+            # null lets the RPC apply its own defaults, which are the same two
+            # numbers the SQLite mirror coalesces to.
+            "p_lambda_eta": (None if lambda_eta is None else float(lambda_eta)),
+            "p_lambda_max": (None if lambda_max is None else float(lambda_max)),
+            # false is the RPC's own default and the hazard model's off state:
+            # no state row is read, p_return is the lifetime histogram ratio,
+            # the stop-loss predicate applies and the loop is 202608100002's.
+            "p_hazard_v2": bool(hazard_v2),
+            # 0 is the RPC's own default and the cap's off state: the beta
+            # block does not run at all, so the loop is 202608100004's. It is
+            # NOT "a cap of zero", which would deny every candidate.
+            "p_beta": (0.0 if beta is None else float(beta)),
         }) or []
         if rows and rows[0].get("status") == "lease_unavailable":
             return {"status": "lease_unavailable", "rows": []}
@@ -5610,6 +7246,151 @@ class SupabaseUsageStore:
             "p_lookback_hours": int(lookback_hours),
             "p_limit": int(limit),
         }))
+
+    # Only the two RPCs the regime job needs are mirrored here, and that is the
+    # whole hosted surface by design. warm_customer_state_get has no RPC to call
+    # -- nothing outside warm_due_claim reads a posterior, and exposing one
+    # would be a read path for behavioural state that no product surface asks
+    # for. warm_suppression_add has no RPC either: in Postgres the suppression
+    # row is written by compliance_delete_subject, inside the erasure
+    # transaction, which is the only place it may be written from. Both exist on
+    # the SQLite store because that store has no compliance surface at all, and
+    # the suppression path still has to be executable there.
+    def warm_customer_state_set_regime(self, organization_id: str,
+                                       customer_id: str, provider: str,
+                                       regime: str,
+                                       regime_score: float | None = None
+                                       ) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_customer_state_set_regime", data={
+                "p_organization_id": organization_id,
+                "p_customer_id": customer_id,
+                "p_provider": provider,
+                "p_regime": regime,
+                "p_regime_score": (None if regime_score is None
+                                   else float(regime_score)),
+            }))
+
+    def warm_customer_arrival_buckets(self, lookback_days: int = 28,
+                                      limit: int = 500) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_customer_arrival_series", data={
+            "p_lookback_days": int(lookback_days),
+            "p_limit": int(limit),
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    # --- per-customer spend envelopes (202608100004) ---------------------
+    def warm_customer_budget_list(self, organization_id: str,
+                                  provider: str | None = None,
+                                  period_start: str | None = None,
+                                  ) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_customer_budget_list", data={
+            "p_organization_id": organization_id,
+            "p_provider": provider,
+            "p_period_start": period_start,
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def warm_customer_budget_put(self, organization_id: str, provider: str,
+                                 customer_id: str,
+                                 period_start: str | None = None,
+                                 envelope_usd: float = 0.0) -> dict[str, Any]:
+        # The RPC raises 23503 for a customer that is not this organization's;
+        # the endpoint turns that into a 404, so nothing here needs to
+        # pre-check membership and race the check against a deletion.
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_customer_budget_put", data={
+                "p_organization_id": organization_id,
+                "p_provider": provider,
+                "p_customer_id": customer_id,
+                "p_period_start": period_start,
+                "p_envelope_usd": float(envelope_usd),
+            }))
+
+    def warm_customer_budget_allocate(self, org_limit: int = 200) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_customer_budget_allocate", data={
+                "p_org_limit": int(org_limit),
+            }))
+
+    # --- beta cap, guardrail and canary (202608100005) --------------------
+    def warm_control_savings_refresh(self, max_days: int = 28) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_control_savings_refresh", data={
+                "p_max_days": int(max_days),
+            }))
+
+    def warm_org_mode_set(self, organization_id: str, provider: str,
+                          mode: str, reason: str = "") -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_org_mode_set", data={
+            "p_organization_id": organization_id,
+            "p_provider": provider,
+            "p_mode": mode,
+            "p_reason": str(reason or ""),
+        }))
+
+    def warm_org_mode_list(self) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_org_mode_list", data={}) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def warm_guardrail_scan(self, lookback_days: int = 7) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_guardrail_scan", data={
+            "p_lookback_days": int(lookback_days),
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def warm_canary_reserve(self, provider: str, day: str, est_usd: float,
+                            cap_usd: float) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_canary_reserve", data={
+            "p_provider": provider,
+            "p_day": day,
+            "p_est_usd": float(est_usd),
+            "p_cap_usd": float(cap_usd),
+        }))
+
+    def warm_canary_settle(self, provider: str, day: str, est_usd: float,
+                           actual_usd: float) -> dict[str, Any]:
+        return _rpc_object(self._request("POST", "rpc/warm_canary_settle", data={
+            "p_provider": provider,
+            "p_day": day,
+            "p_est_usd": float(est_usd),
+            "p_actual_usd": float(actual_usd),
+        }))
+
+    def warm_canary_probe_insert(self, provider: str, model: str,
+                                 prefix_seed: str, prefix_tokens: int,
+                                 written_at: str,
+                                 gap_target_s: float) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_canary_probe_insert", data={
+                "p_provider": provider,
+                "p_model": model,
+                "p_prefix_seed": prefix_seed,
+                "p_prefix_tokens": int(prefix_tokens),
+                "p_written_at": written_at,
+                "p_gap_target_s": float(gap_target_s),
+            }))
+
+    def warm_canary_probe_due(self, provider: str | None = None,
+                              limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_canary_probe_due", data={
+            "p_provider": provider,
+            "p_limit": int(limit),
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def warm_canary_probe_mark(self, probe_id: int, state: str) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_canary_probe_mark", data={
+                "p_id": int(probe_id),
+                "p_state": state,
+            }))
+
+    def warm_canary_probe_stats(self, provider: str) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_canary_probe_stats", data={
+                "p_provider": provider,
+            }))
 
     def warm_credentials_get(self, organization_id: str,
                              provider: str) -> dict[str, Any] | None:

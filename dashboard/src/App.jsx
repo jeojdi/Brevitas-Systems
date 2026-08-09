@@ -982,8 +982,8 @@ export default function App() {
             arriving a beat later. */}
         <PanelErrorBoundary key={renderTab}>
         {renderTab === 'Overview'   && (workspaceKnown
-          ? <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>
-          : <Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} />)}
+          ? <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} accessToken={session.access_token} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>
+          : <Overview apiKey={apiKey} accessToken={session.access_token} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} />)}
         {(renderTab === 'Repositories' || renderTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
         {renderTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
         {renderTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}

@@ -305,6 +305,14 @@ run_forward_assertions() {
     --file scripts/ci/migration-warm-reward-join-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-warm-holdout-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-warm-index-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-warm-hazard-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-warm-envelope-assertions.sql
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-warm-guardrail-assertions.sql
   # Live behaviour of the money path. Each of these files opens its own
   # transaction and ends in ROLLBACK, so they are rerunnable, they leave no
   # financial rows behind, and they are order-independent with respect to each

@@ -3864,6 +3864,118 @@ def delete_warming(request: Request, provider: str):
             "prefixes_deleted": int(purged.get("prefixes_deleted") or 0)}
 
 
+class WarmCustomerBudgetRequest(BaseModel):
+    provider: str
+    customer_id: str
+    envelope_usd: float = Field(default=0.0, ge=0, le=99_999_999)
+    # YYYY-MM; defaults to the current UTC month. Only ever a MONTH: the row
+    # key is a calendar period and the store derives period_start from it, so
+    # no caller can name a day the claim path would never look at.
+    period: str | None = None
+
+
+def _warm_budget_role_gate(organization: dict) -> None:
+    """A customer envelope is entirely money -- a ceiling and the spend booked
+    against it -- so unlike /v1/warming there is no operational half to show a
+    plain member. Same billing:manage test get_warming uses, but 403 instead of
+    a redacted view."""
+    role = _canonical_company_role(organization.get("role"))
+    if (role in ("company_owner", "company_admin")
+            or "billing:manage" in ROLE_PERMISSIONS.get(role, frozenset())):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Managing warming customer budgets requires billing access")
+
+
+def _warm_budget_period(period: str | None) -> str:
+    """'YYYY-MM' -> the first day of that UTC month. Parsed strictly: a caller
+    that means March cannot land on February because a lenient parser accepted
+    something else."""
+    if not period:
+        return datetime.now(timezone.utc).date().replace(day=1).isoformat()
+    try:
+        parsed = datetime.strptime(str(period), "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="period must be YYYY-MM") from exc
+    return parsed.date().replace(day=1).isoformat()
+
+
+@app.get("/v1/warming/customer-budgets")
+@limiter.limit("60/minute")
+def get_warming_customer_budgets(request: Request, provider: str | None = None,
+                                 period: str | None = None):
+    _, organization = _member_organization(request)
+    _warm_budget_role_gate(organization)
+    if provider is not None and provider not in _WARM_PROVIDERS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown warming provider '{provider}'")
+    period_start = _warm_budget_period(period)
+    try:
+        rows = _store.warm_customer_budget_list(
+            organization["id"], provider, period_start)
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
+    return {"period_start": period_start, "budgets": [{
+        "customer_id": str(row.get("customer_ref") or ""),
+        "provider": str(row.get("provider") or ""),
+        "period_start": str(row.get("period_start") or "")[:10],
+        "envelope_usd": float(row.get("envelope_usd") or 0.0),
+        "reserved_usd": float(row.get("reserved_usd") or 0.0),
+        "spent_usd": float(row.get("spent_usd") or 0.0),
+        "source": str(row.get("source") or ""),
+        # A tombstoned row is the residue of an erasure: the dollars are the
+        # organization's own accounting and stay visible, the key does not.
+        "erased": str(row.get("customer_ref") or "").startswith("erased:"),
+    } for row in rows or []]}
+
+
+@app.put("/v1/warming/customer-budgets")
+@limiter.limit("30/minute")
+def set_warming_customer_budget(request: Request, body: WarmCustomerBudgetRequest):
+    user_id, organization = _member_organization(request, write=True)
+    _warm_budget_role_gate(organization)
+    if body.provider not in _WARM_PROVIDERS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown warming provider '{body.provider}'")
+    if not math.isfinite(float(body.envelope_usd)):
+        raise HTTPException(status_code=400, detail="envelope_usd must be finite")
+    try:
+        uuid.UUID(str(body.customer_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise HTTPException(status_code=400,
+                            detail="customer_id must be a uuid") from exc
+    period_start = _warm_budget_period(body.period)
+    try:
+        saved = _store.warm_customer_budget_put(
+            organization["id"], body.provider, str(body.customer_id),
+            period_start, float(body.envelope_usd))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Unknown customer") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        # The RPC raises 23503 for a customer that is not this organization's.
+        # PostgREST surfaces it as a 4xx the transport wrapper re-raises, so the
+        # message is the only thing that distinguishes it from a real outage.
+        if "customer is unknown" in str(exc):
+            raise HTTPException(status_code=404, detail="Unknown customer") from exc
+        raise _key_admin_unavailable(exc) from exc
+    _audit_tenant_mutation(
+        request, organization["id"], user_id,
+        _canonical_company_role(organization.get("role")),
+        "warming.customer_budget_set", target_type="warm_customer_budget",
+        target_id=f"{organization['id']}:{body.provider}:{body.customer_id}")
+    return {"ok": True, "provider": body.provider,
+            "customer_id": str(body.customer_id),
+            "period_start": period_start,
+            "envelope_usd": float(saved.get("envelope_usd")
+                                  or body.envelope_usd),
+            "source": "org_override"}
+
+
 # ── Compression ───────────────────────────────────────────────────────────────
 
 _MAX_STR = 50_000

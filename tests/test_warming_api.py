@@ -759,3 +759,105 @@ def test_hosted_warm_observe_does_not_stamp_an_unrecorded_prefix(
         assert db.execute(
             "SELECT warm_prefix_hash FROM usage_log WHERE request_id=?",
             ("brv_receipt_uncapped",)).fetchone()[0] is None
+
+
+# ── Per-customer spend envelopes (202608100004) ───────────────────────────────
+
+def _budgets(client, session="Bearer admin-session", **params):
+    return client.get("/v1/warming/customer-budgets",
+                      headers={"Authorization": session}, params=params)
+
+
+def _put_budget(client, session="Bearer admin-session", **overrides):
+    payload = {"provider": "anthropic", "customer_id": "", "envelope_usd": 1.0,
+               **overrides}
+    return client.put("/v1/warming/customer-budgets",
+                      headers={"Authorization": session}, json=payload)
+
+
+def test_customer_budget_get_requires_billing_role(tmp_path, monkeypatch):
+    """A customer envelope is entirely money, so unlike /v1/warming there is no
+    operational half to redact -- a member without billing:manage gets 403."""
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-budget-role")
+    assert _enroll(client).status_code == 200
+
+    assert _budgets(client, session="").status_code == 401
+    assert _budgets(client, session="Bearer member-session").status_code == 403
+    assert _put_budget(client, session="Bearer member-session").status_code == 403
+
+    allowed = _budgets(client)
+    assert allowed.status_code == 200
+    assert allowed.json()["budgets"] == []
+    assert allowed.json()["period_start"].endswith("-01")
+
+
+def test_customer_budget_put_owner_creates_override_and_audits(tmp_path, monkeypatch):
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-budget-put")
+    assert _enroll(client).status_code == 200
+    customer = store.upsert_customer(organization["id"], "customer-1")
+
+    saved = _put_budget(client, customer_id=str(customer["id"]), envelope_usd=2.5)
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["ok"] is True
+    assert body["source"] == "org_override"
+    assert body["envelope_usd"] == 2.5
+    assert body["period_start"].endswith("-01")
+
+    listed = _budgets(client).json()["budgets"]
+    assert len(listed) == 1
+    assert listed[0]["customer_id"] == str(customer["id"])
+    assert listed[0]["source"] == "org_override"
+    assert listed[0]["erased"] is False
+    assert listed[0]["reserved_usd"] == 0.0
+
+    with sqlite3.connect(store.db_path) as db:
+        actions = [row[0] for row in db.execute(
+            "SELECT action FROM audit_events WHERE organization_id=?",
+            (organization["id"],))]
+    assert "warming.customer_budget_set" in actions
+
+
+def test_customer_budget_put_unknown_customer_404(tmp_path, monkeypatch):
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-budget-404")
+    assert _enroll(client).status_code == 200
+    missing = _put_budget(client, customer_id="33333333-3333-4333-8333-333333333333")
+    assert missing.status_code == 404
+
+
+def test_customer_budget_put_bounds_400(tmp_path, monkeypatch):
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-budget-bounds")
+    assert _enroll(client).status_code == 200
+    customer = str(store.upsert_customer(organization["id"], "customer-1")["id"])
+
+    assert _put_budget(client, provider="mistral",
+                       customer_id=customer).status_code == 400
+    assert _put_budget(client, customer_id="not-a-uuid").status_code == 400
+    assert _put_budget(client, customer_id=customer,
+                       envelope_usd=-1.0).status_code == 422
+    assert _put_budget(client, customer_id=customer,
+                       envelope_usd=1e9).status_code == 422
+    assert _put_budget(client, customer_id=customer,
+                       period="2026-13").status_code == 400
+    assert _put_budget(client, customer_id=customer,
+                       period="2026-08-01").status_code == 400
+    assert _budgets(client, provider="mistral").status_code == 400
+    assert _budgets(client, period="not-a-month").status_code == 400
+
+
+def test_customer_budget_period_selects_month(tmp_path, monkeypatch):
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-budget-period")
+    assert _enroll(client).status_code == 200
+    customer = str(store.upsert_customer(organization["id"], "customer-1")["id"])
+
+    assert _put_budget(client, customer_id=customer, envelope_usd=4.0,
+                       period="2026-03").status_code == 200
+    march = _budgets(client, period="2026-03").json()
+    assert march["period_start"] == "2026-03-01"
+    assert [row["envelope_usd"] for row in march["budgets"]] == [4.0]
+    assert _budgets(client, period="2026-04").json()["budgets"] == []

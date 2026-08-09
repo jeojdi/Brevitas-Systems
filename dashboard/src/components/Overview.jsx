@@ -2,6 +2,7 @@ import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
 import { fetchStats, fetchActivity, fetchCacheStats } from '../lib/api.js'
 import { WITHHELD, spendRedacted } from '../lib/spend.js'
 import InstallCommand from './InstallCommand.jsx'
+import WarmingBudgets from './WarmingBudgets.jsx'
 import {
   AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -73,7 +74,10 @@ function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-d
   )
 }
 
-export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true }) {
+// accessToken is optional and empty in every preview mount: the per-customer
+// envelope card is session-authenticated and money-gated, so it renders only
+// where a real session exists.
+export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true, accessToken = '' }) {
   const [stats, setStats]     = useState(previewStats)
   const [activity, setActivity] = useState(null)
   const [cacheStats, setCacheStats] = useState(null)
@@ -262,6 +266,10 @@ function OverviewBody({ pending = false, showInstallCommand, darkMode, loadStats
               label="// warm cache hits"
             />
           </div>
+          {/* The per-customer ceilings the warming spend above is measured
+              against. Absent for a member without billing access, and absent
+              until an operator or the allocator creates a row. */}
+          <WarmingBudgets accessToken={accessToken} refreshTick={refreshTick} />
           {/* The weekly chart plots dollars; with the *_usd keys stripped it
               would flatline at zero, so it is hidden rather than misdrawn. */}
           {!cacheSpendWithheld && cacheHistory.length > 0 && (

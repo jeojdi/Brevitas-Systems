@@ -116,6 +116,24 @@ export const startBillingCheckout = (accessToken, options = {}) =>
   billingJson('/api/billing/checkout', accessToken, { ...options, method: 'POST' })
 export const openBillingPortal = (accessToken, options = {}) =>
   billingJson('/api/billing/portal', accessToken, { ...options, method: 'POST' })
+// Per-customer warming spend envelopes. Session-authenticated like billing, and
+// gated server-side on billing:manage — a customer envelope is entirely money,
+// so there is no redacted view for a member without it, only a 403.
+export const fetchWarmingCustomerBudgets = (accessToken, { provider, period, ...options } = {}) => {
+  const query = new URLSearchParams()
+  if (provider) query.set('provider', provider)
+  if (period) query.set('period', period)
+  const suffix = query.toString()
+  return billingJson(
+    `/v1/warming/customer-budgets${suffix ? `?${suffix}` : ''}`, accessToken, options)
+}
+export const setWarmingCustomerBudget = (accessToken, body, options = {}) =>
+  billingJson('/v1/warming/customer-budgets', accessToken, {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    body: JSON.stringify(body),
+  })
 export const compress = (apiKey, body, options = {}) => apiJson('/v1/compress', apiKey, {
   ...options, method: 'POST', body,
 })
