@@ -1,50 +1,241 @@
-# Anthropic Prompt Cache — Empirical Map
+# Anthropic Prompt-Cache Behavior Map (Empirical)
 
-**Measured live on `claude-haiku-4-5`, 2026-08-10, on Brevitas's own probe key. Total spend $0.23 (cap $5). Every row is backed by Anthropic's own usage receipt (`cache_read_input_tokens` vs `cache_creation_input_tokens`).**
+**Proprietary measurement. Do not distribute.**
 
-This is proprietary measurement — the *actual* behavior, not the documented behavior. It is the first entry in the continuously-re-probed cache map that is Brevitas's real moat. Re-run `scripts/anthropic_cache_probe.py` (needs `BREVITAS_ANTHROPIC_PROBE=1`) on a schedule; when a number here moves, a provider changed something silently and there is money in the delta.
+What the Anthropic prompt cache *actually* does, measured against the live
+`/v1/messages` API on Brevitas's own funded probe key, with the provider's own
+usage receipt (`cache_read_input_tokens` vs `cache_creation_input_tokens`) as the
+evidence for every claim. This is the founding-thesis measurement: the cache is
+documented only in prose, its timing is opaque, and the economics of warming rest
+on where exactly the TTL cliff falls and whether a read refreshes the clock.
 
-## Findings
+- **Harness:** `scripts/anthropic_cache_probe.py` (re-runnable; guarded by
+  `BREVITAS_ANTHROPIC_PROBE=1`, hard $5.00 list-price spend cap, probe key only).
+- **Model:** `claude-haiku-4-5` (cheapest priced Anthropic model in `MODEL_PRICES`).
+- **Run:** 2026-08-09/10, seed `20260810`. Prefixes are synthetic (seeded word
+  list), never customer data. `max_tokens` 4–8; every call byte-identical and
+  well-formed.
+- **Total live spend: $0.2336 of the $5.00 cap.** Receipts dumped to
+  `receipts.json` (scratchpad).
+- **Scope guardrail honored:** behavioral characterization only. No cross-tenant
+  access, no rate-limit probing, no exploitation of the cross-user cache-sharing
+  side channel, no malformed traffic. Every result below comes from our own
+  key writing and reading our own synthetic prefixes.
 
-| # | Probe | Measured result | Anthropic's docs | Verdict |
-|---|---|---|---|---|
-| P1 | **TTL cliff** | HIT at 270s and **exactly 300s**; MISS at 330s and beyond | "5 minutes" | **Holds, slightly generous** — the entry is still alive *at* 5:00 and dies between 5:00 and 5:30 |
-| P2 | **Refresh-on-read** | **CONFIRMED.** A prefix read at 4min then 8min = HIT; an identical prefix read only at 8min = MISS. The "chain" prefix, read every 60–90s, stayed warm a full 7.5 min on one write. | Documented but unquantified | **Every read resets the 5-min clock, free.** This is the single most important economic fact. |
-| P3 | **Min cacheable tokens** | 4094 tok → `write=0` (silently uncached); 4351 tok → `write=4338` (cached) | 4096 for Haiku 4.5 | **Exactly 4096.** Below it, caching fails with **no error** — `cache_creation=0` and full-price billing. |
-| P4 | **Breakpoint limit** | 1 and 4 cache normally; **5 → HTTP 400** "A maximum of 4 blocks with cache_control may be provided." | Max 4 | **Hard error, not a silent cap.** Over-injection breaks the request outright. |
-| P5 | **1h tier** | The `ttl:"1h"` prefix was still a HIT at 6min — the exact moment the default-tier prefixes died. Same timeline, controlled contrast. | 1h opt-in tier | **Live and behaves.** 8× longer life for a 2× (vs 1.25×) write premium. |
+Pricing basis ($/Mtok, from `brevitas/receipts.py MODEL_PRICES`, marginally above
+current public haiku list so the cap over-books rather than under-books):
+`input 1.00 · cache-read 0.10 (0.10×) · cache-write-5m 1.25 (1.25×) ·
+cache-write-1h 2.00 (2.00×) · output 5.00`.
 
-## What each finding means for a Brevitas lever
+---
 
-**P2 (refresh-on-read) is the money fact, and it reframes warming.** Because every real read resets the clock for free, **warming is only needed to bridge gaps longer than 5 minutes.** A customer whose users fire more often than every 5 minutes needs *zero* warming — pinging them is pure waste (this is exactly the "organic self-refresh" suppression the learned scheduler now enforces). Warming's whole addressable market on Anthropic is the gap *between* 5 minutes and however long until the user returns. And when that gap is long, there are two bridges — keep-alive pings vs a one-time 1h write — and the cheaper one depends on the gap, which is a per-customer prediction, not a constant.
+## Headline results
 
-**P1 (cliff at 5:00–5:30, not before) is slack a doc-reader doesn't know they have.** A cloner trusting "5 minutes" abandons or re-warms at exactly 300s. The measurement says the entry is still alive at 300s and safe to ~315s. Small, but it's the shape of the whole thesis: the real number is not the published number, and only measurement finds the gap.
+| Probe | Measured | Anthropic docs | Verdict |
+|---|---|---|---|
+| P3 min cacheable prefix | floor between **4094 and 4351 tok** (≈4096) | 4096 tok for Haiku | **MATCH** |
+| P4 max `cache_control` breakpoints | 4 OK, **5 → hard HTTP 400** | max 4 | **MATCH** (fails closed) |
+| P1 raw TTL cliff (single read, uncontaminated) | HIT ≤300s, **MISS ≥330s** → TTL ∈ (300, 330] s | "at least 5 min", refreshed on use | **MATCH**, cliff just past 5:00 |
+| P1 refresh chain (read every ≤90s) | warm through **450s** (7.5 min) | reads refresh TTL | **MATCH** — indefinite with touches |
+| P2 refresh-on-read across 8 min | read@4m ⇒ **HIT@8m**; no read ⇒ **MISS@8m** | implied, never quantified | **CONFIRMED** — the warming thesis |
+| P5 1h tier | write `ttl:"1h"` ⇒ **HIT@6m** while 5m tier is dead | 1h extended TTL (beta flag) | **MATCH** — tier live, outlives 5m clock |
 
-**P3 (silent 4096 floor) is a diagnostic you can sell.** A customer whose stable prefix sits just under 4096 tokens is paying full price on every request and getting *nothing* from caching, with no error to tell them. "We'll show you every prompt that's silently missing the cache floor" is a onboarding hook no competitor offers because they don't measure per-prefix.
+---
 
-**P4 (hard 400 at 5 breakpoints) is a passthrough-fidelity guardrail.** Any breakpoint-injection logic must respect the 4-cap or it breaks the customer's request. Ours does; a naive injector that adds a 5th on top of a caller's 4 would 400 their traffic.
+## P3 — Minimum cacheable prefix (fast probe)
 
-**P5 (1h tier live) confirms the tiered-breakpoint lever.** Put the frozen tools+system prefix on 1h and the volatile conversation tail on 5m: the big stable bytes survive an hour (amortizing the 2× write over many turns) while the churny tail pays the cheaper 1.25× write. The scheduler's multi-action menu already models this; P5 confirms the tier it depends on is real.
+**Method.** Ten fresh prefixes sized through the documented floor, each written
+once. `cache_creation_input_tokens > 0` iff the prefix was eligible; the smallest
+eligible size is the empirical floor. Sizes labeled by exact `count_tokens`.
 
-## The raw timeline (one write batch, staggered single reads)
+| Measured prefix tokens | `cache_creation_input_tokens` | Cached? |
+|---:|---:|:--|
+| 807 / 1038 / 1540 / 2091 / 3099 / 3817 | 0 | no |
+| **4094** | **0** | **no** |
+| **4351** | **4338** | **yes** |
+| 4808 / 5612 | 4795 / 5599 | yes |
 
-```
-t=0     11 fresh writes land (~7700 cache-creation tokens each)
-+60s    chain read      → HIT  (read=7726)
-+270s   fan270 read     → HIT  (read=7721)   4.5 min: warm
-+300s   fan300 read     → HIT  (read=7756)   5.0 min exactly: STILL warm
-+330s   fan330 read     → MISS (write=7747)  5.5 min: dead  ← cliff is here
-+360s   fan360 read     → MISS ; 1h-tier read → HIT (read=7766)  ← default dead, 1h alive
-+390s.. fan390/420/450  → MISS (confirm)
-+480s   R1 (read@4min then@8min) → HIT (read=7704)   ← refresh kept it alive
-+480s   R2 (read only @8min)     → MISS (write=7680) ← no refresh, expired
-        chain (read every ~60-90s) → HIT at every point through 7.5 min
-```
+**Receipt evidence (the boundary pair):**
+- 4094 tok → `{"input_tokens":4094,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}` — no error, silently uncached.
+- 4351 tok → `{"input_tokens":13,"cache_creation_input_tokens":4338,"cache_creation":{"ephemeral_5m_input_tokens":4338}}`.
 
-Receipts: `scratchpad/receipts.json`. Harness: `scripts/anthropic_cache_probe.py`.
+**Docs comparison: MATCH.** Anthropic documents a **4096-token** minimum for
+Haiku (vs 1024 for Sonnet/Opus). The floor sits in (4094, 4351]; a 4094-token
+prefix caches nothing. The generic "1024" figure people quote from the Sonnet
+docs is **wrong for Haiku by 4×**.
 
-## Next probes worth the money (per the cross-provider sweep)
+**Brevitas lever.** Any prefix under ~4096 tokens on a Haiku route is
+**structurally unwarmable** — a keep-alive ping writes nothing and bills the
+customer for a ping that can never convert. The candidate filter must gate on a
+*model-specific* token floor (4096 for Haiku, 1024 elsewhere), not a global
+constant, or we overclaim on short-prefix Haiku traffic. The failure mode is
+silent (HTTP 200, `cache_creation=0`), so it cannot be caught by status codes —
+only by reading the receipt, which is exactly what the settlement path must do.
 
-1. **Fan-out formation lag** — how many milliseconds after the first response starts streaming does the cache become readable? Determines the serialize-then-release lever's timing on agent swarms.
-2. **20-block lookback** — construct a turn that appends >20 content blocks and confirm the prior cache goes unreachable; measure the reprocessing cost.
-3. **Re-probe P1–P5 weekly** — the March 2026 TTL regression is the precedent; the map's value is catching the *next* one first.
+---
+
+## P4 — Breakpoint count (fast probe)
+
+**Method.** Split one large prefix into N `cache_control` system blocks; N ∈ {1,4,5}.
+
+| Breakpoints | Result |
+|---:|:--|
+| 1 | 200, `cache_creation_input_tokens: 7682` |
+| 4 | 200, `cache_creation_input_tokens: 7755` |
+| **5** | **HTTP 400** — `"A maximum of 4 blocks with cache_control may be provided. Found 5."` |
+
+**Docs comparison: MATCH, and it fails closed.** The 4-breakpoint maximum is a
+**hard request-validation error**, not a silent cap that drops the 5th block. A
+malformed multi-breakpoint request is rejected wholesale (no tokens billed on the
+400), so we can never silently lose a breakpoint and mis-price.
+
+**Brevitas lever.** Multi-segment prefixes (system + tools + long context) can
+carry **up to 4** independently-refreshable cache segments. A warming ping that
+touches the *outermost* breakpoint refreshes everything before it, so one ping
+covers the whole ≤4-segment stack — we never need to fan pings per segment. If an
+upstream request already carries 4 breakpoints, our proxy must **not** inject a
+5th for warming instrumentation — that would 400 the customer's real request.
+
+---
+
+## P1 — TTL cliff (slow probe, real wall-clock)
+
+The load-bearing measurement. Two independent constructions on one ~8-minute
+timeline, all prefixes written at t=0.
+
+### Construction A — single-read fan (uncontaminated raw TTL)
+Each gap point is its **own** fresh prefix, read **exactly once** at that gap, so
+no read refreshes another. This isolates the raw TTL.
+
+| Gap (measured elapsed) | `cache_read` | `cache_creation` | Outcome |
+|---:|---:|---:|:--|
+| 270 s (4.5 m) | 7721 | 0 | **HIT** |
+| 300 s (5.0 m) | 7756 | 0 | **HIT** |
+| **330 s (5.5 m)** | **0** | **7747** | **MISS** |
+| 360 s (6.0 m) | 0 | 7647 | MISS |
+| 390 / 420 / 450 s | 0 | 7698 / 7650 / 7774 | MISS |
+
+**The cliff is between 300 s and 330 s.** Receipts:
+`fan300 → cache_read_input_tokens:7756` (warm at exactly 5:00);
+`fan330 → cache_creation_input_tokens:7747` (cold, fully re-written at 5:30).
+
+### Construction B — refresh chain (touched every ≤90 s)
+One prefix, read at 60/150/240/300/360/450 s. **Every read HIT**
+(`cache_read_input_tokens:7726` at each), including **450 s (7.5 min)** — 2.5×
+past a single TTL. A prefix touched inside each window stays warm indefinitely.
+
+**Docs comparison: MATCH.** Anthropic states the ephemeral TTL is a **5-minute
+minimum, refreshed on each use**. Measured: an untouched entry survives to 300 s
+and is gone by 330 s — the "at least 5 minutes" is really *5:00 plus a small
+grace*, not materially longer. A touched entry never expires. No drift.
+
+**Brevitas lever.** This is the physics the whole warming product prices against,
+now measured rather than assumed:
+- **Effective keep-alive interval ≤ ~300 s.** With the cliff at (300, 330] s, a
+  safety margin below 300 s (the shipped `safety_margin_seconds: 60` → 240 s
+  cadence) is correct and not over-conservative. A 270-s ping cadence would also
+  hold; a 330-s cadence would drop entries.
+- **Any customer gap > ~330 s is real money on the table** (a cold re-write at
+  **1.25×** vs a warm read at **0.10×** — a **12.5× per-token swing** on the
+  prefix). Gaps ≤300 s are organically warm and **not ours to bill**.
+
+---
+
+## P2 — Refresh-on-read (slow probe) — the warming thesis, proven
+
+**Method.** Two fresh prefixes, both written at t=0.
+- **R1 (warmed):** read at **240 s**, then again at **480 s**.
+- **R2 (control):** read **only** at **480 s**.
+Both returns land at 8:00 — two full TTLs past the write. The only difference is
+R1's single intervening read.
+
+| Prefix | Read @240 s | Read @480 s (8 min) |
+|---|:--|:--|
+| **R1 warmed** | **HIT** `cache_read:7704` | **HIT** `cache_read:7704` |
+| **R2 control** | — | **MISS** `cache_creation:7680` |
+
+**Receipt evidence:**
+- `R1@480 → {"cache_read_input_tokens":7704,"cache_creation_input_tokens":0}`
+- `R2ctrl@480 → {"cache_read_input_tokens":0,"cache_creation_input_tokens":7680}`
+
+**Docs comparison: CONFIRMED and QUANTIFIED.** The docs say a read "refreshes"
+the TTL but never demonstrate it bridging multiple windows. Here it is,
+mechanically: R1's read at 4:00 reset the clock to ~4:00+TTL ≈ 540 s, so the 8:00
+return (480 s) still landed inside it and read warm. R2, with no intervening
+read, died at 5:00 and paid the full write premium again at 8:00. **A single read
+at t=4 min carried a 7704-token prefix across an 8-minute gap a 5-minute TTL
+cannot span.**
+
+**Brevitas lever — this is the company.** A keep-alive **read** (max_tokens=1)
+is priced at **0.10×** and refreshes the clock exactly like a real arrival. So a
+returning request after an 8-minute idle costs:
+- **Unwarmed:** cold write = **1.25×** the prefix.
+- **Warmed (one ping):** ping (≈0.10× at ping time) + warm read (0.10×) ≈ **0.20×**.
+
+That's the ~**6× swing** the warming ledger books — now demonstrated end-to-end
+on live infra with provider receipts, not modeled. The invariant this run also
+validates: warming only converts on gaps that *exceed* the TTL (P1); pinging a
+customer whose own traffic stays inside 300 s is pure cost, which is why the
+policy must gate on measured inter-arrival, not just presence.
+
+---
+
+## P5 — 1-hour extended tier (sample, not swept)
+
+**Method.** One prefix written with `cache_control:{"type":"ephemeral","ttl":"1h"}`
+(sent with `anthropic-beta: extended-cache-ttl-2025-04-11`), read once at **360 s**
+— past the 5-minute default cliff that killed the P1 fan prefixes on the *same
+timeline*.
+
+| Leg | Receipt |
+|---|:--|
+| write `ttl:"1h"` | `cache_creation:{"ephemeral_1h_input_tokens":7766,"ephemeral_5m_input_tokens":0}` |
+| read @360 s (6 min) | `cache_read_input_tokens:7766`, `cache_creation:0` → **HIT** |
+
+**Docs comparison: MATCH, plus an undocumented receipt detail.** The 1h tier is
+**live** and behaves: at t=360 s the default-tier fan prefixes were already cold
+(P1), while the 1h prefix read warm. Notably the usage receipt **splits cache
+writes by tier** — `cache_creation.ephemeral_1h_input_tokens` vs
+`ephemeral_5m_input_tokens` — so tier attribution is observable per call and we
+never have to guess which tier a write landed in. The beta header was accepted
+without error (tier may now be GA-adjacent; header still honored).
+
+**Brevitas lever.** For predictable long-cadence traffic (cron/batch every
+5–60 min), a **1h write (2.0×) amortized over many warm reads (0.10×)** can beat
+repeated **5m writes + pings**. The break-even is a function of arrival density:
+above ~1 arrival per ~5 min the 5m-tier + ping is cheaper; for sparse-but-regular
+patterns the 1h tier removes the ping entirely. Because the receipt reports the
+tier split, the settlement path can price 1h and 5m writes distinctly (2.0× vs
+1.25×) with zero ambiguity — `receipts.py` should carry a `write_1h` rate rather
+than reuse the 5m `write`.
+
+---
+
+## What we measured vs. what remains
+
+**Measured this run (all with live provider receipts):** min-token floor (4096),
+breakpoint max (4, hard 400), raw TTL cliff (300–330 s), indefinite refresh via
+periodic reads (to 450 s), refresh-on-read bridging an 8-min gap, and the 1h tier
+outliving the 5m clock at 6 min. Total **$0.2336**.
+
+**Not yet measured (harness is left runnable for these):**
+- **Cliff resolution.** The raw cliff is bracketed to (300, 330] s. A follow-up
+  fan at 300/305/310/315/320/325 s would pin it to ±5 s (~$0.06, ~6 min).
+- **1h tier exact TTL.** Confirmed alive at 6 min; its own expiry (nominal 3600 s)
+  is unmeasured — a single read at ~62 min would confirm the far cliff (~$0.02,
+  but a 1-hour wait).
+- **Cross-model floors.** Only Haiku's 4096 floor is measured here; Sonnet/Opus
+  (documented 1024) are unverified on live infra.
+- **Grace-window stability.** The (300, 330] grace was seen once; whether the
+  cliff is 300 s hard or has a consistent ~15–30 s grace wants 2–3 repeats to
+  distinguish jitter from a real grace band.
+
+None of the gaps change the shipped levers: the ≤300 s keep-alive cadence, the
+model-specific token floor, and the 6× warmed-vs-cold economics are all
+established by the receipts above.
+
+---
+
+*Harness: `scripts/anthropic_cache_probe.py`. Reproduce:
+`BREVITAS_ANTHROPIC_PROBE=1 .venv/bin/python scripts/anthropic_cache_probe.py`.
+Guarded by a $5 list-price cap; synthetic prefixes only; probe key only.*
