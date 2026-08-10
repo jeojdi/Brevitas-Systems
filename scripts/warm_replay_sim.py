@@ -344,10 +344,108 @@ def scenario_churned(seed: int = 13) -> list[Arrival]:
     ]
 
 
+def _poisson_window(rng: random.Random, start: float, end: float,
+                    mean_gap_s: float) -> list[float]:
+    """Exponential inter-arrival timestamps inside [start, end)."""
+    out: list[float] = []
+    clock = start + rng.expovariate(1.0 / mean_gap_s)
+    while clock < end:
+        out.append(clock)
+        clock += rng.expovariate(1.0 / mean_gap_s)
+    return out
+
+
+def scenario_company(seed: int = 17) -> list[Arrival]:
+    """One organization, eight end customers, twenty-one simulated days.
+
+    This is the scenario the LEARNED scheduler exists for, and the one that
+    exposes what v1 does on a real trace rather than a six-hour demo. v1's
+    ROI gate reads p_return = hour_histogram[bucket] / arrival_count -- a
+    LIFETIME fraction. A customer active in K hour-of-week buckets averages
+    1/K there no matter how dense their traffic is, so over three weeks
+    almost every real customer falls under the 0.11 anthropic break-even and
+    v1 simply stops warming. The hazard model divides by EXPOSURE instead,
+    which is scale-free in trace length.
+
+    The cast, all on anthropic physics, all in org-acme:
+      cron-30m    a batch agent every 30 minutes, around the clock
+      cron-2h     a slower batch agent every 2 hours
+      us-day      a human, 09-17 UTC-5, weekdays, ~6 minute gaps
+      eu-day      a human, 09-17 UTC+1, weekdays, ~7 minute gaps
+      night-owl   a human, evenings only (UTC-8), every day, ~8 minute gaps
+      power       a heavy bursty user: several dense bursts a day
+      churned     a daytime human who leaves for good after day 7
+      newcomer    a sparse customer who first appears on day 14
+
+    us-day, eu-day and night-owl share one org-wide system prefix, so they
+    land on the SAME provider cache key and keep each other warm for free.
+    That is the SUTVA point the module docstring makes, made load-bearing:
+    a policy that bills each of them for the others' warmth is overclaiming.
+    """
+    rng = random.Random(seed)
+    day = _SEC_PER_DAY
+    # _ANCHOR is a Monday 09:00 UTC; back up to that Monday's midnight so the
+    # weekday arithmetic below is readable.
+    start = _ANCHOR - 9 * 3600.0
+    out: list[Arrival] = []
+    org = "org-acme"
+    shared = "sysprompt-acme"
+
+    def add(ts: float, customer: str, prefix: str, tokens: int) -> None:
+        out.append(Arrival(ts, org, customer, "anthropic", prefix, tokens,
+                           "claude-sonnet-5"))
+
+    # -- two cron agents, around the clock ---------------------------------
+    for i in range(int(21 * day / 1800.0)):
+        add(start + i * 1800.0, "cron-30m", "p-cron30", 3_200)
+    for i in range(int(21 * day / 7200.0)):
+        add(start + i * 7200.0, "cron-2h", "p-cron2h", 2_400)
+
+    # -- three humans in three time zones, on one shared org prefix --------
+    humans = (
+        # (customer, utc window start hour, window hours, mean gap, weekdays only)
+        ("us-day", 14.0, 8.0, 360.0, True),     # 09-17 at UTC-5
+        ("eu-day", 8.0, 8.0, 420.0, True),      # 09-17 at UTC+1
+        ("night-owl", 3.0, 4.0, 480.0, False),  # 19-23 at UTC-8
+    )
+    for customer, hour0, span, gap, weekdays_only in humans:
+        for d in range(21):
+            if weekdays_only and datetime.fromtimestamp(
+                    start + d * day, timezone.utc).isoweekday() > 5:
+                continue
+            base = start + d * day + hour0 * 3600.0
+            for ts in _poisson_window(rng, base, base + span * 3600.0, gap):
+                add(ts, customer, shared, 2_800)
+
+    # -- the heavy bursty power user ---------------------------------------
+    for d in range(21):
+        for burst in range(rng.randint(2, 4)):
+            base = start + d * day + rng.uniform(6.0, 21.0) * 3600.0
+            for ts in _poisson_window(rng, base, base + rng.uniform(0.7, 2.0) * 3600.0,
+                                      240.0):
+                add(ts, "power", "p-power", 4_000)
+
+    # -- the customer who churns after day 7 -------------------------------
+    for d in range(7):
+        base = start + d * day + 15.0 * 3600.0
+        for ts in _poisson_window(rng, base, base + 6.0 * 3600.0, 420.0):
+            add(ts, "churned", "p-churn", 3_600)
+
+    # -- the sparse newcomer, first seen on day 14 -------------------------
+    for d in range(14, 21):
+        base = start + d * day + 10.0 * 3600.0
+        for ts in _poisson_window(rng, base, base + 5.0 * 3600.0, 1_500.0):
+            add(ts, "newcomer", "p-new", 1_400)
+
+    out.sort(key=lambda a: (a.ts, a.customer))
+    return out
+
+
 SCENARIOS: dict[str, Callable[[int], list[Arrival]]] = {
     "cron": scenario_cron,
     "bursty": scenario_bursty,
     "churned": scenario_churned,
+    "company": scenario_company,
 }
 
 
@@ -618,9 +716,383 @@ class V1HeuristicPolicy(Policy):
         row.next_due_at = now + max(1, ttl - cfg.safety_margin_seconds)
 
 
+# --------------------------------------------------------------------------
+# learned scheduler (Phase 1 semantics, learned ONLINE during the replay)
+# --------------------------------------------------------------------------
+
+# Constants are LITERALS on both sides of the port, exactly as the migration
+# insists: a hazard posterior is only comparable across replicas if every
+# writer decays it with the same half-life.
+_T_HALF_S = 1_209_600.0          # 14 days
+_E_CAP_HOURS = 484.8             # T_HALF / (3600 * ln 2): the exposure supremum
+_MAX_WALK_HOURS = 672.0
+_SPARSITY = 1e-6
+_ORG_AGGREGATE = "\x00org-aggregate"   # stands in for the nil-uuid row
+# BG/NBD hyperparameters, fixed: r = 0.5, alpha = 7 days, a = 1, b = 2.5.
+_BG_R, _BG_ALPHA, _BG_B = 0.5, 7.0, 2.5
+_INDEX_CLAMP = 1_000_000.0
+
+
+@dataclass
+class _HazardState:
+    """One `warm_customer_state` row: decayed hour-of-week hazard sufficient
+    statistics plus the raw BG/NBD counters."""
+
+    hazard_n: dict[str, float] = field(default_factory=dict)
+    hazard_e: dict[str, float] = field(default_factory=dict)
+    events_total: int = 0
+    first_seen_at: float = 0.0
+    last_seen_at: float = 0.0
+    last_update_at: float = 0.0
+
+
+def hazard_touch(state: _HazardState | None, ts: float) -> _HazardState:
+    """Fold one arrival into the decayed maps. Port of
+    public.warm_customer_state_touch (202608100003)."""
+    bucket = hour_of_week(ts)
+    if state is None:
+        # A first arrival has NO exposure history: hazard_e stays empty, so
+        # the shrinkage prior carries the whole estimate. That is the
+        # cold-start story, and it is why this policy starts v1-equivalent.
+        return _HazardState(hazard_n={bucket: 1.0}, hazard_e={}, events_total=1,
+                            first_seen_at=ts, last_seen_at=ts, last_update_at=ts)
+
+    # A clock that went backwards decays nothing rather than amplifying.
+    delta = max(0.0, ts - state.last_update_at)
+    decay = 0.5 ** (delta / _T_HALF_S)
+    state.hazard_n = {k: round(v * decay, 12) for k, v in state.hazard_n.items()
+                      if v * decay >= _SPARSITY}
+    state.hazard_e = {k: round(v * decay, 12) for k, v in state.hazard_e.items()
+                      if v * decay >= _SPARSITY}
+
+    if delta / 3600.0 > _MAX_WALK_HOURS:
+        # Too long to walk hour by hour; the decayed integral is uniform over
+        # the week by then anyway.
+        share = _E_CAP_HOURS / 168.0
+        for index in range(168):
+            key = str(index)
+            state.hazard_e[key] = round(state.hazard_e.get(key, 0.0) + share, 12)
+    else:
+        cursor = state.last_update_at
+        while cursor < ts:
+            nxt = min(ts, math.floor(cursor / 3600.0) * 3600.0 + 3600.0)
+            hours = (nxt - cursor) / 3600.0
+            key = hour_of_week(cursor)
+            state.hazard_e[key] = round(state.hazard_e.get(key, 0.0) + hours, 12)
+            cursor = nxt
+
+    state.hazard_n[bucket] = round(state.hazard_n.get(bucket, 0.0) + 1.0, 12)
+    state.events_total += 1
+    state.last_seen_at = ts
+    state.last_update_at = ts
+    return state
+
+
+def hazard_rate(state: _HazardState, org_state: _HazardState | None,
+                bucket: str) -> float:
+    """h, arrivals per hour in `bucket`, shrunk customer -> org -> global.
+
+    0.25 / 42.0 = 1/168, one arrival per week per bucket-hour: the global
+    level, a CONSTANT on purpose, content-free and identical for every
+    tenant so no cross-organization behaviour is ever pooled. 8 pseudo-
+    exposure-hours of organization-prior weight sit between the two.
+    """
+    org_n = (org_state.hazard_n.get(bucket, 0.0) if org_state else 0.0)
+    org_e = (org_state.hazard_e.get(bucket, 0.0) if org_state else 0.0)
+    h_org = (org_n + 0.25) / (org_e + 42.0)
+    return ((state.hazard_n.get(bucket, 0.0) + 8.0 * h_org)
+            / (state.hazard_e.get(bucket, 0.0) + 8.0))
+
+
+def hazard_p_return(rate: float, ttl_seconds: float) -> float:
+    """1 - exp(-h * TTL), the single-bucket approximation: a TTL window that
+    spans more than one hour-of-week bucket is priced entirely at the bucket
+    it starts in (Phase 2 integrates across the window)."""
+    return min(1.0, max(0.0, 1.0 - math.exp(
+        max(-50.0, -rate * ttl_seconds / 3600.0))))
+
+
+def bg_nbd_p_alive(state: _HazardState, now: float) -> float:
+    """P(the customer is still alive), BG/NBD with fixed hyperparameters.
+
+    The more arrivals a customer made, the less forgiving a silence is: the
+    ratio ((alpha + T)/(alpha + t_x)) raised to (r + x) is the likelihood
+    that a customer this active would have gone this quiet by chance.
+    """
+    x = state.events_total
+    t_x = max(0.0, (state.last_seen_at - state.first_seen_at) / 86_400.0)
+    t_cap = max(t_x, (now - state.first_seen_at) / 86_400.0)
+    z = (math.log(1.0 / (_BG_B + max(x - 1, 0)))
+         + min(50.0, _BG_R + x) * math.log((_BG_ALPHA + t_cap)
+                                           / (_BG_ALPHA + t_x)))
+    return max(0.01, min(1.0, 1.0 / (1.0 + math.exp(min(50.0, max(-50.0, z))))))
+
+
+def chain_length(rate: float, now: float, last_seen_at: float,
+                 ttl_seconds: float, safety_margin_s: float,
+                 break_even: float) -> int:
+    """n_chain: how many FURTHER keep-alives this ping commits the org to
+    before the session's expected next arrival.
+
+    The truncation at I_max = tau * (1/f - 1) is what makes "never warm a
+    dead session" arithmetic rather than policy: past it the chain alone
+    drives index = p_eff/b - 1 - n_chain below zero for every p <= 1.
+    """
+    chain_age = max(0.0, now - last_seen_at)
+    gap = min(2_592_000.0, max(0.0, 3600.0 / max(rate, 1e-6) - chain_age))
+    tau = max(1.0, ttl_seconds - safety_margin_s)
+    read_fraction = break_even / (1.0 + break_even)
+    imax = tau * max(0.0, 1.0 / max(read_fraction, 1e-9) - 1.0)
+    return max(0, math.ceil(min(gap, imax) / tau) - 1)
+
+
+def dollar_index(p_eff: float, break_even: float, n_chain: int) -> float:
+    """index = (p_eff*v_hit - n_chain*c_belief - c_belief) / c_belief
+             = p_eff / b - 1 - n_chain
+
+    The prefix dollar value cancels (v_hit/c_belief = (1-f)/f = 1/b), which
+    is what makes the index comparable across providers and prefix sizes.
+    Mirror of api/store.py warm_index_components and of migration
+    202608100002's index block.
+    """
+    if break_even <= 1e-9:
+        # A provider whose reads are free: every ping pays for itself.
+        return _INDEX_CLAMP
+    return min(_INDEX_CLAMP, max(-_INDEX_CLAMP,
+                                 p_eff / break_even - 1 - n_chain))
+
+
+class LearnedIndexPolicy(V1HeuristicPolicy):
+    """Phase 1's learned scheduler, learned ONLINE as the replay advances.
+
+    Deliberately a subclass: the observation path (warm_prefixes rows, EWMA,
+    next_due_at, expiry, the reserve) is v1's, byte for byte. What changes is
+    what p_return MEANS and what gates on it -- exactly the shape of the
+    shipped flag pair (p_hazard_v2 + p_index_enabled in 202608100003), where
+    hazard_v2 is an EXTENSION of the index policy and inert without it.
+
+    Per arrival it folds the customer's (and the organization aggregate's)
+    decayed hour-of-week hazard statistics forward, then at claim time:
+
+        h        = shrunk hazard rate for this hour-of-week bucket
+        p_return = 1 - exp(-h * TTL)              (replaces v1's histogram)
+        p_alive  = BG/NBD frequency / recency / age
+        n_chain  = keep-alives committed before the expected next arrival
+        index    = p_return * p_alive / b - 1 - n_chain
+
+    Admission is index > 0, after the same ROI floor v1 applies (now against
+    the hazard p_return), with the per-org daily budget spent greedily by
+    index descending. The stop-loss predicate is BYPASSED, exactly as the
+    migration specifies -- p_alive and the chain term replace it.
+
+    IT STARTS AT FLAT PRIORS BY CONSTRUCTION. A customer with no state has
+    empty hazard maps, so h collapses to the uniform global prior, p_alive is
+    1 and n_chain is 0: the flat-prior form the migration proved equal to v1.
+
+    NOT MODELLED: the pacing dual (lambda). At the default unbounded daily
+    budget lambda is pinned at 0 for every candidate, so omitting it is
+    outcome-identical here; it would matter only under a binding budget.
+    """
+
+    name = "learned-index"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state: dict[tuple[str, str, str], _HazardState] = {}
+        self.last_index: dict[tuple[str, str, str, str], float] = {}
+
+    def reset(self, cfg: "SimConfig", physics: dict[str, Physics]) -> None:
+        super().reset(cfg, physics)
+        self.state = {}
+        self.last_index = {}
+
+    # -- observe -----------------------------------------------------------
+    def on_arrival(self, arrival: Arrival, cache_read: bool) -> None:
+        super().on_arrival(arrival, cache_read)
+        for subject in (arrival.customer, _ORG_AGGREGATE):
+            key = (arrival.org, subject, arrival.provider)
+            self.state[key] = hazard_touch(self.state.get(key), arrival.ts)
+
+    # -- score -------------------------------------------------------------
+    def _score(self, row: _PrefixRow, now: float) -> tuple[float, float, float, int]:
+        """(p_return, p_alive, index, n_chain) for one candidate row."""
+        cfg = self.cfg
+        assert cfg is not None
+        phys = self.physics[row.provider]
+        bucket = hour_of_week(now)
+        break_even = cfg.break_even_for(row.provider)
+        state = self.state.get((row.org, row.customer, row.provider))
+        if state is None:
+            # No state row: the 202608100002 defaults, which ARE v1.
+            p_return = min(1.0, row.hour_histogram.get(bucket, 0)
+                           / max(row.arrival_count, 1))
+            index = dollar_index(p_return, break_even, 0)
+            return p_return, 1.0, index, 0
+        org_state = self.state.get((row.org, _ORG_AGGREGATE, row.provider))
+        rate = hazard_rate(state, org_state, bucket)
+        p_return = hazard_p_return(rate, phys.ttl_seconds)
+        p_alive = bg_nbd_p_alive(state, now)
+        n_chain = chain_length(rate, now, state.last_seen_at, phys.ttl_seconds,
+                               cfg.safety_margin_seconds, break_even)
+        # organic_multiplier is pinned at 1.0 in Phase 1: until the (org,
+        # prefix) control arm produces per-(provider, hour) organic baselines
+        # there is no unbiased estimator for it. Pinning it can only OVERSTATE
+        # the index, and the index gates spending, never billing.
+        index = dollar_index(p_return * p_alive * 1.0, break_even, n_chain)
+        return p_return, p_alive, index, n_chain
+
+    # -- claim -------------------------------------------------------------
+    def _eligible(self, row: _PrefixRow, now: float) -> bool:
+        """v1's candidate filter MINUS the stop-loss predicate, which
+        202608100002 bypasses when the hazard and index flags are both on."""
+        cfg = self.cfg
+        assert cfg is not None
+        return (row.state == "active"
+                and row.expires_at > now
+                and (row.ewma_interarrival_s is None
+                     or row.ewma_interarrival_s <= cfg.max_gap_seconds))
+
+    def next_due_at(self) -> float:
+        cfg = self.cfg
+        if cfg is None:
+            return float("inf")
+        soonest = float("inf")
+        for row in self.rows.values():
+            if row.state != "active":
+                continue
+            if (row.ewma_interarrival_s is not None
+                    and row.ewma_interarrival_s > cfg.max_gap_seconds):
+                continue
+            soonest = min(soonest, row.next_due_at)
+        return soonest
+
+    def on_tick(self, now: float) -> list[PingRequest]:
+        cfg = self.cfg
+        assert cfg is not None
+        day = utc_day(now)
+        for key in [k for k, r in self.rows.items() if r.expires_at <= now]:
+            del self.rows[key]
+
+        scored: list[tuple[float, _PrefixRow, float]] = []
+        for row in self.rows.values():
+            if row.next_due_at > now or not self._eligible(row, now):
+                continue
+            p_return, _p_alive, index, _chain = self._score(row, now)
+            self.last_index[row.prefix_key] = index
+            scored.append((index, row, p_return))
+        # Ordered by the index itself, descending: value per belief-dollar,
+        # which is already the right ranking under a binding budget.
+        scored.sort(key=lambda item: (-item[0], item[1].next_due_at,
+                                      item[1].prefix_key))
+
+        claimed: list[PingRequest] = []
+        claimed_counts: dict[tuple[str, str, str], int] = defaultdict(int)
+        for index, row, p_return in scored[:cfg.claim_limit * 4]:
+            if len(claimed) >= cfg.claim_limit:
+                break
+            floor = (cfg.roi_min_p if row.arrival_count < cfg.roi_min_arrivals
+                     else cfg.break_even_for(row.provider))
+            if p_return < floor:
+                self.decisions["skipped_roi"] += 1
+                continue
+            if index <= 0.0:
+                self.decisions["skipped_index"] += 1
+                continue
+            reserve = max(
+                row.ping_reserve_usd,
+                round(cfg.reserve_usd_per_mtok * row.prefix_tokens / 1_000_000.0, 10))
+            cust_key = (row.org, row.customer, row.provider)
+            pings_today = sum(
+                r.pings_today for r in self.rows.values()
+                if (r.org, r.customer, r.provider) == cust_key
+                and r.pings_today_date == day)
+            if pings_today + claimed_counts[cust_key] >= cfg.max_pings_per_customer_day:
+                self.decisions["cap_denied"] += 1
+                continue
+            book = self.ledger[(row.org, row.provider, day)]
+            if book[0] + book[1] + reserve > cfg.daily_budget_usd:
+                self.decisions["budget_denied"] += 1
+                continue
+            book[0] += reserve
+            claimed_counts[cust_key] += 1
+            self.decisions["pinged"] += 1
+            claimed.append(PingRequest(
+                prefix_key=row.prefix_key, cache_key=row.cache_key,
+                provider=row.provider, customer=row.customer,
+                prefix_tokens=row.prefix_tokens, reserved_usd=reserve))
+        return claimed
+
+    # -- introspection -----------------------------------------------------
+    def summary(self, now: float) -> dict[str, dict[str, Any]]:
+        """What the model actually learned, per customer, at `now`."""
+        out: dict[str, dict[str, Any]] = {}
+        for (org, customer, provider), state in sorted(self.state.items()):
+            if customer == _ORG_AGGREGATE:
+                continue
+            org_state = self.state.get((org, _ORG_AGGREGATE, provider))
+            rates = {
+                bucket: hazard_rate(state, org_state, bucket)
+                for bucket in sorted(state.hazard_n, key=lambda b: int(b))
+            }
+            top = sorted(rates.items(), key=lambda kv: (-kv[1], int(kv[0])))[:3]
+            peak = top[0][1] if top else 0.0
+            out[_customer_label(org, customer)] = {
+                "top_hazard_hours": [
+                    {"hour_of_week": int(bucket),
+                     "weekday": ("Mon Tue Wed Thu Fri Sat Sun".split()
+                                 [int(bucket) // 24]),
+                     "utc_hour": int(bucket) % 24,
+                     "arrivals_per_hour": round(rate, 4)}
+                    for bucket, rate in top
+                ],
+                "detected_period_s": (round(3600.0 / peak, 1) if peak > 0 else None),
+                "p_alive_end": round(bg_nbd_p_alive(state, now), 4),
+                "events_total": state.events_total,
+                "buckets_with_mass": len(state.hazard_n),
+                "quiet_days": round(max(0.0, now - state.last_seen_at) / 86_400.0, 2),
+            }
+        return out
+
+
+class LearnedIndexStopLossPolicy(LearnedIndexPolicy):
+    """learned-index with ONE line changed: the v1 stop-loss is not bypassed.
+
+    Not a shipped policy -- a counterfactual, so the cost of that single
+    documented design decision is a number rather than an argument.
+    202608100002 satisfies the stop-loss predicate unconditionally when the
+    hazard and index flags are both on, on the theory that p_alive and the
+    chain term subsume it. This arm holds everything else fixed and asks what
+    that theory is worth.
+    """
+
+    name = "learned-index-stoploss"
+
+    def _eligible(self, row: _PrefixRow, now: float) -> bool:
+        cfg = self.cfg
+        assert cfg is not None
+        return (super()._eligible(row, now)
+                and row.consecutive_misses < cfg.stop_loss)
+
+    def next_due_at(self) -> float:
+        cfg = self.cfg
+        if cfg is None:
+            return float("inf")
+        soonest = float("inf")
+        for row in self.rows.values():
+            if row.state != "active" or row.consecutive_misses >= cfg.stop_loss:
+                continue
+            if (row.ewma_interarrival_s is not None
+                    and row.ewma_interarrival_s > cfg.max_gap_seconds):
+                continue
+            soonest = min(soonest, row.next_due_at)
+        return soonest
+
+
 POLICIES: dict[str, Callable[[], Policy]] = {
     "v1heuristic": V1HeuristicPolicy,
     "never-warm": NeverWarmPolicy,
+    "learned-index": LearnedIndexPolicy,
+    "learned-index-stoploss": LearnedIndexStopLossPolicy,
 }
 
 
@@ -684,10 +1156,31 @@ class ReplayResult:
     ticks: int = 0
     per_customer: dict[str, CustomerStats] = field(default_factory=dict)
     decisions: dict[str, int] = field(default_factory=dict)
+    # Timestamped money, so a report can slice a warmup window off the front
+    # without re-running the replay. (ts, customer_label, usd).
+    savings_events: list[tuple[float, str, float]] = field(default_factory=list)
+    ping_events: list[tuple[float, str, float]] = field(default_factory=list)
+    # Whatever the policy learned, if it learned anything.
+    learned: dict[str, Any] = field(default_factory=dict)
 
     @property
     def net_usd(self) -> float:
         return self.savings_usd - self.ping_cost_usd
+
+    def window(self, start_ts: float) -> tuple[float, float, dict[str, tuple[float, float]]]:
+        """(savings, ping cost, per-customer (savings, cost)) at ts >= start."""
+        savings = 0.0
+        cost = 0.0
+        per: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+        for ts, label, usd in self.savings_events:
+            if ts >= start_ts:
+                savings += usd
+                per[label][0] += usd
+        for ts, label, usd in self.ping_events:
+            if ts >= start_ts:
+                cost += usd
+                per[label][1] += usd
+        return savings, cost, {k: (v[0], v[1]) for k, v in per.items()}
 
 
 def _customer_label(org: str, customer: str) -> str:
@@ -758,6 +1251,7 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
                     stats.incremental_warm_arrivals += 1
                     stats.savings_usd += gain
                     result.savings_usd += gain
+                    result.savings_events.append((arrival.ts, label, gain))
                 elif base and not cache_read:
                     # Impossible: pings only add touches, and warmth is monotone
                     # in touches. A violation means the engine lost a refresh.
@@ -782,6 +1276,7 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
             stats = per_customer[label]
             stats.ping_cost_usd += spent
             stats.pings += 1
+            result.ping_events.append((tick_ts, label, spent))
             if tick_ts > last_arrival_ts:
                 result.pings_after_last_arrival += 1
                 stats.pings_after_last_arrival += 1
@@ -789,6 +1284,11 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
 
     result.per_customer = dict(per_customer)
     result.decisions = dict(getattr(policy, "decisions", {}) or {})
+    summarize = getattr(policy, "summary", None)
+    if callable(summarize):
+        # Read the posterior as of the last arrival, not as of the last tick:
+        # "P(alive) at the end" means at the end of the observed trace.
+        result.learned = summarize(last_arrival_ts)
     return result
 
 
@@ -805,6 +1305,18 @@ class OracleResult:
     bridged_gaps: int = 0
     declined_gaps: int = 0
     per_customer: dict[str, CustomerStats] = field(default_factory=dict)
+    # (arrival ts, customer label, gain usd, chain cost usd) per bridged gap.
+    bridge_events: list[tuple[float, str, float, float]] = field(default_factory=list)
+
+    def window(self, start_ts: float) -> tuple[float, dict[str, float]]:
+        """(net usd, per-customer net usd) over gaps CLOSING at ts >= start."""
+        net = 0.0
+        per: dict[str, float] = defaultdict(float)
+        for ts, label, gain, cost in self.bridge_events:
+            if ts >= start_ts:
+                net += gain - cost
+                per[label] += gain - cost
+        return net, dict(per)
 
 
 def hindsight_oracle(arrivals: Sequence[Arrival], cfg: SimConfig) -> OracleResult:
@@ -862,6 +1374,7 @@ def hindsight_oracle(arrivals: Sequence[Arrival], cfg: SimConfig) -> OracleResul
                 stats.savings_usd += gain
                 stats.ping_cost_usd += cost
                 stats.pings += pings
+                out.bridge_events.append((nxt.ts, label, gain, cost))
             else:
                 out.declined_gaps += 1
     out.net_usd = out.savings_usd - out.ping_cost_usd
@@ -963,7 +1476,9 @@ def evaluate(arrivals: Sequence[Arrival], cfg: SimConfig,
                 } for label, st in sorted(res.per_customer.items())
             },
         })
-    payload["_objects"] = {"baseline": baseline, "oracle": oracle, "results": results}
+    payload["_objects"] = {"baseline": baseline, "oracle": oracle,
+                           "results": results, "start_ts": arrivals[0].ts,
+                           "end_ts": arrivals[-1].ts, "arrivals": arrivals}
     return payload
 
 
@@ -1004,6 +1519,176 @@ def render(payload: dict[str, Any], title: str = "") -> str:
                 f"  [{st['incremental_warm_arrivals']}/{st['arrivals']} incr warm,"
                 f" {st['pings']} pings]")
     lines.append("=" * 78)
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# learning report
+# --------------------------------------------------------------------------
+
+WARMUP_DAYS = 7
+
+
+def render_learning(payload: dict[str, Any], title: str = "",
+                    warmup_days: int = WARMUP_DAYS) -> str:
+    """Warmup window (days 1..N) versus evaluation window (days N+1..end).
+
+    Everything below is EVALUATION-WINDOW money. The warmup window is where
+    the online model builds its hazard mass; scoring a learner on the period
+    it was learning in flatters it, so that period is reported separately and
+    then excluded.
+    """
+    objs = payload["_objects"]
+    baseline: ReplayResult = objs["baseline"]
+    oracle: OracleResult = objs["oracle"]
+    results: list[tuple[str, ReplayResult]] = objs["results"]
+    trace = payload["trace"]
+
+    start_ts = objs["start_ts"]
+    end_ts = objs["end_ts"]
+    eval_start = start_ts + warmup_days * _SEC_PER_DAY
+    total_days = (end_ts - start_ts) / _SEC_PER_DAY
+
+    lines: list[str] = []
+    lines.append("=" * 92)
+    lines.append(f"LEARNING REPORT -- {title or 'trace'}")
+    lines.append("=" * 92)
+    lines.append(f"  {trace['arrivals']:,} arrivals, {len(trace['customers'])} customers, "
+                 f"{trace['cache_keys']} cache key(s), {total_days:.1f} simulated days")
+    lines.append(f"  warmup    days 1-{warmup_days}   "
+                 f"{datetime.fromtimestamp(start_ts, timezone.utc).date()} .. "
+                 f"{datetime.fromtimestamp(eval_start, timezone.utc).date()}"
+                 f"   (model builds hazard mass; excluded from every number below)")
+    lines.append(f"  EVALUATION days {warmup_days + 1}-{total_days:.0f}  "
+                 f"{datetime.fromtimestamp(eval_start, timezone.utc).date()} .. "
+                 f"{datetime.fromtimestamp(end_ts, timezone.utc).date()}")
+    lines.append("")
+
+    oracle_eval, oracle_per = oracle.window(eval_start)
+    lines.append("-" * 92)
+    lines.append("EVALUATION WINDOW -- net dollars and fraction of the hindsight optimum")
+    lines.append("-" * 92)
+    lines.append(f"  {'policy':<24}{'net $':>14}{'savings $':>14}"
+                 f"{'ping cost $':>14}{'pings':>9}{'of oracle':>13}")
+    rows: list[tuple[str, float, float, float, int]] = [
+        ("never-warm", 0.0, 0.0, 0.0, 0)]
+    windows: dict[str, tuple[float, float, dict[str, tuple[float, float]]]] = {}
+    for name, res in results:
+        savings, cost, per = res.window(eval_start)
+        windows[name] = (savings, cost, per)
+        pings = sum(1 for ts, _l, _u in res.ping_events if ts >= eval_start)
+        if name == "never-warm":
+            rows[0] = (name, savings - cost, savings, cost, pings)
+        else:
+            rows.append((name, savings - cost, savings, cost, pings))
+    for name, net, savings, cost, pings in rows:
+        frac = oracle_fraction(net, oracle_eval)
+        lines.append(f"  {name:<24}{net:>14.6f}{savings:>14.6f}"
+                     f"{cost:>14.6f}{pings:>9,}{_frac(frac):>13}")
+    oracle_pings = sum(1 for ts, _l, _g, _c in oracle.bridge_events if ts >= eval_start)
+    lines.append(f"  {'oracle':<24}{oracle_eval:>14.6f}{'':>14}{'':>14}"
+                 f"{oracle_pings:>9,}{'100.0%':>13}"
+                 f"   <- hindsight bound, {oracle_pings} gaps bridged")
+    lines.append("")
+
+    learned_name = "learned-index"
+    learned_res = dict(results).get(learned_name)
+    v1_res = dict(results).get("v1heuristic")
+    if learned_res is None:
+        lines.append("  (learned-index not among the replayed policies)")
+        lines.append("=" * 92)
+        return "\n".join(lines)
+
+    lines.append("-" * 92)
+    lines.append("WHAT learned-index LEARNED, PER CUSTOMER (evaluation window money)")
+    lines.append("-" * 92)
+    _s, _c, learned_per = windows[learned_name]
+    v1_per = windows.get("v1heuristic", (0.0, 0.0, {}))[2]
+    for label in sorted(trace["customers"]):
+        info = learned_res.learned.get(label, {})
+        l_sav, l_cost = learned_per.get(label, (0.0, 0.0))
+        v_sav, v_cost = v1_per.get(label, (0.0, 0.0))
+        l_net, v_net = l_sav - l_cost, v_sav - v_cost
+        pings = sum(1 for ts, lab, _u in learned_res.ping_events
+                    if ts >= eval_start and lab == label)
+        hits = sum(1 for ts, lab, _u in learned_res.savings_events
+                   if ts >= eval_start and lab == label)
+        top = info.get("top_hazard_hours") or []
+        top_text = ", ".join(
+            f"{h['weekday']} {h['utc_hour']:02d}:00Z ({h['arrivals_per_hour']:.2f}/h)"
+            for h in top) or "(no mass)"
+        period = info.get("detected_period_s")
+        period_text = f"{period / 60.0:.1f} min" if period else "n/a"
+        lines.append(f"  {label}")
+        lines.append(f"      top hazard hours : {top_text}")
+        lines.append(f"      peak-bucket period: {period_text}"
+                     f"   P(alive) at end: {info.get('p_alive_end', 1.0):.3f}"
+                     f"   quiet {info.get('quiet_days', 0.0):.1f}d"
+                     f"   buckets w/ mass {info.get('buckets_with_mass', 0)}")
+        lines.append(f"      pings {pings:>5,}   warm hits {hits:>5,}"
+                     f"   net {_usd(l_net):>14}"
+                     f"   vs v1 {_usd(v_net):>14}"
+                     f"   delta {_usd(l_net - v_net):>14}")
+    # -- where the pings actually went ------------------------------------
+    lines.append("")
+    lines.append("-" * 92)
+    lines.append("WHERE learned-index SPENT IT -- pings by how long the customer "
+                 "was ALREADY silent")
+    lines.append("-" * 92)
+    # Merge the real arrival stream with the ping stream so every ping can be
+    # labelled with how long that customer had already been quiet.
+    last_seen: dict[str, float] = {}
+    stream: list[tuple[float, int, str, float]] = [
+        (a.ts, 0, _customer_label(a.org, a.customer), 0.0)
+        for a in objs["arrivals"]
+    ]
+    stream += [(ts, 1, label, usd) for ts, label, usd in learned_res.ping_events]
+    stream.sort(key=lambda item: (item[0], item[1]))
+    edges = ((300.0, "< 5m"), (900.0, "5-15m"), (3_600.0, "15-60m"),
+             (21_600.0, "1-6h"), (float("inf"), "> 6h"))
+    hist: dict[str, list[float]] = {name: [0, 0.0] for _e, name in edges}
+    for ts, kind, label, usd in stream:
+        if kind == 0:
+            last_seen[label] = ts
+            continue
+        if ts < eval_start:
+            continue
+        idle = ts - last_seen.get(label, ts)
+        for edge, name in edges:
+            if idle < edge:
+                hist[name][0] += 1
+                hist[name][1] += usd
+                break
+    total_pings = sum(int(v[0]) for v in hist.values())
+    total_cost = sum(v[1] for v in hist.values())
+    for _edge, name in edges:
+        count, cost = hist[name]
+        lines.append(f"    silent {name:<8} {int(count):>6,} pings "
+                     f"({int(count) / max(total_pings, 1) * 100:5.1f}%)"
+                     f"   ${cost:>9.4f} ({cost / max(total_cost, 1e-9) * 100:5.1f}% of spend)")
+    reads = [u for ts, _l, u in learned_res.ping_events if ts >= eval_start]
+    write_priced = sum(1 for u in reads if u > 0.003)
+    lines.append(f"    write-priced pings: {write_priced:,} of {len(reads):,} "
+                 f"({write_priced / max(len(reads), 1) * 100:.1f}%) -- a ping that "
+                 f"lands on an entry that already lapsed pays the full write premium")
+
+    lines.append("")
+    lines.append("-" * 92)
+    l_net_total = windows[learned_name][0] - windows[learned_name][1]
+    v_net_total = (windows.get("v1heuristic", (0.0, 0.0, {}))[0]
+                   - windows.get("v1heuristic", (0.0, 0.0, {}))[1])
+    lines.append(f"  learned-index net {_usd(l_net_total)}"
+                 f"   v1heuristic net {_usd(v_net_total)}"
+                 f"   delta {_usd(l_net_total - v_net_total)}")
+    if learned_res.decisions:
+        lines.append("  learned-index claim decisions (whole run): "
+                     + "  ".join(f"{k}={v}" for k, v in
+                                 sorted(learned_res.decisions.items())))
+    if v1_res is not None and v1_res.decisions:
+        lines.append("  v1heuristic  claim decisions (whole run): "
+                     + "  ".join(f"{k}={v}" for k, v in
+                                 sorted(v1_res.decisions.items())))
+    lines.append("=" * 92)
     return "\n".join(lines)
 
 
@@ -1146,6 +1831,97 @@ def selftest(cfg_factory: Callable[[], SimConfig]) -> int:
             "anthropic break-even must stay the calibrated scalar")
     checks += 2
 
+    # -- the learned scheduler on the company eval window -------------------
+    company = SCENARIOS["company"](0)
+    cfg = cfg_factory()
+    payload = evaluate(company, cfg, ["never-warm", "v1heuristic", "learned-index",
+                                      "learned-index-stoploss"])
+    print(render_learning(payload, title="selftest scenario 'company'"))
+    objs = payload["_objects"]
+    eval_start = objs["start_ts"] + WARMUP_DAYS * _SEC_PER_DAY
+    by_policy = dict(objs["results"])
+    oracle_eval, _per = objs["oracle"].window(eval_start)
+
+    def _eval_net(name: str) -> float:
+        savings, cost, _ = by_policy[name].window(eval_start)
+        return savings - cost
+
+    learned_net = _eval_net("learned-index")
+    v1_net = _eval_net("v1heuristic")
+    never_net = _eval_net("never-warm")
+
+    _assert(abs(never_net) < 1e-12,
+            f"[company] never-warm eval net must be zero, got {never_net}")
+    checks += 1
+
+    # THE HEADLINE COMPARISON, REPORTED RATHER THAN ASSERTED.
+    #
+    # This harness was asked to assert learned-index >= v1heuristic on the
+    # company evaluation window. It does not, and encoding that inequality as
+    # an assertion would bake a claim the trace refutes into the test suite --
+    # the next person to run --selftest would read a green bar as evidence for
+    # something this simulator actually measures as false. So the comparison
+    # is computed, printed and left falsifiable, while the invariants that ARE
+    # unconditional stay fatal below.
+    stoploss_net = _eval_net("learned-index-stoploss") if (
+        "learned-index-stoploss" in by_policy) else None
+    print("\n" + "!" * 78)
+    print("HEADLINE FINDING (reported, not asserted -- see selftest source)")
+    print(f"  company eval window   v1heuristic   net {_usd(v1_net)}")
+    print(f"                        learned-index net {_usd(learned_net)}")
+    if stoploss_net is not None:
+        print(f"                        +stop-loss    net {_usd(stoploss_net)}")
+    print(f"                        oracle        net {_usd(oracle_eval)}")
+    verdict = ("HOLDS" if learned_net >= v1_net - 1e-12 else "DOES NOT HOLD")
+    print(f"  learned-index >= v1heuristic : {verdict}")
+    print("!" * 78 + "\n")
+
+    # And neither may beat hindsight, which is the whole point of having one.
+    for name, net in (("learned-index", learned_net), ("v1heuristic", v1_net),
+                      ("learned-index-stoploss", _eval_net("learned-index-stoploss"))):
+        _assert(net <= oracle_eval + 1e-9,
+                f"[company] {name} eval net {net} beats the hindsight oracle "
+                f"{oracle_eval}")
+        checks += 1
+    _assert(oracle_eval >= -1e-12,
+            f"[company] oracle eval net must be non-negative, got {oracle_eval}")
+    checks += 1
+    # Warmth stays monotone in touches for the learned policy too.
+    base_flags = objs["baseline"].warm_flags
+    for i, (base, got) in enumerate(zip(base_flags,
+                                        by_policy["learned-index"].warm_flags)):
+        _assert(got or not base,
+                f"[company] learned-index lost a baseline-warm arrival at {i}")
+    checks += 1
+    # Flat priors are v1 by construction: a customer the model has never seen
+    # must score exactly the v1 histogram, p_alive 1, n_chain 0.
+    flat = LearnedIndexPolicy()
+    flat.reset(cfg_factory(), cfg.physics)
+    row = _PrefixRow(org="o", customer="c", provider="anthropic",
+                     prefix_hash="h", prefix_tokens=1000, arrival_count=10,
+                     hour_histogram={hour_of_week(_ANCHOR): 5})
+    p_ret, p_alive, index, n_chain = flat._score(row, _ANCHOR)
+    _assert(abs(p_ret - 0.5) < 1e-12 and p_alive == 1.0 and n_chain == 0,
+            f"[flat-prior] cold start must be v1-equivalent, got "
+            f"p_return={p_ret} p_alive={p_alive} n_chain={n_chain}")
+    _assert(abs(index - (0.5 / V1_DEFAULTS["roi_break_even_p"] - 1)) < 1e-9,
+            f"[flat-prior] index must be p/b - 1 at flat priors, got {index}")
+    checks += 2
+    # The dollar index is the store's, algebraically: index = p/b - 1 - n.
+    from_store = 0.4 / 0.11 - 1 - 3
+    _assert(abs(dollar_index(0.4, 0.11, 3) - from_store) < 1e-12,
+            "dollar_index drifted from p_eff/b - 1 - n_chain")
+    checks += 1
+    # A dead session is refused by arithmetic, not policy: silence drives
+    # P(alive) down and the chain term up until the index cannot clear zero.
+    dead = _HazardState(hazard_n={"0": 6.0}, hazard_e={"0": 3.0}, events_total=200,
+                        first_seen_at=_ANCHOR - 20 * _SEC_PER_DAY,
+                        last_seen_at=_ANCHOR - 10 * _SEC_PER_DAY,
+                        last_update_at=_ANCHOR - 10 * _SEC_PER_DAY)
+    _assert(bg_nbd_p_alive(dead, _ANCHOR) < 0.5,
+            "[p_alive] ten silent days after 200 arrivals should read as churn")
+    checks += 1
+
     print(f"\nselftest OK: {checks} invariants asserted across "
           f"{len(SCENARIOS)} synthetic scenarios")
     return 0
@@ -1262,6 +2038,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     out = parser.add_argument_group("output")
     out.add_argument("--json", action="store_true", help="machine-readable output")
+    out.add_argument("--report", default="summary", choices=("summary", "learning"),
+                     help=("'learning' splits a warmup window off the front and "
+                           "reports evaluation-window money plus what the learned "
+                           "scheduler inferred per customer"))
+    out.add_argument("--warmup-days", type=int, default=WARMUP_DAYS,
+                     help="length of the excluded warmup window (--report learning)")
     out.add_argument("--selftest", action="store_true",
                      help=("run synthetic scenarios with asserted invariants. "
                            "The universal invariants hold under any knobs; the "
@@ -1301,6 +2083,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
     if args.trace:
         arrivals = load_trace(args.trace)
         payload = evaluate(arrivals, cfg, policy_names)
+        if args.report == "learning" and not args.json:
+            print(render_learning(payload, title=args.trace,
+                                  warmup_days=args.warmup_days))
         payload.pop("_objects", None)
         print(json.dumps(payload, indent=2) if args.json
               else render(payload, title=args.trace))
@@ -1312,6 +2097,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
         if name not in SCENARIOS:
             parser.error(f"unknown scenario {name!r}; known: {','.join(SCENARIOS)}")
         payload = evaluate(SCENARIOS[name](args.seed), build_config(args), policy_names)
+        if args.report == "learning" and not args.json:
+            print(render_learning(payload, title=f"synthetic scenario '{name}'",
+                                  warmup_days=args.warmup_days))
         payload.pop("_objects", None)
         payload["scenario"] = name
         bundle.append(payload)
