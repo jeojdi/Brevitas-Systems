@@ -34,8 +34,9 @@ const BASE_URL = 'https://brevitassystems.com';
 
 const TOC = [
   { group: 'GETTING STARTED', items: [
-    { id: 'overview',     label: 'How it works' },
-    { id: 'requirements', label: 'Requirements' },
+    { id: 'overview',          label: 'How it works' },
+    { id: 'verifying-savings', label: 'Verifying savings' },
+    { id: 'requirements',      label: 'Requirements' },
   ]},
   { group: 'INSTALL', items: [
     { id: 'install', label: 'Install' },
@@ -136,7 +137,42 @@ function DocsPage() {
               </p>
             </Section>
 
-            <Section id="requirements" kicker="GETTING STARTED · 02" title={<>Requirements.</>}>
+            <Section id="verifying-savings" kicker="GETTING STARTED · 02" title={<>Verifying savings.</>}>
+              <p className="t-body-lg">
+                Brevitas calculates savings from what the provider <strong style={{ color: 'var(--fg)' }}>actually
+                billed</strong>, not what the caller requested — the provider's own response and pricing data are the
+                source of truth.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Model.</strong> The model name is taken from the provider's <em>response</em>, not the request, so pricing uses the actual model and version that ran.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Cost.</strong> Each model has separate rates for fresh input, cached input, cache writes, and output. Cost = tokens × the appropriate rate for each bucket.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Savings.</strong> Brevitas doesn't need to reduce token count. If it causes tokens to be served from a cheaper cache bucket, the difference between the all-fresh baseline and the actual provider cost is the saving.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>No double-counting.</strong> If the provider's cache would have hit without Brevitas, that discount is excluded. Brevitas is only credited for savings it actually caused.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>No fake savings.</strong> If Brevitas changes nothing, baseline = actual cost → <span className="mono">$0</span> savings → <span className="mono">$0</span> fee.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Safety.</strong> If the real model can't be identified or the cache hit can't be attributed to Brevitas, the row is recorded <span className="mono">unpriced / $0</span> rather than guessed.</li>
+              </ul>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 8 }}>{'// worked example — 100k-token Opus prompt, 90k served from cache'}</div>
+              <table className="docs-table">
+                <thead><tr><th>Leg</th><th>Tokens</th><th>Rate (per 1M)</th><th>Cost</th></tr></thead>
+                <tbody>
+                  <tr><td>Baseline <span className="mono">(all fresh)</span></td><td>100k input</td><td><span className="mono">$5.00</span></td><td><span className="mono">$0.500</span></td></tr>
+                  <tr><td>Actual <span className="mono">(90k cache-read + 10k fresh)</span></td><td>90k @ cached · 10k @ fresh</td><td><span className="mono">$0.50 / $5.00</span></td><td><span className="mono">$0.095</span></td></tr>
+                  <tr><td><strong style={{ color: 'var(--fg)' }}>Verified savings</strong></td><td>—</td><td>—</td><td><span className="mono bronze">$0.405</span></td></tr>
+                  <tr><td>Brevitas fee <span className="mono">(20%)</span></td><td>—</td><td>—</td><td><span className="mono">~$0.081</span></td></tr>
+                </tbody>
+              </table>
+
+              <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderLeft: '2px solid var(--bronze)', borderRadius: 2, padding: '16px 20px', marginTop: 4 }}>
+                <p className="t-body" style={{ margin: 0 }}>
+                  <strong style={{ color: 'var(--fg)' }}>In one sentence.</strong> Brevitas charges a percentage of
+                  verified, attributable savings between the provider's full-price baseline and its actual billed
+                  cost — using the provider's own response and pricing data as the source of truth.
+                </p>
+              </div>
+            </Section>
+
+            <Section id="requirements" kicker="GETTING STARTED · 03" title={<>Requirements.</>}>
               <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <li className="t-body"><strong style={{ color: 'var(--fg)' }}>macOS, Linux, or Windows</strong> (x86-64 or ARM64).</li>
                 <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Python 3.13+</strong> — required by <span className="mono">brevitas-systems</span>. Homebrew installs it as a dependency automatically; on Windows install it yourself (e.g. from <a href="https://www.python.org/downloads/" className="btn-inline" style={{ color: 'var(--bronze)' }}>python.org</a> or <span className="mono">winget install Python.Python.3.13</span>).</li>
@@ -149,7 +185,40 @@ function DocsPage() {
             </Section>
 
             <Section id="install" kicker="INSTALL · 01" title={<>Install.</>}>
-              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>{'// macOS / Linux (Homebrew)'}</div>
+              <p className="t-body-lg">
+                Two ways in. The <strong style={{ color: 'var(--fg)' }}>hosted gateway</strong> is one command and is the
+                path whose savings are verified and billable. The <span className="mono bronze">bvx</span> installer wires
+                your local AI tools and codebases through Brevitas with no code changes — analytics, never billed.
+              </p>
+
+              {/* Hosted gateway — the recommended, billable path */}
+              <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>{'// RECOMMENDED · METERED · BILLABLE — hosted gateway'}</div>
+              <p className="t-body">
+                Install the CLI, then approve once in the browser. <span className="mono bronze">brevitas connect</span> opens
+                the dashboard for approval, then hands back an organization service key scoped to your workspace — nothing
+                to install on your servers and no background service. The only change in your app is the client base URL.
+              </p>
+              <CodeBlock lang="sh" code={`pip install brevitas-systems     # installs the brevitas CLI
+brevitas connect                 # approve in the browser, receive a scoped org key`} />
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: 'var(--ink-2)' }}>
+                <img src="/assets/docs/connect-dashboard.png" alt="The Connect tab of the Brevitas dashboard showing the one-command quick start: pip install brevitas-systems, then brevitas connect." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// brevitas connect opens this dashboard for approval, then hands back a scoped key'}</figcaption>
+              </figure>
+              <p className="t-body">Then point your client at the gateway — two headers, no other code changes:</p>
+              <CodeBlock lang="python" code={`import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",   # required on every hosted request
+    },
+)`} />
+
+              {/* Local tooling — bvx */}
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 20 }}>{'// LOCAL TOOLING — bvx · macOS / Linux (Homebrew)'}</div>
               <CodeBlock lang="sh" code={`brew tap Brevitas-ai/brevitas
 brew install bvx`} />
               <p className="t-body">Or as a single command:</p>
@@ -182,6 +251,10 @@ irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | ie
             <Section id="setup" kicker="INSTALL · 02" title={<>First-time setup.</>}>
               <p className="t-body">Run the interactive installer once:</p>
               <CodeBlock lang="sh" code={`bvx install`} />
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: '#0a0a0a' }}>
+                <img src="/assets/docs/bvx-home.png" alt="The bvx terminal UI home screen: an Actions menu with Connect repository, Configure AI tools, System status, and more." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// bvx opens an interactive menu — arrow keys to navigate, Enter to launch'}</figcaption>
+              </figure>
               <p className="t-body">This is the same as <span className="mono">bvx install ai</span>. Here's exactly what it does:</p>
               <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Scans</strong> your system for supported AI tools (Claude Code, Codex CLI, Continue, Aider, …).</li>
@@ -217,6 +290,14 @@ Installing...
               <CodeBlock lang="sh" code={`bvx install <repo>                 # scan + open the AI-call map
 bvx install <repo> --apply         # write a .env.agentmap you can source
 bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs`} />
+              <p className="t-body">
+                Choosing <strong style={{ color: 'var(--fg)' }}>Connect repository</strong> (or running <span className="mono">bvx install</span> with
+                no path) opens a picker so you can browse to the backend project folder to connect:
+              </p>
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: '#0a0a0a' }}>
+                <img src="/assets/docs/bvx-repo-picker.png" alt="The bvx repository picker: a file browser listing Documents, Downloads, Desktop, and GitHub folders with a preview pane." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// bvx repository picker — pick the project folder, Enter to open, then scan + connect'}</figcaption>
+              </figure>
             </Section>
 
             <Section id="verify" kicker="MANAGE · 01" title={<>Verify it works.</>}>
