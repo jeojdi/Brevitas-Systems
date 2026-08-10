@@ -904,6 +904,7 @@ function Nav({ current }) {
 
   const links = [
     { href: '/product', label: 'Product', k: 'product' },
+    { href: '/demo', label: 'Demo', k: 'demo' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
     { href: '/pricing', label: 'Pricing', k: 'pricing' },
     // Docs hidden from nav for now
