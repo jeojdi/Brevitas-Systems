@@ -34,7 +34,7 @@ const ENTERPRISE_TABS = ['Overview', 'Repositories', 'Audit', 'Connect', 'Team &
 const LIVE_REFRESH_MS = 10_000
 const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
-  && ['dashboard', 'billing', 'onboarding', 'onboarding-personal', 'onboarding-enterprise', 'personal', 'enterprise', 'invitation'].includes(PREVIEW_SECTION)
+  && ['dashboard', 'billing', 'onboarding', 'onboarding-personal', 'onboarding-enterprise', 'personal', 'enterprise', 'invitation', 'loading'].includes(PREVIEW_SECTION)
 const previewOnboardingCheck = async () => ({ cliConnected: false, proxiedRequestObserved: false })
 const PREVIEW_STATS = {
   total_calls: 128,
@@ -115,6 +115,50 @@ function pendingDeviceCode() {
   return sessionStorage.getItem('bvx_device_code') || ''
 }
 
+// Auth is now the only full-page gate: it resolves from localStorage in ~100ms and
+// nothing meaningful can render before we know whether a session exists. The company
+// context and key-provisioning waits that used to be their own boot screens instead
+// render the real dashboard chrome with shimmering placeholders — the boxes appear
+// first and the numbers arrive into them — so blanking the page for those would undo
+// exactly that. The step trail stays on this screen because during a slow auth check
+// it honestly names what comes next, even though the later steps never take it over.
+const BOOT_STEPS = ['Signing you in', 'Loading workspace', 'Preparing dashboard']
+
+function BootScreen({ step, label }) {
+  return (
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center gap-6 px-6 text-center">
+      <a href="/" aria-label="Brevitas Systems home">
+        <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-8 w-auto dark:hidden" />
+        <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-8 w-auto hidden dark:block" />
+      </a>
+      {/* The spinner stays hidden from assistive tech: the aria-live paragraph
+          below already carries the label, and a second live region (role="status")
+          announcing the same text would double-speak every stage change. */}
+      <div className="boot-spinner" aria-hidden="true" />
+      {/* aria-live so screen-reader users hear the stage change without the three
+          branches having to manage focus across unmounts. */}
+      <p aria-live="polite" className="text-sm text-brand-navy dark:text-brand-dark-navy">{label}</p>
+      <ol className="flex flex-wrap items-center justify-center gap-2 font-mono text-[11px] tracking-wide">
+        {BOOT_STEPS.map((name, index) => (
+          <li key={name} className="flex items-center gap-2">
+            {index > 0 && <span aria-hidden="true" className="text-brand-muted dark:text-brand-dark-muted">→</span>}
+            <span
+              aria-current={index === step ? 'step' : undefined}
+              className={index < step
+                ? 'text-brand-teal'
+                : index === step
+                  ? 'text-brand-blue'
+                  : 'text-brand-muted dark:text-brand-dark-muted'}
+            >
+              {name}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 function MoonIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -137,6 +181,18 @@ function SunIcon() {
       <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
     </svg>
   )
+}
+
+// Until company context resolves we cannot know whether the personal or enterprise
+// tab set applies, and rendering a guess would flash wrong labels and reflow when it
+// swapped. Unlabeled pills sized roughly to the personal set keep the nav's footprint
+// stable, and the real buttons replace them in one pass the moment context arrives.
+const SKELETON_TAB_WIDTHS = ['w-24', 'w-24', 'w-16', 'w-20', 'w-24', 'w-24', 'w-16', 'w-20']
+
+function SkeletonTabs() {
+  return SKELETON_TAB_WIDTHS.map((width, index) => (
+    <span key={index} aria-hidden="true" className={`skeleton h-11 shrink-0 rounded-xl ${width}`} />
+  ))
 }
 
 function WorkspaceStart({ enterprise, onNavigate }) {
@@ -251,6 +307,10 @@ function DashboardPreview({ darkMode, onToggleDark }) {
   }
   const enterprisePreview = PREVIEW_SECTION === 'enterprise'
   const personalPreview = PREVIEW_SECTION === 'personal'
+  // ?preview=loading reviews the skeleton-first state without a backend: the empty
+  // apiKey handed to Overview below is the same signal the real app passes while the
+  // key is still minting, so what renders here is exactly the pre-data dashboard.
+  const loadingPreview = PREVIEW_SECTION === 'loading'
   const previewTabs = enterprisePreview ? ENTERPRISE_TABS : personalPreview ? PERSONAL_TABS : ['Overview']
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
@@ -262,6 +322,9 @@ function DashboardPreview({ darkMode, onToggleDark }) {
               <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto hidden dark:block" />
             </a>
             <div className="flex items-center gap-2 sm:gap-4">
+              {loadingPreview && (
+                <span className="skeleton hidden h-6 w-44 rounded-full md:block" aria-hidden="true" />
+              )}
               <span className="annotation flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> local preview
               </span>
@@ -275,19 +338,27 @@ function DashboardPreview({ darkMode, onToggleDark }) {
               </button>
             </div>
           </div>
-          <nav className="flex items-center gap-2 overflow-x-auto border-t border-brand-border px-2 py-2.5 dark:border-brand-dark-border sm:px-5 sm:py-3" aria-label="Dashboard preview section">
-            {(billingPreview ? ['Savings'] : previewTabs).map((tab, index) => (
-              <span key={tab} className={`inline-flex min-h-11 shrink-0 items-center rounded-xl px-4 py-2.5 text-[11px] font-medium uppercase tracking-widest ${index === 0 ? 'bg-brand-blue-dim text-brand-blue dark:bg-brand-dark-blue-dim' : 'text-brand-muted dark:text-brand-dark-muted'}`}>
-                {tab}
-              </span>
-            ))}
+          <nav className="flex items-center gap-2 overflow-x-auto border-t border-brand-border px-2 py-2.5 dark:border-brand-dark-border sm:px-5 sm:py-3" aria-label="Dashboard preview section" aria-busy={loadingPreview || undefined}>
+            {loadingPreview
+              ? <SkeletonTabs />
+              : (billingPreview ? ['Savings'] : previewTabs).map((tab, index) => (
+                <span key={tab} className={`inline-flex min-h-11 shrink-0 items-center rounded-xl px-4 py-2.5 text-[11px] font-medium uppercase tracking-widest ${index === 0 ? 'bg-brand-blue-dim text-brand-blue dark:bg-brand-dark-blue-dim' : 'text-brand-muted dark:text-brand-dark-muted'}`}>
+                  {tab}
+                </span>
+              ))}
           </nav>
         </header>
       </div>
       <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
-        {/* Lets the setup bar be reviewed at ?preview=dashboard without an account. */}
-        <SetupBanner onCheck={previewOnboardingCheck} onComplete={async () => {}} onOpenSetup={() => {}} />
-        {enterprisePreview || personalPreview ? (
+        {/* Lets the setup bar be reviewed at ?preview=dashboard without an account.
+            Hidden in the loading preview: the real pre-context state defaults
+            setupComplete to true, so no banner exists at that point. */}
+        {!loadingPreview && (
+          <SetupBanner onCheck={previewOnboardingCheck} onComplete={async () => {}} onOpenSetup={() => {}} />
+        )}
+        {loadingPreview ? (
+          <Overview apiKey="" darkMode={darkMode} refreshTick={0} showInstallCommand={false} />
+        ) : enterprisePreview || personalPreview ? (
           <div className="space-y-10">
             <WorkspaceStart enterprise={enterprisePreview} onNavigate={() => {}} />
             <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} showInstallCommand={false} />
@@ -616,6 +687,20 @@ export default function App() {
     company => company.company_id === companyContext.activeCompanyId,
   )
   const enterpriseWorkspace = activeWorkspace?.account_type === 'company'
+  // Two independent readiness signals drive the skeleton-first layout. The workspace
+  // is "known" once the membership list can resolve the active company — that decides
+  // which tab set and header chip are even correct to draw. The data is "pending"
+  // whenever no API key exists: the key is cleared on every user/company change and
+  // minted only after context resolves, so its absence covers the initial context
+  // load, workspace switches, and key provisioning in one signal — while deliberately
+  // NOT covering background context refetches (which set companyContext.loading with
+  // a key already in hand, and must not knock live numbers back to shimmer).
+  const workspaceKnown = Boolean(activeWorkspace)
+  const dashboardPending = !apiKey
+  // While pending, main always shows the Overview composition regardless of which
+  // tab was active — mid-switch the other panels would fire real requests with an
+  // empty key, and Overview is the one panel the next paint is guaranteed to want.
+  const renderTab = dashboardPending ? 'Overview' : activeTab
   const dashboardTabs = enterpriseWorkspace ? ENTERPRISE_TABS : PERSONAL_TABS
   // `Admin` is appended for brevitas_admin sessions and is deliberately absent from
   // PERSONAL_TABS/ENTERPRISE_TABS. The guard below has to test the same list the nav
@@ -648,13 +733,7 @@ export default function App() {
   }
 
   if (authLoading) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          Loading…
-        </span>
-      </div>
-    )
+    return <BootScreen step={0} label="Signing you in…" />
   }
 
   if (recoveringPassword) {
@@ -677,6 +756,16 @@ export default function App() {
         />
       </div>
     )
+  }
+
+  // A pending device connect always leaves the dashboard for the DeviceConnect
+  // screen, so rendering the skeleton shell here would only flash for the beat
+  // until company context resolves. Hold the boot screen for that beat instead.
+  // needsOnboarding and error are excluded so their branches below still win —
+  // without that, a workspace-less or errored context (activeCompanyId '') would
+  // leave this branch up forever.
+  if (deviceCode && !companyContext.activeCompanyId && !companyContext.error && !companyContext.needsOnboarding) {
+    return <BootScreen step={1} label="Loading your workspace…" />
   }
 
   if (deviceCode && companyContext.activeCompanyId && !companyContext.loading) {
@@ -740,26 +829,6 @@ export default function App() {
     )
   }
 
-  if (!companyContext.activeCompanyId || companyContext.loading || companySwitching) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          {companySwitching ? 'Switching workspace…' : 'Loading your workspace…'}
-        </span>
-      </div>
-    )
-  }
-
-  if (keyLoading) {
-    return (
-      <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center">
-        <span className="font-mono text-[11px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">
-          Setting up your dashboard…
-        </span>
-      </div>
-    )
-  }
-
   if (keyError) {
     return (
       <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex items-center justify-center flex-col gap-4">
@@ -799,7 +868,16 @@ export default function App() {
               >
                 {darkMode ? <SunIcon /> : <MoonIcon />}
               </button>
-              {companyContext.companies.length > 1 ? (
+              {/* A workspace switch keeps the whole layout up (the key reset already
+                  returns the numbers to shimmer), so this inline annotation is the
+                  only switching indicator — a full-page block would discard exactly
+                  the chrome stability the skeleton-first layout exists for. */}
+              {companySwitching && (
+                <span className="annotation hidden sm:inline" aria-live="polite">Switching workspace…</span>
+              )}
+              {!workspaceKnown ? (
+                <span className="skeleton hidden h-6 w-44 rounded-full md:block" aria-hidden="true" />
+              ) : companyContext.companies.length > 1 ? (
                 <label className="block">
                   <span className="sr-only">Active workspace</span>
                   <select
@@ -835,17 +913,30 @@ export default function App() {
             </div>
           </div>
 
+          {!workspaceKnown ? (
+            <nav
+              className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
+              aria-label="Dashboard sections"
+              aria-busy="true"
+            >
+              <SkeletonTabs />
+            </nav>
+          ) : (
           <nav
             className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
             aria-label="Dashboard sections"
           >
+            {/* Highlight follows renderTab, not activeTab: while data is pending
+                the panel is pinned to Overview, and a nav that highlights a tab
+                the main area is not showing reads as a bug. The two converge
+                again the moment the key lands. */}
             {visibleTabs.map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                aria-current={activeTab === tab ? 'page' : undefined}
+                aria-current={renderTab === tab ? 'page' : undefined}
                 className={`shrink-0 min-h-11 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
-                  activeTab === tab
+                  renderTab === tab
                     ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
                     : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy hover:bg-brand-bg dark:hover:bg-brand-dark-elevated'
                 }`}
@@ -854,6 +945,7 @@ export default function App() {
               </button>
             ))}
           </nav>
+          )}
         </header>
       </div>
 
@@ -865,8 +957,10 @@ export default function App() {
           <EmailVerificationBanner email={session.user.email} />
         )}
         {/* BVX connection and the first proxied request are asked for here rather
-            than gating the dashboard behind them. */}
-        {!companyContext.setupComplete && (
+            than gating the dashboard behind them. Held back while pending: the banner
+            checks onboarding against the workspace the key belongs to, and mid-switch
+            or pre-context that pairing does not exist yet. */}
+        {!dashboardPending && !companyContext.setupComplete && (
           <SetupBanner
             onCheck={checkWorkspaceSetup}
             onComplete={finishWorkspaceSetup}
@@ -879,19 +973,27 @@ export default function App() {
         </div>}
         {/* Keyed on the tab so a crashed panel resets when the user navigates away,
             and so one throwing panel degrades to a message instead of unmounting
-            the whole SPA to a blank page. */}
-        <PanelErrorBoundary key={activeTab}>
-        {activeTab === 'Overview'   && <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>}
-        {(activeTab === 'Repositories' || activeTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
-        {activeTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
-        {activeTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}
-        {activeTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
-        {activeTab === 'Team & keys' && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
-        {activeTab === 'Workspace' && <CompanyAdministration personal key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
-        {activeTab === 'Playground' && <Playground   apiKey={apiKey} />}
-        {activeTab === 'Docs'       && <Docs />}
-        {activeTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}
-        {activeTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
+            the whole SPA to a blank page. While data is pending, renderTab pins the
+            panel to the Overview composition under the same key and tree shape it
+            keeps once the key arrives, so the boxes stay mounted and the numbers
+            resolve into them rather than the panel remounting. WorkspaceStart joins
+            only once the workspace type is known — its copy differs per type, and a
+            wrongly-guessed variant being swapped out would be worse than the hero
+            arriving a beat later. */}
+        <PanelErrorBoundary key={renderTab}>
+        {renderTab === 'Overview'   && (workspaceKnown
+          ? <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>
+          : <Overview apiKey={apiKey} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} />)}
+        {(renderTab === 'Repositories' || renderTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
+        {renderTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
+        {renderTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}
+        {renderTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
+        {renderTab === 'Team & keys' && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
+        {renderTab === 'Workspace' && <CompanyAdministration personal key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
+        {renderTab === 'Playground' && <Playground   apiKey={apiKey} />}
+        {renderTab === 'Docs'       && <Docs />}
+        {renderTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}
+        {renderTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
         </PanelErrorBoundary>
       </main>
       <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">

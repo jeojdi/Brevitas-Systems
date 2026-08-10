@@ -35,13 +35,16 @@ test('one throwing panel degrades to a message instead of unmounting the SPA', a
   // Message only, and only to the local console: panel props carry usage and
   // billing figures, so the boundary must not become an egress path.
   assert.doesNotMatch(boundary, /fetch\(|capture\(|posthog/)
-  // Keyed on the tab so navigating away resets a crashed panel.
-  assert.match(shell, /<PanelErrorBoundary key=\{activeTab\}>/)
+  // Keyed on the rendered tab so navigating away resets a crashed panel. renderTab
+  // rather than activeTab: while the API key is pending the shell pins the panel to
+  // the Overview skeleton, and the boundary key has to follow what actually renders
+  // or a crash in the skeleton would survive into the loaded panel.
+  assert.match(shell, /<PanelErrorBoundary key=\{renderTab\}>/)
   assert.match(shell, /<\/PanelErrorBoundary>/)
   const boundaryStart = shell.indexOf('<PanelErrorBoundary')
   const boundaryEnd = shell.indexOf('</PanelErrorBoundary>')
   for (const tab of ['Overview', 'Savings', 'Admin', 'Playground']) {
-    const at = shell.indexOf(`activeTab === '${tab}'`, boundaryStart)
+    const at = shell.indexOf(`renderTab === '${tab}'`, boundaryStart)
     assert.ok(at > boundaryStart && at < boundaryEnd, `${tab} panel must render inside the boundary`)
   }
 })

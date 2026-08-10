@@ -7,10 +7,9 @@ test('homepage quick starts continue into full BVX onboarding', async () => {
   const defaults = components.match(/const DEFAULT_INSTALL_COMMANDS = \[[^]*?\n\];/)?.[0]
 
   assert.ok(defaults, 'DEFAULT_INSTALL_COMMANDS must be present')
-  assert.match(defaults, /brew install Brevitas-ai\/brevitas\/bvx && bvx install/)
+  assert.match(defaults, /brew install Brevitas-ai\/brevitas\/bvx && bvx login && bvx install/)
   assert.match(
     defaults,
-    /irm https:\/\/raw\.githubusercontent\.com\/Brevitas-ai\/brevitas\/main\/install\.ps1 \| iex; if \(\$\?\) \{ bvx install \}/,
+    /irm https:\/\/raw\.githubusercontent\.com\/Brevitas-ai\/brevitas\/main\/install\.ps1 \| iex; if \(\$\?\) \{ bvx login; if \(\$\?\) \{ bvx install \} \}/,
   )
-  assert.doesNotMatch(defaults, /bvx login/)
 })

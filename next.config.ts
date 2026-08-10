@@ -125,6 +125,31 @@ const nextConfig: NextConfig = {
       },
       ...["/dashboard/:path*", "/login", "/login/personal", "/login/enterprise", "/signup", "/waitlist", "/invite"]
         .map((source) => ({ source, headers: dashboardHeaders })),
+      {
+        // Everything Vite emits under /dashboard/assets carries a content hash in
+        // its filename, so it can be cached forever — a new build gets new URLs.
+        // Without this, these files inherit the public-folder default
+        // (max-age=0, must-revalidate), which forces every page load — and every
+        // edge POP — back through a cross-ocean revalidation with the US origin;
+        // measured 300–530ms TTFB from Frankfurt/Singapore/Tokyo on 2026-08-06.
+        // Deliberately scoped to the hashed directory only: /dashboard/index.html
+        // and /dashboard/boot-dark.js keep stable names and MUST stay
+        // revalidating or deploys would not reach returning browsers.
+        source: "/dashboard/assets/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
+      {
+        // Self-hosted font binaries (mirrored Google Fonts). Only the .woff2
+        // files are immutable — /fonts/fonts.css keeps a stable name and is the
+        // one file that must revalidate, or a regenerated font set could never
+        // reach browsers that cached the old stylesheet for a year.
+        source: "/fonts/:file(.+\\.woff2)",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
       ...["/email-confirmed", "/welcome"]
         .map((source) => ({ source, headers: noIndexHeaders })),
     ];

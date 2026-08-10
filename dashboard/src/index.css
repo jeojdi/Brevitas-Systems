@@ -39,6 +39,74 @@ body,
 .dark ::-webkit-scrollbar-track { background: #0c0c0c; }
 .dark ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 9999px; }
 
+/* Boot screen spinner. A hand-rolled ring rather than a Tailwind animate-spin div
+   because the accent quadrant has to stay visible when prefers-reduced-motion
+   suppresses the rotation — a fully uniform static ring would look like a decoration,
+   not an in-progress load. */
+.boot-spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  border: 2px solid #e2e4f0;
+  border-top-color: #4f5fc4;
+  animation: boot-spin 0.8s linear infinite;
+}
+.dark .boot-spinner {
+  border-color: #2a2a2a;
+  border-top-color: #4f5fc4;
+}
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-spinner { animation: none; }
+}
+
+/* Skeleton shimmer. The dashboard chrome renders before company context and the API
+   key resolve, so pending values need a shape that reads as "arriving" rather than
+   "missing". The sheen is a translucent overlay pseudo-element instead of a
+   background-position sweep so one class fits any element width without per-size
+   keyframes; when prefers-reduced-motion suppresses it, the static tint alone still
+   marks the region as a placeholder — dropping to nothing would make the pending
+   state indistinguishable from an empty value. */
+.skeleton,
+.skeleton-text {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background-color: #e7e9f2;
+}
+.skeleton-text {
+  display: inline-block;
+  height: 1em;
+  border-radius: 0.25rem;
+  vertical-align: middle;
+}
+.dark .skeleton,
+.dark .skeleton-text {
+  background-color: #232323;
+}
+.skeleton::after,
+.skeleton-text::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: skeleton-sheen 1.6s ease-in-out infinite;
+}
+.dark .skeleton::after,
+.dark .skeleton-text::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+}
+@keyframes skeleton-sheen {
+  to { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after,
+  .skeleton-text::after { content: none; }
+}
+
 /* Cormorant italic accents */
 .accent-blue { @apply font-serif italic text-brand-blue; }
 .accent-teal { @apply font-serif italic text-brand-teal; }

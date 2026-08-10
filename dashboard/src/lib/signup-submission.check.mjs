@@ -16,8 +16,13 @@ const sentenceCount = copy => copy.split(/[.!?]+\s+|[.!?]+$/).filter(Boolean).le
 test('post-signup copy tells the user to confirm by email, not to wait for an invite', () => {
   assert.match(SIGNUP_CONFIRMATION_NOTICE, /confirmation link/i)
   assert.match(SIGNUP_CONFIRMATION_NOTICE, /click it/i)
+  // With auto-confirm on, this notice only shows when GoTrue withheld a session,
+  // which usually means the mail really is in transit. Setting the delivery
+  // expectation up front is what stops the "nothing arrived" support loop.
+  assert.match(SIGNUP_CONFIRMATION_NOTICE, /minute or two/i)
+  assert.match(SIGNUP_CONFIRMATION_NOTICE, /spam/i)
   assert.match(SIGNUP_CONFIRMATION_NOTICE, /"Forgot password"/)
-  assert.equal(sentenceCount(SIGNUP_CONFIRMATION_NOTICE), 2)
+  assert.equal(sentenceCount(SIGNUP_CONFIRMATION_NOTICE), 3)
   assert.doesNotMatch(SIGNUP_CONFIRMATION_NOTICE, /—/)
 
   // The waitlist framing is what drove the duplicate signup in the first place.

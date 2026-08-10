@@ -36,7 +36,10 @@ test('customer UI separates input reduction, native caching, avoided calls, and 
 test('dashboard navigation is separated and exposes its active section', async () => {
   const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
   assert.match(app, /aria-label="Dashboard sections"/)
-  assert.match(app, /aria-current=\{activeTab === tab \? 'page' : undefined\}/)
+  // renderTab, not activeTab: while data is pending the main area is pinned to
+  // Overview, and the highlighted tab must follow what is actually shown or the
+  // nav claims a section the page is not displaying.
+  assert.match(app, /aria-current=\{renderTab === tab \? 'page' : undefined\}/)
 })
 
 test('overview uses an input-avoidance per-call area chart', async () => {

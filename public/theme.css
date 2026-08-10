@@ -936,10 +936,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 }
 
 /* Theme-aware hero/section backgrounds */
-.hero-bg-dark  { display: block; }
-.hero-bg-light { display: none; }
-[data-theme="light"] .hero-bg-dark  { display: none; }
-[data-theme="light"] .hero-bg-light { display: block; }
+/* Hero backdrop theming now lives in HeroBackdrop (index.html), which loads
+   only the active theme's image. */
 
 /* Flowers section scrim — dark over dark image, light over light image */
 .flowers-scrim {

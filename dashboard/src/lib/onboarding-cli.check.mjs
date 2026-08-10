@@ -46,7 +46,7 @@ test('the dashboard asks for the remaining setup instead of gating on it', async
   assert.match(app, /onComplete=\{finishWorkspaceSetup\}/)
   // The button has to reach the tab that actually carries the install commands.
   assert.match(app, /onOpenSetup=\{\(\) => setActiveTab\('Connect'\)\}/)
-  assert.match(app, /activeTab === 'Connect' && <ConnectionPage/)
+  assert.match(app, /renderTab === 'Connect' && <ConnectionPage/)
 })
 
 test('platform install commands match the distributed BVX installation paths', () => {
@@ -59,7 +59,14 @@ test('platform install commands match the distributed BVX installation paths', (
     'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex')
   assert.match(BVX_PLATFORMS.find(platform => platform.id === 'windows').note,
     /No GitHub account or API token is required/)
+  // The quick start signs in explicitly (login first, so install reuses the
+  // stored key instead of prompting a second time) on macOS and Windows.
   assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'macos').quickStartCommand,
+    'brew install Brevitas-ai/brevitas/bvx && bvx login && bvx install')
+  assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'windows').quickStartCommand,
+    'irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex; '
+    + 'if ($?) { bvx login; if ($?) { bvx install } }')
+  assert.equal(BVX_PLATFORMS.find(platform => platform.id === 'linux').quickStartCommand,
     'brew install Brevitas-ai/brevitas/bvx && bvx install')
 })
 
@@ -77,11 +84,11 @@ test('setup authenticates and configures through install, then proves a real pro
     component('Overview'),
     component('Docs'),
   ])
-  assert.match(install, /bvx install[^]*includes browser authentication/)
+  assert.match(install, /bvx install[^]*includes browser\s+authentication/)
   assert.match(install, /Requests proxied/)
   assert.match(overview, /<InstallCommand phase="all"/)
   assert.match(docs, /Requests proxied/)
-  assert.doesNotMatch(install, /&& bvx login/)
+  assert.match(install, /bvx login[^]*authorizes this device/)
   assert.match(install, /One command connects your tools/)
   assert.match(install, /No API key copying is required/)
 })

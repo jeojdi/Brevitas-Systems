@@ -27,7 +27,7 @@ test('audit page is registered in both workspace tab lists', async () => {
   const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
   assert.match(app, /PERSONAL_TABS = \[[^\]]*'Audit'/)
   assert.match(app, /ENTERPRISE_TABS = \[[^\]]*'Audit'/)
-  assert.match(app, /activeTab === 'Audit'[\s\S]{0,40}<Audit apiKey=\{apiKey\} refreshTick=\{refreshTick\}/)
+  assert.match(app, /renderTab === 'Audit'[\s\S]{0,40}<Audit apiKey=\{apiKey\} refreshTick=\{refreshTick\}/)
 })
 
 test('audit UI celebrates the well-optimized case and renders every verdict honestly', async () => {

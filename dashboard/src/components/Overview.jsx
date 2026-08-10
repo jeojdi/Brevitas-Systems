@@ -59,11 +59,14 @@ function getTooltipStyle(dark) {
   }
 }
 
-function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-dark-navy' }) {
+function BigStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-dark-navy', pending = false }) {
   return (
     <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-5 sm:p-6 min-w-0">
-      <p className={`font-mono text-3xl xl:text-4xl font-medium tabular-nums truncate ${valueClass}`} title={String(value)}>
-        {value}
+      <p className={`font-mono text-3xl xl:text-4xl font-medium tabular-nums truncate ${valueClass}`} title={pending ? undefined : String(value)}>
+        {/* The placeholder sits inside the real value element so it inherits the
+            exact font-size/line box the number will occupy — when data lands, the
+            number replaces the shimmer with zero layout shift. */}
+        {pending ? <span className="skeleton-text w-24" aria-hidden="true" /> : value}
       </p>
       <p className="annotation mt-2">{label}</p>
     </div>
@@ -82,6 +85,24 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
     if (previewStats) {
       setStats(previewStats)
       setLoading(false)
+      return
+    }
+    // App now mounts Overview before the workspace API key is minted (skeleton-first
+    // shell), and clears the key on every user/workspace switch. Fetching with an
+    // empty key would just 401, and letting the previous workspace's numbers linger
+    // through a switch would show one workspace's data under another's name — so a
+    // missing key drops back to the skeleton and waits. Nulling controllerRef (not
+    // just aborting) keeps the aborted fetch's finally from flipping loading off and
+    // killing the skeleton. `apiKey` is in this callback's deps, so the effect
+    // re-runs and fetches the moment the key lands.
+    if (!apiKey) {
+      controllerRef.current?.abort()
+      controllerRef.current = null
+      setStats(null)
+      setActivity(null)
+      setCacheStats(null)
+      setError('')
+      setLoading(true)
       return
     }
     controllerRef.current?.abort()
@@ -111,7 +132,9 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
     return () => controllerRef.current?.abort()
   }, [loadStats, refreshTick])
 
-  if (loading) return <p className="annotation pt-8">// loading…</p>
+  // Same component in both branches: React keeps OverviewBody mounted across the
+  // pending→loaded transition, so numbers resolve into boxes that are already drawn.
+  if (loading) return <OverviewBody pending showInstallCommand={showInstallCommand} darkMode={darkMode} loadStats={loadStats} />
   if (error && !stats) return <div className="pt-8"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
   // A re-run of loadStats clears `error` synchronously and never restores `loading`,
   // so a failed first load followed by the retry button or the 10s refresh tick lands
@@ -119,6 +142,26 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
   // the stat reads below would dereference null, unmounting the whole SPA.
   if (!stats) return <div className="pt-8"><p className="annotation">// stats unavailable</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
 
+  return (
+    <OverviewBody
+      showInstallCommand={showInstallCommand}
+      darkMode={darkMode}
+      loadStats={loadStats}
+      error={error}
+      stats={stats}
+      activity={activity}
+      cacheStats={cacheStats}
+    />
+  )
+}
+
+// One body for the skeleton and the loaded page: the pending state renders the same
+// section headers, cards and chart shells with shimmer where values will land, so
+// the placeholder layout cannot drift out of sync with the real one. Data-conditional
+// sections (provider cache, client activity) stay hidden while pending because their
+// existence is only known once the payloads arrive — pre-drawing them would shift the
+// page when they turn out absent.
+function OverviewBody({ pending = false, showInstallCommand, darkMode, loadStats, error = '', stats = null, activity = null, cacheStats = null }) {
   // The API strips *_usd keys and sets spend_redacted for roles without billing
   // access; those sessions must see "Withheld", never a confident $0.00.
   const spendWithheld = spendRedacted(stats)
@@ -159,7 +202,7 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
   }
 
   return (
-    <div className="space-y-12">
+    <div className="space-y-12" aria-busy={pending || undefined}>
       {showInstallCommand && <InstallCommand phase="all" />}
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation hover:text-brand-blue">retry</button></div>}
       {/* ── Section label ── */}
@@ -181,12 +224,13 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 
       {/* ── Big stats row ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-        <BigStat value={stats?.total_calls ?? 0} label="// ai calls" />
-        <BigStat value={fmt(stats?.total_provider_input_tokens_avoided || 0)} label="// provider input tokens avoided" valueClass="text-brand-blue" />
-        <BigStat value={fmt(stats?.total_calls_avoided || 0)} label="// model calls avoided" valueClass="text-brand-blue" />
-        <BigStat value={spendWithheld ? WITHHELD : `$${Number(stats?.total_native_cache_discount_usd || 0).toFixed(2)}`} label="// net native-cache discount" />
-        <BigStat value={spendWithheld ? WITHHELD : `$${Number(stats?.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
+        <BigStat pending={pending} value={stats?.total_calls ?? 0} label="// ai calls" />
+        <BigStat pending={pending} value={fmt(stats?.total_provider_input_tokens_avoided || 0)} label="// provider input tokens avoided" valueClass="text-brand-blue" />
+        <BigStat pending={pending} value={fmt(stats?.total_calls_avoided || 0)} label="// model calls avoided" valueClass="text-brand-blue" />
+        <BigStat pending={pending} value={spendWithheld ? WITHHELD : `$${Number(stats?.total_native_cache_discount_usd || 0).toFixed(2)}`} label="// net native-cache discount" />
+        <BigStat pending={pending} value={spendWithheld ? WITHHELD : `$${Number(stats?.total_actual_cost_usd || 0).toFixed(2)}`} label="// provider spend" />
         <BigStat
+          pending={pending}
           value={spendWithheld ? WITHHELD : stats?.total_brevitas_incremental_savings_usd == null ? 'Not measured' : `$${Number(stats?.total_brevitas_incremental_savings_usd).toFixed(2)}`}
           label="// Brevitas lift vs paired control"
         />
@@ -342,7 +386,7 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
         </div>
       )}
 
-      {chartData.length === 0 ? (
+      {!pending && chartData.length === 0 ? (
         <div className="bg-white dark:bg-brand-dark-surface rounded-2xl border border-brand-border dark:border-brand-dark-border p-10 sm:p-20 text-center">
           <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-3">No data yet.</p>
           <p className="annotation">
@@ -364,53 +408,63 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
                 <p className="annotation flex items-center gap-2">
                   <span className="w-5 h-0.5 rounded-full" style={{ backgroundColor: savedColor }} /> input avoided in range
                 </p>
-                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">{fmt(recentAvoided)}</p>
+                <p className="font-mono text-xl sm:text-2xl text-brand-blue tabular-nums mt-1">
+                  {pending ? <span className="skeleton-text w-16" aria-hidden="true" /> : fmt(recentAvoided)}
+                </p>
               </div>
             </div>
           </div>
-          <div role="img" aria-label="Area chart showing provider input tokens avoided on each recent call">
-            <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
-                <defs>
-                  <linearGradient id="savedArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
-                    <stop offset="100%" stopColor={savedColor} stopOpacity={0.03} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                <XAxis
-                  dataKey="call"
-                  tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                  tickFormatter={fmtAxis}
-                  tickLine={false}
-                  axisLine={false}
-                  width={58}
-                  domain={[0, 'auto']}
-                  allowDecimals={false}
-                />
-                <Tooltip
-                  {...tooltipStyle}
-                  labelFormatter={tooltipLabel}
-                  formatter={(value, name) => [`${Number(value).toLocaleString()} tokens`, name]}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="inputAvoided"
-                  name="Input tokens avoided"
-                  stroke={savedColor}
-                  fill="url(#savedArea)"
-                  strokeWidth={3}
-                  dot={{ r: 5.5, fill: savedColor, stroke: pointRingColor, strokeWidth: 2 }}
-                  activeDot={{ r: 7.5, stroke: pointRingColor, strokeWidth: 2.5 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          {/* Recharts fed an empty array still draws real axes and gridlines, which
+              reads as "measured zero" rather than "arriving" — so while pending the
+              chart region is one shimmer rect at the chart's exact rendered height,
+              and recharts mounts only once real data exists. */}
+          {pending ? (
+            <div className="skeleton h-80 w-full" aria-hidden="true" />
+          ) : (
+            <div role="img" aria-label="Area chart showing provider input tokens avoided on each recent call">
+              <ResponsiveContainer width="100%" height={320}>
+                <AreaChart data={chartData} margin={{ top: 12, right: 8, left: 8, bottom: 4 }}>
+                  <defs>
+                    <linearGradient id="savedArea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={savedColor} stopOpacity={0.34} />
+                      <stop offset="100%" stopColor={savedColor} stopOpacity={0.03} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                  <XAxis
+                    dataKey="call"
+                    tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fill: tickColor, fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    tickFormatter={fmtAxis}
+                    tickLine={false}
+                    axisLine={false}
+                    width={58}
+                    domain={[0, 'auto']}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    {...tooltipStyle}
+                    labelFormatter={tooltipLabel}
+                    formatter={(value, name) => [`${Number(value).toLocaleString()} tokens`, name]}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="inputAvoided"
+                    name="Input tokens avoided"
+                    stroke={savedColor}
+                    fill="url(#savedArea)"
+                    strokeWidth={3}
+                    dot={{ r: 5.5, fill: savedColor, stroke: pointRingColor, strokeWidth: 2 }}
+                    activeDot={{ r: 7.5, stroke: pointRingColor, strokeWidth: 2.5 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       )}
     </div>

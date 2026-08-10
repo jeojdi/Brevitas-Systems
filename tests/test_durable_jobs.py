@@ -445,6 +445,26 @@ def test_worker_consumes_redis_stream_as_wakeup_only():
     assert asyncio.run(dispatcher.wait_for_notification("$", 50)) == "123-0"
 
 
+def test_failing_redis_wait_still_paces_the_consume_loop():
+    class Redis:
+        async def xread(self, streams, count, block):
+            raise ConnectionError("redis unavailable")
+
+    dispatcher = RedisJobDispatcher(Redis())
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await dispatcher.wait_for_notification("$", 100)
+        return result, loop.time() - started
+
+    result, elapsed = asyncio.run(exercise())
+    assert result == "$"
+    # A failing Redis must wait out the block interval; returning immediately
+    # would tight-loop claim RPCs against Postgres for the whole outage.
+    assert elapsed >= 0.09
+
+
 def test_redis_wakeup_stream_has_finite_length_and_ttl():
     calls = []
 

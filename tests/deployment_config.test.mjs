@@ -35,8 +35,7 @@ test('public discovery files contain only live public routes and assets', () => 
 test('homepage install flow continues into full bvx onboarding', () => {
   const homepageSource = `${read('public/index.html')}\n${read('public/components.jsx')}`
   assert.match(homepageSource,
-    /brew install Brevitas-ai\/brevitas\/bvx && bvx install/)
-  assert.doesNotMatch(homepageSource, /bvx login/)
+    /brew install Brevitas-ai\/brevitas\/bvx && bvx login && bvx install/)
   assert.doesNotMatch(homepageSource, /bvx install ai/)
 })
 
