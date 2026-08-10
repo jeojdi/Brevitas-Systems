@@ -15,8 +15,8 @@ declare
     v_cust_on uuid := '00000000-0000-4000-8000-0000000d0005';
     v_hash_a text := repeat('d1', 32);
     v_hash_b text := repeat('d2', 32);
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
-    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean,numeric,numeric,numeric,numeric)';
+    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text,numeric)';
     v_column text;
     v_count integer;
     v_off_count integer;

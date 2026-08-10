@@ -346,13 +346,23 @@ def test_hazard_v2_on_scores_stop_lossed_arm(tmp_path):
         chain = round(row["chain_cost_usd"] / row["c_belief_usd"])
         # THE INDEX COMPOSITION: p_eff/b - 1 - n_chain, with p_eff carrying
         # P(alive) and the chain pricing the whole commitment.
+        #
+        # p_eff USED to be re-derivable as p_return * p_alive, and this
+        # assertion used to spell it that way. 202608100010's F1 makes the two
+        # probabilities different numbers on purpose -- the ROI floor gates on
+        # one TTL window, the index is charged over the 1 + n_chain windows the
+        # chain actually commits money to -- so the effective probability is
+        # recorded on the row and read from it here. The identity being checked
+        # is unchanged; only the place p_eff comes from is.
+        assert row["p_eff"] is not None
         assert row["index_score"] == pytest.approx(
-            row["p_return"] * row["p_alive"] / break_even - 1 - chain, abs=1e-9)
-        # p_return is the hazard posterior, not the histogram ratio (which is
-        # 1.0 for this fixture), and it depends on no wall clock.
-        assert row["p_return"] == pytest.approx(
-            warm_p_return_v2(20.0, 5.0, 0.0, 0.0, 300), abs=1e-9)
+            row["p_eff"] / break_even - 1 - chain, abs=1e-9)
+        # p_return is a silence-conditioned hazard probability, not the
+        # histogram ratio (which is 1.0 for this fixture) and not the
+        # unconditional posterior 202608100003 used.
         assert row["p_return"] < 1.0
+        assert row["p_return"] != pytest.approx(
+            warm_p_return_v2(20.0, 5.0, 0.0, 0.0, 300), abs=1e-9)
 
 
 def test_hazard_v2_without_index_keeps_stop_loss(tmp_path):

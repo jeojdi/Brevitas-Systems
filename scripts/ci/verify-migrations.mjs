@@ -238,6 +238,13 @@ export const expectedFreshMigrationOrder = [
   // forward verbatim; its precondition refuses to apply without them. Reads
   // usage_log.authoritative and writes no row of its own.
   'supabase/migrations/202608100009_onboarding_hosted_proxy_evidence.sql',
+  // Index convergence: the simulator-proven learned-index-fixed policy ported
+  // into warm_due_claim. Must stay after 202608100007, whose seventeen-argument
+  // warm_due_claim and twenty-seven-argument warm_decision_record it carries
+  // forward, after 202608100003, whose warm_customer_state_touch it carries and
+  // whose table it adds a column to, and after 202608100008, whose two
+  // compliance exports it carries forward.
+  'supabase/migrations/202608100010_warm_index_convergence.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -1048,7 +1055,9 @@ function verifyUpgradeHarnessCoverage() {
 // Advanced again to 202608100010 when 202608100009 (hosted-proxy onboarding
 // evidence) consumed 202608100009. Same rule as every bump above it: the cutoff
 // is the next UNUSED number, so it keeps governing the head.
-const REVERSE_POSTURE_CUTOFF = '202608100010'
+// Advanced again as 202608100010 landed: the cutoff is the next UNUSED
+// migration number, so it must stay ahead of the applied chain's head.
+const REVERSE_POSTURE_CUTOFF = '202608100011'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

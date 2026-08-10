@@ -610,6 +610,37 @@ def _warm_claim_kwargs() -> dict[str, Any]:
         # rows groups nothing, which is the same no-op as leaving this off.
         "parent_dedup": os.getenv("BREVITAS_WARM_PARENT_DEDUP", "false").lower()
                         in ("1", "true", "yes"),
+        # INDEX CONVERGENCE (202608100010). Four tunables of the converged
+        # learned-index-fixed policy, defaulted to the values the simulator run
+        # that converged actually used. They are NOT a flag: every one of them
+        # is inert unless BOTH BREVITAS_WARM_INDEX and BREVITAS_WARM_HAZARD_V2
+        # are on, because that is the pair the whole convergence delta sits
+        # inside. An operator who turns the pair on and configures none of these
+        # gets the policy the benchmark measured, which is the only default a
+        # knob like this may have.
+        #
+        # F4, the shrinkage prior: pseudo-exposure-hours of organization-prior
+        # weight on a customer's own bucket estimate, down from the 8.0 Phase 1
+        # pinned, and retired entirely once the customer has accumulated
+        # BREVITAS_WARM_HAZARD_EXPOSURE_MAJORITY_HOURS of engaged exposure --
+        # roughly two active days, against the three weeks the pinned prior
+        # took. Raising either makes the policy slower to trust a customer's
+        # own evidence, which is the inertness F4 exists to remove.
+        "prior_hours": _warm_bound(
+            "BREVITAS_WARM_HAZARD_PRIOR_HOURS", 2.0, 0.01, 1000.0),
+        "exposure_majority_hours": _warm_bound(
+            "BREVITAS_WARM_HAZARD_EXPOSURE_MAJORITY_HOURS", 48.0, 0.01, 100_000.0),
+        # F5, the periodicity fast-path: the robust MAD/median above which an
+        # arm's recent gaps are not a clock, and how many predicted arrivals may
+        # pass unanswered before the phase model is treated as falsified and the
+        # arm handed back to the index path. Lowering the dispersion admits
+        # fewer arms to the fast path; raising the miss limit sustains a
+        # departed cron agent for longer, which is what the limit exists to
+        # stop.
+        "period_max_dispersion": _warm_bound(
+            "BREVITAS_WARM_PERIOD_MAX_DISPERSION", 0.20, 0.001, 1.0),
+        "period_miss_limit": _warm_bound(
+            "BREVITAS_WARM_PERIOD_MISS_LIMIT", 1.5, 0.1, 100.0),
     }
 
 

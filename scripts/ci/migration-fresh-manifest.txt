@@ -99,3 +99,4 @@ supabase/migrations/202608100006_warm_prefix_chain_tree.sql
 supabase/migrations/202608100007_warm_parent_dedup.sql
 supabase/migrations/202608100008_warm_prefix_tree_attribution.sql
 supabase/migrations/202608100009_onboarding_hosted_proxy_evidence.sql
+supabase/migrations/202608100010_warm_index_convergence.sql

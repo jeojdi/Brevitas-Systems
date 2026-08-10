@@ -19,8 +19,8 @@ declare
     v_peer uuid := '00000000-0000-4000-8000-0000000d0004';
     v_hash_lead text := repeat('d1', 32);
     v_hash_peer text := repeat('d2', 32);
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
-    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean,numeric,numeric,numeric,numeric)';
+    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text,numeric)';
     v_root text := md5('dedup-root-a') || md5('dedup-root-b');
     v_shared text := md5('dedup-shared-a') || md5('dedup-shared-b');
     v_leaf_lead text := md5('dedup-leaf-lead-a') || md5('dedup-leaf-lead-b');

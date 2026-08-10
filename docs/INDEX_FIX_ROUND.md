@@ -1,5 +1,80 @@
 # Index Fix Round — making the learned policy profitable (BINDING SPEC, queued behind Phase 1.5)
 
+## STATUS: PORTED — migration `202608100010_warm_index_convergence.sql`
+
+The converged policy is in the shipped scheduler. `scripts/warm_replay_sim.py`'s
+`LearnedIndexFixedPolicy` (commit 722688a) was the binding reference for every
+number; where this document and the simulator disagreed, the simulator won, because
+it is the thing that converged and this document predates F5–F7.
+
+**What landed.** F1–F4 as specified, plus the three additions the convergence run
+proved necessary: **F5** the median/MAD periodicity fast-path (3-gap engagement,
+2-missed-arrival falsification), **F6** the median-floored chain, and **F7** the
+shared-cache-key skip. The cold-start hold is stronger than F4 describes: it holds
+v1 semantics until `roi_min_arrivals`, not merely until the hazard row exists.
+
+**Flags are unchanged and still default-off.** Every line of the delta is reachable
+only when both `BREVITAS_WARM_INDEX` and `BREVITAS_WARM_HAZARD_V2` are on and the
+pair is not frozen. Four new env knobs (`BREVITAS_WARM_HAZARD_PRIOR_HOURS` 2.0,
+`BREVITAS_WARM_HAZARD_EXPOSURE_MAJORITY_HOURS` 48.0,
+`BREVITAS_WARM_PERIOD_MAX_DISPERSION` 0.20, `BREVITAS_WARM_PERIOD_MISS_LIMIT` 1.5)
+default to the converged simulator's values, so an operator who turns the pair on
+and configures nothing gets the policy the benchmark measured.
+
+**Schema.** Two columns, no new table: `warm_customer_state.recent_gaps` (F5's
+evidence) and `warm_decision_log.p_eff` (below). F7 needed no storage —
+`warm_prefixes.last_touch_at` is already stamped on every arrival and every warmed
+ping, which is exactly the simulator's `cache_warm_until`. Three decisions join the
+vocabulary: `skipped_organic`, `skipped_abandon`, `skipped_shared_warm`.
+
+### Where the shipped scheduler differs from the simulator, and what each costs
+
+1. **`I_max`'s read fraction is recovered, not read.** The simulator uses each
+   provider's true `read_cost_fraction`; the claim recovers `f = b/(1+b)` from the
+   per-provider break-even it already gates on, so the gate and the economics cannot
+   drift. Exact for providers whose break-even is derived (deepseek). For
+   `anthropic` the break-even is the operator's calibrated 0.11 rather than a derived
+   one, so `f` is 0.0991 against a true 0.10 and the abandon horizon runs **~1.2%
+   long** (3484s against 3450s). Cost: a handful of keep-alives per churned anthropic
+   arm per week, bounded by one `c_belief` each — sub-cent at current volumes. It is
+   the same approximation 202608100003's chain truncation already carried, in the
+   same direction, and it is now stated rather than inherited silently.
+2. **`spent_unknown` does not stamp the shared-key clock.** The simulator's settle
+   always warms; `warm_ping_settle` advances `last_touch_at` only on `warmed`,
+   because a `spent_unknown` ping may never have reached the provider. A sibling is
+   therefore re-pinged rather than skipped on warmth nobody can prove. Conservative
+   in the spend direction: costs at most one extra keep-alive per ambiguous settle.
+3. **F7 excludes the arm's own row.** The simulator's `cache_warm_until` conflates
+   own and sibling touches; it never matters there because a row's touch and its
+   `next_due_at` move together, so at the moment an arm becomes due its own warmth
+   has exactly the safety margin left and the comparison is an equality. Excluding
+   self is equivalent on every state a writer can produce and removes the failure
+   mode on states only a fixture can build. Zero dollar impact.
+4. **Gated arms are logged.** The simulator counts a gated arm; the claim writes a
+   `warm_decision_log` row with a null index. Strictly more information, no
+   behavioural difference.
+5. **The candidate window is still pre-ranked and truncated** at `claim_limit * 4`
+   by the Phase-1 approximate index (`n_chain = 0`, `p_alive = 1`) before the loop
+   rescores, where the simulator scores every eligible arm and then sorts. Pre-existing
+   from 202608100002, not introduced here; it can only matter when more than
+   `4 * claim_limit` arms are due in one tick.
+6. **`p_eff` is recorded rather than inferred.** F1 makes the ROI floor's probability
+   and the index's probability different numbers on purpose, which broke the Phase-1
+   identity `index = p_return * p_alive / b - 1 - n_chain`. Rather than leave the
+   index unreconstructible from its own log row, the effective probability is a
+   column. No simulator counterpart — the simulator has no log.
+7. **Numeric detail.** `warm_conv_survival` clamps its exponent at −50 (the same
+   clamp every other `exp()` in this schema carries; outcome-identical to twenty
+   digits), spells `log1p(x)` as `ln(1+x)`, and implements Python's half-to-**even**
+   rounding for `n_chain` because Postgres's `round()` is half-away-from-zero. Measured
+   cross-backend agreement on identical state: **3e-8** on every scored quantity.
+   Measured Python-vs-simulator agreement: **1e-9**, the residual being (1).
+8. **Sibling warmth is forgotten when a row is pruned.** The simulator remembers
+   `cache_warm_until` forever; the claim derives it from live `warm_prefixes` rows.
+   Prefix expiry is 7 days and the longest TTL is 4h, so the forgotten warmth is
+   always long stale. Unreachable in practice.
+
+
 **Trigger:** the 21-day synthetic-company benchmark (scripts/warm_replay_sim.py, `--synthetic company --report learning`) measured the shipped learned-index policy at **−$1.89 net vs v1's +$0.007** on the evaluation window. The simulator did its job; the flags stay off in production until this round lands and the benchmark flips. Diagnosis is precise (learning-test agent report, 2026-08-10); fixes below are exhaustive against it.
 
 ## The four defects and their fixes

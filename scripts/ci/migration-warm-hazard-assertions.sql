@@ -17,7 +17,7 @@ declare
     v_hash_a text := repeat('e1', 32);
     v_hash_b text := repeat('e2', 32);
     v_request uuid := '00000000-0000-4000-8000-0000000e0005';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean,numeric,numeric,numeric,numeric)';
     v_table text;
     v_column text;
     v_count integer;
@@ -231,8 +231,19 @@ begin
         -- chain_cost is n_chain PINGS priced at c_belief each -- the expected
         -- keep-alive dollars -- not at the (floored) ledger reservation, which
         -- is money safety for the daily ceiling and a different quantity.
+        -- p_eff USED to be re-derivable as p_return * p_alive, and this check
+        -- used to spell it that way. 202608100010's F1 makes the ROI floor's
+        -- probability and the index's probability different numbers on purpose
+        -- -- the floor gates on one TTL window, the index is charged over the
+        -- 1 + n_chain windows the chain commits money to -- so the effective
+        -- probability is recorded on the row and read from it here. The
+        -- identity being checked is unchanged; only where p_eff comes from is.
+        if v_row.p_eff is null then
+            raise exception 'a scored row must record the probability it was charged for: %',
+                to_jsonb(v_row);
+        end if;
         if abs(v_row.index_score
-               - (v_row.p_return * v_row.p_alive / 0.11 - 1
+               - (v_row.p_eff / 0.11 - 1
                   - round(v_row.chain_cost_usd / v_row.c_belief_usd))) > 1e-9 then
             raise exception 'index_score must be p_eff/b - 1 - n_chain: %',
                 to_jsonb(v_row);

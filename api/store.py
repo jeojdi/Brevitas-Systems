@@ -126,7 +126,11 @@ _WARM_SETTLE_OUTCOMES = frozenset({
 # ping the pre-dedup policy would have sent.
 _WARM_DECISIONS = frozenset({
     "pinged", "skipped_roi", "budget_denied", "cap_denied", "stopped", "holdout",
-    "skipped_lambda", "envelope_denied", "beta_denied", "dedup_deferred"})
+    "skipped_lambda", "envelope_denied", "beta_denied", "dedup_deferred",
+    # 202608100010, the three convergence gates. All three are reachable only
+    # with BOTH the index and hazard flags on, and all three mean the same
+    # thing: this arm is not worth buying at any probability.
+    "skipped_organic", "skipped_abandon", "skipped_shared_warm"})
 # Shared-parent group roles, mirroring 202608100007's CHECK.
 _WARM_DEDUP_ROLES = frozenset({"leader", "deferred"})
 # Per-provider minimum cacheable prefix, hard-coded exactly as the RPC does it:
@@ -327,7 +331,9 @@ def warm_index_components(p_return: float, break_even: float, reserve_usd: float
                           write_multiplier: float = 1.0,
                           p_alive: float = 1.0,
                           organic_multiplier: float = 1.0,
-                          n_chain: int = 0) -> dict[str, float | None]:
+                          n_chain: int = 0,
+                          p_eff_override: float | None = None
+                          ) -> dict[str, float | None]:
     """The dimensionless dollar index and its logged dollar components.
 
     Mirror of the index block in public.warm_due_claim (202608100002). With
@@ -361,7 +367,15 @@ def warm_index_components(p_return: float, break_even: float, reserve_usd: float
     pinning them at 1.0 can only OVERSTATE the index. The index gates spending,
     never billing.
     """
-    p_eff = float(p_return) * float(p_alive) * float(organic_multiplier)
+    # 202608100010. Phase 1's p_eff was always p_return * p_alive * organic, so
+    # the index could be re-derived from the logged row. F1 makes the ROI
+    # floor's probability and the index's probability different numbers on
+    # purpose -- the floor gates on one TTL window, the index is charged over
+    # the 1 + n_chain windows the chain commits to -- so the convergence scorer
+    # passes the second one in, and it is REPORTED rather than left inferable.
+    p_eff = (float(p_return) * float(p_alive) * float(organic_multiplier)
+             if p_eff_override is None
+             else float(p_eff_override) * float(organic_multiplier))
     reserve = float(reserve_usd)
     v_hit: float | None
     c_belief: float | None
@@ -395,6 +409,10 @@ def warm_index_components(p_return: float, break_even: float, reserve_usd: float
         "c_belief_usd": c_belief,
         "p_alive": float(p_alive),
         "organic_multiplier": float(organic_multiplier),
+        # The probability the index above was actually charged for. Equal to
+        # p_return * p_alive * organic whenever the convergence scorer did not
+        # run, which is every claim with either flag off.
+        "p_eff": min(1.0, max(0.0, p_eff)),
     }
 
 
@@ -638,6 +656,307 @@ def warm_chain_pings(hazard_rate: float, age_seconds: float,
     fraction = float(break_even) / (1.0 + float(break_even))
     i_max = tau * max(0.0, 1.0 / max(fraction, 1e-9) - 1.0)
     return max(0, math.ceil(min(gap, i_max) / tau) - 1)
+
+
+# --------------------------------------------------------------------------
+# INDEX CONVERGENCE (202608100010) -- F1..F7 of docs/INDEX_FIX_ROUND.md.
+#
+# Everything below is ADDITIVE. The Phase-1 estimators above are left byte for
+# byte alone, so a claim with either flag off keeps computing exactly what it
+# computed before; only a claim with BOTH BREVITAS_WARM_INDEX and
+# BREVITAS_WARM_HAZARD_V2 on reaches any of this.
+#
+# Ported from scripts/warm_replay_sim.py's LearnedIndexFixedPolicy, which is
+# the converged reference: the constants here are LITERALS on both sides of the
+# port for the same reason the half-life is, and the four tunables are RPC
+# arguments so the two backends and the migration cannot drift on them.
+# --------------------------------------------------------------------------
+
+# F4: shrinkage prior weight, 8 pseudo-exposure-hours -> 2.
+_WARM_PRIOR_HOURS_DEFAULT = 2.0
+# F4 exposure cap: the pseudo-hours are RETIRED in proportion to the customer's
+# own accumulated exposure, so their own evidence holds majority weight once
+# they have roughly this much engaged history. Exposure only accrues up to a
+# customer's last arrival, so it measures engaged time, not wall clock.
+_WARM_EXPOSURE_MAJORITY_HOURS_DEFAULT = 48.0
+_WARM_PRIOR_FLOOR_HOURS = 0.25
+# Hour-by-hour walk bound. 240 hours is ten days of horizon; past it the
+# decayed hazard is uniform over the week anyway.
+_WARM_LAMBDA_WALK_GUARD = 240
+# F5 periodicity detector.
+_WARM_PERIOD_MIN_GAPS = 3            # inter-arrival gaps before a period is claimed
+_WARM_PERIOD_WINDOW = 12             # how many recent gaps the state remembers
+_WARM_PERIOD_MAX_DISPERSION_DEFAULT = 0.20
+_WARM_PERIOD_MISS_LIMIT_DEFAULT = 1.5
+_WARM_PERIOD_MAX_CONFIDENCE = 0.98
+
+
+def warm_hazard_posterior(n_b: float, e_b: float, org_n_b: float,
+                          org_e_b: float, exposure_total: float,
+                          prior_hours: float,
+                          majority_hours: float) -> tuple[float, float]:
+    """(alpha, beta) of the Gamma posterior over one bucket's arrival rate.
+
+    warm_hazard_rate above returns exactly alpha/beta with the prior pinned at
+    8.0 and no exposure cap. Keeping the SHAPE as well as the mean is what makes
+    the silence conditioning in warm_convergence_score possible: a rate you are
+    certain about and a rate you merely guessed decay differently under evidence
+    of silence.
+
+    F4, both clauses. The prior decays as the customer accumulates engaged
+    exposure (majority weight by ~2 active days), AND it is capped at the
+    customer's own exposure in THIS bucket so their own evidence can never be
+    outvoted by the prior once they have any. Without the cap the shipped 8
+    pseudo-hours -- and even 2 -- still drag a six-arrivals-per-hour cron agent
+    down to 2/hour for its whole first week, which is the inertness F4 exists to
+    remove.
+    """
+    h_org = ((float(org_n_b) + _WARM_HAZARD_ALPHA0)
+             / (float(org_e_b) + _WARM_HAZARD_BETA0))
+    own = float(e_b)
+    ramped = float(prior_hours) * (
+        1.0 - min(1.0, float(exposure_total) / max(float(majority_hours), 1e-9)))
+    k = max(_WARM_PRIOR_FLOOR_HOURS,
+            min(ramped, max(own, _WARM_PRIOR_FLOOR_HOURS)))
+    return float(n_b) + k * h_org, own + k
+
+
+def warm_period_detect(gaps: list[float] | None,
+                       max_dispersion: float) -> tuple[float, float] | None:
+    """(period_seconds, confidence) if this arm looks like a clock, else None.
+
+    Robust autocorrelation on a series this short is just a noisy way of
+    computing what the median inter-arrival already says, so the detector is
+    median/MAD: the period is the median gap, and the evidence for calling it a
+    period is that the gaps cluster tightly around it. MAD rather than standard
+    deviation because one missed cron firing (a double-length gap) must not
+    disqualify an otherwise perfect clock -- the median absorbs it.
+    """
+    series = [float(gap) for gap in gaps or ()]
+    if len(series) < _WARM_PERIOD_MIN_GAPS:
+        return None
+    period = _warm_median(series)
+    if period <= 0.0:
+        return None
+    dispersion = _warm_median([abs(gap - period) for gap in series]) / period
+    if dispersion > float(max_dispersion):
+        return None
+    # Tight clustering is high confidence; the edge of the band is barely more
+    # than a coin flip, and the index arithmetic gets to see that honestly.
+    confidence = 1.0 - dispersion / float(max_dispersion) * 0.5
+    return period, min(_WARM_PERIOD_MAX_CONFIDENCE, max(0.5, confidence))
+
+
+def _warm_median(values: list[float]) -> float:
+    ordered = sorted(float(value) for value in values)
+    count = len(ordered)
+    if count == 0:
+        return 0.0
+    mid = count // 2
+    if count % 2:
+        return ordered[mid]
+    return 0.5 * (ordered[mid - 1] + ordered[mid])
+
+
+def warm_survival_conditional(alpha: float, beta_silent: float,
+                              lam_ahead: float, rate: float) -> float:
+    """S = P(NO arrival in the stretch worth `lam_ahead` expected arrivals |
+    silent so far), under the Gamma posterior.
+
+    P(no arrival) = E_theta[exp(-theta*h)] = (1 + h/beta)^(-alpha), the
+    Gamma-Poisson (negative binomial) survival. `beta_silent` already carries
+    the elapsed silence, which is the entire point: a customer who should have
+    arrived five times by now and did not has a posterior rate five times'
+    worth lower, and THAT is what makes the probability silence-conditioned
+    rather than the unconditional hourly hazard the Phase-1 index uses.
+    """
+    if alpha <= 0.0 or rate <= 1e-12 or lam_ahead <= 0.0:
+        return 1.0
+    hours_ahead = float(lam_ahead) / float(rate)
+    exponent = -float(alpha) * math.log1p(
+        min(1e9, hours_ahead / max(float(beta_silent), 1e-9)))
+    return math.exp(max(-_WARM_EXP_CLAMP, exponent))
+
+
+def warm_i_max_seconds(ttl_seconds: float, write_multiplier: float,
+                       break_even: float) -> float:
+    """I_max = ttl * (w/f - 1): sustaining a chain longer than this costs more
+    in read-priced keep-alives than the one write-priced miss it prevents.
+
+    f is recovered from the same per-provider break-even the claim already gates
+    on (b = f/(1-f) inverts to f = b/(1+b) exactly), for the same reason the
+    index dollars are: the gate and the economics cannot then drift apart.
+    """
+    fraction = max(float(break_even) / (1.0 + float(break_even)), 1e-9)
+    return max(0.0, float(ttl_seconds)
+               * (float(write_multiplier) / fraction - 1.0))
+
+
+def _warm_hour_segments(start: datetime, end: datetime) -> list[
+        tuple[float, float, str]]:
+    """[(offset_start_s, offset_end_s, hour_of_week_bucket)] from `start`.
+
+    Hour-of-week boundaries, so a horizon that runs off the end of a customer's
+    active window is priced bucket by bucket rather than flattened to an average
+    rate -- which is wrong in exactly the case that matters, where averaging a
+    customer's real rate with buckets they have never been seen in collapses the
+    near-window probability for no reason.
+    """
+    segments: list[tuple[float, float, str]] = []
+    cursor = start
+    steps = 0
+    while cursor < end and steps < _WARM_LAMBDA_WALK_GUARD:
+        nxt = min(end, cursor.replace(minute=0, second=0, microsecond=0)
+                  + timedelta(hours=1))
+        segments.append(((cursor - start).total_seconds(),
+                         (nxt - start).total_seconds(),
+                         _utc_hour_bucket(cursor)))
+        cursor = nxt
+        steps += 1
+    return segments
+
+
+def warm_convergence_score(
+        *, counts: dict[str, Any], exposure: dict[str, Any],
+        org_counts: dict[str, Any], org_exposure: dict[str, Any],
+        events_total: int, first_seen_at: datetime, state_last_seen_at: datetime,
+        prefix_last_seen_at: datetime, now: datetime,
+        recent_gaps: list[float] | None,
+        ttl_seconds: float, safety_margin_seconds: float, break_even: float,
+        write_multiplier: float, prior_hours: float, majority_hours: float,
+        period_max_dispersion: float,
+        period_miss_limit: float) -> dict[str, Any]:
+    """(p_return, p_alive, index, n_chain, path) for one candidate, F1+F3+F5+F6.
+
+    Mirror of scripts/warm_replay_sim.py LearnedIndexFixedPolicy._score and of
+    202608100010's block of the same name. The caller has already established
+    that both flags are on, the pair is not frozen, a state row exists and the
+    arm has cleared roi_min_arrivals -- the cold-start hold is the CALLER's,
+    because it must reproduce v1's decision byte for byte and this function
+    never computes v1.
+    """
+    exposure_total = math.fsum(float(value) for value in exposure.values())
+    tau = max(1.0, float(ttl_seconds) - float(safety_margin_seconds))
+    i_max = warm_i_max_seconds(ttl_seconds, write_multiplier, break_even)
+    silence = max(0.0, (now - prefix_last_seen_at).total_seconds())
+    p_alive = warm_p_alive(
+        int(events_total or 0),
+        max(0.0, (state_last_seen_at - first_seen_at).total_seconds()) / 86400.0,
+        max(0.0, (now - first_seen_at).total_seconds()) / 86400.0)
+
+    # -- F5: the clock path, taken before any renewal arithmetic -------------
+    detected = warm_period_detect(recent_gaps, period_max_dispersion)
+    if detected is not None:
+        period, confidence = detected
+        # A period inside the TTL is a self-refreshing arm; F2 owns that case
+        # and has already skipped it. Past `period_miss_limit` periods of
+        # silence two predicted arrivals have gone unanswered, the clock model
+        # is falsified -- a departed agent, not a slow one -- and the arm falls
+        # back to the index path, which prices the silence and abandons it.
+        # Without that a churned cron agent is sustained to I_max forever.
+        if (period > float(ttl_seconds)
+                and silence <= float(period_miss_limit) * period):
+            periods_elapsed = math.floor(silence / period) + 1
+            wait = (periods_elapsed * period) - silence
+            if wait <= i_max:
+                n_chain = max(0, math.ceil(wait / tau - 1e-9) - 1)
+                return {
+                    "p_return": confidence, "p_alive": p_alive,
+                    "n_chain": n_chain, "path": "periodic",
+                    "p_eff": confidence * p_alive,
+                }
+
+    bucket = _utc_hour_bucket(now)
+    alpha, beta = warm_hazard_posterior(
+        float(counts.get(bucket, 0.0)), float(exposure.get(bucket, 0.0)),
+        float(org_counts.get(bucket, 0.0)), float(org_exposure.get(bucket, 0.0)),
+        exposure_total, prior_hours, majority_hours)
+    rate = alpha / beta if beta > 0 else 0.0
+
+    # F1: fold the elapsed silence into the posterior. lam_silence is the
+    # arrivals this customer's own history says should have happened while they
+    # were quiet; dividing by the current rate expresses it in this bucket's
+    # exposure-hours so it can be added to beta.
+    lam_silence = 0.0
+    for seg_start, seg_end, seg_bucket in _warm_hour_segments(
+            now - timedelta(seconds=silence), now):
+        seg_alpha, seg_beta = warm_hazard_posterior(
+            float(counts.get(seg_bucket, 0.0)),
+            float(exposure.get(seg_bucket, 0.0)),
+            float(org_counts.get(seg_bucket, 0.0)),
+            float(org_exposure.get(seg_bucket, 0.0)),
+            exposure_total, prior_hours, majority_hours)
+        lam_silence += ((seg_alpha / seg_beta if seg_beta > 0 else 0.0)
+                        * (seg_end - seg_start) / 3600.0)
+    beta_silent = beta + (lam_silence / rate if rate > 1e-12 else 0.0)
+
+    k_max = max(0, int(i_max // tau))
+    horizon_s = max(float(ttl_seconds), k_max * tau)
+    segments = [
+        (seg_start, seg_end, warm_hazard_posterior(
+            float(counts.get(seg_bucket, 0.0)),
+            float(exposure.get(seg_bucket, 0.0)),
+            float(org_counts.get(seg_bucket, 0.0)),
+            float(org_exposure.get(seg_bucket, 0.0)),
+            exposure_total, prior_hours, majority_hours))
+        for seg_start, seg_end, seg_bucket
+        in _warm_hour_segments(now, now + timedelta(seconds=horizon_s))]
+
+    def _lam_to(seconds: float) -> float:
+        total = 0.0
+        for seg_start, seg_end, (seg_alpha, seg_beta) in segments:
+            if seconds <= seg_start:
+                break
+            total += ((seg_alpha / seg_beta if seg_beta > 0 else 0.0)
+                      * (min(seconds, seg_end) - seg_start) / 3600.0)
+        return total
+
+    def _p_within(seconds: float) -> float:
+        return min(1.0, max(0.0, 1.0 - warm_survival_conditional(
+            alpha, beta_silent, _lam_to(seconds), rate)))
+
+    # F1 proper: the single-TTL-window conditional return probability. This is
+    # what the ROI floor gates on and what the decision log records.
+    p_return = _p_within(float(ttl_seconds))
+
+    # F3: n_chain from the survival curve of that same conditional
+    # distribution -- the EXPECTED number of further keep-alives, which is
+    # sum_k P(still silent after k windows), truncated at I_max. It RISES as a
+    # session goes quiet instead of falling toward zero the way E_gap - age did.
+    expected = 0.0
+    median_k = 0
+    for k in range(1, k_max + 1):
+        still_silent = warm_survival_conditional(
+            alpha, beta_silent, _lam_to(k * tau), rate)
+        expected += still_silent
+        if still_silent >= 0.5:
+            # The last window the typical session is still waiting through.
+            median_k = k
+    n_chain = _warm_round_half_even(expected)
+    # F6: inside an active session, price the chain the typical session actually
+    # needs rather than the mean the heavy tail inflates. The I_max gate the
+    # caller already applied guarantees we are inside one.
+    n_chain = min(n_chain, median_k)
+    return {"p_return": p_return, "p_alive": p_alive, "n_chain": n_chain,
+            "path": "index",
+            "p_eff": _p_within((1 + n_chain) * tau) * p_alive}
+
+
+def _warm_round_half_even(value: float) -> int:
+    """Python's round(), spelled out so the Postgres mirror can match it.
+
+    round() in Python is half-to-even; round() in Postgres is half-away-from-
+    zero. The two disagree only at an exact .5, which a sum of survival
+    probabilities essentially never lands on -- but "essentially never" is not
+    the standard this file holds its two backends to.
+    """
+    floor = math.floor(value)
+    remainder = value - floor
+    if remainder > 0.5:
+        return int(floor) + 1
+    if remainder < 0.5:
+        return int(floor)
+    return int(floor) if int(floor) % 2 == 0 else int(floor) + 1
 
 
 def warm_regime_classify(counts: list[int]) -> tuple[str, float]:
@@ -2283,7 +2602,14 @@ class UsageStore:
             # warm_decision_log is per-customer behavioral evidence (erased with
             # the tenant); warm_ttl_observations is Plane G and deliberately
             # carries no tenant key, so tenant erasure must NOT touch it.
-            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT, index_score REAL, index_density REAL, v_hit_usd REAL, chain_cost_usd REAL, c_belief_usd REAL, p_alive REAL, organic_multiplier REAL, lambda_index REAL, dedup_group TEXT, dedup_role TEXT, dedup_group_size INTEGER, dedup_node_digest TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT, index_score REAL, index_density REAL, v_hit_usd REAL, chain_cost_usd REAL, c_belief_usd REAL, p_alive REAL, organic_multiplier REAL, lambda_index REAL, dedup_group TEXT, dedup_role TEXT, dedup_group_size INTEGER, dedup_node_digest TEXT, p_eff REAL)")
+            # Idempotent for a database created before 202608100010's column,
+            # mirroring the migration's `add column if not exists`. p_eff is the
+            # probability the index was CHARGED for; since F1 that is not the
+            # same number as p_return, which is what the ROI floor gates on.
+            if "p_eff" not in {column[1] for column in db.execute(
+                    "PRAGMA table_info(warm_decision_log)").fetchall()}:
+                db.execute("ALTER TABLE warm_decision_log ADD COLUMN p_eff REAL")
             decision_columns = {
                 r[1] for r in db.execute("PRAGMA table_info(warm_decision_log)")}
             # Dev/test mirror of 202608090002_warm_reward_join.sql.
@@ -2321,7 +2647,14 @@ class UsageStore:
             # warm_modeling_suppression is the erasure memory the observer
             # consults before it writes anything; it has no retention horizon
             # here for the same reason it has none in Postgres.
-            db.execute("CREATE TABLE IF NOT EXISTS warm_customer_state (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, customer_key_hmac TEXT NOT NULL DEFAULT '', hazard_n TEXT NOT NULL DEFAULT '{}', hazard_e TEXT NOT NULL DEFAULT '{}', events_total INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_update_at TEXT NOT NULL, regime TEXT NOT NULL DEFAULT 'unknown', regime_score REAL, regime_updated_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(organization_id,customer_id,provider))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_customer_state (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, customer_key_hmac TEXT NOT NULL DEFAULT '', hazard_n TEXT NOT NULL DEFAULT '{}', hazard_e TEXT NOT NULL DEFAULT '{}', events_total INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_update_at TEXT NOT NULL, regime TEXT NOT NULL DEFAULT 'unknown', regime_score REAL, regime_updated_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, recent_gaps TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(organization_id,customer_id,provider))")
+            # Idempotent for a database created before 202608100010's column.
+            # The last twelve inter-arrival gaps in seconds, newest last: the
+            # only evidence the periodicity fast-path reasons over.
+            if "recent_gaps" not in {column[1] for column in db.execute(
+                    "PRAGMA table_info(warm_customer_state)").fetchall()}:
+                db.execute("ALTER TABLE warm_customer_state ADD COLUMN "
+                           "recent_gaps TEXT NOT NULL DEFAULT '[]'")
             db.execute("CREATE TABLE IF NOT EXISTS warm_modeling_suppression (organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, suppressed_at TEXT NOT NULL, PRIMARY KEY(organization_id,customer_id))")
             db.execute("CREATE INDEX IF NOT EXISTS warm_customer_state_tenant_idx ON warm_customer_state(organization_id, provider)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_customer_state_retention_idx ON warm_customer_state(last_seen_at)")
@@ -4125,7 +4458,8 @@ class UsageStore:
             dedup_group: str | None = None,
             dedup_role: str | None = None,
             dedup_group_size: int | None = None,
-            dedup_node_digest: str | None = None) -> None:
+            dedup_node_digest: str | None = None,
+            p_eff: float | None = None) -> None:
         """Mirror of public.warm_decision_record, on an open transaction.
 
         Called from inside warm_due_claim's critical section, so its checks are
@@ -4154,6 +4488,7 @@ class UsageStore:
                 or (chain_cost_usd is not None and float(chain_cost_usd) < 0)
                 or (c_belief_usd is not None and float(c_belief_usd) < 0)
                 or (p_alive is not None and not 0 <= float(p_alive) <= 1)
+                or (p_eff is not None and not 0 <= float(p_eff) <= 1)
                 or (organic_multiplier is not None and float(organic_multiplier) < 0)
                 or (lambda_index is not None and float(lambda_index) < 0)
                 or (claim_token is not None and decision != "pinged")
@@ -4172,8 +4507,8 @@ class UsageStore:
             "ewma_interarrival_s,arrival_count,pings_today,claim_token,rng_seed,"
             "propensity,index_score,index_density,v_hit_usd,chain_cost_usd,"
             "c_belief_usd,p_alive,organic_multiplier,lambda_index,"
-            "dedup_group,dedup_role,dedup_group_size,dedup_node_digest) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "dedup_group,dedup_role,dedup_group_size,dedup_node_digest,p_eff) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (organization_id, customer_id, provider, prefix_hash, now.isoformat(),
              decision, float(p_return), float(roi_floor), float(reserve_usd),
              int(prefix_tokens),
@@ -4193,7 +4528,8 @@ class UsageStore:
              None if lambda_index is None else float(lambda_index),
              dedup_group or None, dedup_role or None,
              None if dedup_group_size is None else int(dedup_group_size),
-             dedup_node_digest or None))
+             dedup_node_digest or None,
+             None if p_eff is None else float(p_eff)))
 
     def warm_usage_stamp_prefix(self, organization_id: str, key_hash: str,
                                 request_id: str,
@@ -4649,8 +4985,8 @@ class UsageStore:
         """
         row = db.execute(
             "SELECT hazard_n,hazard_e,events_total,first_seen_at,last_seen_at,"
-            "last_update_at FROM warm_customer_state WHERE organization_id=? "
-            "AND customer_id=? AND provider=?",
+            "last_update_at,recent_gaps FROM warm_customer_state WHERE "
+            "organization_id=? AND customer_id=? AND provider=?",
             (organization_id, customer_id, provider)).fetchone()
         state = None
         if row:
@@ -4664,14 +5000,25 @@ class UsageStore:
             }
         touched = warm_hazard_touch(state, now)
         if row:
+            # F5 (202608100010). The gap this arrival just closed, appended to
+            # the twelve-entry window the periodicity detector reads. `state`
+            # still carries the PREVIOUS arrival's last_seen_at, which is
+            # exactly the gap the simulator records. The INSERT branch below
+            # writes no gap because a first arrival closes none.
+            gaps = json.loads(row["recent_gaps"] or "[]")
+            gap = (now - state["last_seen_at"]).total_seconds()
+            if gap > 0:
+                gaps = ([*gaps, gap])[-_WARM_PERIOD_WINDOW:]
             db.execute(
                 "UPDATE warm_customer_state SET hazard_n=?,hazard_e=?,"
-                "events_total=?,last_seen_at=?,last_update_at=?,updated_at=? "
+                "events_total=?,last_seen_at=?,last_update_at=?,updated_at=?,"
+                "recent_gaps=? "
                 "WHERE organization_id=? AND customer_id=? AND provider=?",
                 (json.dumps(touched["hazard_n"]), json.dumps(touched["hazard_e"]),
                  int(touched["events_total"]),
                  touched["last_seen_at"].isoformat(),
                  touched["last_update_at"].isoformat(), now.isoformat(),
+                 json.dumps(gaps),
                  organization_id, customer_id, provider))
         else:
             db.execute(
@@ -4975,6 +5322,16 @@ class UsageStore:
                        hazard_v2: bool = False,
                        beta: float | None = 0.0,
                        parent_dedup: bool = False,
+                       # INDEX CONVERGENCE (202608100010). All four are inert
+                       # unless BOTH index_enabled and hazard_v2 are true, and
+                       # all four default to the value the converged simulator
+                       # run used, so a caller that predates this migration
+                       # gets the converged policy rather than an
+                       # unconfigured one.
+                       prior_hours: float | None = None,
+                       exposure_majority_hours: float | None = None,
+                       period_max_dispersion: float | None = None,
+                       period_miss_limit: float | None = None,
                        ) -> dict[str, Any]:
         # Nulls coalesce to the RPC's own defaults, so a caller that predates
         # Phase 1 and a caller that passes None land on the same numbers.
@@ -4984,6 +5341,20 @@ class UsageStore:
         # denies everything, which is right for an operator who armed the cap
         # with no control data and wrong for one who never armed it.
         beta_multiple = 0.0 if beta is None else float(beta)
+        # Nulls coalesce to the RPC's own defaults, which are the simulator's
+        # converged values, so a caller that passes None and a caller that
+        # passes nothing land on the same policy.
+        prior_hours = (_WARM_PRIOR_HOURS_DEFAULT if prior_hours is None
+                       else float(prior_hours))
+        exposure_majority_hours = (
+            _WARM_EXPOSURE_MAJORITY_HOURS_DEFAULT
+            if exposure_majority_hours is None else float(exposure_majority_hours))
+        period_max_dispersion = (
+            _WARM_PERIOD_MAX_DISPERSION_DEFAULT if period_max_dispersion is None
+            else float(period_max_dispersion))
+        period_miss_limit = (
+            _WARM_PERIOD_MISS_LIMIT_DEFAULT if period_miss_limit is None
+            else float(period_miss_limit))
         if (not 0 <= float(holdout_fraction) <= 1
                 or not 1 <= int(claim_limit) <= 500
                 or not 0 <= float(reserve_usd_per_mtok) <= 1000
@@ -4996,7 +5367,11 @@ class UsageStore:
                 or not 60 <= int(claim_lease_seconds) <= 7_200
                 or not 0.01 <= eta <= 2.0
                 or not 0 <= lambda_ceiling <= 1_000_000
-                or not 0 <= beta_multiple <= 100):
+                or not 0 <= beta_multiple <= 100
+                or not 0 < prior_hours <= 1000
+                or not 0 < exposure_majority_hours <= 100_000
+                or not 0 < period_max_dispersion <= 1
+                or not 0 < period_miss_limit <= 100):
             raise ValueError("warm claim bounds are invalid")
         # Mirrors the warm_due_claim RPC's jsonb validation (migration
         # 202607280003): provider -> break-even probability, providers not in
@@ -5120,6 +5495,108 @@ class UsageStore:
                                    / max(int(row["arrival_count"]), 1))
                     break_even = float(by_provider.get(row["provider"],
                                                        roi_break_even_p))
+                    # v1's answer, kept before anything can overwrite it: the
+                    # cold-start hold below has to be able to put it back.
+                    p_return_v1 = p_return
+                    # Set by the convergence block, read by the index below.
+                    # None means the block did not run, which is every claim
+                    # with either flag off.
+                    conv_p_eff: float | None = None
+                    frozen = bool(row["warm_frozen"])
+                    prefix_last_seen = datetime.fromisoformat(row["last_seen_at"])
+                    write_multiplier = warm_write_multiplier(
+                        row["provider"], int(row["provider_ttl_seconds"] or 0))
+
+                    # ==========================================================
+                    # THE CONVERGENCE GATES (202608100010). F2, F3 and F7 of
+                    # docs/INDEX_FIX_ROUND.md, mirroring the block of the same
+                    # name in the migration.
+                    #
+                    # All three are pure functions of the candidate row and the
+                    # provider constants -- no model, no state row, no hazard
+                    # walk -- and all three say the same thing: this arm is not
+                    # worth buying at any probability. They run before the
+                    # hazard read for that reason, and they are the only place
+                    # here that records a decision with no index attached, which
+                    # is honest: there is no index, because nothing was scored.
+                    # ==========================================================
+                    conv_gate: str | None = None
+                    if index_enabled and hazard_v2 and not frozen:
+                        i_max = warm_i_max_seconds(
+                            int(row["provider_ttl_seconds"]), write_multiplier,
+                            break_even)
+                        silence = max(
+                            0.0, (now - prefix_last_seen).total_seconds())
+                        ewma = row["ewma_interarrival_s"]
+                        if (ewma is not None
+                                and float(ewma) < float(row["provider_ttl_seconds"])):
+                            # F2. The customer arrives more often than the entry
+                            # expires, so they refresh it themselves for free
+                            # and every keep-alive bought is a duplicate of a
+                            # write their own traffic already made. A GATE, not
+                            # a multiplier: the region it removes is
+                            # catastrophic rather than uncertain, so it does not
+                            # wait for the control arm.
+                            conv_gate = "skipped_organic"
+                        elif silence > i_max:
+                            # F3. Past I_max the chain needed to bridge this
+                            # silence costs more than the single write-priced
+                            # miss it would prevent, for every p <= 1. Letting
+                            # the entry lapse and re-warming on the next real
+                            # arrival is arithmetically better.
+                            conv_gate = "skipped_abandon"
+                        else:
+                            # F7. The provider's cache is keyed by
+                            # (organization, prefix), not by customer, so every
+                            # one of an organization's arms on this prefix_hash
+                            # is bidding to keep ONE entry warm. last_touch_at
+                            # is stamped by warm_prefix_observe on every arrival
+                            # and by warm_ping_settle on every warmed ping, so
+                            # its max over the siblings IS the moment that entry
+                            # was last refreshed by anybody.
+                            #
+                            # OTHER arms only. An arm can never skip on warmth
+                            # it bought itself: its own touch and its own
+                            # next_due_at move together, so at the moment it
+                            # becomes due its own warmth has exactly the safety
+                            # margin left and the test below is an equality
+                            # rather than a strict inequality. Excluding self
+                            # says that out loud.
+                            # NULLIF on both, because this mirror stores
+                            # timestamps as TEXT and a row written before
+                            # 202608090001's column existed carries '' rather
+                            # than NULL. An empty string is not a touch, and
+                            # parsing one as if it were is how a fixture
+                            # becomes an exception on a money path.
+                            touch = db.execute(
+                                "SELECT MAX(COALESCE(NULLIF(sibling.last_touch_at,''),"
+                                "NULLIF(sibling.last_seen_at,''))) AS touched FROM "
+                                "warm_prefixes sibling WHERE "
+                                "sibling.organization_id=? AND sibling.provider=? "
+                                "AND sibling.prefix_hash=? AND sibling.customer_id<>?",
+                                (row["organization_id"], row["provider"],
+                                 row["prefix_hash"], row["customer_id"])).fetchone()
+                            touched = (touch["touched"] if touch else None) or ""
+                            if touched:
+                                warm_for = ((datetime.fromisoformat(touched)
+                                             - now).total_seconds()
+                                            + float(row["provider_ttl_seconds"]))
+                                if warm_for > float(safety_margin_seconds):
+                                    conv_gate = "skipped_shared_warm"
+                    if conv_gate is not None:
+                        floor = (float(roi_min_p)
+                                 if int(row["arrival_count"]) < int(roi_min_arrivals)
+                                 else break_even)
+                        self._warm_decision_record_locked(
+                            db, row["organization_id"], row["customer_id"],
+                            row["provider"], row["prefix_hash"], conv_gate,
+                            p_return, floor,
+                            max(float(row["ping_reserve_usd"] or 0.0),
+                                round(float(reserve_usd_per_mtok)
+                                      * int(row["prefix_tokens"]) / 1_000_000.0, 10)),
+                            int(row["prefix_tokens"]), row["ewma_interarrival_s"],
+                            int(row["arrival_count"]), None, None, now)
+                        continue
 
                     # THE HAZARD MODEL (202608100003). Read only under the flag,
                     # and only when this customer HAS a state row that is not
@@ -5141,8 +5618,8 @@ class UsageStore:
                     frozen = bool(row["warm_frozen"])
                     hazard_state = db.execute(
                         "SELECT hazard_n,hazard_e,events_total,first_seen_at,"
-                        "last_seen_at FROM warm_customer_state WHERE "
-                        "organization_id=? AND customer_id=? AND provider=?",
+                        "last_seen_at,recent_gaps FROM warm_customer_state "
+                        "WHERE organization_id=? AND customer_id=? AND provider=?",
                         (row["organization_id"], row["customer_id"],
                          row["provider"])).fetchone() if (
                              hazard_v2 and not frozen) else None
@@ -5193,6 +5670,61 @@ class UsageStore:
                             rate, (now - last_seen).total_seconds(),
                             int(row["provider_ttl_seconds"]),
                             int(safety_margin_seconds), break_even)
+
+                        # ==============================================
+                        # INDEX CONVERGENCE (202608100010). F1, F4, F5 and
+                        # F6, plus the cold-start hold. Everything above
+                        # stays computed, because a claim that does not
+                        # reach here must be able to use it unchanged.
+                        # ==============================================
+                        if (index_enabled and int(row["arrival_count"])
+                                < int(roi_min_arrivals)):
+                            # COLD START HOLDS v1, and holds it for as long
+                            # as v1 itself admits it has no evidence. Phase
+                            # 1 took its flat-prior branch only when the
+                            # state ROW was absent -- for exactly one
+                            # arrival -- and then scored from a posterior
+                            # built on a single observation, which is what
+                            # left the learned policy earning nothing over a
+                            # customer's first session while v1 was already
+                            # bridging their gaps. Putting back all three v1
+                            # values, not just p_return, is what makes the
+                            # decision byte-identical to the flag-off one.
+                            p_return = p_return_v1
+                            hazard_p_alive = None
+                            hazard_chain = 0
+                        elif index_enabled:
+                            scored = warm_convergence_score(
+                                counts=json.loads(
+                                    hazard_state["hazard_n"] or "{}"),
+                                exposure=json.loads(
+                                    hazard_state["hazard_e"] or "{}"),
+                                org_counts=json.loads(
+                                    (aggregate["hazard_n"] if aggregate
+                                     else "") or "{}"),
+                                org_exposure=json.loads(
+                                    (aggregate["hazard_e"] if aggregate
+                                     else "") or "{}"),
+                                events_total=int(
+                                    hazard_state["events_total"] or 0),
+                                first_seen_at=first_seen,
+                                state_last_seen_at=last_seen,
+                                prefix_last_seen_at=prefix_last_seen,
+                                now=now,
+                                recent_gaps=json.loads(
+                                    hazard_state["recent_gaps"] or "[]"),
+                                ttl_seconds=int(row["provider_ttl_seconds"]),
+                                safety_margin_seconds=int(safety_margin_seconds),
+                                break_even=break_even,
+                                write_multiplier=write_multiplier,
+                                prior_hours=prior_hours,
+                                majority_hours=exposure_majority_hours,
+                                period_max_dispersion=period_max_dispersion,
+                                period_miss_limit=period_miss_limit)
+                            p_return = scored["p_return"]
+                            hazard_p_alive = scored["p_alive"]
+                            hazard_chain = scored["n_chain"]
+                            conv_p_eff = scored["p_eff"]
 
                     # THE GROUP'S RETURN PROBABILITY (202608100007),
                     # DIAGNOSTIC ONLY. The leader's ping is arguably worth a
@@ -5263,7 +5795,12 @@ class UsageStore:
                                      int(row["provider_ttl_seconds"] or 0)),
                                  p_alive=(1.0 if hazard_p_alive is None
                                           else hazard_p_alive),
-                                 n_chain=hazard_chain)
+                                 n_chain=hazard_chain,
+                                 # 202608100010: None whenever the
+                                 # convergence scorer did not run, and then
+                                 # warm_index_components computes exactly
+                                 # 202608100007's p_return * p_alive.
+                                 p_eff_override=conv_p_eff)
                              if index_enabled else None)
                     # GROUPED: the value a return realizes is the value of the
                     # SHARED span -- the group node's token_cum -- not the
@@ -8257,6 +8794,16 @@ class SupabaseUsageStore:
                        hazard_v2: bool = False,
                        beta: float | None = 0.0,
                        parent_dedup: bool = False,
+                       # INDEX CONVERGENCE (202608100010). All four are inert
+                       # unless BOTH index_enabled and hazard_v2 are true, and
+                       # all four default to the value the converged simulator
+                       # run used, so a caller that predates this migration
+                       # gets the converged policy rather than an
+                       # unconfigured one.
+                       prior_hours: float | None = None,
+                       exposure_majority_hours: float | None = None,
+                       period_max_dispersion: float | None = None,
+                       period_miss_limit: float | None = None,
                        ) -> dict[str, Any]:
         rows = self._request("POST", "rpc/warm_due_claim", data={
             "p_claim_limit": int(claim_limit),
@@ -8297,6 +8844,18 @@ class SupabaseUsageStore:
             # state: no temp table is created, no group is formed, no candidate
             # is deferred and the loop is 202608100005's.
             "p_parent_dedup": bool(parent_dedup),
+            # null lets the RPC apply its own defaults, which are the four
+            # numbers the SQLite mirror coalesces to and the four the
+            # converged simulator run used.
+            "p_prior_hours": (None if prior_hours is None else float(prior_hours)),
+            "p_exposure_majority_hours": (
+                None if exposure_majority_hours is None
+                else float(exposure_majority_hours)),
+            "p_period_max_dispersion": (
+                None if period_max_dispersion is None
+                else float(period_max_dispersion)),
+            "p_period_miss_limit": (
+                None if period_miss_limit is None else float(period_miss_limit)),
         }) or []
         if rows and rows[0].get("status") == "lease_unavailable":
             return {"status": "lease_unavailable", "rows": []}

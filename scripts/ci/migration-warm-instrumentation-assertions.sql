@@ -31,7 +31,8 @@ begin
     if to_regprocedure('public.warm_ttl_observe(text,text,text,numeric,text,text)') is null
        or to_regprocedure('public.warm_ttl_tier(integer)') is null
        or to_regprocedure('public.warm_decision_settle_outcome(uuid,text)') is null
-       or to_regprocedure('public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text)') is null
+       or to_regprocedure('public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text,numeric)') is null
+       or to_regprocedure('public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text)') is not null
        -- 202608100006 widened this to fourteen arguments (the salted prefix
        -- chain) and dropped the eleven-argument form this migration installed;
        -- what stays pinned is that neither retired shape survives.

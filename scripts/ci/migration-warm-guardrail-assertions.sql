@@ -16,7 +16,7 @@ declare
     v_hash_b text := repeat('b3', 32);
     v_tenant_request uuid := '00000000-0000-4000-8000-000000110005';
     v_export_request uuid := '00000000-0000-4000-8000-000000110006';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean,numeric,numeric,numeric,numeric)';
     v_day date := (clock_timestamp() at time zone 'utc')::date;
     v_bucket text;
     v_table text;

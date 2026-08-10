@@ -17,7 +17,7 @@ declare
     v_request uuid := '00000000-0000-4000-8000-0000000f0005';
     v_tenant_request uuid := '00000000-0000-4000-8000-0000000f0006';
     v_export_request uuid := '00000000-0000-4000-8000-0000000f0008';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean,numeric,numeric,numeric,numeric)';
     v_settle_signature text := 'public.warm_ping_settle(uuid,uuid,text,text,date,numeric,numeric,text,integer,integer,uuid)';
     v_period date := date_trunc('month', ((clock_timestamp() at time zone 'utc')::date)::timestamp)::date;
     v_bucket text;
