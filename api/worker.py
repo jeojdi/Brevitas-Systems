@@ -75,6 +75,7 @@ from .observability import (
     BillingTelemetryAdapter,
     graceful_observability_shutdown,
     observe_job,
+    record_warm_ping,
 )
 from brevitas.observability import StructuredLogger, configure_json_logging
 from brevitas.provider_reliability import (
@@ -893,6 +894,13 @@ async def _warm_one(row: dict, cycle_ts: int, safety_margin_seconds: int) -> Non
             )
         except Exception as exc:
             logger.error("warm_settle_failed", error_type=type(exc).__name__)
+        # Scrape mirror, after the settle and never in front of it: the ledger is
+        # the money and this is a number an operator reads. Only 'warmed' carries
+        # a priced receipt, so only 'warmed' contributes dollars -- the same rule
+        # the settle call above applies, so the counter and the ledger cannot
+        # disagree about what warming cost.
+        record_warm_ping(outcome=outcome,
+                         spent_usd=spent_usd if outcome == "warmed" else 0.0)
         # Close the loop on the logged decision. Strictly after the settle and
         # in its own guard: the decision log is analytics, and nothing about it
         # may delay, precede or fail the money path. A claim whose decision row

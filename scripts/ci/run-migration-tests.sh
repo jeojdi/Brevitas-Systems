@@ -295,6 +295,11 @@ run_forward_assertions() {
     --file scripts/ci/migration-durable-onboarding-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-onboarding-local-proxy-assertions.sql
+  # 202608100009's second lane. Must follow the local-proxy suite: that file
+  # asserts the device lane still stands, and this one asserts a hosted org with
+  # none of the device furniture now stands on its own.
+  psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
+    --file scripts/ci/migration-onboarding-hosted-proxy-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \
     --file scripts/ci/migration-billing-customer-owner-fencing-assertions.sql
   psql "${DATABASE_URL}" --no-psqlrc --set ON_ERROR_STOP=1 \

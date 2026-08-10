@@ -120,12 +120,16 @@ begin
         v_forged_installation_id, v_company_id, v_forged_device_id, 'test',
         'bvx', '9.9.9', now(), now()
     );
+    -- authoritative=false: this assertion measures the FORGED-installation
+    -- rejection, and 202608100009's hosted lane accepts an authoritative proxy
+    -- receipt on its own, which would satisfy onboarding before the forgery
+    -- could be detected.
     insert into public.usage_log(
         key_hash, owner_id, organization_id, ts, authoritative,
         receipt_source, request_id, baseline_tokens, optimized_tokens
     ) values (
         v_key_hash, v_owner_id::text, v_company_id, now() - interval '2 seconds',
-        true, 'proxy', 'durable-onboarding-forged-0003', 10, 10
+        false, 'proxy', 'durable-onboarding-forged-0003', 10, 10
     );
     v_status := public.complete_organization_onboarding(
         v_owner_id, v_company_id, 'durable-onboarding-forged-check-0004'
@@ -178,29 +182,43 @@ begin
         raise exception 'SDK telemetry completed onboarding';
     end if;
 
-    -- A server-authoritative proxy row from a non-device key remains
-    -- insufficient even within the same company.
+    -- A proxy row from a non-device key remains insufficient FOR THE DEVICE
+    -- LANE even within the same company.
+    --
+    -- CONTRACT CHANGE, 202608100009. This row used to be authoritative=true and
+    -- this suite asserted that an authoritative non-device proxy receipt could
+    -- never complete onboarding. That is exactly the rule the hosted lane
+    -- deliberately reverses: a hosted customer has no device key at all, and an
+    -- authoritative receipt -- writable only by the in-process hosted bridge --
+    -- is now evidence in its own right. The row is therefore
+    -- authoritative=false here, so this file keeps measuring the thing it
+    -- exists to measure (the device-key binding) instead of accidentally
+    -- measuring the second lane. The second lane has its own suite:
+    -- scripts/ci/migration-onboarding-hosted-proxy-assertions.sql.
     insert into public.usage_log(
         key_hash, owner_id, organization_id, authoritative,
         receipt_source, request_id, baseline_tokens, optimized_tokens
     ) values (
-        v_non_device_key_hash, v_owner_id::text, v_company_id, true,
+        v_non_device_key_hash, v_owner_id::text, v_company_id, false,
         'proxy', 'durable-onboarding-non-device-0007', 10, 10
     );
     v_status := public.complete_organization_onboarding(
         v_owner_id, v_company_id, 'durable-onboarding-non-device-check-0008'
     );
     if v_status->>'status' <> 'pending' then
-        raise exception 'non-device authoritative receipt completed onboarding';
+        raise exception 'non-device proxy receipt completed onboarding';
     end if;
 
     -- A device-key proxy row is still insufficient when it is not the exact key
-    -- bound by the installation registration transaction.
+    -- bound by the installation registration transaction. authoritative=false
+    -- for the same reason as the row above: the device lane is what this
+    -- assertion measures, and an authoritative row would satisfy the hosted lane
+    -- (202608100009) before the mismatch could be detected.
     insert into public.usage_log(
         key_hash, owner_id, organization_id, authoritative,
         receipt_source, request_id, baseline_tokens, optimized_tokens
     ) values (
-        v_mismatch_key_hash, v_owner_id::text, v_company_id, true,
+        v_mismatch_key_hash, v_owner_id::text, v_company_id, false,
         'proxy', 'durable-onboarding-key-mismatch-0009', 10, 10
     );
     v_status := public.complete_organization_onboarding(

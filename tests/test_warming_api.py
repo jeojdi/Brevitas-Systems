@@ -953,3 +953,69 @@ def test_attribution_endpoint_org_scoped_role_gated_and_shape(tmp_path,
     # No digest, no path, no prefix hash anywhere in the response.
     assert "digest" not in _body_text(body)
     assert "s1.k1." not in _body_text(body)
+
+
+def test_warm_enabled_cache_is_keyed_per_customer_not_per_organization(
+        tmp_path, monkeypatch):
+    """One customer's warm answer must never be served to a sibling.
+
+    docs/SECURITY_AUDIT_2026-07-30.md:437 flagged this cache as keyed on the
+    organization alone while `customer_id` was being passed in, and it was never
+    fixed. It is the same defect the audit DID fix on _cache_enabled_cached, and
+    the fix is the same composite key.
+
+    NOTE ON WHAT IS AND IS NOT PROVABLE TODAY: both UsageStore.warm_enabled and
+    SupabaseUsageStore.warm_enabled currently answer at organization level and
+    ignore customer_id entirely, so a real per-customer divergence cannot be
+    produced through the store. This test therefore drives the store through a
+    stub that DOES diverge -- which is exactly the shape a per-customer override
+    will take -- and proves the cache carries the distinction through.
+    """
+    server, store, organization, client = _setup(tmp_path, monkeypatch, "warm-key")
+    organization_id = organization["id"]
+
+    class PerCustomer:
+        def warm_enabled(self, org, customer_id=""):
+            return customer_id == "customer-a"
+
+    monkeypatch.setattr(server, "_store", PerCustomer())
+    assert server._warm_enabled_cached(organization_id, "customer-a") is True
+    assert server._warm_enabled_cached(organization_id, "customer-b") is False
+    # ...and in the other order, from cold, so neither answer can be an artefact
+    # of which customer happened to ask first.
+    server._warm_enabled_cache.clear()
+    assert server._warm_enabled_cached(organization_id, "customer-b") is False
+    assert server._warm_enabled_cached(organization_id, "customer-a") is True
+    # The org-only caller keys on its own (org, "") slot, not on a customer's.
+    assert server._warm_enabled_cached(organization_id) is False
+
+    keys = {key for key, _value in server._warm_enabled_cache.items()}
+    assert f"{organization_id}\x00customer-a" in keys
+    assert f"{organization_id}\x00customer-b" in keys
+    assert organization_id not in keys
+
+
+def test_warming_consent_change_invalidates_every_customer_entry(
+        tmp_path, monkeypatch):
+    """Consent is org-level, so a change to it drops the whole org prefix.
+
+    The grant/revoke handlers used to `discard(organization_id)`, which stops
+    matching the moment the key becomes composite -- the fix for the leak would
+    otherwise have introduced a staleness bug in its place, leaving a revoked
+    organization warming for up to the cache TTL.
+    """
+    server, store, organization, client = _setup(tmp_path, monkeypatch, "warm-inval")
+    organization_id = organization["id"]
+
+    assert _enroll(client).status_code == 200
+    assert server._warm_enabled_cached(organization_id, "customer-a") is True
+    assert server._warm_enabled_cached(organization_id, "customer-b") is True
+
+    assert client.delete(
+        "/v1/warming/anthropic",
+        headers={"Authorization": "Bearer admin-session"}).status_code == 200
+
+    assert server._warm_enabled_cache.get(
+        f"{organization_id}\x00customer-a") is None
+    assert server._warm_enabled_cached(organization_id, "customer-a") is False
+    assert server._warm_enabled_cached(organization_id, "customer-b") is False

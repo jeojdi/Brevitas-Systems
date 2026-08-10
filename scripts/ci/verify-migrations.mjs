@@ -233,6 +233,11 @@ export const expectedFreshMigrationOrder = [
   // routines it restates. MEASURED-ONLY: it reads usage_log and writes only its
   // own three analytics tables.
   'supabase/migrations/202608100008_warm_prefix_tree_attribution.sql',
+  // Hosted-proxy onboarding evidence. Must stay after 202607280004, whose two
+  // onboarding RPCs it replaces and whose device-lane predicate it carries
+  // forward verbatim; its precondition refuses to apply without them. Reads
+  // usage_log.authoritative and writes no row of its own.
+  'supabase/migrations/202608100009_onboarding_hosted_proxy_evidence.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -841,7 +846,12 @@ function verifyDurableOnboardingContract() {
   for (const contract of [
     'forged unbound installation became onboarding evidence',
     'sdk telemetry completed onboarding',
-    'non-device authoritative receipt completed onboarding',
+    // Renamed by 202608100009: an AUTHORITATIVE non-device proxy receipt is now
+    // evidence on its own (the hosted lane), so the device-lane suite drives
+    // this case with a client-reported row instead. The contract the name
+    // guards -- "a non-device key does not satisfy the device lane" -- is
+    // unchanged; only the row's authority is.
+    'non-device proxy receipt completed onboarding',
     'registration-key/usage-key mismatch completed onboarding',
     'cross-tenant actor completed onboarding',
     'valid receipt-bound bvx proxy request did not complete onboarding',
@@ -1035,7 +1045,10 @@ function verifyUpgradeHarnessCoverage() {
 // from REVERSE_POSTURE_BACKFILL_FLOOR, not from the cutoff, so 202608100006 is
 // checked for its posture header exactly as every migration since 202607280013
 // is. The cutoff's own job is to stay ahead of the head, which it does.
-const REVERSE_POSTURE_CUTOFF = '202608100009'
+// Advanced again to 202608100010 when 202608100009 (hosted-proxy onboarding
+// evidence) consumed 202608100009. Same rule as every bump above it: the cutoff
+// is the next UNUSED number, so it keeps governing the head.
+const REVERSE_POSTURE_CUTOFF = '202608100010'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

@@ -308,6 +308,14 @@ def test_installation_on_activation_migration_registers_and_backfills():
 
 
 def test_onboarding_rejects_forged_install_and_mismatched_usage(tmp_path):
+    """The DEVICE lane's forgery resistance, in isolation from the hosted lane.
+
+    Every proxy row below is authoritative=False on purpose. 202608100009 added
+    a second, independent lane in which an AUTHORITATIVE proxy row is evidence on
+    its own -- so an authoritative row here would satisfy onboarding through that
+    lane and this test would stop measuring what it exists to measure, which is
+    that a forged installations row and a non-device key buy nothing.
+    """
     store = UsageStore(str(tmp_path / "forged-onboarding.db"))
     owner_id = "forged-owner"
     organization_id = store.ensure_organization(owner_id, "Forged")["id"]
@@ -327,8 +335,8 @@ def test_onboarding_rejects_forged_install_and_mismatched_usage(tmp_path):
     )
     store.record_usage(
         forged_key, 10, 10, owner_id=owner_id,
-        organization_id=organization_id, authoritative=True,
-        receipt_source="proxy", request_id="forged-authoritative-proxy",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="forged-client-reported-proxy",
     )
     status = store.onboarding_status(owner_id, organization_id)
     assert status["status"] == "pending"
@@ -351,8 +359,8 @@ def test_onboarding_rejects_forged_install_and_mismatched_usage(tmp_path):
     )
     store.record_usage(
         other_key, 10, 10, owner_id=owner_id,
-        organization_id=organization_id, authoritative=True,
-        receipt_source="proxy", request_id="wrong-key-authoritative",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="wrong-key-client-reported",
     )
     assert store.complete_onboarding(
         owner_id, organization_id, "wrong-key-onboarding-check",
@@ -360,8 +368,8 @@ def test_onboarding_rejects_forged_install_and_mismatched_usage(tmp_path):
 
     store.record_usage(
         hash_key(device_key), 10, 10, owner_id=owner_id,
-        organization_id=organization_id, authoritative=True,
-        receipt_source="proxy", request_id="matching-device-authoritative",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="matching-device-client-reported",
     )
     assert store.complete_onboarding(
         owner_id, organization_id, "matching-device-onboarding-check",
@@ -463,3 +471,144 @@ def test_supabase_invitation_acceptance_normalizes_frontend_contract():
         "status": "accepted",
     }
     assert calls[0][1] == "rpc/company_admin_accept_invitation"
+
+
+def test_onboarding_accepts_authoritative_hosted_proxy_traffic(tmp_path, monkeypatch):
+    """A hosted customer has no device key, no installation, and no `bvx login`.
+
+    Before 202608100009 the evidence predicate described exactly one topology --
+    a laptop that ran the CLI -- so this workspace could never leave "connect the
+    CLI" no matter how much money its traffic made. The two halves asserted here
+    are the whole fix: client-reported proxy traffic (authoritative=False, which
+    is what POST /v1/usage writes and what the tenant itself can send) is NOT
+    evidence, and an authoritative proxy receipt -- writable only by the hosted
+    in-process bridge -- is.
+    """
+    client, store = _client(tmp_path, monkeypatch, "hosted-owner")
+    created = client.post(
+        "/v1/organization/bootstrap",
+        json={"account_type": "company", "name": "Hosted Co"})
+    organization_id = created.json()["company_id"]
+
+    service_account = store.ensure_service_account(
+        organization_id, "production", created_by="hosted-owner")
+    key_hash = hash_key("bvt_service_hosted_owner")
+    store.create_key(
+        key_hash, "hosted service key", owner_id="hosted-owner",
+        organization_id=organization_id,
+        service_account_id=service_account["id"],
+        key_type="organization_service",
+        scopes=["proxy:invoke", "usage:write", "usage:read_own"],
+        created_by="hosted-owner", request_id="hosted-key-create-0001",
+        actor_role="company_owner",
+    )
+
+    # Client-reported: same receipt_source, no authority. Must not count.
+    store.record_usage(
+        key_hash, 10, 10, owner_id="hosted-owner",
+        organization_id=organization_id, authoritative=False,
+        receipt_source="proxy", request_id="hosted-client-reported-0002",
+    )
+    client_reported = client.get("/v1/organization/onboarding")
+    refused = client.post("/v1/organization/onboarding/complete")
+
+    assert client_reported.json()["cli_connected"] is False
+    assert client_reported.json()["proxied_request_observed"] is False
+    assert refused.status_code == 409
+
+    # Authoritative: the hosted bridge served the request itself.
+    store.record_usage(
+        key_hash, 10, 8, owner_id="hosted-owner",
+        organization_id=organization_id, authoritative=True,
+        receipt_source="proxy", request_id="hosted-authoritative-0003",
+    )
+    observed = client.get("/v1/organization/onboarding")
+    completed = client.post("/v1/organization/onboarding/complete")
+
+    assert observed.json()["cli_connected"] is True
+    assert observed.json()["proxied_request_observed"] is True
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "complete"
+    reopened = UsageStore(store.db_path)
+    assert reopened.onboarding_status(
+        "hosted-owner", organization_id)["status"] == "complete"
+    with reopened._conn() as db:
+        evidence_id, authoritative = db.execute(
+            "SELECT usage.id,usage.authoritative FROM usage_log usage "
+            "JOIN organizations organization "
+            "ON organization.onboarding_evidence_usage_id=usage.id "
+            "WHERE organization.id=?", (organization_id,)).fetchone()
+    # The recorded evidence is the AUTHORITATIVE row, not the client-reported
+    # one that shares its organization and receipt_source.
+    assert authoritative == 1
+    assert evidence_id > 0
+
+
+def test_hosted_lane_never_displaces_an_existing_device_evidence_row(
+        tmp_path, monkeypatch):
+    """A workspace that already had device evidence keeps naming the same receipt."""
+    client, store = _client(tmp_path, monkeypatch, "both-lanes-owner")
+    created = client.post(
+        "/v1/organization/bootstrap", json={"account_type": "individual"})
+    organization_id = created.json()["company_id"]
+
+    device_key = _configured_bvx_evidence(
+        store, organization_id, "both-lanes-owner", authoritative=False,
+        receipt_source="proxy", request_id="both-lanes-device-receipt",
+    )
+    with store._conn() as db:
+        device_row_id = db.execute(
+            "SELECT id FROM usage_log WHERE request_id=?",
+            ("both-lanes-device-receipt",)).fetchone()[0]
+    # A later hosted receipt must not become the recorded evidence.
+    store.record_usage(
+        hash_key(device_key), 10, 8, owner_id="both-lanes-owner",
+        organization_id=organization_id, authoritative=True,
+        receipt_source="proxy", request_id="both-lanes-hosted-receipt",
+    )
+
+    completed = client.post("/v1/organization/onboarding/complete")
+
+    assert completed.status_code == 200
+    with store._conn() as db:
+        recorded = db.execute(
+            "SELECT onboarding_evidence_usage_id FROM organizations WHERE id=?",
+            (organization_id,)).fetchone()[0]
+    assert recorded == device_row_id
+
+
+def test_hosted_proxy_evidence_migration_adds_a_second_lane_only():
+    raw = (Path(__file__).parent.parent / "supabase/migrations/"
+           "202608100009_onboarding_hosted_proxy_evidence.sql").read_text()
+    migration = "\n".join(
+        line for line in raw.splitlines() if not line.lstrip().startswith("--"))
+
+    # Both RPCs are re-issued, each carrying exactly one hosted lane. The
+    # three-predicate block is the lane's signature: receipt_source alone also
+    # appears in the device lane, so it cannot identify this one.
+    assert migration.count(
+        "and usage.authoritative\n"
+        "       and usage.receipt_source = 'proxy'\n"
+        "       and usage.ts >= v_started_at\n") == 2
+    assert migration.count("v_hosted_evidence_usage_id") == 8
+    # ...and the 202607280004 device lane is carried forward untouched: four
+    # device-key joins and four activation joins, exactly as before.
+    assert migration.count("credential.key_type = 'device'") == 4
+    assert migration.count("activation.action = 'device_key.activated'") == 4
+    assert migration.count("installation.device_auth_receipt_id is not null") == 4
+    # The lane's access path, and the precondition that refuses a first-time apply.
+    assert "usage_log_org_authoritative_proxy_idx" in migration
+    assert "where authoritative and receipt_source = 'proxy'" in migration
+    assert "202608100009 requires 202607280004 to be applied" in migration
+    # Same posture as every other SECURITY DEFINER onboarding routine.
+    assert migration.count("security definer") == 2
+    assert migration.count(
+        "from public, anon, authenticated, service_role") == 2
+    assert ("grant execute on function public.organization_onboarding_status"
+            "(uuid,uuid)\n    to service_role" in migration)
+    assert ("grant execute on function public.complete_organization_onboarding"
+            "(uuid,uuid,text)\n    to service_role" in migration)
+    # No table, no column, so no compliance/RLS surface is created here.
+    assert "create table" not in migration.lower()
+    assert "add column" not in migration.lower()
+    assert "-- REVERSE: DDL:" in raw

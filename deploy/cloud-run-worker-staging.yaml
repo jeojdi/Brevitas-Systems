@@ -54,6 +54,21 @@ spec:
               value: "1"
             - name: BREVITAS_KMS_READINESS_MAX_AGE_SECONDS
               value: "30"
+            # Same two flags as the API service, declared for the same reason:
+            # config that lives only in a dashboard is config nobody can review.
+            # The worker publishes no HTTP surface, so BREVITAS_METRICS_ENABLED
+            # is deliberately absent here — the warming counters it increments
+            # are readable only where a scrape endpoint exists.
+            - name: BREVITAS_CACHE_ENABLED
+              value: "true"
+            - name: BREVITAS_OTEL_ENABLED
+              value: "false"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_SERVICE_NAME
+              value: worker
             - name: BREVITAS_WORKER_BILLING_ROLE
               value: nonbilling
             - name: BREVITAS_BILLING_ENABLED

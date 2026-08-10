@@ -2560,7 +2560,29 @@ class UsageStore:
     def _onboarding_evidence(
             db: sqlite3.Connection, organization_id: str,
             started_at: str) -> tuple[bool, sqlite3.Row | None]:
+        """Mirror of 202608100009: onboarding evidence has TWO independent lanes.
+
+        Lane 2 (hosted) is checked first and stands alone. A hosted customer is
+        handed an organization_service key and never runs `bvx login`, so no
+        installations row and no device key ever exist for them -- and the device
+        lane below returns early with (False, None) the moment that row is
+        missing, which is why this used to be unsatisfiable rather than merely
+        harder. An authoritative proxy receipt is written only by the in-process
+        hosted bridge (api/server.py's _hosted_proxy_receipt); POST /v1/usage is
+        hard-wired to authoritative=0, so a tenant cannot self-report its way
+        into this lane the way it can into the device lane.
+
+        The device lane's row still wins when both exist, so a workspace that
+        already had evidence keeps naming the same receipt.
+        """
         checked_at = _now()
+        hosted = db.execute(
+            "SELECT usage.id,usage.ts FROM usage_log usage "
+            "WHERE usage.organization_id=? AND usage.authoritative=1 "
+            "AND usage.receipt_source='proxy' AND usage.ts>=? "
+            "ORDER BY usage.ts,usage.id LIMIT 1",
+            (organization_id, started_at),
+        ).fetchone()
         installation = db.execute(
             "SELECT installation.installed_at FROM installations installation "
             "JOIN api_keys credential ON credential.id=installation.registration_key_id "
@@ -2582,7 +2604,7 @@ class UsageStore:
             (checked_at, organization_id, started_at),
         ).fetchone()
         if not installation:
-            return False, None
+            return bool(hosted), hosted
         evidence = db.execute(
             "SELECT usage.id,usage.ts FROM usage_log usage "
             "JOIN installations installation ON installation.organization_id=usage.organization_id "
@@ -2608,7 +2630,7 @@ class UsageStore:
             "ORDER BY usage.ts,usage.id LIMIT 1",
             (started_at, checked_at, organization_id),
         ).fetchone()
-        return True, evidence
+        return True, (evidence if evidence is not None else hosted)
 
     def onboarding_status(self, user_id: str, organization_id: str) -> dict[str, Any]:
         """Return content-free onboarding state after exact active-membership proof."""
@@ -3358,11 +3380,45 @@ class UsageStore:
         Unlike `key_context` this does not touch `last_used_at` and does not
         filter on revoked/expired: attribution of a receipt must not change when
         the key that produced it is later revoked.
+
+        OWNER FALLBACK. Every key minted through POST /v1/keys carries an
+        organization, but keys that predate the organization model (key_type
+        'legacy') carry only an owner_id, and their receipts landed with
+        organization_id NULL -- roughly half of recent client-reported rows in
+        production, which is exactly the dogfood/local-bvx traffic whose org
+        linkage the dashboard needs. The owner of such a key is a single human,
+        and that human's own active workspace is the only tenant the receipt can
+        belong to, so resolving through the membership invents nothing and can
+        never cross a tenant boundary. Ordered by (created_at, organization_id)
+        so a multi-workspace owner attributes deterministically -- the same
+        ordering ensure_organization/member_organization use to pick a default
+        workspace. A key with no organization AND no active membership still
+        returns "": there is no tenant to name, and a receipt is never dropped
+        for it (see api/server.py's intake path).
         """
         with self._conn() as db:
-            row = db.execute("SELECT organization_id FROM api_keys WHERE key_hash=?",
-                             (key_hash,)).fetchone()
-        return str(row[0] or "") if row else ""
+            row = db.execute(
+                "SELECT organization_id,owner_id FROM api_keys WHERE key_hash=?",
+                (key_hash,)).fetchone()
+            if not row:
+                return ""
+            organization_id = str(row[0] or "")
+            if organization_id:
+                return organization_id
+            owner_id = str(row[1] or "")
+            if not owner_id:
+                return ""
+            member_columns = {
+                column[1] for column in
+                db.execute("PRAGMA table_info(organization_members)")
+            }
+            active_clause = " AND status='active'" if "status" in member_columns else ""
+            owned = db.execute(
+                "SELECT organization_id FROM organization_members "
+                f"WHERE user_id=?{active_clause} "
+                "ORDER BY created_at,organization_id LIMIT 1",
+                (owner_id,)).fetchone()
+        return str(owned[0] or "") if owned else ""
 
     def key_owner(self, key_hash: str) -> str:
         with self._conn() as db:
@@ -7289,11 +7345,34 @@ class SupabaseUsageStore:
         return row
 
     def key_organization(self, key_hash: str) -> str:
-        """Read-only tenant lookup for usage attribution (see UsageStore)."""
+        """Read-only tenant lookup for usage attribution (see UsageStore).
+
+        Carries UsageStore's owner fallback: an organization-less legacy key
+        attributes to its owner's own active workspace, chosen by the same
+        (created_at, organization_id) ordering, so the two stores agree on the
+        tenant a receipt belongs to. A malformed owner id resolves to "" rather
+        than raising -- attribution runs inside the receipt write path and must
+        never turn a recoverable lookup into a lost row.
+        """
         rows = self._request("GET", "api_keys", params={
-            "select": "organization_id", "key_hash": f"eq.{key_hash}", "limit": "1",
+            "select": "organization_id,owner_id",
+            "key_hash": f"eq.{key_hash}", "limit": "1",
         }) or []
-        return str(rows[0].get("organization_id") or "") if rows else ""
+        if not rows:
+            return ""
+        organization_id = str(rows[0].get("organization_id") or "")
+        if organization_id:
+            return organization_id
+        try:
+            owner_id = _required_uuid(str(rows[0].get("owner_id") or ""), "owner_id")
+        except ValueError:
+            return ""
+        owned = self._request("GET", "organization_members", params={
+            "select": "organization_id", "user_id": f"eq.{owner_id}",
+            "status": "eq.active", "order": "created_at.asc,organization_id.asc",
+            "limit": "1",
+        }) or []
+        return str(owned[0].get("organization_id") or "") if owned else ""
 
     def key_owner(self, key_hash: str) -> str:
         rows = self._request("GET", "api_keys", params={

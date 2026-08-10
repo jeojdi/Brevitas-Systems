@@ -29,7 +29,7 @@ import requests as _requests
 import httpx
 from fastapi import FastAPI, HTTPException, Header, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -81,6 +81,7 @@ from .observability import (
     install_fastapi_observability,
     mark_documented_upstream_outage,
     record_savings_row,
+    render_prometheus_text,
 )
 from .security import credential_cipher_from_environment
 from .runtime import hosted_runtime
@@ -1809,11 +1810,27 @@ _warm_enabled_cache = BoundedTTLMap[str, bool](
 )
 
 
+def _warm_policy_cache_key(organization_id: str, customer_id: str = "") -> str:
+    """Same composite key shape as _cache_policy_cache_key, for the same reason.
+
+    `warm_enabled(organization_id, customer_id)` takes a customer and every caller
+    passes one (see the proxy path below), but this cache used to key on the
+    organization alone. Today both store implementations answer org-only, so the
+    collision is currently unobservable — the moment a per-customer warm override
+    exists, an org-only key hands one customer's answer to every sibling, which is
+    exactly the leak 202607-30's audit fixed on the sibling cache policy cache.
+    Keying on the pair now means the override lands into a correct cache rather
+    than requiring this file to be re-audited when it does.
+    """
+    return f"{organization_id}\x00{customer_id}"
+
+
 def _warm_enabled_cached(organization_id: str, customer_id: str = "") -> bool:
     """Warming is best-effort: a store failure means not-warm, never a 503."""
     if not organization_id:
         return False
-    cached = _warm_enabled_cache.get(organization_id)
+    cache_key = _warm_policy_cache_key(organization_id, customer_id)
+    cached = _warm_enabled_cache.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -1822,8 +1839,22 @@ def _warm_enabled_cached(organization_id: str, customer_id: str = "") -> bool:
         logger.warning("warm policy lookup unavailable error_type=%s",
                        type(exc).__name__)
         return False
-    _warm_enabled_cache.put(organization_id, enabled)
+    _warm_enabled_cache.put(cache_key, enabled)
     return enabled
+
+
+def _invalidate_warm_policy(organization_id: str) -> None:
+    """Drop every cached warm decision for one organization, before answering.
+
+    The consent grant/revoke handlers below used to `discard(organization_id)`,
+    which stopped matching the moment the key became composite. Sweep the whole
+    org prefix, exactly like _invalidate_cache_policy: consent is org-level, so a
+    change to it invalidates every customer's cached answer under that org.
+    """
+    prefix = f"{organization_id}\x00"
+    for cache_key, _value in _warm_enabled_cache.items():
+        if str(cache_key).startswith(prefix):
+            _warm_enabled_cache.discard(cache_key)
 
 
 # Cache policy is a per-tenant boolean read on EVERY authenticated request (including
@@ -3825,7 +3856,7 @@ def set_warming(request: Request, body: WarmingConfigRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise _key_admin_unavailable(exc) from exc
-    _warm_enabled_cache.discard(organization["id"])
+    _invalidate_warm_policy(organization["id"])
     _audit_tenant_mutation(
         request, organization["id"], user_id,
         _canonical_company_role(organization.get("role")),
@@ -3850,7 +3881,7 @@ def delete_warming(request: Request, provider: str):
         purged = _store.warm_credentials_purge(organization["id"], provider)
     except Exception as exc:
         raise _key_admin_unavailable(exc) from exc
-    _warm_enabled_cache.discard(organization["id"])
+    _invalidate_warm_policy(organization["id"])
     if purged.get("credentials_deleted"):
         # warm_credentials_purge deletes the consent row, so this audit event is
         # the only remaining evidence that spend consent ever existed.
@@ -5955,6 +5986,119 @@ def _build_audit_report(metrics: dict) -> dict:
     }
 
 
+def _readiness_check(ok: bool | None, *, count: int | None = None,
+                     state: str = "", detail: str = "") -> dict:
+    """One line of the `brevitas billing-check` checklist.
+
+    The CLI (brevitas/cli.py:1023-1031) renders ok as ✓ / ✗ / "?" for None, then
+    prints whichever of count/state/detail are present. `ok=None` therefore means
+    "this replica cannot tell", which is materially different from "no" and is
+    the only honest answer for a fact the API process does not hold.
+    """
+    line: dict[str, Any] = {"ok": ok}
+    if count is not None:
+        line["count"] = int(count)
+    if state:
+        line["state"] = state
+    if detail:
+        line["detail"] = detail
+    return line
+
+
+@app.get("/v1/billing/readiness")
+@limiter.limit("60/minute")
+def billing_readiness(request: Request, kh: str = Depends(_authenticated)):
+    """Why this organization's traffic is (or is not) producing billable savings.
+
+    `brevitas billing-check` has called this since it shipped and no server ever
+    answered it, so the command dead-ended on its own 404 branch. The shape is
+    exactly what that branch's success path consumes: a `checks` map of
+    name -> {ok, count?, state?, detail?} plus a top-level `billable` boolean,
+    and the command exits non-zero unless `billable` is true.
+
+    ORG-SCOPED AND READ-ONLY. Authorized on the caller's own key with the same
+    usage:read_own scope /v1/stats uses, and every number comes from that key's
+    own usage_stats. Nothing here consults, changes or short-circuits a billing
+    gate: it reports the state of gates that are decided elsewhere.
+
+    Dollar figures obey the same CONTRACT A redaction as the stats endpoints --
+    a caller who may not read spend gets the boolean verdicts and no amounts.
+    """
+    context = _require_scope(request, kh, "usage:read_own")
+    organization_id = context.organization_id
+    process_cache = os.getenv(
+        "BREVITAS_CACHE_ENABLED", "false").lower() in ("1", "true", "yes")
+    tenant_cache = bool(organization_id) and _cache_enabled_cached(
+        organization_id, context.customer_id)
+    try:
+        stats = _store.get_stats(kh) or {}
+        # The billable basis, not the headline. `attributable_discount_usd` is
+        # the one number both stores compute through _billable_cache_savings /
+        # 202607280002's usage_stats, and it counts AUTHORITATIVE rows only --
+        # precisely the distinction a hosted customer's first day turns on, since
+        # a local proxy reporting over POST /v1/usage produces verified savings
+        # that are not billable. get_stats does not carry it on the SQLite path,
+        # so it is read from cache_stats, which does on both.
+        cache = _store.cache_stats(kh) or {}
+    except Exception as exc:
+        logger.error("billing readiness stats unavailable error_type=%s",
+                     type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Usage statistics unavailable",
+            headers={"Retry-After": "1"}) from exc
+    calls = int(stats.get("total_calls") or 0)
+    verified = float(stats.get("total_verified_savings_usd") or 0.0)
+    billable_basis = float(cache.get("attributable_discount_usd") or 0.0)
+    checks = {
+        "organization": _readiness_check(
+            bool(organization_id), state=context.key_type,
+            detail=("key is bound to an organization" if organization_id
+                    else "key has no organization; usage cannot be attributed")),
+        "cache_enabled_process": _readiness_check(
+            process_cache, state="on" if process_cache else "off",
+            detail=("BREVITAS_CACHE_ENABLED on this API replica"
+                    if process_cache else
+                    "set BREVITAS_CACHE_ENABLED=true on the API service")),
+        "cache_enabled_organization": _readiness_check(
+            tenant_cache, state="on" if tenant_cache else "off",
+            detail=("this organization has opted in to caching" if tenant_cache
+                    else "enable caching with PUT /v1/cache-policy")),
+        "traffic_observed": _readiness_check(
+            calls > 0, count=calls,
+            detail=("usage rows recorded for this key" if calls else
+                    "route traffic through the hosted proxy first")),
+        "verified_savings": _readiness_check(
+            verified > 0.0,
+            detail=("verified savings recorded" if verified > 0.0 else
+                    "no verified savings recorded yet")),
+        "billable_savings": _readiness_check(
+            billable_basis > 0.0,
+            detail=("authoritative rows are producing billable savings"
+                    if billable_basis > 0.0 else
+                    "no AUTHORITATIVE savings; client-reported receipts "
+                    "(POST /v1/usage) are never billable")),
+        # ok=None on purpose: BREVITAS_BILLING_ENABLED gates the dashboard's
+        # billing surface, not this process, so the API cannot assert it. A "?"
+        # is the truth; a green tick here would be a claim this replica has no
+        # standing to make.
+        "billing_surface": _readiness_check(
+            None, state="unknown",
+            detail="billing enablement is an operator-side setting"),
+    }
+    required = ("organization", "cache_enabled_process",
+                "cache_enabled_organization", "traffic_observed",
+                "billable_savings")
+    payload: dict[str, Any] = {
+        "schema": "brevitas.billing.readiness.v1",
+        "organization_id": organization_id,
+        "checks": checks,
+        "billable": all(checks[name]["ok"] is True for name in required),
+        "verified_savings_usd": round(verified, 8),
+        "billable_savings_usd": round(billable_basis, 8),
+    }
+    return _spend_filtered(context, payload)
+
+
 @app.get("/v1/audit")
 @limiter.limit("120/minute")
 def audit_report(request: Request, kh: str = Depends(_authenticated)):
@@ -6458,6 +6602,54 @@ async def liveness():
 async def version():
     """Public, non-secret identity for matching a deployment to its tested source."""
     return {"service": "api", "build": build_identity(required=_production_runtime())}
+
+
+def _metrics_scrape_token() -> str:
+    return (os.getenv("BREVITAS_METRICS_TOKEN") or "").strip()
+
+
+def _metrics_endpoint_enabled() -> bool:
+    return (os.getenv("BREVITAS_METRICS_ENABLED", "true").strip().lower()
+            not in ("0", "false", "no", "off"))
+
+
+@app.get("/metrics")
+async def prometheus_metrics(request: Request):
+    """Prometheus scrape surface for the counters observability/prometheus/alerts.yml reads.
+
+    NOT UNDER /v1 AND NOT KEY-AUTHENTICATED, on purpose. Prometheus sends a
+    static `Authorization` header and nothing else -- it cannot mint an
+    X-Brevitas-Key, cannot carry a customer id, and cannot follow the tenant
+    resolution every /v1 route depends on. So this route authorizes on a single
+    deployment-wide bearer token, and carries no tenant data of any kind: the
+    label vocabulary is method/route/outcome/authority, and there is no
+    organization, customer, key or dollar figure attributable to one of them.
+
+    THREE DOORS, ALL CLOSED BY DEFAULT-SAFE ANSWERS:
+      * BREVITAS_METRICS_ENABLED=false -> 404. An operator can turn the surface
+        off entirely without redeploying a token.
+      * BREVITAS_METRICS_TOKEN unset -> 404, NOT 401. An unconfigured deployment
+        must be indistinguishable from one that never had the route, so a probe
+        cannot learn that a token is what is missing. This also means the route
+        is inert until someone deliberately configures it, which is why enabling
+        it by default is safe.
+      * Wrong or missing bearer -> 401 with a constant-time comparison.
+    """
+    if not _metrics_endpoint_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    token = _metrics_scrape_token()
+    if not token:
+        raise HTTPException(status_code=404, detail="Not Found")
+    presented = request.headers.get("authorization", "")
+    scheme, _, credential = presented.partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(
+            credential.strip(), token):
+        raise HTTPException(
+            status_code=401, detail="Invalid metrics credential",
+            headers={"WWW-Authenticate": "Bearer"})
+    return PlainTextResponse(
+        render_prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:

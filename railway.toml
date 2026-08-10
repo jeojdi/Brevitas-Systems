@@ -1,3 +1,37 @@
+# RUNTIME VARIABLES ARE NOT DECLARABLE HERE, AND THAT IS A PROPERTY OF RAILWAY,
+# NOT A CHOICE. railway.schema.json admits exactly four root keys -- $schema,
+# build, deploy, environments -- with additionalProperties:false, and none of
+# them carries environment variables. An `[env]` table in this file would make
+# the config schema-invalid rather than set anything, so the variables the API
+# needs are recorded here as reviewable knowledge and set on the Railway service
+# itself. Both replicas (numReplicas = 2 below) must carry identical values: a
+# per-service variable set on one replica and not the other is precisely how a
+# blind replica takes production traffic.
+#
+#   BREVITAS_CACHE_ENABLED=true
+#       Half of the savings switch; the other half is per-tenant
+#       (organizations.cache_enabled). Absent, it defaults to "false" and the
+#       replica optimizes nothing while still serving traffic and reporting
+#       healthy. GET /v1/billing/readiness reports both halves for a caller's
+#       own organization.
+#   BREVITAS_METRICS_ENABLED=true
+#       Publishes GET /metrics. Defaults to on, but the route answers 404 until
+#       BREVITAS_METRICS_TOKEN is also set, so declaring it alone changes nothing.
+#   BREVITAS_METRICS_TOKEN=<secret>
+#       Bearer token Prometheus presents to scrape /metrics. A credential: set it
+#       as a Railway variable, never in a file in this repository.
+#   BREVITAS_OTEL_ENABLED=false
+#       Stays false until an OTLP collector exists. This is the precondition
+#       observability/prometheus/alerts.yml names for arming
+#       brevitas_alerting_armed_telemetry_absence; until it is true with a
+#       reachable endpoint, /metrics is the only publisher of the brevitas_*
+#       series those 25 rules read.
+#   OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_PROTOCOL / OTEL_SERVICE_NAME
+#       Collector address (empty until one exists), "http/protobuf", "api".
+#
+# deploy/cloud-run-api-staging.yaml carries the same set in a real env block --
+# that platform does support declaring them -- and is the worked example.
+
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"

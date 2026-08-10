@@ -75,6 +75,37 @@ spec:
               value: "false"
             - name: BREVITAS_BILLING_ENABLED
               value: "false"
+            # Half of the savings switch. The other half is per-tenant
+            # (organizations.cache_enabled); BOTH must be on before a hosted
+            # customer's traffic can produce verified savings, and this half was
+            # in no deploy artifact at all — a replica that never read it
+            # defaulted to "false" and quietly optimized nothing.
+            # GET /v1/billing/readiness reports both halves.
+            - name: BREVITAS_CACHE_ENABLED
+              value: "true"
+            # Prometheus scrape surface (GET /metrics). Enabled here so the
+            # setting is checked-in knowledge rather than dashboard state, but
+            # the route stays inert — it answers 404 — until
+            # BREVITAS_METRICS_TOKEN is set as a managed secret. The token is
+            # deliberately NOT declared here: it is a credential, and every
+            # credential in this file arrives through secretKeyRef.
+            - name: BREVITAS_METRICS_ENABLED
+              value: "true"
+            # OTel stays OFF until a collector exists, and is declared here so
+            # that fact is visible instead of implied by absence. This is the
+            # precondition observability/prometheus/alerts.yml names for arming
+            # brevitas_alerting_armed_telemetry_absence: flip this to "true",
+            # set OTEL_EXPORTER_OTLP_ENDPOINT to the collector, confirm a
+            # non-zero brevitas_api_requests_total, and only then arm the rule.
+            # Until then the /metrics mirror above is the series' only publisher.
+            - name: BREVITAS_OTEL_ENABLED
+              value: "false"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_SERVICE_NAME
+              value: api
             - name: SUPABASE_URL
               valueFrom:
                 secretKeyRef:

@@ -1,6 +1,7 @@
 """FastAPI and durable-worker integration for content-free observability."""
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from typing import Iterator, Mapping
@@ -24,6 +25,7 @@ from brevitas.observability import (
     provider_correlation_headers,
     route_label,
     shutdown_observability,
+    sla_eligible_fault,
 )
 
 
@@ -60,6 +62,128 @@ def mark_documented_upstream_outage(request: Request, provider: str) -> bool:
     return active
 
 
+# ── Prometheus scrape mirror ─────────────────────────────────────────────────
+# observability/prometheus/alerts.yml carries 25 rules and every one of them
+# reads a `brevitas_*` series, but nothing in this repository ever published a
+# scrape endpoint: the OTel path is the only exporter and it needs
+# BREVITAS_OTEL_ENABLED plus a collector, which no deploy artifact sets. Every
+# rule has therefore been evaluating absent series since the day it was written,
+# and the burn-rate rules divide by clamp_min(), so absent reads as "healthy"
+# rather than as "blind" (docs/SECURITY_AUDIT_2026-07-30.md, finding #1).
+#
+# This is a MIRROR, not a replacement. The OTel instruments stay exactly as they
+# are; these counters are incremented from the same chokepoints and rendered by
+# GET /metrics so a Prometheus that cannot reach an OTLP collector still has the
+# series the alert rules most depend on. It is deliberately not the
+# prometheus_client library: adding a dependency to publish six counter families
+# is a worse trade than the exposition format below, and the process must keep
+# starting when that library is absent.
+#
+# PROCESS-LOCAL AND MONOTONIC. Each replica counts what it served since its own
+# boot, which is what a Prometheus counter means; rate()/increase() handle the
+# restart reset. Nothing here is persisted and nothing is per-tenant: the label
+# sets are copied from brevitas.observability.Metrics so the mirrored series and
+# the OTel series can never disagree about a partition.
+_PROM_HELP: dict[str, tuple[str, str]] = {
+    "brevitas_api_requests_total": (
+        "counter", "HTTP requests served by this API replica."),
+    "brevitas_service_operations_total": (
+        "counter", "Internal service operations attempted by this replica."),
+    "brevitas_billing_savings_rows_total": (
+        "counter", "Usage rows persisted, split by authority and billability."),
+    "brevitas_billing_verified_savings_usd_total": (
+        "counter", "Verified savings dollars persisted, split by authority."),
+    "brevitas_warm_pings_total": (
+        "counter", "Cache-warming keep-alive pings settled by this process."),
+    "brevitas_warm_spend_usd_total": (
+        "counter", "Dollars spent on cache-warming pings by this process."),
+}
+# A hard ceiling on distinct label combinations. Every label written here is
+# already drawn from a finite vocabulary (route_label fails closed to
+# "unmatched"), so this can only be reached by a defect -- and when it is, the
+# mirror stops growing instead of becoming the memory leak.
+_PROM_MAX_SERIES = 2048
+_prom_lock = threading.Lock()
+_prom_counters: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+
+
+def _prom_add(name: str, labels: Mapping[str, str], value: float = 1.0) -> None:
+    """Increment one mirrored counter. Never raises: telemetry is not the work."""
+    try:
+        amount = float(value)
+        if amount != amount or amount in (float("inf"), float("-inf")):
+            return
+        # A counter that can go down is a lie. Clamp rather than drop, so the
+        # series still exists at zero -- an absent series and a zero one are
+        # different answers to an alert rule, and only one of them is true.
+        amount = max(0.0, amount)
+        key = (name, tuple(sorted((str(k), str(v)) for k, v in labels.items())))
+        with _prom_lock:
+            if key not in _prom_counters and len(_prom_counters) >= _PROM_MAX_SERIES:
+                return
+            _prom_counters[key] = _prom_counters.get(key, 0.0) + amount
+    except Exception:
+        return
+
+
+def _prom_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render_prometheus_text() -> str:
+    """Render the mirrored counters in Prometheus text exposition format 0.0.4.
+
+    Families are emitted with their HELP/TYPE header even when they hold no
+    series yet, so a rule reading `brevitas_billing_savings_rows_total` sees a
+    family that exists and is zero rather than one that is absent -- the same
+    distinction Metrics.record_savings_row's docstring exists to preserve.
+    """
+    with _prom_lock:
+        snapshot = dict(_prom_counters)
+    lines: list[str] = []
+    for name, (kind, help_text) in _PROM_HELP.items():
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {kind}")
+        series = sorted((labels, total) for (metric, labels), total
+                        in snapshot.items() if metric == name)
+        if not series:
+            lines.append(f"{name} 0")
+            continue
+        for labels, total in series:
+            if not labels:
+                # An unlabelled sample renders bare. `name{} 1` is legal
+                # exposition format but several scrapers and every human reader
+                # treat the empty braces as a mistake.
+                lines.append(f"{name} {total!r}")
+                continue
+            rendered = ",".join(f'{key}="{_prom_escape(val)}"' for key, val in labels)
+            lines.append(f"{name}{{{rendered}}} {total!r}")
+    return "\n".join(lines) + "\n"
+
+
+def reset_prometheus_mirror() -> None:
+    """Test-only: drop every mirrored series so a case starts from a known zero."""
+    with _prom_lock:
+        _prom_counters.clear()
+
+
+def record_warm_ping(*, outcome: str, spent_usd: float = 0.0) -> None:
+    """Mirror one settled warming ping. Called from the worker's settle path.
+
+    Warming pings execute in api/worker.py, a different process from the API, so
+    these two series are non-zero only on a process that runs the warming loop.
+    That is a property of the deployment topology, not of this counter: a
+    Prometheus scraping both processes sums them, and a scrape of the API alone
+    correctly reports that the API served no pings.
+    """
+    safe = str(outcome or "unknown").lower()
+    if safe not in {"warmed", "skipped", "failed", "spent_unknown", "expired"}:
+        safe = "unknown"
+    _prom_add("brevitas_warm_pings_total", {"outcome": safe})
+    if spent_usd:
+        _prom_add("brevitas_warm_spend_usd_total", {}, spent_usd)
+
+
 def record_savings_row(
     *, authoritative: bool, billable: bool,
     verified_savings_usd: float | None = None,
@@ -83,6 +207,19 @@ def record_savings_row(
         authoritative=authoritative, billable=billable,
         verified_savings_usd=verified_savings_usd,
     )
+    # Same call, same labels, into the scrape mirror. Strictly after the facade
+    # so a defect here can never precede the instrument the collector reads.
+    _prom_add("brevitas_billing_savings_rows_total", {
+        "authoritative": "true" if authoritative else "false",
+        "billable": "true" if billable else "false",
+    })
+    if verified_savings_usd is not None:
+        # Raw, not coerced here: _prom_add owns the float()/NaN/negative handling
+        # inside its own guard, so a malformed amount cannot raise on the money
+        # path the way a caller-side float() would.
+        _prom_add("brevitas_billing_verified_savings_usd_total",
+                  {"authoritative": "true" if authoritative else "false"},
+                  verified_savings_usd)
 
 
 class RequestObservabilityMiddleware:
@@ -153,6 +290,38 @@ class RequestObservabilityMiddleware:
                         service="api",
                         outcome="server_error" if status_code >= 500 else "success",
                     )
+                    # Scrape mirror. The outcome partition is recomputed with the
+                    # SAME rule Metrics.record_api_request applies -- including
+                    # the fault-domain split of 5xx into server_error vs
+                    # unavailable, which the log line below deliberately does not
+                    # make -- because the SLO burn rules select on
+                    # outcome="server_error" and sla_eligible="true" and would
+                    # otherwise count a provider outage against Brevitas's budget.
+                    if status_code >= 500:
+                        prom_outcome = ("server_error" if domain == "brevitas"
+                                        else "unavailable")
+                    elif status_code in (401, 403):
+                        prom_outcome = "auth_denied"
+                    elif status_code >= 400:
+                        prom_outcome = "client_error"
+                    else:
+                        prom_outcome = "success"
+                    _prom_add("brevitas_api_requests_total", {
+                        "method": method.upper() or "OTHER",
+                        # `route` is already a route_label() result (see
+                        # _resolved_route), so it is a template or "unmatched".
+                        "route": route,
+                        "outcome": prom_outcome,
+                        "surface": "external",
+                        "fault_domain": domain,
+                        "sla_eligible": ("true" if sla_eligible_fault(domain)
+                                         else "false"),
+                    })
+                    _prom_add("brevitas_service_operations_total", {
+                        "service": "api", "surface": "internal",
+                        "outcome": ("server_error" if status_code >= 500
+                                    else "success"),
+                    })
                     log.info(
                         "api_request_completed",
                         method=method,
@@ -282,5 +451,7 @@ __all__ = [
     "BillingTelemetryAdapter", "graceful_observability_shutdown",
     "install_fastapi_observability", "mark_documented_upstream_outage",
     "mark_request_fault_domain", "observe_job", "observe_provider_call",
-    "outbound_provider_headers", "RequestObservabilityMiddleware",
+    "outbound_provider_headers", "record_savings_row", "record_warm_ping",
+    "render_prometheus_text", "reset_prometheus_mirror",
+    "RequestObservabilityMiddleware",
 ]
