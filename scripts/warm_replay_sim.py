@@ -55,6 +55,7 @@ import csv
 import io
 import json
 import math
+import os
 import random
 import sys
 from collections import defaultdict
@@ -157,8 +158,10 @@ class Physics:
         return min(1.0, self.read_cost_fraction / gain)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Arrival:
+    # slots: a 12-month/100-customer trace is >1M of these, and the per-object
+    # __dict__ is the difference between a 300MB and a 900MB replay.
     ts: float                 # epoch seconds, UTC
     org: str
     customer: str
@@ -441,11 +444,195 @@ def scenario_company(seed: int = 17) -> list[Arrival]:
     return out
 
 
+# --------------------------------------------------------------------------
+# company100: one organization, one hundred end customers, one year
+# --------------------------------------------------------------------------
+
+# Five offices. UTC offsets, west to east.
+_TZ_OFFSETS = (-8.0, -5.0, 0.0, 1.0, 8.0)
+_SHARED_PREFIX = "sysprompt-org"
+_SHARED_TOKENS = 5_200
+# Customer name prefix -> cohort. Reporting groups on the token before the
+# first dash, so the cohort of a customer is readable off its label.
+COHORT_ORDER = ("bot", "human", "power", "churn", "late")
+
+
+def _cohort_of(label: str) -> str:
+    customer = label.split("/", 1)[-1]
+    head = customer.split("-", 1)[0]
+    return head if head in COHORT_ORDER else "other"
+
+
+def _company100_customers(rng: random.Random, count: int
+                          ) -> list[dict[str, Any]]:
+    """The deterministic cast. Sizes and personalities are drawn once, so the
+    same seed reproduces the same organization exactly."""
+    n_bot = max(1, round(count * 0.30))
+    n_human = max(1, round(count * 0.40))
+    n_power = max(1, round(count * 0.10))
+    n_churn = max(1, round(count * 0.10))
+    n_late = max(1, count - n_bot - n_human - n_power - n_churn)
+    cast: list[dict[str, Any]] = []
+
+    for i in range(n_bot):
+        # 15 minutes to 6 hours, log-spaced: the fast end sits above the 300s
+        # anthropic TTL (real money on the table) and the slow end above v1's
+        # 3600s max_gap filter (structurally unservable, and worth seeing).
+        span = (i / max(n_bot - 1, 1))
+        period = 900.0 * (24.0 ** span)
+        cast.append({"name": f"bot-{i:02d}", "kind": "bot", "period": period,
+                     "weekends": (i % 3 != 0)})
+    for i in range(n_human):
+        cast.append({"name": f"human-{i:02d}", "kind": "human",
+                     "tz": _TZ_OFFSETS[i % len(_TZ_OFFSETS)],
+                     "gap": rng.uniform(240.0, 900.0),
+                     "attend": rng.uniform(0.7, 0.95),
+                     "span_h": rng.uniform(6.0, 9.0)})
+    for i in range(n_power):
+        cast.append({"name": f"power-{i:02d}", "kind": "power",
+                     "gap": rng.uniform(90.0, 200.0),
+                     "bursts": (2, 4)})
+    for i in range(n_churn):
+        cast.append({"name": f"churn-{i:02d}", "kind": "human",
+                     "tz": _TZ_OFFSETS[i % len(_TZ_OFFSETS)],
+                     "gap": rng.uniform(300.0, 900.0),
+                     "attend": rng.uniform(0.6, 0.9),
+                     "span_h": rng.uniform(5.0, 8.0),
+                     "leaves_day": 30 + i * 28})
+    for i in range(n_late):
+        # Half arrive as humans, half as bots -- onboarding is not one shape.
+        if i % 2 == 0:
+            cast.append({"name": f"late-{i:02d}", "kind": "human",
+                         "tz": _TZ_OFFSETS[i % len(_TZ_OFFSETS)],
+                         "gap": rng.uniform(300.0, 900.0),
+                         "attend": rng.uniform(0.6, 0.9),
+                         "span_h": rng.uniform(4.0, 8.0),
+                         "joins_day": 45 + i * 30})
+        else:
+            cast.append({"name": f"late-{i:02d}", "kind": "bot",
+                         "period": 1200.0 * (6.0 ** (i / max(n_late - 1, 1))),
+                         "weekends": True, "joins_day": 45 + i * 30})
+
+    # Prefixes: every fifth customer lands on the ORG-WIDE system prompt and so
+    # shares one provider cache key with nineteen others -- they keep each
+    # other warm for free, which is the SUTVA hazard the whole simulator
+    # exists to keep honest. Everyone else carries their own 1k-8k prefix.
+    for index, member in enumerate(cast):
+        if index % 5 == 0:
+            member["prefix"] = _SHARED_PREFIX
+            member["tokens"] = _SHARED_TOKENS
+        else:
+            member["prefix"] = f"p-{member['name']}"
+            member["tokens"] = int(round(rng.uniform(1_000, 8_000) / 100.0) * 100)
+    return cast
+
+
+def scenario_company100(seed: int = 23, days: int = 365,
+                        customers: int = 100) -> list[Arrival]:
+    """One organization, 100 end customers, 12 simulated months, anthropic.
+
+    The cast, mixed the way a real account is mixed:
+      30 cron/agent bots     periods 15 minutes to 6 hours, around the clock,
+                             a third of them pausing at weekends
+      40 workday humans      09:00-17:00 local across five time zones
+                             (UTC-8/-5/+0/+1/+8), weekdays, 4-15 minute gaps,
+                             70-95% daily attendance
+      10 heavy power users   2-4 dense bursts a day, 90-200 second gaps --
+                             below the 300s TTL, so they refresh their own
+                             cache and every ping spent on them is waste
+      10 churned customers   human-shaped, leaving for good on staggered days
+                             30 through 282
+      10 late onboarders     half human half bot, first appearing on staggered
+                             days 45 through 315
+
+    Twenty of the hundred (every fifth) share one org-wide system prefix and
+    therefore ONE provider cache key. Prefix sizes are 1k-8k tokens otherwise.
+    Everything is drawn from a seeded Random, so a seed reproduces the org.
+    """
+    rng = random.Random(seed)
+    day = _SEC_PER_DAY
+    start = _ANCHOR - 9 * 3600.0          # the anchor Monday at midnight UTC
+    org = "org-centry"
+    cast = _company100_customers(rng, customers)
+    out: list[Arrival] = []
+
+    def add(ts: float, member: dict[str, Any]) -> None:
+        out.append(Arrival(ts, org, member["name"], "anthropic",
+                           member["prefix"], member["tokens"],
+                           "claude-sonnet-5"))
+
+    horizon = days * day
+    for member in cast:
+        joins = float(member.get("joins_day", 0)) * day
+        leaves = (float(member["leaves_day"]) * day
+                  if "leaves_day" in member else horizon)
+        if member["kind"] == "bot":
+            period = float(member["period"])
+            # Jittered period: a real scheduler drifts, and a perfectly
+            # periodic trace would flatter any hazard model.
+            clock = joins + rng.uniform(0.0, period)
+            while clock < min(leaves, horizon):
+                ts = start + clock
+                weekday = datetime.fromtimestamp(ts, timezone.utc).isoweekday()
+                if member.get("weekends", True) or weekday <= 5:
+                    add(ts, member)
+                clock += period * rng.uniform(0.9, 1.1)
+            continue
+        if member["kind"] == "power":
+            d = int(joins // day)
+            while d * day < min(leaves, horizon):
+                for _burst in range(rng.randint(*member["bursts"])):
+                    base = start + d * day + rng.uniform(5.0, 22.0) * 3600.0
+                    for ts in _poisson_window(
+                            rng, base, base + rng.uniform(0.5, 2.0) * 3600.0,
+                            float(member["gap"])):
+                        add(ts, member)
+                d += 1
+            continue
+        # human
+        tz = float(member["tz"])
+        d = int(joins // day)
+        while d * day < min(leaves, horizon):
+            day_start = start + d * day
+            if datetime.fromtimestamp(day_start, timezone.utc).isoweekday() <= 5 \
+                    and rng.random() < float(member["attend"]):
+                # 09:00 local, expressed in UTC.
+                base = day_start + (9.0 - tz) * 3600.0
+                for ts in _poisson_window(
+                        rng, base, base + float(member["span_h"]) * 3600.0,
+                        float(member["gap"])):
+                    if ts - start < min(leaves, horizon):
+                        add(ts, member)
+            d += 1
+
+    out.sort(key=lambda a: (a.ts, a.customer))
+    return out
+
+
+def scenario_company100_6mo(seed: int = 23) -> list[Arrival]:
+    """company100 truncated to 6 months -- the runtime fallback."""
+    return scenario_company100(seed, days=182)
+
+
+def scenario_company25(seed: int = 23) -> list[Arrival]:
+    """company100's mix at 25 customers over 12 months."""
+    return scenario_company100(seed, days=365, customers=25)
+
+
+def scenario_company100_30d(seed: int = 23) -> list[Arrival]:
+    """company100's first 30 days -- a timing probe, not a benchmark."""
+    return scenario_company100(seed, days=30)
+
+
 SCENARIOS: dict[str, Callable[[int], list[Arrival]]] = {
     "cron": scenario_cron,
     "bursty": scenario_bursty,
     "churned": scenario_churned,
     "company": scenario_company,
+    "company100": scenario_company100,
+    "company100-6mo": scenario_company100_6mo,
+    "company100-30d": scenario_company100_30d,
+    "company25": scenario_company25,
 }
 
 
@@ -567,6 +754,15 @@ class V1HeuristicPolicy(Policy):
         self.ledger: dict[tuple[str, str, str], list[float]] = defaultdict(
             lambda: [0.0, 0.0])
         self.decisions: dict[str, int] = defaultdict(int)
+        # PERFORMANCE ONLY (both of these are exact caches of quantities the
+        # naive code recomputes by scanning every row; see _pings_today and
+        # next_due_at). At 100 customers over 12 months the naive forms are
+        # O(rows) per candidate and O(rows) per loop iteration respectively,
+        # which is the whole runtime.
+        self.pings_by_customer_day: dict[tuple[str, str, str, str], int] = defaultdict(int)
+        self._due_min: float = float("inf")
+        self._due_key: tuple[str, str, str, str] | None = None
+        self._due_dirty: bool = True
 
     def reset(self, cfg: "SimConfig", physics: dict[str, Physics]) -> None:
         self.rows = {}
@@ -574,6 +770,46 @@ class V1HeuristicPolicy(Policy):
         self.physics = physics
         self.ledger = defaultdict(lambda: [0.0, 0.0])
         self.decisions = defaultdict(int)
+        self.pings_by_customer_day = defaultdict(int)
+        self._due_min = float("inf")
+        self._due_key = None
+        self._due_dirty = True
+
+    # -- exact caches ------------------------------------------------------
+    def _pings_today(self, row: _PrefixRow, day: str) -> int:
+        """Pings this customer has already settled today, across all their
+        prefixes. Identical to summing row.pings_today over rows sharing
+        (org, customer, provider) whose pings_today_date is `day`."""
+        return self.pings_by_customer_day[(row.org, row.customer, row.provider, day)]
+
+    def _forget_row(self, row: _PrefixRow, day: str) -> None:
+        """Drop a pruned row's contribution to today's per-customer count, so
+        the cache keeps matching the scan it replaces."""
+        if row.pings_today_date == day and row.pings_today:
+            key = (row.org, row.customer, row.provider, day)
+            self.pings_by_customer_day[key] -= row.pings_today
+        if self._due_key is not None and row.prefix_key == self._due_key:
+            self._due_dirty = True
+
+    def _due_candidate(self, row: _PrefixRow) -> bool:
+        """The time-invariant half of the candidate filter, per class."""
+        cfg = self.cfg
+        assert cfg is not None
+        return (row.state == "active"
+                and row.consecutive_misses < cfg.stop_loss
+                and (row.ewma_interarrival_s is None
+                     or row.ewma_interarrival_s <= cfg.max_gap_seconds))
+
+    def _due_touch(self, row: _PrefixRow) -> None:
+        """Re-establish the cached minimum after a row's next_due_at moved."""
+        if self._due_dirty:
+            return
+        if self._due_key is not None and row.prefix_key == self._due_key:
+            # The row that WAS the minimum moved; the new minimum is unknown.
+            self._due_dirty = True
+        elif row.next_due_at < self._due_min and self._due_candidate(row):
+            self._due_min = row.next_due_at
+            self._due_key = row.prefix_key
 
     # -- observe -----------------------------------------------------------
     def on_arrival(self, arrival: Arrival, cache_read: bool) -> None:
@@ -596,6 +832,7 @@ class V1HeuristicPolicy(Policy):
                 # Observer-priced worst case: a lapsed ping writes the cache.
                 ping_reserve_usd=phys.write_usd(arrival.prefix_tokens))
             self.rows[arrival.prefix_key] = row
+            self._due_touch(row)
             return
         gap = arrival.ts - row.last_seen_at
         row.ewma_interarrival_s = (
@@ -613,6 +850,7 @@ class V1HeuristicPolicy(Policy):
         row.last_seen_at = arrival.ts
         row.next_due_at = arrival.ts + horizon
         row.expires_at = arrival.ts + cfg.prefix_ttl_days * _SEC_PER_DAY
+        self._due_touch(row)
 
     # -- claim -------------------------------------------------------------
     def _eligible(self, row: _PrefixRow, now: float) -> bool:
@@ -636,15 +874,15 @@ class V1HeuristicPolicy(Policy):
         cfg = self.cfg
         if cfg is None:
             return float("inf")
-        soonest = float("inf")
-        for row in self.rows.values():
-            if row.state != "active" or row.consecutive_misses >= cfg.stop_loss:
-                continue
-            if (row.ewma_interarrival_s is not None
-                    and row.ewma_interarrival_s > cfg.max_gap_seconds):
-                continue
-            soonest = min(soonest, row.next_due_at)
-        return soonest
+        if self._due_dirty:
+            soonest = float("inf")
+            soonest_key: tuple[str, str, str, str] | None = None
+            for row in self.rows.values():
+                if row.next_due_at < soonest and self._due_candidate(row):
+                    soonest, soonest_key = row.next_due_at, row.prefix_key
+            self._due_min, self._due_key = soonest, soonest_key
+            self._due_dirty = False
+        return self._due_min
 
     def on_tick(self, now: float) -> list[PingRequest]:
         cfg = self.cfg
@@ -654,6 +892,7 @@ class V1HeuristicPolicy(Policy):
         # warm_prefix_observe deletes expired rows on every write; the claim
         # filter also excludes them. Prune so next_due_at() can go to infinity.
         for key in [k for k, r in self.rows.items() if r.expires_at <= now]:
+            self._forget_row(self.rows[key], day)
             del self.rows[key]
         candidates = sorted(
             (r for r in self.rows.values() if r.next_due_at <= now and self._eligible(r, now)),
@@ -676,10 +915,7 @@ class V1HeuristicPolicy(Policy):
                 self.decisions["skipped_roi"] += 1
                 continue
             cust_key = (row.org, row.customer, row.provider)
-            pings_today = sum(
-                r.pings_today for r in self.rows.values()
-                if (r.org, r.customer, r.provider) == cust_key
-                and r.pings_today_date == day)
+            pings_today = self._pings_today(row, day)
             if pings_today + claimed_counts[cust_key] >= cfg.max_pings_per_customer_day:
                 self.decisions["cap_denied"] += 1
                 continue
@@ -713,7 +949,10 @@ class V1HeuristicPolicy(Policy):
         row.consecutive_misses += 1
         row.pings_today = row.pings_today + 1 if row.pings_today_date == day else 1
         row.pings_today_date = day
+        self.pings_by_customer_day[
+            (row.org, row.customer, row.provider, day)] += 1
         row.next_due_at = now + max(1, ttl - cfg.safety_margin_seconds)
+        self._due_touch(row)
 
 
 # --------------------------------------------------------------------------
@@ -744,6 +983,10 @@ class _HazardState:
     first_seen_at: float = 0.0
     last_seen_at: float = 0.0
     last_update_at: float = 0.0
+    # sum(hazard_e.values()), maintained by hazard_touch so the F4 exposure cap
+    # does not re-sum 168 buckets on every scored candidate. Read by nothing in
+    # the shipped Phase 1 path.
+    exposure_total: float = 0.0
 
 
 def hazard_touch(state: _HazardState | None, ts: float) -> _HazardState:
@@ -785,6 +1028,7 @@ def hazard_touch(state: _HazardState | None, ts: float) -> _HazardState:
     state.events_total += 1
     state.last_seen_at = ts
     state.last_update_at = ts
+    state.exposure_total = math.fsum(state.hazard_e.values())
     return state
 
 
@@ -860,6 +1104,160 @@ def dollar_index(p_eff: float, break_even: float, n_chain: int) -> float:
         return _INDEX_CLAMP
     return min(_INDEX_CLAMP, max(-_INDEX_CLAMP,
                                  p_eff / break_even - 1 - n_chain))
+
+
+# --------------------------------------------------------------------------
+# INDEX FIX ROUND (docs/INDEX_FIX_ROUND.md) -- F1..F4
+#
+# Everything below is ADDITIVE. The shipped-Phase-1 estimators above are left
+# byte for byte alone so `learned-index` keeps measuring what production would
+# do today; `learned-index-fixed` is the only consumer of any of it.
+# --------------------------------------------------------------------------
+
+# F4: shrinkage prior weight, 8 pseudo-exposure-hours -> 2, env-tunable.
+_PRIOR_HOURS_DEFAULT = 2.0
+# F4 exposure cap: the pseudo-hours are RETIRED in proportion to the customer's
+# own accumulated exposure, so their own evidence holds majority weight once
+# they have roughly this much engaged history. Exposure only accrues up to a
+# customer's last arrival, so it measures engaged time, not wall clock.
+_EXPOSURE_MAJORITY_HOURS = 48.0
+_PRIOR_FLOOR_HOURS = 0.25
+_LAMBDA_WALK_GUARD = 240
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    try:
+        value = float(str(raw))
+    except ValueError:
+        return default
+    return value if value > 0.0 else default
+
+
+def prior_hours() -> float:
+    return _env_float("BREVITAS_WARM_HAZARD_PRIOR_HOURS", _PRIOR_HOURS_DEFAULT)
+
+
+def exposure_majority_hours() -> float:
+    return _env_float("BREVITAS_WARM_HAZARD_EXPOSURE_MAJORITY_HOURS",
+                      _EXPOSURE_MAJORITY_HOURS)
+
+
+def hazard_posterior(state: _HazardState, org_state: _HazardState | None,
+                     bucket: str, prior_h: float,
+                     majority_h: float) -> tuple[float, float]:
+    """(alpha, beta) of the Gamma posterior over this bucket's arrival rate.
+
+    The shipped `hazard_rate` returns exactly alpha/beta with prior_h pinned at
+    8.0 and no exposure cap; keeping the SHAPE as well as the mean is what
+    makes the silence conditioning below possible, because a rate you are
+    certain about and a rate you merely guessed decay differently under
+    evidence of silence.
+    """
+    org_n = (org_state.hazard_n.get(bucket, 0.0) if org_state else 0.0)
+    org_e = (org_state.hazard_e.get(bucket, 0.0) if org_state else 0.0)
+    h_org = (org_n + 0.25) / (org_e + 42.0)
+    own_bucket_e = state.hazard_e.get(bucket, 0.0)
+    # F4, both clauses. The prior decays as the customer accumulates engaged
+    # exposure (majority weight by ~2 active days), AND it is capped at the
+    # customer's own exposure in THIS bucket so their own evidence can never be
+    # outvoted by the prior once they have any. Without the cap the shipped
+    # 8 pseudo-hours -- and even 2 -- still drag a 6-arrivals-per-hour cron
+    # agent down to 2/hour for its entire first week, which is the inertness
+    # F4 exists to remove.
+    ramped = prior_h * (1.0 - min(1.0, state.exposure_total / max(majority_h, 1e-9)))
+    k = max(_PRIOR_FLOOR_HOURS, min(ramped, max(own_bucket_e, _PRIOR_FLOOR_HOURS)))
+    alpha = state.hazard_n.get(bucket, 0.0) + k * h_org
+    beta = own_bucket_e + k
+    return alpha, beta
+
+
+def hazard_lambda(state: _HazardState, org_state: _HazardState | None,
+                  t0: float, t1: float, prior_h: float,
+                  majority_h: float) -> float:
+    """Expected arrivals over [t0, t1): the hour-of-week hazard integrated
+    along the path, i.e. -log of the product of the per-bucket survival
+    factors. This is the "multiply bucket hazards along the elapsed-silence
+    path" of F1, in log space where it is a sum."""
+    if t1 <= t0:
+        return 0.0
+    total = 0.0
+    cursor = t0
+    guard = 0
+    while cursor < t1 and guard < _LAMBDA_WALK_GUARD:
+        nxt = min(t1, math.floor(cursor / 3600.0) * 3600.0 + 3600.0)
+        alpha, beta = hazard_posterior(state, org_state, hour_of_week(cursor),
+                                       prior_h, majority_h)
+        total += (alpha / beta if beta > 0 else 0.0) * (nxt - cursor) / 3600.0
+        cursor = nxt
+        guard += 1
+    return total
+
+
+# F5: periodicity fast-path. A scheduled agent is not a renewal process with an
+# uncertain rate -- it is a clock, and the right forecast is its phase, not its
+# hazard. These are the detector's constants.
+_PERIOD_MIN_GAPS = 3          # inter-arrival gaps before a period is claimed
+_PERIOD_WINDOW = 12           # how many recent gaps the detector remembers
+_PERIOD_MAX_DISPERSION = 0.20 # robust MAD/median above which it is not a clock
+_PERIOD_MISS_LIMIT = 1.5      # predicted arrivals that may pass before the
+                              # phase model is treated as falsified
+_PERIOD_MAX_CONFIDENCE = 0.98
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    n = len(ordered)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return 0.5 * (ordered[mid - 1] + ordered[mid])
+
+
+def detect_period(gaps: Sequence[float]) -> tuple[float, float] | None:
+    """(period_seconds, confidence) if this arm looks like a clock, else None.
+
+    Robust autocorrelation on a series this short is just a noisy way of
+    computing what the median inter-arrival already says, so the detector is
+    median/MAD: the period is the median gap, and the evidence for calling it a
+    period is that the gaps are tightly clustered around it. MAD rather than
+    standard deviation because one missed cron firing (a double-length gap)
+    must not disqualify an otherwise perfect clock -- the median absorbs it.
+    """
+    if len(gaps) < _PERIOD_MIN_GAPS:
+        return None
+    period = _median(gaps)
+    if period <= 0.0:
+        return None
+    dispersion = _median([abs(g - period) for g in gaps]) / period
+    if dispersion > _PERIOD_MAX_DISPERSION:
+        return None
+    # Tight clustering is high confidence; the edge of the band is barely more
+    # than a coin flip, and the index arithmetic gets to see that honestly.
+    confidence = 1.0 - dispersion / _PERIOD_MAX_DISPERSION * 0.5
+    return period, min(_PERIOD_MAX_CONFIDENCE, max(0.5, confidence))
+
+
+def survival_conditional(alpha: float, beta_silent: float,
+                         lam_ahead: float, rate: float) -> float:
+    """S = P(NO arrival in the next stretch worth `lam_ahead` expected
+    arrivals | silent so far), under the Gamma posterior.
+
+    P(no arrival) = E_theta[exp(-theta * h)] = (1 + h/beta)^(-alpha), the
+    Gamma-Poisson (negative binomial) survival. `beta_silent` already carries
+    the elapsed silence, which is the entire point: a customer who should have
+    arrived five times by now and did not has a posterior rate five times'
+    worth lower, and THAT is what makes the probability silence-conditioned
+    rather than the unconditional hourly hazard the shipped index uses.
+    """
+    if alpha <= 0.0 or rate <= 1e-12 or lam_ahead <= 0.0:
+        return 1.0
+    hours_ahead = lam_ahead / rate
+    return math.exp(-alpha * math.log1p(min(1e9, hours_ahead / max(beta_silent, 1e-9))))
 
 
 class LearnedIndexPolicy(V1HeuristicPolicy):
@@ -952,30 +1350,34 @@ class LearnedIndexPolicy(V1HeuristicPolicy):
                 and (row.ewma_interarrival_s is None
                      or row.ewma_interarrival_s <= cfg.max_gap_seconds))
 
-    def next_due_at(self) -> float:
+    def _due_candidate(self, row: _PrefixRow) -> bool:
+        """v1's, minus the stop-loss predicate -- see _eligible."""
         cfg = self.cfg
-        if cfg is None:
-            return float("inf")
-        soonest = float("inf")
-        for row in self.rows.values():
-            if row.state != "active":
-                continue
-            if (row.ewma_interarrival_s is not None
-                    and row.ewma_interarrival_s > cfg.max_gap_seconds):
-                continue
-            soonest = min(soonest, row.next_due_at)
-        return soonest
+        assert cfg is not None
+        return (row.state == "active"
+                and (row.ewma_interarrival_s is None
+                     or row.ewma_interarrival_s <= cfg.max_gap_seconds))
+
+    def _gate(self, row: _PrefixRow, now: float) -> str | None:
+        """Pre-scoring skip hook. Shipped Phase 1 gates nothing here; the
+        INDEX_FIX_ROUND policy hangs F2/F3 off it."""
+        return None
 
     def on_tick(self, now: float) -> list[PingRequest]:
         cfg = self.cfg
         assert cfg is not None
         day = utc_day(now)
         for key in [k for k, r in self.rows.items() if r.expires_at <= now]:
+            self._forget_row(self.rows[key], day)
             del self.rows[key]
 
         scored: list[tuple[float, _PrefixRow, float]] = []
         for row in self.rows.values():
             if row.next_due_at > now or not self._eligible(row, now):
+                continue
+            gate = self._gate(row, now)
+            if gate is not None:
+                self.decisions[gate] += 1
                 continue
             p_return, _p_alive, index, _chain = self._score(row, now)
             self.last_index[row.prefix_key] = index
@@ -1002,10 +1404,7 @@ class LearnedIndexPolicy(V1HeuristicPolicy):
                 row.ping_reserve_usd,
                 round(cfg.reserve_usd_per_mtok * row.prefix_tokens / 1_000_000.0, 10))
             cust_key = (row.org, row.customer, row.provider)
-            pings_today = sum(
-                r.pings_today for r in self.rows.values()
-                if (r.org, r.customer, r.provider) == cust_key
-                and r.pings_today_date == day)
+            pings_today = self._pings_today(row, day)
             if pings_today + claimed_counts[cust_key] >= cfg.max_pings_per_customer_day:
                 self.decisions["cap_denied"] += 1
                 continue
@@ -1073,19 +1472,355 @@ class LearnedIndexStopLossPolicy(LearnedIndexPolicy):
         return (super()._eligible(row, now)
                 and row.consecutive_misses < cfg.stop_loss)
 
-    def next_due_at(self) -> float:
+    def _due_candidate(self, row: _PrefixRow) -> bool:
         cfg = self.cfg
-        if cfg is None:
-            return float("inf")
-        soonest = float("inf")
-        for row in self.rows.values():
-            if row.state != "active" or row.consecutive_misses >= cfg.stop_loss:
+        assert cfg is not None
+        return (super()._due_candidate(row)
+                and row.consecutive_misses < cfg.stop_loss)
+
+
+class LearnedIndexFixedPolicy(LearnedIndexPolicy):
+    """learned-index plus exactly the four fixes of docs/INDEX_FIX_ROUND.md.
+
+    F1 -- p_return is silence-conditioned. The shipped index asks "how often
+      does this customer arrive in this hour-of-week bucket"; this asks "given
+      they have been silent for s seconds, what is P(arrival in (s, s+W])".
+      The hazard state already carries the Gamma sufficient statistics; the
+      elapsed silence is folded in as expected-arrivals-that-did-not-happen
+      (`hazard_lambda` along the silence path, converted to this bucket's
+      exposure units) and the answer falls out of the negative-binomial
+      survival. Silence is evidence, and the shipped query threw it away.
+
+    F2 -- hard organic-suppression GATE. EWMA inter-arrival below the provider
+      TTL means the customer refreshes their own entry for free; skip with
+      `skipped_organic` before scoring. A gate, not a multiplier: it does not
+      wait for control-arm data, and the learned organic_multiplier stays
+      stubbed at 1.0.
+
+    F3 -- I_max abandon rule. Past I_max = ttl * (w/f - 1) the keep-alive chain
+      costs more than the lapse it is preventing, whatever the probability;
+      skip with `skipped_abandon`. And n_chain becomes the sum of the
+      CONDITIONAL survival curve over the windows this ping commits to --
+      the expected number of further keep-alives actually bought -- instead of
+      `E_gap - chain_age`, which fell toward zero exactly as a session died.
+
+    F4 -- cold-start prior. 8 pseudo-exposure-hours -> 2 (env
+      BREVITAS_WARM_HAZARD_PRIOR_HOURS), plus the exposure cap that retires the
+      prior as the customer's own exposure accumulates, so their own evidence
+      carries majority weight after ~2 active days instead of ~3 weeks.
+
+    The index is the shipped one, unchanged: index = p_eff/b - 1 - n_chain.
+    What changes is that the probability fed to it is measured over the horizon
+    the chain actually commits money to -- P(arrival within the 1 + n_chain
+    windows being bought) -- rather than over one TTL window while being
+    charged for all of them. `learned-index-fixed-window` below holds the
+    strict single-window reading, so the difference is a number.
+
+    F5 -- PERIODICITY FAST-PATH. A scheduled agent is a clock, not a renewal
+      process, and the residual-life machinery above is the wrong instrument
+      for it: with a dozen arrivals of evidence the negative-binomial tail is
+      wide enough that n_chain exceeds the break-even chain length and the
+      policy abandons mid-chain -- buying the first keep-alive of a chain and
+      then not the second, which is the one spend pattern that is strictly
+      worse than doing nothing. When an arm's recent gaps cluster tightly
+      (median/MAD), the customer is routed to a deterministic
+      phase-minus-lead-time schedule: forecast the next arrival from the phase,
+      count the keep-alives that actually stand between now and it, and let the
+      index price THAT. If two predicted arrivals pass unanswered the phase
+      model is falsified and the arm falls back to the index path, which is
+      what stops a departed cron agent from being sustained forever.
+
+    F6 -- MEDIAN-FLOORED CHAIN. On the index path n_chain is the expected
+      number of further keep-alives, which is a mean over a heavy-tailed
+      residual-life distribution and so is dragged up by improbable long
+      silences that the I_max rule would abandon long before reaching. Where
+      the customer is inside an active session (a recent arrival) the chain is
+      floored at the MEDIAN of the same survival curve, which is the number of
+      keep-alives the typical session actually needs. Past the median horizon
+      the mean still governs, so this cannot resurrect a dead arm.
+    """
+
+    name = "learned-index-fixed"
+    horizon_mode = "chain"          # "chain" | "window"
+    periodic_fast_path = True
+    median_floor_chain = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prior_hours = prior_hours()
+        self.exposure_majority_hours = exposure_majority_hours()
+        self._imax_cache: dict[str, float] = {}
+        # (org, customer, provider) -> recent inter-arrival gaps, newest last.
+        self.gaps: dict[tuple[str, str, str], list[float]] = {}
+        self.period_hits: dict[str, int] = defaultdict(int)
+        # F7: (org, provider, prefix_hash) -> when this PROVIDER CACHE KEY was
+        # last touched by anybody. Provider caches are org-key-scoped, not
+        # customer-scoped, so twenty customers on one shared system prompt are
+        # twenty arms bidding to keep ONE entry warm.
+        self.cache_warm_until: dict[tuple[str, str, str], float] = {}
+
+    def reset(self, cfg: "SimConfig", physics: dict[str, Physics]) -> None:
+        super().reset(cfg, physics)
+        self.prior_hours = prior_hours()
+        self.exposure_majority_hours = exposure_majority_hours()
+        self._imax_cache = {}
+        self.gaps = {}
+        self.period_hits = defaultdict(int)
+        self.cache_warm_until = {}
+
+    # -- F5: phase bookkeeping ---------------------------------------------
+    def on_arrival(self, arrival: Arrival, cache_read: bool) -> None:
+        key = (arrival.org, arrival.customer, arrival.provider)
+        previous = self.state.get(key)
+        if previous is not None and previous.last_seen_at > 0.0:
+            gap = arrival.ts - previous.last_seen_at
+            if gap > 0.0:
+                window = self.gaps.setdefault(key, [])
+                window.append(gap)
+                if len(window) > _PERIOD_WINDOW:
+                    del window[0]
+        # Every arrival refreshes the shared entry for free -- for every
+        # customer on that key, not just this one.
+        phys = self.physics.get(arrival.provider)
+        if phys is not None:
+            self.cache_warm_until[arrival.cache_key] = arrival.ts + phys.ttl_seconds
+        super().on_arrival(arrival, cache_read)
+
+    def on_settle(self, req: PingRequest, now: float, spent_usd: float) -> None:
+        self.cache_warm_until[req.cache_key] = (
+            now + self.physics[req.provider].ttl_seconds)
+        super().on_settle(req, now, spent_usd)
+
+    # -- F3: the break-even keep-alive horizon ------------------------------
+    def i_max(self, provider: str) -> float:
+        """I_max = ttl * (w/f - 1): sustaining longer than this costs more in
+        read-priced keep-alives than the one write-priced miss it prevents."""
+        cached = self._imax_cache.get(provider)
+        if cached is not None:
+            return cached
+        phys = self.physics[provider]
+        f = max(phys.read_cost_fraction, 1e-9)
+        value = max(0.0, phys.ttl_seconds * (phys.write_multiplier / f - 1.0))
+        self._imax_cache[provider] = value
+        return value
+
+    # -- F5: phase forecast --------------------------------------------------
+    def _phase_forecast(self, row: _PrefixRow, now: float,
+                        tau: float) -> tuple[float, int] | None:
+        """(confidence, n_chain) for a detected-periodic arm, else None.
+
+        The forecast is the phase, not the hazard: the next arrival is due one
+        period after the last one, and the keep-alives this ping commits to are
+        simply the ones standing between now and then. That is the same
+        index arithmetic every other candidate faces -- it just gets an honest
+        chain length instead of one inflated by rate uncertainty the customer's
+        own regularity has already resolved.
+        """
+        gaps = self.gaps.get((row.org, row.customer, row.provider))
+        if not gaps:
+            return None
+        detected = detect_period(gaps)
+        if detected is None:
+            return None
+        period, confidence = detected
+        phys = self.physics[row.provider]
+        if period <= phys.ttl_seconds:
+            # Self-refreshing; F2 owns this case and skips it outright.
+            return None
+        silence = max(0.0, now - row.last_seen_at)
+        if silence > _PERIOD_MISS_LIMIT * period:
+            # Two predicted arrivals have passed unanswered. The clock model is
+            # falsified -- this is a departed agent, not a slow one -- so hand
+            # the arm back to the index path, which will price the silence and
+            # abandon it. Without this a churned cron agent is sustained to
+            # I_max on every single window, forever.
+            return None
+        # Phase: the next multiple of the period after the last real arrival.
+        periods_elapsed = math.floor(silence / period) + 1
+        wait = (periods_elapsed * period) - silence
+        if wait > self.i_max(row.provider):
+            return None
+        n_chain = max(0, math.ceil(wait / tau - 1e-9) - 1)
+        return confidence, n_chain
+
+    # -- F2 + F3 + F7, before anything expensive is computed ----------------
+    def _gate(self, row: _PrefixRow, now: float) -> str | None:
+        cfg = self.cfg
+        assert cfg is not None
+        phys = self.physics[row.provider]
+        if (row.ewma_interarrival_s is not None
+                and row.ewma_interarrival_s < phys.ttl_seconds):
+            return "skipped_organic"
+        if now - row.last_seen_at > self.i_max(row.provider):
+            return "skipped_abandon"
+        # F7 -- shared-key dedup. The entry this arm wants to buy is already
+        # warm, and stays warm past the point where this arm next gets to
+        # decide; buying it again adds nothing. Without this, N customers on
+        # one org-wide system prompt each pay a full keep-alive chain for the
+        # single entry all of them read -- N-1 of those chains are pure waste,
+        # and the periodicity fast-path makes N-1 chains fire in lockstep.
+        warm_until = self.cache_warm_until.get(row.cache_key)
+        if (warm_until is not None
+                and warm_until - now > cfg.safety_margin_seconds):
+            return "skipped_shared_warm"
+        return None
+
+    # -- F1 + F3: score -----------------------------------------------------
+    def _score(self, row: _PrefixRow, now: float) -> tuple[float, float, float, int]:
+        cfg = self.cfg
+        assert cfg is not None
+        phys = self.physics[row.provider]
+        bucket = hour_of_week(now)
+        break_even = cfg.break_even_for(row.provider)
+        state = self.state.get((row.org, row.customer, row.provider))
+        if state is None or row.arrival_count < cfg.roi_min_arrivals:
+            # Cold start is v1, by construction and now for as long as v1
+            # itself admits it has no evidence (roi_min_arrivals). The shipped
+            # index only took this branch when the hazard row was literally
+            # absent, i.e. for exactly one arrival, after which it switched to
+            # a posterior built from a single observation and went quiet --
+            # which is what left the learned policy earning nothing over a
+            # customer's first session while v1 was already bridging gaps.
+            p_return = min(1.0, row.hour_histogram.get(bucket, 0)
+                           / max(row.arrival_count, 1))
+            return p_return, 1.0, dollar_index(p_return, break_even, 0), 0
+        org_state = self.state.get((row.org, _ORG_AGGREGATE, row.provider))
+        tau_fp = max(1.0, phys.ttl_seconds - cfg.safety_margin_seconds)
+
+        # -- F5: the clock path, taken before any renewal arithmetic --------
+        if self.periodic_fast_path:
+            periodic = self._phase_forecast(row, now, tau_fp)
+            if periodic is not None:
+                p_periodic, n_chain_p = periodic
+                p_alive_p = bg_nbd_p_alive(state, now)
+                self.period_hits[row.customer] += 1
+                return (p_periodic, p_alive_p,
+                        dollar_index(p_periodic * p_alive_p, break_even,
+                                     n_chain_p),
+                        n_chain_p)
+
+        alpha, beta = hazard_posterior(state, org_state, bucket,
+                                       self.prior_hours,
+                                       self.exposure_majority_hours)
+        rate = alpha / beta if beta > 0 else 0.0
+
+        # F1: fold the elapsed silence into the posterior. lam_silence is the
+        # arrivals this customer's own history says should have happened while
+        # they were quiet; dividing by the current rate expresses it in this
+        # bucket's exposure-hours so it can be added to beta.
+        silence = max(0.0, now - row.last_seen_at)
+        lam_silence = hazard_lambda(state, org_state, now - silence, now,
+                                    self.prior_hours,
+                                    self.exposure_majority_hours)
+        beta_silent = beta + (lam_silence / rate if rate > 1e-12 else 0.0)
+
+        tau = max(1.0, phys.ttl_seconds - cfg.safety_margin_seconds)
+        k_max = max(0, int(self.i_max(row.provider) // tau))
+        # One forward walk over the whole horizon the chain could span, kept as
+        # PIECEWISE hour-of-week segments. Flattening it to an average rate is
+        # wrong in exactly the case that matters: a horizon that runs off the
+        # end of a customer's active window averages their real rate with
+        # buckets they have never been seen in, and the near-window
+        # probability collapses for no reason.
+        horizon_s = max(phys.ttl_seconds, k_max * tau)
+        segments: list[tuple[float, float, float]] = []
+        cursor = now
+        end = now + horizon_s
+        guard = 0
+        while cursor < end and guard < _LAMBDA_WALK_GUARD:
+            nxt = min(end, math.floor(cursor / 3600.0) * 3600.0 + 3600.0)
+            seg_a, seg_b = hazard_posterior(state, org_state,
+                                            hour_of_week(cursor),
+                                            self.prior_hours,
+                                            self.exposure_majority_hours)
+            segments.append((cursor, nxt, seg_a / seg_b if seg_b > 0 else 0.0))
+            cursor = nxt
+            guard += 1
+
+        def _lam_to(seconds: float) -> float:
+            target = now + seconds
+            total = 0.0
+            for s0, s1, seg_rate in segments:
+                if target <= s0:
+                    break
+                total += seg_rate * (min(target, s1) - s0) / 3600.0
+            return total
+
+        def _p_within(seconds: float) -> float:
+            return min(1.0, max(0.0, 1.0 - survival_conditional(
+                alpha, beta_silent, _lam_to(seconds), rate)))
+
+        # F1 proper: the single-TTL-window conditional return probability. This
+        # is what the ROI floor gates on and what the report prints.
+        p_return = _p_within(phys.ttl_seconds)
+
+        # F3: n_chain from the survival curve of that same conditional
+        # distribution -- the EXPECTED number of further keep-alives, which is
+        # sum_k P(still silent after k windows), truncated at I_max. It rises
+        # as a session goes quiet instead of falling toward zero.
+        n_chain_expected = 0.0
+        n_chain_median = 0
+        for k in range(1, k_max + 1):
+            still_silent = survival_conditional(
+                alpha, beta_silent, _lam_to(k * tau), rate)
+            n_chain_expected += still_silent
+            if still_silent >= 0.5:
+                # The last window the typical session is still waiting through.
+                n_chain_median = k
+        n_chain = int(round(n_chain_expected))
+        if self.median_floor_chain:
+            # F6: inside an active session, price the chain the typical session
+            # actually needs rather than the mean the heavy tail inflates. The
+            # I_max gate above already guarantees we are inside one.
+            n_chain = min(n_chain, n_chain_median)
+
+        p_alive = bg_nbd_p_alive(state, now)
+        if self.horizon_mode == "chain":
+            p_eff_base = _p_within((1 + n_chain) * tau)
+        else:
+            p_eff_base = p_return
+        index = dollar_index(p_eff_base * p_alive * 1.0, break_even, n_chain)
+        return p_return, p_alive, index, n_chain
+
+    # -- introspection ------------------------------------------------------
+    def summary(self, now: float) -> dict[str, dict[str, Any]]:
+        out = super().summary(now)
+        for (org, customer, provider), state in sorted(self.state.items()):
+            if customer == _ORG_AGGREGATE:
                 continue
-            if (row.ewma_interarrival_s is not None
-                    and row.ewma_interarrival_s > cfg.max_gap_seconds):
+            label = _customer_label(org, customer)
+            if label not in out:
                 continue
-            soonest = min(soonest, row.next_due_at)
-        return soonest
+            org_state = self.state.get((org, _ORG_AGGREGATE, provider))
+            rates = {}
+            for bucket in state.hazard_n:
+                alpha, beta = hazard_posterior(state, org_state, bucket,
+                                               self.prior_hours,
+                                               self.exposure_majority_hours)
+                rates[bucket] = alpha / beta if beta > 0 else 0.0
+            top = sorted(rates.items(), key=lambda kv: (-kv[1], int(kv[0])))[:3]
+            peak = top[0][1] if top else 0.0
+            out[label]["top_hazard_hours"] = [
+                {"hour_of_week": int(bucket),
+                 "weekday": "Mon Tue Wed Thu Fri Sat Sun".split()[int(bucket) // 24],
+                 "utc_hour": int(bucket) % 24,
+                 "arrivals_per_hour": round(rate, 4)}
+                for bucket, rate in top
+            ]
+            out[label]["detected_period_s"] = (round(3600.0 / peak, 1)
+                                               if peak > 0 else None)
+            out[label]["own_exposure_hours"] = round(state.exposure_total, 2)
+        return out
+
+
+class LearnedIndexFixedWindowPolicy(LearnedIndexFixedPolicy):
+    """learned-index-fixed with F1 read at its strictest: the index is fed the
+    SINGLE-TTL-window conditional probability while still being charged for
+    1 + n_chain pings. Not a shipped candidate -- it exists so the cost of that
+    reading is a measured number rather than an argument."""
+
+    name = "learned-index-fixed-window"
+    horizon_mode = "window"
 
 
 POLICIES: dict[str, Callable[[], Policy]] = {
@@ -1093,6 +1828,8 @@ POLICIES: dict[str, Callable[[], Policy]] = {
     "never-warm": NeverWarmPolicy,
     "learned-index": LearnedIndexPolicy,
     "learned-index-stoploss": LearnedIndexStopLossPolicy,
+    "learned-index-fixed": LearnedIndexFixedPolicy,
+    "learned-index-fixed-window": LearnedIndexFixedWindowPolicy,
 }
 
 
@@ -1201,6 +1938,19 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
     result = ReplayResult(policy=policy.name, warm_flags=warm_flags)
     per_customer: dict[str, CustomerStats] = defaultdict(CustomerStats)
 
+    # One string object per customer rather than one per event: at a million
+    # arrivals and several million pings the f-string in _customer_label is
+    # hundreds of megabytes all by itself.
+    label_cache: dict[tuple[str, str], str] = {}
+
+    def label_for(org: str, customer: str) -> str:
+        key = (org, customer)
+        label = label_cache.get(key)
+        if label is None:
+            label = _customer_label(org, customer)
+            label_cache[key] = label
+        return label
+
     last_arrival_ts = arrivals[-1].ts if arrivals else 0.0
     tick = float(cfg.tick_seconds)
     # Grid origin: the first arrival, so tick alignment is reproducible.
@@ -1240,7 +1990,7 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
             cache_read = expiry.get(arrival.cache_key, float("-inf")) > arrival.ts
             expiry[arrival.cache_key] = arrival.ts + phys.ttl_seconds
             warm_flags.append(cache_read)
-            label = _customer_label(arrival.org, arrival.customer)
+            label = label_for(arrival.org, arrival.customer)
             stats = per_customer[label]
             stats.arrivals += 1
             stats.warm_arrivals += int(cache_read)
@@ -1272,7 +2022,7 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
             expiry[req.cache_key] = tick_ts + phys.ttl_seconds
             result.ping_cost_usd += spent
             result.pings += 1
-            label = _customer_label(req.prefix_key[0], req.customer)
+            label = label_for(req.prefix_key[0], req.customer)
             stats = per_customer[label]
             stats.ping_cost_usd += spent
             stats.pings += 1
@@ -1478,7 +2228,8 @@ def evaluate(arrivals: Sequence[Arrival], cfg: SimConfig,
         })
     payload["_objects"] = {"baseline": baseline, "oracle": oracle,
                            "results": results, "start_ts": arrivals[0].ts,
-                           "end_ts": arrivals[-1].ts, "arrivals": arrivals}
+                           "end_ts": arrivals[-1].ts, "arrivals": arrivals,
+                           "cfg": cfg}
     return payload
 
 
@@ -1591,66 +2342,205 @@ def render_learning(payload: dict[str, Any], title: str = "",
                  f"   <- hindsight bound, {oracle_pings} gaps bridged")
     lines.append("")
 
-    learned_name = "learned-index"
-    learned_res = dict(results).get(learned_name)
-    v1_res = dict(results).get("v1heuristic")
-    if learned_res is None:
-        lines.append("  (learned-index not among the replayed policies)")
-        lines.append("=" * 92)
-        return "\n".join(lines)
+    # -- per-cohort money --------------------------------------------------
+    cohorts: dict[str, list[str]] = defaultdict(list)
+    for label in trace["customers"]:
+        cohorts[_cohort_of(label)].append(label)
+    # Only a trace whose customers actually carry cohort names gets the table;
+    # otherwise every customer lands in "other" and the section is noise.
+    if len([c for c in cohorts if c != "other"]) >= 2:
+        arrivals_by_label: dict[str, int] = defaultdict(int)
+        for arrival in objs["arrivals"]:
+            arrivals_by_label[_customer_label(arrival.org, arrival.customer)] += 1
+        lines.append("-" * 92)
+        lines.append("PER-COHORT, EVALUATION WINDOW (net $ / pings, by customer "
+                     "cohort)")
+        lines.append("-" * 92)
+        order = [c for c in COHORT_ORDER if c in cohorts]
+        order += sorted(c for c in cohorts if c not in COHORT_ORDER)
+        ping_counts = {
+            name: _counts_by_label(res.ping_events, eval_start)
+            for name, res in results
+        }
+        for cohort in order:
+            members = cohorts[cohort]
+            arrivals_n = sum(arrivals_by_label[m] for m in members)
+            o_net = sum(oracle_per.get(m, 0.0) for m in members)
+            lines.append(f"  {cohort}  ({len(members)} customers, "
+                         f"{arrivals_n:,} arrivals)   oracle net {_usd(o_net)}")
+            for name, _res in results:
+                if name == "never-warm":
+                    continue
+                _s, _c, per = windows[name]
+                net = sum(per.get(m, (0.0, 0.0))[0] - per.get(m, (0.0, 0.0))[1]
+                          for m in members)
+                cost = sum(per.get(m, (0.0, 0.0))[1] for m in members)
+                pings = sum(ping_counts[name].get(m, 0) for m in members)
+                share = f"{net / o_net * 100:6.1f}%" if o_net > ORACLE_RATIO_FLOOR_USD else "     --"
+                lines.append(f"      {name:<28}{net:>13.4f}"
+                             f"   spend {cost:>10.4f}   pings {pings:>9,}"
+                             f"   of-oracle {share}")
+        lines.append("")
+
+    # -- where each policy's pings went, by how long the customer was quiet --
+    imax = _i_max_seconds(objs.get("cfg"), trace["providers"])
+    for name, res in results:
+        if not res.ping_events:
+            continue
+        lines.append("-" * 92)
+        lines.append(f"WHERE {name} SPENT IT -- pings by how long the customer "
+                     f"was ALREADY silent")
+        lines.append(f"  (I_max = {imax:,.0f}s = {imax / 60.0:.1f} min: past this "
+                     f"the keep-alive chain costs more than the miss it prevents)")
+        lines.append("-" * 92)
+        hist, total_pings, total_cost, write_priced = _silence_histogram(
+            objs["arrivals"], res.ping_events, eval_start, imax)
+        for bucket_name, count, cost in hist:
+            lines.append(f"    silent {bucket_name:<14} {count:>9,} pings "
+                         f"({count / max(total_pings, 1) * 100:5.1f}%)"
+                         f"   ${cost:>11.4f} "
+                         f"({cost / max(total_cost, 1e-9) * 100:5.1f}% of spend)")
+        past_imax = sum(c for n, c, _u in hist if n.startswith(">"))
+        lines.append(f"    pings past I_max: {past_imax:,} of {total_pings:,} "
+                     f"({past_imax / max(total_pings, 1) * 100:.2f}%)")
+        lines.append(f"    write-priced pings: {write_priced:,} of {total_pings:,} "
+                     f"({write_priced / max(total_pings, 1) * 100:.1f}%) -- a ping "
+                     f"that lands on an entry that already lapsed pays the full "
+                     f"write premium")
+        lines.append("")
+
+    # -- what the learned policies learned, per customer --------------------
+    by_name = dict(results)
+    v1_res = by_name.get("v1heuristic")
+    v1_per = windows.get("v1heuristic", (0.0, 0.0, {}))[2]
+    learned_names = [n for n, r in results if r.learned]
+    for learned_name in learned_names:
+        learned_res = by_name[learned_name]
+        _s, _c, learned_per = windows[learned_name]
+        ping_counts = _counts_by_label(learned_res.ping_events, eval_start)
+        hit_counts = _counts_by_label(learned_res.savings_events, eval_start)
+        deltas: list[tuple[float, str]] = []
+        for label in trace["customers"]:
+            l_sav, l_cost = learned_per.get(label, (0.0, 0.0))
+            v_sav, v_cost = v1_per.get(label, (0.0, 0.0))
+            deltas.append(((l_sav - l_cost) - (v_sav - v_cost), label))
+        deltas.sort(key=lambda item: (-item[0], item[1]))
+        shown = deltas
+        note = ""
+        if len(deltas) > _LEARNED_DETAIL_LIMIT:
+            half = _LEARNED_DETAIL_LIMIT // 2
+            shown = deltas[:half] + deltas[-half:]
+            note = (f"  (showing the {half} best and {half} worst of "
+                    f"{len(deltas)} customers by delta vs v1)")
+        lines.append("-" * 92)
+        lines.append(f"WHAT {learned_name} LEARNED, PER CUSTOMER "
+                     f"(evaluation window money)")
+        if note:
+            lines.append(note)
+        lines.append("-" * 92)
+        for _delta, label in shown:
+            info = learned_res.learned.get(label, {})
+            l_sav, l_cost = learned_per.get(label, (0.0, 0.0))
+            v_sav, v_cost = v1_per.get(label, (0.0, 0.0))
+            l_net, v_net = l_sav - l_cost, v_sav - v_cost
+            top = info.get("top_hazard_hours") or []
+            top_text = ", ".join(
+                f"{h['weekday']} {h['utc_hour']:02d}:00Z "
+                f"({h['arrivals_per_hour']:.2f}/h)" for h in top) or "(no mass)"
+            period = info.get("detected_period_s")
+            period_text = f"{period / 60.0:.1f} min" if period else "n/a"
+            lines.append(f"  {label}")
+            lines.append(f"      top hazard hours : {top_text}")
+            lines.append(f"      peak-bucket period: {period_text}"
+                         f"   P(alive) at end: {info.get('p_alive_end', 1.0):.3f}"
+                         f"   quiet {info.get('quiet_days', 0.0):.1f}d"
+                         f"   buckets w/ mass {info.get('buckets_with_mass', 0)}")
+            lines.append(f"      pings {ping_counts.get(label, 0):>7,}   "
+                         f"warm hits {hit_counts.get(label, 0):>7,}"
+                         f"   net {_usd(l_net):>14}"
+                         f"   vs v1 {_usd(v_net):>14}"
+                         f"   delta {_usd(l_net - v_net):>14}")
+        lines.append("")
 
     lines.append("-" * 92)
-    lines.append("WHAT learned-index LEARNED, PER CUSTOMER (evaluation window money)")
-    lines.append("-" * 92)
-    _s, _c, learned_per = windows[learned_name]
-    v1_per = windows.get("v1heuristic", (0.0, 0.0, {}))[2]
-    for label in sorted(trace["customers"]):
-        info = learned_res.learned.get(label, {})
-        l_sav, l_cost = learned_per.get(label, (0.0, 0.0))
-        v_sav, v_cost = v1_per.get(label, (0.0, 0.0))
-        l_net, v_net = l_sav - l_cost, v_sav - v_cost
-        pings = sum(1 for ts, lab, _u in learned_res.ping_events
-                    if ts >= eval_start and lab == label)
-        hits = sum(1 for ts, lab, _u in learned_res.savings_events
-                   if ts >= eval_start and lab == label)
-        top = info.get("top_hazard_hours") or []
-        top_text = ", ".join(
-            f"{h['weekday']} {h['utc_hour']:02d}:00Z ({h['arrivals_per_hour']:.2f}/h)"
-            for h in top) or "(no mass)"
-        period = info.get("detected_period_s")
-        period_text = f"{period / 60.0:.1f} min" if period else "n/a"
-        lines.append(f"  {label}")
-        lines.append(f"      top hazard hours : {top_text}")
-        lines.append(f"      peak-bucket period: {period_text}"
-                     f"   P(alive) at end: {info.get('p_alive_end', 1.0):.3f}"
-                     f"   quiet {info.get('quiet_days', 0.0):.1f}d"
-                     f"   buckets w/ mass {info.get('buckets_with_mass', 0)}")
-        lines.append(f"      pings {pings:>5,}   warm hits {hits:>5,}"
-                     f"   net {_usd(l_net):>14}"
-                     f"   vs v1 {_usd(v_net):>14}"
-                     f"   delta {_usd(l_net - v_net):>14}")
-    # -- where the pings actually went ------------------------------------
-    lines.append("")
-    lines.append("-" * 92)
-    lines.append("WHERE learned-index SPENT IT -- pings by how long the customer "
-                 "was ALREADY silent")
-    lines.append("-" * 92)
-    # Merge the real arrival stream with the ping stream so every ping can be
-    # labelled with how long that customer had already been quiet.
-    last_seen: dict[str, float] = {}
-    stream: list[tuple[float, int, str, float]] = [
-        (a.ts, 0, _customer_label(a.org, a.customer), 0.0)
-        for a in objs["arrivals"]
-    ]
-    stream += [(ts, 1, label, usd) for ts, label, usd in learned_res.ping_events]
-    stream.sort(key=lambda item: (item[0], item[1]))
-    edges = ((300.0, "< 5m"), (900.0, "5-15m"), (3_600.0, "15-60m"),
-             (21_600.0, "1-6h"), (float("inf"), "> 6h"))
-    hist: dict[str, list[float]] = {name: [0, 0.0] for _e, name in edges}
-    for ts, kind, label, usd in stream:
-        if kind == 0:
-            last_seen[label] = ts
+    v_net_total = (windows.get("v1heuristic", (0.0, 0.0, {}))[0]
+                   - windows.get("v1heuristic", (0.0, 0.0, {}))[1])
+    for name, _res in results:
+        if name == "never-warm":
             continue
+        net = windows[name][0] - windows[name][1]
+        lines.append(f"  {name:<28} net {_usd(net):>16}"
+                     f"   vs v1 {_usd(net - v_net_total):>16}"
+                     f"   {'>= v1' if net >= v_net_total - 1e-12 else 'BELOW v1'}")
+    for name, res in results:
+        if res.decisions:
+            lines.append(f"  {name} claim decisions (whole run): "
+                         + "  ".join(f"{k}={v}" for k, v in
+                                     sorted(res.decisions.items())))
+    lines.append("=" * 92)
+    return "\n".join(lines)
+
+
+_LEARNED_DETAIL_LIMIT = 12
+
+
+def _counts_by_label(events: Sequence[tuple[float, str, float]],
+                     start_ts: float) -> dict[str, int]:
+    """One pass, not one pass per customer: at a hundred customers and several
+    million pings the per-customer filter is the whole report's runtime."""
+    out: dict[str, int] = defaultdict(int)
+    for ts, label, _usd in events:
+        if ts >= start_ts:
+            out[label] += 1
+    return out
+
+
+def _i_max_seconds(cfg: "SimConfig | None", providers: Sequence[str]) -> float:
+    """I_max = ttl * (w/f - 1) for the trace's dominant provider."""
+    if cfg is None:
+        return 3_450.0
+    for provider in providers:
+        phys = cfg.physics.get(provider)
+        if phys is not None:
+            f = max(phys.read_cost_fraction, 1e-9)
+            return max(0.0, phys.ttl_seconds * (phys.write_multiplier / f - 1.0))
+    return 3_450.0
+
+
+def _silence_histogram(arrivals: Sequence[Arrival],
+                       ping_events: Sequence[tuple[float, str, float]],
+                       eval_start: float, imax: float
+                       ) -> tuple[list[tuple[str, int, float]], int, float, int]:
+    """Pings bucketed by how long that customer had already been silent.
+
+    Streams a two-pointer merge of the arrival stream and the ping stream --
+    both already in timestamp order -- rather than materialising and sorting
+    their concatenation, which at a million arrivals and several million pings
+    is gigabytes.
+    """
+    raw = [(300.0, "< 5m"), (900.0, "5-15m"), (imax, "15m-I_max"),
+           (21_600.0, "> I_max, < 6h"), (float("inf"), "> 6h")]
+    edges: list[tuple[float, str]] = []
+    for edge, name in raw:
+        # Keep the ladder strictly increasing whatever the provider's I_max is.
+        if edge > 0 and (not edges or edge > edges[-1][0]):
+            edges.append((edge, name))
+    hist: dict[str, list[float]] = {name: [0, 0.0] for _e, name in edges}
+    last_seen: dict[str, float] = {}
+    labels: dict[tuple[str, str], str] = {}
+    write_priced = 0
+    i = 0
+    n = len(arrivals)
+    for ts, label, usd in ping_events:
+        while i < n and arrivals[i].ts <= ts:
+            arrival = arrivals[i]
+            key = (arrival.org, arrival.customer)
+            name = labels.get(key)
+            if name is None:
+                name = _customer_label(*key)
+                labels[key] = name
+            last_seen[name] = arrival.ts
+            i += 1
         if ts < eval_start:
             continue
         idle = ts - last_seen.get(label, ts)
@@ -1659,37 +2549,10 @@ def render_learning(payload: dict[str, Any], title: str = "",
                 hist[name][0] += 1
                 hist[name][1] += usd
                 break
-    total_pings = sum(int(v[0]) for v in hist.values())
-    total_cost = sum(v[1] for v in hist.values())
-    for _edge, name in edges:
-        count, cost = hist[name]
-        lines.append(f"    silent {name:<8} {int(count):>6,} pings "
-                     f"({int(count) / max(total_pings, 1) * 100:5.1f}%)"
-                     f"   ${cost:>9.4f} ({cost / max(total_cost, 1e-9) * 100:5.1f}% of spend)")
-    reads = [u for ts, _l, u in learned_res.ping_events if ts >= eval_start]
-    write_priced = sum(1 for u in reads if u > 0.003)
-    lines.append(f"    write-priced pings: {write_priced:,} of {len(reads):,} "
-                 f"({write_priced / max(len(reads), 1) * 100:.1f}%) -- a ping that "
-                 f"lands on an entry that already lapsed pays the full write premium")
-
-    lines.append("")
-    lines.append("-" * 92)
-    l_net_total = windows[learned_name][0] - windows[learned_name][1]
-    v_net_total = (windows.get("v1heuristic", (0.0, 0.0, {}))[0]
-                   - windows.get("v1heuristic", (0.0, 0.0, {}))[1])
-    lines.append(f"  learned-index net {_usd(l_net_total)}"
-                 f"   v1heuristic net {_usd(v_net_total)}"
-                 f"   delta {_usd(l_net_total - v_net_total)}")
-    if learned_res.decisions:
-        lines.append("  learned-index claim decisions (whole run): "
-                     + "  ".join(f"{k}={v}" for k, v in
-                                 sorted(learned_res.decisions.items())))
-    if v1_res is not None and v1_res.decisions:
-        lines.append("  v1heuristic  claim decisions (whole run): "
-                     + "  ".join(f"{k}={v}" for k, v in
-                                 sorted(v1_res.decisions.items())))
-    lines.append("=" * 92)
-    return "\n".join(lines)
+        if usd > 0.003:
+            write_priced += 1
+    rows = [(name, int(hist[name][0]), hist[name][1]) for _e, name in edges]
+    return (rows, sum(r[1] for r in rows), sum(r[2] for r in rows), write_priced)
 
 
 # --------------------------------------------------------------------------
