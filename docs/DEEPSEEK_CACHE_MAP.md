@@ -78,7 +78,7 @@ sent (DeepSeek is OpenAI-compatible; there is no `cache_control` to send).
 converts `1792 / 1868` tokens (95.9%) to the 0.02× hit rate with zero directives.
 The cost fell from **$0.000262 → $0.000016** (a **16×** drop) on the resend.
 
-Note the `hit=1792` is exactly `28 × 64`; the trailing `76` tokens (the tail past
+Note the `hit=1792` is exactly `14 × 128`; the trailing `76` tokens (the tail past
 the last full 128-block plus the fixed user suffix) bill as a miss. This is the
 128-block quantization proven by the 201→128 resolving probe (see top).
 
@@ -123,7 +123,7 @@ on the resend means that size caches.
 2. **Hits are quantized to 128-token blocks, tail uncached** (proven: a 201-tok
    prefix caches 128, not 192, stranding 73 > 64). Every hit is a multiple of 128
    (128, 256, 512, `896=7×128`, `1792=14×128`, `1920=15×128`). The
-   remainder above the last 64-boundary (e.g. `1015−896=119`, `2024−1920=104`)
+   remainder above the last 128-boundary (e.g. `1015−896=119`, `2024−1920=104`; 896=7×128, 1920=15×128)
    always bills as a miss. DeepSeek rounds the cacheable prefix **down** to the
    nearest 64.
 
@@ -137,7 +137,7 @@ recovers 896 at the hit rate; the last ~119 are structurally un-discountable. A
 savings estimate that credits the *full* prefix at the hit rate over-claims by the
 128-block remainder on every call. The settlement path already reads the receipt,
 so it books the real `prompt_cache_hit_tokens` — but any *pre-call projection*
-must floor to 64 or it overstates.
+must floor to 128 or it overstates.
 
 ---
 
