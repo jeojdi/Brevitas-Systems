@@ -48,7 +48,7 @@ The initial sweep left 64-vs-128 ambiguous — every observed hit (128, 256, 512
 |---|---|---|---|
 | P1 automatic caching | resend HIT `hit=1792` with **no directive** | "enabled by default" | **CONFIRMED** — fully automatic |
 | P2 min cacheable prefix | 98-tok prompt **never caches**; first hit at prompt **163 tok** (hit=128) | *silent — no floor documented* | **NEW DATUM** — floor ≈128 tok, **not** 64 |
-| P2 cache granularity | every hit is an exact **multiple of 64** (128/256/512/896/1792/1920) | "cache prefix units" (no number) | **NEW DATUM** — 64-token blocks, tail uncached |
+| P2 cache granularity | every hit rounds **down to the nearest 128** (128/256/512/896/1792/1920; confirmed by the 201→128 probe) | "cache prefix units" (no number) | **NEW DATUM — 128-token blocks**, tail uncached |
 | P3 TTL (bounded) | HIT at 60 / 300 / **900 s** — alive through 15 min | "a few hours to a few days" | **CONSISTENT** — TTL ≫ 15 min |
 | P4 refresh-on-read | moot: entry alive at 300 s untouched | (not documented) | **N/A** — long TTL makes refresh irrelevant |
 | P5 peak-hour pricing | Beijing 16:54 (in rumored peak); receipt carries **no price field** | 2× peak announced, effective **TBA** | **NOT LIVE / INVISIBLE in receipt** |
@@ -79,8 +79,8 @@ converts `1792 / 1868` tokens (95.9%) to the 0.02× hit rate with zero directive
 The cost fell from **$0.000262 → $0.000016** (a **16×** drop) on the resend.
 
 Note the `hit=1792` is exactly `28 × 64`; the trailing `76` tokens (the tail past
-the last full 64-block plus the fixed user suffix) bill as a miss. This is the
-64-block quantization measured directly in P2.
+the last full 128-block plus the fixed user suffix) bill as a miss. This is the
+128-block quantization proven by the 201→128 resolving probe (see top).
 
 **Brevitas lever.** DeepSeek gives the cache discount away automatically on any
 repeated prefix. So Brevitas cannot bill "we enabled caching" here — the customer
@@ -110,18 +110,19 @@ on the resend means that size caches.
 
 **Receipt evidence (the boundary pair):**
 - 98-tok prompt → `{"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":98}` — no error, silently uncached.
-- 163-tok prompt → `{"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":35}` — first hit, exactly 2×64.
+- 163-tok prompt → `{"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":35}` — first hit, exactly one 128-block.
 
 **Two proprietary findings:**
 
 1. **Caching does NOT kick in at 64 tokens.** A 98-token prompt caches *nothing*.
    The floor sits in **(98, 163] prompt tokens**, and the smallest hit ever
-   observed is **128 tokens (2 × 64-block)**. So the effective minimum cacheable
+   observed is **128 tokens (one 128-block)**. So the effective minimum cacheable
    prefix is **≈128 tokens** — a *higher* floor than the single 64-token storage
    unit implies, but **~8× lower than OpenAI's documented 1024-token floor** and
    ~32× lower than Anthropic Haiku's measured 4096 (`ANTHROPIC_CACHE_MAP.md`).
-2. **Hits are quantized to 64-token blocks, tail uncached.** Every hit is an exact
-   multiple of 64 (128, 256, 512, `896=14×64`, `1792=28×64`, `1920=30×64`). The
+2. **Hits are quantized to 128-token blocks, tail uncached** (proven: a 201-tok
+   prefix caches 128, not 192, stranding 73 > 64). Every hit is a multiple of 128
+   (128, 256, 512, `896=7×128`, `1792=14×128`, `1920=15×128`). The
    remainder above the last 64-boundary (e.g. `1015−896=119`, `2024−1920=104`)
    always bills as a miss. DeepSeek rounds the cacheable prefix **down** to the
    nearest 64.
@@ -130,11 +131,11 @@ on the resend means that size caches.
 rounding direction. Both are measured here for the first time.
 
 **Brevitas lever.** The candidate filter for DeepSeek routes must gate on a
-**~128-token minimum** — but far more importantly, model on the **64-block
+**~128-token minimum** — but far more importantly, model on the **128-block
 floor of the hit**, not the raw prefix length. A prefix of 1,015 tokens only ever
 recovers 896 at the hit rate; the last ~119 are structurally un-discountable. A
 savings estimate that credits the *full* prefix at the hit rate over-claims by the
-64-block remainder on every call. The settlement path already reads the receipt,
+128-block remainder on every call. The settlement path already reads the receipt,
 so it books the real `prompt_cache_hit_tokens` — but any *pre-call projection*
 must floor to 64 or it overstates.
 
