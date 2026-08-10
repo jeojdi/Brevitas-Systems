@@ -17,7 +17,7 @@ declare
     v_request uuid := '00000000-0000-4000-8000-0000000f0005';
     v_tenant_request uuid := '00000000-0000-4000-8000-0000000f0006';
     v_export_request uuid := '00000000-0000-4000-8000-0000000f0008';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
     v_settle_signature text := 'public.warm_ping_settle(uuid,uuid,text,text,date,numeric,numeric,text,integer,integer,uuid)';
     v_period date := date_trunc('month', ((clock_timestamp() at time zone 'utc')::date)::timestamp)::date;
     v_bucket text;
@@ -38,11 +38,13 @@ begin
     -- 0. Signatures. 202608100004 added NO argument to warm_due_claim -- the
     -- envelope is a gate, not an argument, because a spend ceiling a caller
     -- can switch off is not a ceiling -- and left warm_ping_settle's eleven
-    -- alone. The sixteenth argument here is 202608100005's p_beta; what this
-    -- file pins is that the fifteen-argument form is gone, so nothing can
-    -- still be calling the pre-envelope claim.
+    -- alone. The sixteenth argument here is 202608100005's p_beta and the
+    -- seventeenth is 202608100007's p_parent_dedup; what this file pins is
+    -- that the fifteen-argument form is gone, so nothing can still be calling
+    -- the pre-envelope claim.
     -- ------------------------------------------------------------------
     if to_regprocedure(v_claim_signature) is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null
        or to_regprocedure(v_settle_signature) is null then
         raise exception 'the claim/settle signatures must be unchanged by 202608100004';

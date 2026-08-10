@@ -26,13 +26,16 @@ begin
     -- 202607280003/202608090001 signature, which itself dropped the
     -- nine-argument 202607280001 one, so the nine positional arguments the
     -- calls below pass can never be ambiguous.
-    -- warm_prefix_observe is likewise the eleven-argument 202608090001 form
-    -- (trailing p_model_class for the TTL sensor); that migration drops the
-    -- ten-argument 202607280003/202607280018 signature, so this asserts the new
-    -- one is present AND the old one is gone.
-    if to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric,text)') is null
+    -- warm_prefix_observe is the FOURTEEN-argument 202608100006 form (the
+    -- eleven-argument 202608090001 signature plus the salted prefix chain);
+    -- each of those migrations dropped the shape below it, so this asserts the
+    -- current one is present AND both retired ones are gone. The nine
+    -- positional arguments the calls below pass are therefore unambiguous.
+    if to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric,text,jsonb,text,integer)') is null
+       or to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric,text)') is not null
        or to_regprocedure('public.warm_prefix_observe(uuid,uuid,text,text,text,integer,integer,integer,boolean,numeric)') is not null
-       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)') is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)') is not null

@@ -15,8 +15,8 @@ declare
     v_cust_on uuid := '00000000-0000-4000-8000-0000000d0005';
     v_hash_a text := repeat('d1', 32);
     v_hash_b text := repeat('d2', 32);
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)';
-    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
+    v_record_signature text := 'public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,uuid,text,integer,text)';
     v_column text;
     v_count integer;
     v_off_count integer;
@@ -32,13 +32,15 @@ begin
     -- ------------------------------------------------------------------
     if to_regprocedure(v_claim_signature) is null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision)') is not null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric)') is not null then
-        raise exception 'warm_due_claim must be the sixteen-argument beta form only';
+        raise exception 'warm_due_claim must be the seventeen-argument dedup form only';
     end if;
     if to_regprocedure(v_record_signature) is null
+       or to_regprocedure('public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric,numeric)') is not null
        or to_regprocedure('public.warm_decision_record(uuid,uuid,text,text,text,numeric,numeric,numeric,integer,numeric,integer,integer,uuid,bigint,numeric)') is not null then
-        raise exception 'warm_decision_record must be the twenty-three-argument form only';
+        raise exception 'warm_decision_record must be the twenty-seven-argument form only';
     end if;
     if has_function_privilege('anon', v_claim_signature, 'execute')
        or has_function_privilege('authenticated', v_claim_signature, 'execute')

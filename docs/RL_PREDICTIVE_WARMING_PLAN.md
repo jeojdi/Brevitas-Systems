@@ -286,3 +286,17 @@ Notes for review: the cap in the clause (5%) must be enforced in code and in con
 ---
 
 *Full evidence base: 3 grounding audits with file:line references, ~70 research sources, 3 complete competing designs, judge scorecard, and 16 adversarially-derived failure modes with mitigations — archived in the session workflow transcripts.*
+
+---
+
+## Appendix: the graph-database question (resolved 2026-08-10)
+
+Investigated pgGraph (Evokoa) and the broader graph-DB landscape for the prefix/attribution problem. **Verdict: no graph database — but the graph structure is real and currently discarded by our hashing.**
+
+- **pgGraph cannot run on production**: it is a compiled Rust/pgrx extension; Supabase hosted allows only its curated allowlist, pure-SQL extensions, pg_tle, and database.dev packages. It is also ~10 weeks old (1.0.0 on 2026-07-25, no independent benchmarks or named production users), its read-only CSR artifact model is wrong for a tree that grows on every request, and derived mmap'd artifacts would hold erased customers' edges until rebuild — a DSR hazard we do not currently have. Apache AGE is equally uninstallable on Supabase; SQL/PGQ lands in PG19 without variable-length paths and security-invoker only (incompatible with our definer-RPC model); Supabase is on PG17.
+- **The real finding — containment loss is a hashing bug, not a database gap**: sha256 over the whole prefix destroys parent/child structure. Adopt vLLM-style **chain hashing** (fixed token blocks, block_hash[i] = H(block_hash[i-1], tokens[i], salt)) so identical prefixes yield identical hash *sequences* and containment survives with no content stored. Store as an `ltree` materialized path (GiST) + a `prefix_edge` adjacency table — plain tables, so RLS/RPC/erasure work unchanged.
+- **Shared-prefix attribution becomes the airport problem**: on a rooted tree the Shapley value collapses to sequential cost allocation (split each edge's cost equally among tenants beneath it) — one bottom-up recursive CTE, and defensible in a billing dispute.
+- **Hot lookup stays in the gateway process** (SGLang/vLLM-router pattern); Postgres holds the durable, auditable tree.
+- **Revisit trigger**: >3-hop traversals with fanout at real volume, ltree/CTE p95 in the hot path, or a graph extension landing on Supabase's allowlist.
+
+Queued as Phase 1.5: chain-hash prefix keying + prefix tree tables + airport-game attribution.

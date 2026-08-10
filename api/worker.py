@@ -594,6 +594,21 @@ def _warm_claim_kwargs() -> dict[str, Any]:
         # zero, trailing 28-day warm spend may not exceed beta times the
         # control-verified savings in warm_control_savings_daily.
         "beta": _warm_bound("BREVITAS_WARM_SPEND_BETA", 0.0, 0.0, 100.0),
+        # SHARED-PARENT DEDUP (202608100007), default OFF. Two arms of one
+        # organization whose 202608100006 chain paths descend from a common
+        # node share the provider's cache entry for the span up to that node,
+        # so one keep-alive warms both and the second is a duplicate purchase.
+        # On, the claim groups such arms, claims the cheapest one, and defers
+        # the rest to the horizon that ping bought. Like the index and the
+        # hazard model, and unlike the analytics jobs, this changes what gets
+        # claimed, so it is opt-in.
+        #
+        # INERT WITHOUT A CHAIN. Grouping keys on warm_prefixes.chain_path,
+        # which only 202608100006's observation writes and only when the salt
+        # is configured and the tokenizer is exact. A deployment with no chain
+        # rows groups nothing, which is the same no-op as leaving this off.
+        "parent_dedup": os.getenv("BREVITAS_WARM_PARENT_DEDUP", "false").lower()
+                        in ("1", "true", "yes"),
     }
 
 
@@ -1109,6 +1124,45 @@ async def warm_control_savings(stop: asyncio.Event) -> None:
                             mixed_units=int(result.get("mixed_units") or 0))
             except Exception as exc:
                 logger.error("warm_control_savings_error",
+                             error_type=type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+
+
+async def warm_attribution(stop: asyncio.Event) -> None:
+    """Recompute the airport-game attribution statement for the open days.
+
+    Default ON, on the reward-join and control-savings precedent
+    (api/worker.py:880-890, 1101-1112): this writes an analytics table, nothing
+    gates on it and nothing bills from it. It is also inert by construction
+    until 202608100006's chain tree has data -- an arm with no chain_leaf_digest
+    contributes no ancestry, so on a deployment where BREVITAS_WARM_CHAIN_SALT
+    is unset the job scans and writes nothing.
+
+    MEASURED-ONLY. The numbers this loop produces are never a billed quantity;
+    promoting any of them requires an explicit decision this loop does not make.
+    """
+    if not _warming_enabled() or os.getenv(
+            "BREVITAS_WARM_ATTRIBUTION", "true").lower() not in (
+                "1", "true", "yes"):
+        return
+    interval = _warm_bound("BREVITAS_WARM_ATTRIBUTION_INTERVAL_SECONDS",
+                           86_400, 600, 604_800)
+    while not stop.is_set():
+        if _WORKER_ACCEPTING:
+            try:
+                result = await asyncio.to_thread(
+                    _store.warm_attribution_run, 2, 7)
+                logger.info("warm_attribution_cycle",
+                            days_scanned=int(result.get("days_scanned") or 0),
+                            rows_written=int(result.get("rows_written") or 0),
+                            cost_misses=int(result.get("cost_misses") or 0))
+            except Exception as exc:
+                # A conservation violation raises here rather than writing a
+                # statement that does not add up. Failing the job is the point.
+                logger.error("warm_attribution_error",
                              error_type=type(exc).__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
@@ -1810,6 +1864,8 @@ async def run() -> None:
                             name="worker-warm-envelope-allocator"),
         asyncio.create_task(warm_control_savings(stop),
                             name="worker-warm-control-savings"),
+        asyncio.create_task(warm_attribution(stop),
+                            name="worker-warm-attribution"),
         asyncio.create_task(warm_guardrail(stop), name="worker-warm-guardrail"),
         asyncio.create_task(warm_ttl_canary(stop), name="worker-warm-ttl-canary"),
         asyncio.create_task(settlement_sweep(stop), name="worker-settlement-sweep"),

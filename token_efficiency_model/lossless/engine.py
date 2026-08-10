@@ -70,10 +70,30 @@ def _anthropic_cache_enabled() -> bool:
     }
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
 def _openai_breakpoints_enabled() -> bool:
-    return os.environ.get("BREVITAS_OPENAI_CACHE_BREAKPOINTS", "0").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    """Explicit OpenAI breakpoints. OFF by default: a cache write is billed at 1.25x
+    and no online router can prove the read will happen.
+
+    BREVITAS_OPENAI_BREAKPOINTS is the current name; BREVITAS_OPENAI_CACHE_BREAKPOINTS
+    is honoured as a legacy alias so an operator who set the old name keeps their
+    setting. The new name wins whenever it is set at all, including to a falsy value."""
+    value = os.environ.get("BREVITAS_OPENAI_BREAKPOINTS")
+    if value is None:
+        value = os.environ.get("BREVITAS_OPENAI_CACHE_BREAKPOINTS", "0")
+    return value.strip().lower() in _TRUTHY
+
+
+def _openai_cache_key_enabled() -> bool:
+    """prompt_cache_key injection. OFF by default.
+
+    The key is pure routing metadata (lossless by construction), but it is still a
+    field Brevitas puts in a customer's request body, and it changes which OpenAI
+    machine serves them — so it ships behind a kill switch like every other
+    behavior change."""
+    return os.environ.get("BREVITAS_OPENAI_CACHE_KEY", "0").strip().lower() in _TRUTHY
 
 
 def _lever_allowed(lever: str, tenant_key: str = "") -> bool:
@@ -423,6 +443,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
     elif provider == "openai":
         plan = apply_openai_cache(
             body, tenant_key=tenant_key,
+            inject_key=_openai_cache_key_enabled(),
             explicit_breakpoint=_openai_breakpoints_enabled(),
         )
         meta["openai_cache_supported"] = plan.supported

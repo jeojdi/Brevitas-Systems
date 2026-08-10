@@ -679,3 +679,59 @@ def test_observer_arity_detection_tolerates_an_unhashable_sink():
     finally:
         warming.set_warm_observer(None)
     assert sink.calls == ["brv_receipt_unhashable"]
+
+
+# --------------------------------------------------------------------------- #
+# 202608100006: server-side salting of the prefix chain. The client emits an
+# UNSALTED chain (brevitas/ is the customer-installed package and must never
+# hold the key); the hosted boundary HMACs it once per node.
+# --------------------------------------------------------------------------- #
+_SALT = "x" * 48
+
+
+def _chain_for_salting():
+    body = {"model": "claude-sonnet-4-5-20250929",
+            "system": [{"type": "text", "text": _BIG,
+                        "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": "hi"}]}
+    prefix = extract_warm_prefix(body, "anthropic", "claude-sonnet-4-5-20250929",
+                                 {}, {"cache_control_owner": "caller"})
+    assert prefix is not None and prefix.chain is not None
+    return prefix.chain
+
+
+def test_observe_without_salt_master_skips_chain(monkeypatch):
+    import api.server as server
+
+    monkeypatch.delenv("BREVITAS_WARM_CHAIN_SALT", raising=False)
+    server._WARM_CHAIN_SALT_WARNED = False
+    # No salt, no rows: an unsalted node digest is derived from a customer's
+    # prompt prefix, so storing one is not an option. The observation itself is
+    # unaffected -- this returns None, it does not raise.
+    assert server._warm_chain_nodes("org-1", _chain_for_salting()) is None
+    monkeypatch.setenv("BREVITAS_WARM_CHAIN_SALT", "too-short")
+    assert server._warm_chain_nodes("org-1", _chain_for_salting()) is None
+
+
+def test_salted_chain_is_org_scoped_and_shaped(monkeypatch):
+    import api.server as server
+
+    monkeypatch.setenv("BREVITAS_WARM_CHAIN_SALT", _SALT)
+    monkeypatch.setenv("BREVITAS_WARM_CHAIN_SALT_VERSION", "3")
+    chain = _chain_for_salting()
+    nodes, path, version = server._warm_chain_nodes("org-1", chain)
+    assert version == 3
+    assert len(nodes) == len(chain.digests)
+    assert path.startswith("s1.k3.r")
+    assert path.split(".")[2] == "r" + nodes[0]["label"]
+    assert nodes[0]["parent"] == "" and nodes[0]["block_tokens"] == 0
+    assert all(len(node["digest"]) == 64 for node in nodes)
+    # Salting is one-way and per organization: the stored digest is never the
+    # unsalted chain value, and two organizations never share a node.
+    assert nodes[0]["digest"] != chain.digests[0]
+    other, _, _ = server._warm_chain_nodes("org-2", chain)
+    assert other[0]["digest"] != nodes[0]["digest"]
+    # Same input, same output: the tree only works if it is deterministic.
+    again, again_path, _ = server._warm_chain_nodes("org-1", chain)
+    assert [node["digest"] for node in again] == [node["digest"] for node in nodes]
+    assert again_path == path

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
@@ -33,6 +34,7 @@ from token_efficiency_model.lossless.provider_cache import (
     _content_tokens,
     anthropic_min_tokens,
     count_tokens,
+    tokenizer_exact,
 )
 
 # Headers the cached prefix varies on. anthropic-beta rides here because the 1h
@@ -78,6 +80,57 @@ def _auto_ttl_seconds(provider: str, model: str) -> int:
     return 300                     # pre-5.6 automatic: 5-10min inactivity eviction floor
 
 
+# --------------------------------------------------------------------------- #
+# Chain-hash prefix keying (Phase 1.5, TASK A)
+#
+# prefix_hash is a sha256 of the WHOLE payload, which is exactly what makes it
+# useless for containment: two conversations sharing 40k tokens of system prompt
+# hash to two unrelated 64-hex strings. The chain is a SECOND, PARALLEL artifact
+# -- vLLM-style block chaining -- where a shared leading prefix produces a shared
+# leading DIGEST SEQUENCE, so containment survives without storing any content.
+#
+# It changes nothing about prefix_hash: the existing canonicalization (with its
+# default=str escape hatch) is untouched byte-for-byte, and the chain uses a
+# STRICT canonicalization of its own so a non-serializable element quarantines
+# the chain (chain is None) rather than silently hashing a memory address into a
+# structural key that other rows are meant to match.
+# --------------------------------------------------------------------------- #
+_CHAIN_SCHEME = 1
+_CHAIN_BLOCK_BYTES = 4096
+_CHAIN_MAX_BLOCKS = 300        # hard extraction cap; beyond -> truncated=True
+_CHAIN_MAX_PATH_BLOCKS = 253   # ltree label budget: 2 header + 1 root + 253
+
+# Cache-identity extras: request fields that fork the PROVIDER'S cache entry
+# without appearing in the prefix elements. Two requests with an identical
+# element sequence but a different tool_choice (anthropic) or prompt_cache_key
+# (automatic providers) address different entries, so they must not share a
+# chain root. Values are read post-injection -- whatever is on the body at
+# extraction time is what the provider will see.
+_CHAIN_EXTRAS = {
+    "anthropic": ("tool_choice", "thinking", "speed", "output_config"),
+    "openai": ("prompt_cache_key", "prompt_cache_options"),
+    "deepseek": ("prompt_cache_key", "prompt_cache_options"),
+}
+
+
+@dataclass
+class PrefixChain:
+    """Block-chained structural key for one warm prefix.
+
+    digests are UNSALTED: brevitas/ is the customer-installed package and must
+    never hold the per-organization salt. The hosted observation boundary
+    (api/server.py::_hosted_warm_observe) HMACs each u_i into the pseudonymous
+    node digest that is actually stored.
+    """
+    scheme: int                 # _CHAIN_SCHEME
+    digests: list[str]          # u_0..u_n, 64-hex each; u_0 is the seed node
+    block_tokens: list[int]     # len n (per complete block; telescoping)
+    block_elements: list[int]   # elements consumed by each block
+    token_cum: list[int]        # cumulative tokens through block i (len n)
+    tail_tokens: int            # prefix_tokens beyond the last complete block
+    truncated: bool
+
+
 @dataclass
 class WarmPrefix:
     """Everything a warming worker needs to replay one cached prefix byte-identical."""
@@ -87,6 +140,139 @@ class WarmPrefix:
     prefix_tokens: int
     provider_ttl_seconds: int
     payload: dict[str, Any]
+    # Additive and optional: every existing constructor call keeps working, and
+    # a None chain means "no structural key for this observation", never an error.
+    chain: PrefixChain | None = None
+
+
+def _chain_enabled() -> bool:
+    """Observation, so default ON -- but a kill switch exists because the chain
+    is the one part of extraction that walks every element a second time."""
+    return os.getenv("BREVITAS_WARM_CHAIN", "1").strip().lower() not in {
+        "0", "false", "no"}
+
+
+def _canon_strict(obj: Any) -> bytes:
+    """Canonical JSON with NO default= escape hatch.
+
+    json.dumps(default=str) turns an un-encodable object into its repr, which
+    for most objects embeds a memory address: the same request would then hash
+    differently on every process, and two different requests could collide. The
+    existing prefix_hash tolerates that (it is a whole-payload identity and the
+    payload came off the wire as JSON anyway); a STRUCTURAL key that other rows
+    are matched against cannot. TypeError propagates and the chain is dropped.
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _chain_elements(provider: str, captured: dict[str, Any]) -> list[Any]:
+    """The element sequence, in _capture_prefix's own serialization order:
+    tools, then system (anthropic only; a str system is ONE element, a list
+    contributes each block), then the captured message prefix."""
+    elements: list[Any] = list(captured.get("tools") or [])
+    if provider == "anthropic":
+        sysv = captured.get("system")
+        if isinstance(sysv, str):
+            elements.append(sysv)
+        elif isinstance(sysv, list):
+            elements.extend(sysv)
+    elements.extend(captured.get("messages_prefix") or [])
+    return elements
+
+
+def build_prefix_chain(body: dict, provider: str, model: str,
+                       captured: dict, payload: dict, *,
+                       prefix_tokens: int = 0) -> Optional[PrefixChain]:
+    """Chain-hash the captured prefix, or None when no chain may be emitted.
+
+    None -- never a partial or approximate chain -- when the kill switch is off,
+    when tiktoken did not load (a heuristic tokenizer would write mis-weighted
+    node rows, and wrong weights are worse than absent ones), or on ANY
+    exception: the WarmPrefix still goes out, it simply carries no structural
+    key. Library code, so nothing is logged from here.
+    """
+    if not _chain_enabled() or not tokenizer_exact():
+        return None
+    try:
+        return _build_prefix_chain(body, provider, model, captured, payload,
+                                   prefix_tokens=prefix_tokens)
+    except Exception:
+        return None
+
+
+def _build_prefix_chain(body: dict, provider: str, model: str,
+                        captured: dict, payload: dict, *,
+                        prefix_tokens: int = 0) -> PrefixChain:
+    """u_0 = sha256("BXP\\0" || canon(seed));
+       u_i = sha256(u_{i-1} || u32be(i) || block_bytes_i).
+
+    Blocks are ELEMENT-ALIGNED and BYTE-BUDGETED: a block closes at the first
+    element boundary at or past 4096 framed bytes, so two requests sharing a
+    leading element sequence partition identically and their digest sequences
+    share the same prefix. Trailing elements that never reach the budget are the
+    tail: no digest (a partial block would hash differently the moment the
+    conversation grows), only tail_tokens.
+    """
+    seed = {
+        "s": _CHAIN_SCHEME,
+        "p": provider,
+        "m": model,
+        "t": payload.get("ttl", ""),     # anthropic tier; "" for auto providers
+        "v": payload.get("vary", {}),    # anthropic _vary_headers; {} for auto
+        "x": {key: body[key] for key in _CHAIN_EXTRAS.get(provider, ())
+              if isinstance(body, dict) and key in body},
+    }
+    digests = [hashlib.sha256(b"BXP\x00" + _canon_strict(seed)).hexdigest()]
+    block_tokens: list[int] = []
+    block_elements: list[int] = []
+    token_cum: list[int] = []
+    truncated = False
+
+    previous = bytes.fromhex(digests[0])
+    pending = b""                    # framed bytes of the open block
+    pending_text = ""                # its canonical text, for the token count
+    consumed_text = ""               # canonical text of every CLOSED block
+    pending_elements = 0
+    for element in _chain_elements(provider, captured):
+        canonical = _canon_strict(element)
+        pending += len(canonical).to_bytes(4, "big") + canonical
+        pending_text += canonical.decode("utf-8")
+        pending_elements += 1
+        if len(pending) < _CHAIN_BLOCK_BYTES:
+            continue
+        index = len(digests)         # 1-based block index, == len(digests) here
+        digest = hashlib.sha256(
+            previous + index.to_bytes(4, "big") + pending).hexdigest()
+        digests.append(digest)
+        previous = bytes.fromhex(digest)
+        consumed_text += pending_text
+        # Telescoping, and deliberately not per-block counting: tokenizers are
+        # not additive across a concatenation boundary, so counting each block
+        # in isolation would not sum to the whole. Counting the cumulative text
+        # and differencing does, exactly.
+        cumulative = count_tokens(consumed_text)
+        block_tokens.append(cumulative - (token_cum[-1] if token_cum else 0))
+        token_cum.append(cumulative)
+        block_elements.append(pending_elements)
+        pending = b""
+        pending_text = ""
+        pending_elements = 0
+        if len(digests) - 1 >= _CHAIN_MAX_BLOCKS:
+            truncated = True
+            break
+    return PrefixChain(
+        scheme=_CHAIN_SCHEME,
+        digests=digests,
+        block_tokens=block_tokens,
+        block_elements=block_elements,
+        token_cum=token_cum,
+        # The WarmPrefix's own prefix_tokens is authoritative (anthropic takes
+        # it from the engine's meta), so the tail is what that count has beyond
+        # the last closed block rather than a second, disagreeing measurement.
+        tail_tokens=max(0, int(prefix_tokens) - (token_cum[-1] if token_cum else 0)),
+        truncated=truncated,
+    )
 
 
 _warm_observer: Callable | None = None
@@ -230,6 +416,8 @@ def _extract_auto_prefix(body: dict, provider: str, model: str,
         prefix_tokens=prefix_tokens,
         provider_ttl_seconds=_auto_ttl_seconds(provider, model),
         payload=payload,
+        chain=build_prefix_chain(body, provider, model, captured, payload,
+                                 prefix_tokens=prefix_tokens),
     )
 
 
@@ -276,4 +464,6 @@ def extract_warm_prefix(body: dict, provider: str, model: str,
         prefix_tokens=prefix_tokens,
         provider_ttl_seconds=_TTL_SECONDS.get(ttl, 300),
         payload=payload,
+        chain=build_prefix_chain(body, provider, model, captured, payload,
+                                 prefix_tokens=prefix_tokens),
     )

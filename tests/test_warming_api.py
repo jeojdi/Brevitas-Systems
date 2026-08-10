@@ -330,7 +330,8 @@ def test_hosted_warm_observe_reserves_provider_aware_ping_cost(tmp_path, monkeyp
         def __init__(self):
             self.reserves = []
 
-        def warm_prefix_observe(self, *args, ping_reserve_usd=None, model_class=""):
+        def warm_prefix_observe(self, *args, ping_reserve_usd=None,
+                                model_class="", **_chain):
             self.reserves.append(ping_reserve_usd)
             return {"status": "observed"}
 
@@ -387,7 +388,8 @@ def test_hosted_warm_observe_reserve_upper_bounds_full_miss_settle(
     reserves = []
 
     class Recorder:
-        def warm_prefix_observe(self, *args, ping_reserve_usd=None, model_class=""):
+        def warm_prefix_observe(self, *args, ping_reserve_usd=None,
+                                model_class="", **_chain):
             reserves.append(ping_reserve_usd)
             return {"status": "observed"}
 
@@ -861,3 +863,93 @@ def test_customer_budget_period_selects_month(tmp_path, monkeypatch):
     assert march["period_start"] == "2026-03-01"
     assert [row["envelope_usd"] for row in march["budgets"]] == [4.0]
     assert _budgets(client, period="2026-04").json()["budgets"] == []
+
+
+# ── Airport-game attribution (202608100008) ───────────────────────────────────
+
+def _body_text(payload):
+    import json as _json
+
+    return _json.dumps(payload)
+
+
+def _attribution(client, session="Bearer admin-session", **params):
+    return client.get("/v1/warming/attribution",
+                      headers={"Authorization": session}, params=params)
+
+
+def test_attribution_endpoint_org_scoped_role_gated_and_shape(tmp_path,
+                                                              monkeypatch):
+    """The statement is money and it names siblings by count, so it takes the
+    same billing gate the envelopes take -- and it never emits a node digest,
+    a path, or anything else derived from a prompt."""
+    import sqlite3 as _sqlite3
+    from datetime import date as _date, datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+
+    server, store, organization, client = _setup(
+        tmp_path, monkeypatch, "warm-attribution-api")
+    assert _enroll(client).status_code == 200
+
+    assert _attribution(client, session="").status_code == 401
+    assert _attribution(client, session="Bearer member-session").status_code == 403
+    assert _attribution(client, provider="mistral").status_code == 400
+    assert _attribution(client, **{"from": "2026-8"}).status_code == 400
+    assert _attribution(client, to="nonsense").status_code == 400
+    # A window that runs backwards is a caller error, not an empty answer.
+    assert _attribution(client, **{"from": "2026-08-02",
+                                   "to": "2026-08-01"}).status_code == 400
+
+    empty = _attribution(client)
+    assert empty.status_code == 200
+    assert empty.json()["rows"] == []
+    assert empty.json()["residuals"] == []
+    assert empty.json()["note"] == (
+        "Warming spend is borne by Brevitas and is never billed to you.")
+
+    alpha = str(store.upsert_customer(organization["id"], "attr-alpha")["id"])
+    beta = str(store.upsert_customer(organization["id"], "attr-beta")["id"])
+    other_org = store.ensure_organization("owner-2", "Other org")["id"]
+    day = _date.today() - _timedelta(days=1)
+    with _sqlite3.connect(store.db_path) as db:
+        for organization_id, customer in ((organization["id"], alpha),
+                                          (organization["id"], beta),
+                                          (other_org, alpha)):
+            db.execute(
+                "INSERT INTO warm_attribution_daily(organization_id,provider,"
+                "day,customer_ref,nodes_read,nodes_shared,avg_split_denominator,"
+                "warming_cost_share_usd,warm_attributed_savings_usd,"
+                "verified_savings_usd,net_usd,computed_at) "
+                "VALUES(?,'anthropic',?,?,3,1,2.0,0.25,0.4,0.35,0.15,?)",
+                (organization_id, day.isoformat(), customer,
+                 _datetime.now(_timezone.utc).isoformat()))
+        db.execute(
+            "INSERT INTO warm_attribution_residual(organization_id,provider,day,"
+            "total_warm_spend_usd,allocated_usd,unallocated_speculative_usd,"
+            "redundancy_usd,unpriced_usd,reward_join_delta_usd,computed_at) "
+            "VALUES(?,'anthropic',?,1.0,0.5,0.3,0.2,0.01,null,?)",
+            (organization["id"], day.isoformat(),
+             _datetime.now(_timezone.utc).isoformat()))
+
+    body = _attribution(client, **{"from": day.isoformat(),
+                                   "to": day.isoformat()}).json()
+    # ORG-SCOPED: the other organization's row is invisible, and it is invisible
+    # because the read is keyed on the caller's organization, not filtered after.
+    assert len(body["rows"]) == 2
+    assert {row["customer_id"] for row in body["rows"]} == {alpha, beta}
+    row = body["rows"][0]
+    assert set(row) == {"customer_id", "provider", "day", "nodes_read",
+                        "nodes_shared", "avg_split_denominator",
+                        "warming_cost_share_usd", "warm_attributed_savings_usd",
+                        "verified_savings_usd", "net_usd", "erased"}
+    assert row["nodes_shared"] == 1 and row["avg_split_denominator"] == 2.0
+    assert row["warming_cost_share_usd"] == 0.25
+    assert row["net_usd"] == 0.15
+    assert row["erased"] is False
+    footer = body["residuals"][0]
+    assert set(footer) == {"provider", "day", "total_warm_spend_usd",
+                           "allocated_usd", "speculative_usd",
+                           "redundancy_usd", "unpriced_usd"}
+    assert footer["speculative_usd"] == 0.3
+    # No digest, no path, no prefix hash anywhere in the response.
+    assert "digest" not in _body_text(body)
+    assert "s1.k1." not in _body_text(body)

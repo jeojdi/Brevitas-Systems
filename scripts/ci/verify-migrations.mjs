@@ -218,6 +218,21 @@ export const expectedFreshMigrationOrder = [
   'supabase/migrations/202608100003_warm_customer_state_hazard.sql',
   'supabase/migrations/202608100004_warm_customer_budget_envelopes.sql',
   'supabase/migrations/202608100005_warm_beta_cap_guardrail.sql',
+  // Phase 1.5: chain-hash prefix keying and the prefix tree. Must stay after
+  // 202608100003 (it carries that migration's warm_prefix_observe text forward
+  // and widens it) and after 202608100005, whose purge_warm_state,
+  // compliance_delete_tenant and compliance_export_tenant it restates.
+  'supabase/migrations/202608100006_warm_prefix_chain_tree.sql',
+  // Phase 1.5: shared-parent warming dedup. Must stay after 202608100006 (the
+  // chain tree IS its grouping key) and after 202608100005, whose sixteen-
+  // argument warm_due_claim it carries forward and widens; it also replaces
+  // 202608100002's warm_decision_record with the group-stamped form.
+  'supabase/migrations/202608100007_warm_parent_dedup.sql',
+  // Phase 1.5: airport-game attribution. Must stay after 202608100006, whose
+  // prefix tree it walks and whose purge_warm_state and four compliance
+  // routines it restates. MEASURED-ONLY: it reads usage_log and writes only its
+  // own three analytics tables.
+  'supabase/migrations/202608100008_warm_prefix_tree_attribution.sql',
 ]
 
 export const expectedUpgradeMigrationOrder = expectedFreshMigrationOrder.slice(12)
@@ -1013,7 +1028,14 @@ function verifyUpgradeHarnessCoverage() {
 // cutoff is the next UNUSED number, so it keeps governing the head.
 // Advanced again to 202608100006 when 202608100005 (the beta spend cap, the
 // conservative guardrail and the TTL canary) consumed 202608100005.
-const REVERSE_POSTURE_CUTOFF = '202608100006'
+// Advanced again to 202608100009 for Phase 1.5, whose three migrations are
+// numbered together and land in order: 202608100006 (the prefix tree, applied),
+// 202608100007 (shared-parent warming dedup) and 202608100008 (airport-game
+// attribution). Governance is unaffected -- verifyReversePosture below governs
+// from REVERSE_POSTURE_BACKFILL_FLOOR, not from the cutoff, so 202608100006 is
+// checked for its posture header exactly as every migration since 202607280013
+// is. The cutoff's own job is to stay ahead of the head, which it does.
+const REVERSE_POSTURE_CUTOFF = '202608100009'
 const REVERSE_POSTURE_BACKFILL_FLOOR = '202607280013'
 const REVERSE_POSTURE_PATTERN =
   /^--\s*REVERSE:\s*(?:PITR-ONLY(?:\s+--.*)?|EVIDENCE-PRESERVING-PARTIAL:\s*\S.*|DDL:\s*\S.*)$/

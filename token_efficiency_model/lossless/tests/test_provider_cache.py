@@ -79,9 +79,11 @@ def test_openai_gpt56_cache_key_and_explicit_breakpoint():
             {"role": "user", "content": "question"},
         ],
     }
-    plan = apply_openai_cache(body, tenant_key="tenant-a", explicit_breakpoint=True)
+    # Both injections are opt-in now (engine default OFF); this exercises them on.
+    plan = apply_openai_cache(body, tenant_key="a" * 40, inject_key=True,
+                              explicit_breakpoint=True)
     assert plan.supported and plan.key_added and plan.breakpoint_added
-    assert body["prompt_cache_key"].startswith("brevitas:tenant-a:")
+    assert body["prompt_cache_key"].startswith("bx1:" + "a" * 16)
     assert body["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
     assert body["messages"][0]["content"][0]["prompt_cache_breakpoint"] == {
         "mode": "explicit"}

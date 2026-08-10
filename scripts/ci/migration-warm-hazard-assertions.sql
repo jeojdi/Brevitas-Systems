@@ -17,7 +17,7 @@ declare
     v_hash_a text := repeat('e1', 32);
     v_hash_b text := repeat('e2', 32);
     v_request uuid := '00000000-0000-4000-8000-0000000e0005';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
     v_table text;
     v_column text;
     v_count integer;
@@ -34,9 +34,10 @@ begin
     -- existing call ambiguous and PostgREST would 300.
     -- ------------------------------------------------------------------
     if to_regprocedure(v_claim_signature) is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric)') is not null then
-        raise exception 'warm_due_claim must be the sixteen-argument beta form only';
+        raise exception 'warm_due_claim must be the seventeen-argument dedup form only';
     end if;
     if has_function_privilege('anon', v_claim_signature, 'execute')
        or has_function_privilege('authenticated', v_claim_signature, 'execute')

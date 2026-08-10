@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -32,12 +33,28 @@ try:
     import tiktoken
 
     _ENC = tiktoken.get_encoding("cl100k_base")
+    _TOKENIZER_EXACT = True
 
     def count_tokens(text: str) -> int:
         return len(_ENC.encode(text or "", disallowed_special=()))
 except Exception:  # pragma: no cover
+    _TOKENIZER_EXACT = False
+
     def count_tokens(text: str) -> int:
         return max(0, int(len((text or "").split()) * 1.3))
+
+
+def tokenizer_exact() -> bool:
+    """True iff tiktoken actually loaded, so count_tokens is the real encoder.
+
+    The fallback above is a word-count heuristic: good enough for a gate that
+    only has to be roughly right, and NOT good enough for anything that
+    annotates a stored structure with token weights. Callers that persist token
+    counts (the prefix chain, brevitas/warming.py) must stand down entirely
+    rather than write mis-weighted rows -- a degraded tokenizer producing no
+    rows is recoverable, a degraded tokenizer producing wrong rows is not.
+    """
+    return _TOKENIZER_EXACT
 
 
 def _block_text(block: Any) -> str:
@@ -118,6 +135,10 @@ _ANTHROPIC_MIN = [
     ("claude-fable", 512),
     ("claude-mythos", 512),
     ("claude-haiku-4-5", 4096),
+    # Opus 5 dropped the family minimum to 512 (docs, 2026). Missing this row left the
+    # default 1024 in force on an already-approved, already-on injection, so prefixes
+    # between 512 and 1024 tokens were never marked: a missed-savings error only.
+    ("claude-opus-5", 512),
     ("claude-opus-4-6", 4096),
     ("claude-opus-4-5", 4096),
     ("claude-opus-4-7", 2048),
@@ -303,15 +324,137 @@ def _has_openai_breakpoint(value: Any) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- #
+# prompt_cache_key sharding
+#
+# OpenAI's documented guidance is that one prompt_cache_key routes to one machine,
+# and a key carrying more than roughly 15 requests/minute should be split across
+# suffixed shards or it queues behind itself. The whole point of the key is that a
+# prefix family keeps landing on the machine that already holds it, so the shard
+# assignment is a STABLE hash of the stable prefix, never round-robin: a family
+# that moves shards has thrown away the residency it was buying.
+#
+# The rate estimate is a per-process one-minute-half-life EWMA. It is deliberately
+# a local, lossy estimate — under-sharding (too few shards, some queueing) is the
+# benign error direction, over-sharding fragments the cache.
+#
+# The count therefore rises IMMEDIATELY with the rate (queueing is the urgent
+# failure) and falls SLOWLY and hysteretically. A monotone non-decreasing count
+# sounds conservative and is not: a 90-second burst at 10 req/s pins a base at 16
+# for the life of the process, so an hour later, at one request every five
+# minutes, every request still splits across 16 keys — 16-way fragmentation of
+# exactly the residency the key exists to buy. Worse, the key is a chain extra
+# (brevitas/warming.py) and the chain is built post-injection, so 16 pinned
+# shards means 16 distinct chain roots: dedup groups stop forming and attribution
+# fragments with them.
+#
+# Decay is one shard at a time, no more often than _KEY_SHARD_DECAY_SECONDS, and
+# only once the EWMA has fallen a clear margin below the level that justifies the
+# current count. That deadband is what keeps a family from hopping shards — which
+# would abandon the machine already holding its prefix — while still letting an
+# idle base return to one key.
+# --------------------------------------------------------------------------- #
+_KEY_RPM: dict[str, tuple[float, float]] = {}   # base -> (ewma_rpm, last_ts)
+# base -> (shard_count, last_change_ts)
+_KEY_SHARDS: dict[str, tuple[int, float]] = {}
+_KEY_RPM_MAX_ENTRIES = 4096
+_KEY_RPM_HALF_LIFE_SECONDS = 60.0
+_KEY_RPM_PER_SHARD = 15.0
+_KEY_MAX_SHARDS = 16
+_KEY_RATE_CLAMP = 10000.0
+# Five EWMA half-lives between step-downs: by then a burst has decayed to ~3% of
+# its peak, so what remains is the real rate rather than the tail of the spike.
+_KEY_SHARD_DECAY_SECONDS = 300.0
+# Step down only once the rate is 25% under the level the lower count supports.
+_KEY_SHARD_DECAY_MARGIN = 0.75
+
+
+def _observe_key_rate(base: str, now: float) -> float:
+    """Update and return the EWMA requests-per-minute estimate for one key base."""
+    previous = _KEY_RPM.get(base)
+    if previous is None:
+        if len(_KEY_RPM) >= _KEY_RPM_MAX_ENTRIES:
+            # Bounded: evict the least recently observed base rather than grow without
+            # limit in a long-lived proxy process serving many tenants.
+            oldest = min(_KEY_RPM, key=lambda k: _KEY_RPM[k][1])
+            _KEY_RPM.pop(oldest, None)
+            _KEY_SHARDS.pop(oldest, None)
+        _KEY_RPM[base] = (0.0, now)
+        return 0.0
+    prior_rpm, last_ts = previous
+    dt = max(float(now) - float(last_ts), 1e-6)
+    rate_obs = max(0.0, min(_KEY_RATE_CLAMP, 60.0 / dt))
+    decay = 0.5 ** (dt / _KEY_RPM_HALF_LIFE_SECONDS)
+    ewma = rate_obs * (1.0 - decay) + float(prior_rpm) * decay
+    _KEY_RPM[base] = (ewma, now)
+    return ewma
+
+
+def _shard_count(base: str, now: float) -> int:
+    """Shards for one key base: up on demand, down one step at a time.
+
+    See the block comment above for why "monotone non-decreasing" is the wrong
+    conservatism here.
+    """
+    ewma = _observe_key_rate(base, now)
+    target = min(_KEY_MAX_SHARDS, 1 + int(ewma // _KEY_RPM_PER_SHARD))
+    held, changed_at = _KEY_SHARDS.get(base, (1, now))
+    if target > held:
+        # Queueing now. Split immediately.
+        count = target
+    elif (target < held
+            and now - changed_at >= _KEY_SHARD_DECAY_SECONDS
+            and ewma < (held - 1) * _KEY_RPM_PER_SHARD * _KEY_SHARD_DECAY_MARGIN):
+        # Sustained, clearly-below-threshold traffic: give back ONE shard. The
+        # margin is the deadband that stops a family oscillating across the
+        # boundary and hopping machines.
+        count = held - 1
+    else:
+        count = held
+    _KEY_SHARDS[base] = (count, now if count != held else changed_at)
+    return count
+
+
+def _openai_cache_key(tenant_key: str, stable_text: str) -> str:
+    """Opaque per-(org credential, end customer) routing key, optionally sharded.
+
+    `tenant_key` is already sha256(credential + "\\0brevitas-customer\\0" + customer_id)
+    (brevitas/identity.py), so it is exactly the (org, customer) digest and carries no
+    prompt content. Truncating it to 16 hex chars keeps the key short while leaving
+    64 bits of separation between tenants.
+    """
+    base = "bx1:" + (tenant_key or "local")[:16]
+    count = _shard_count(base, time.time())
+    if count <= 1:
+        return base
+    digest = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()[:8]
+    return f"{base}:{int(digest, 16) % count}"
+
+
 def apply_openai_cache(body: dict, tenant_key: str = "", *,
+                       inject_key: bool = False,
                        explicit_breakpoint: bool = False,
                        min_tokens: int = 1024) -> OpenAICachePlan:
     """Add current GPT-5.6 cache routing fields without touching prompt text.
 
-    A deterministic, tenant-scoped prompt_cache_key improves cache routing. Explicit
-    breakpoints are supported but opt-in because writes are billed at 1.25x; when on,
-    the last stable text block is marked and request-wide mode/TTL are set exactly as
-    documented. Caller-owned keys/options/breakpoints are always preserved.
+    Both injections are opt-in and default OFF at the engine (BREVITAS_OPENAI_CACHE_KEY,
+    BREVITAS_OPENAI_BREAKPOINTS):
+
+    * inject_key -- a deterministic, opaque per-(org credential, end customer) routing
+      key, sharded when this process sees enough traffic on it. Routing metadata only:
+      it never adds, removes, reorders or rewrites a token of prompt, and it is NOT
+      attributable savings (the provider may well have cached the same prefix
+      automatically, so no discount can be proven to be ours).
+    * explicit_breakpoint -- the billable one: writes cost 1.25x, so it stays off until
+      an operator turns it on. When on, the last stable text block is marked and the
+      request-wide mode/TTL are set in the SAME call, never separately.
+
+    Caller-owned cache policy always wins. A caller-supplied prompt_cache_key is never
+    replaced, and ANY caller cache directive (key, options, or an embedded breakpoint)
+    stands the breakpoint injection down entirely -- a caller managing their own cache
+    boundaries must not have ours interleaved with theirs. The routing key is the one
+    thing that may still be added over a caller's options/breakpoint, because it moves
+    no boundary: it only names the machine their request lands on.
     """
     if not isinstance(body, dict) or not _openai_cache_capable(str(body.get("model", ""))):
         return OpenAICachePlan()
@@ -338,16 +481,15 @@ def apply_openai_cache(body: dict, tenant_key: str = "", *,
     if stable_tokens < min_tokens:
         return plan
 
-    if "prompt_cache_key" not in body:
-        prefix_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()[:20]
-        tenant = (tenant_key or "local")[:20]
-        body["prompt_cache_key"] = f"brevitas:{tenant}:{prefix_hash}"
+    if inject_key and "prompt_cache_key" not in body:
+        body["prompt_cache_key"] = _openai_cache_key(tenant_key, stable_text)
         plan.key_added = True
         if not caller_owned:
             plan.owner = "brevitas"
 
-    if not explicit_breakpoint or "prompt_cache_options" in body \
-            or _has_openai_breakpoint(messages):
+    # Stand down on ANY caller-set cache directive, not just options/breakpoints: a
+    # request the caller keyed is a request whose cache boundaries the caller owns.
+    if not explicit_breakpoint or caller_owned:
         return plan
 
     target_holder: dict | None = None

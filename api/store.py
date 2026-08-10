@@ -78,6 +78,30 @@ _WARM_CUSTOMER_REF = re.compile(
 # per-provider endpoint allowlist), so admitting a provider here never
 # enables spend on its own.
 _WARM_PROVIDERS = frozenset({"anthropic", "openai", "deepseek"})
+# 202608100006. A chain node label is the first 48 bits of the salted digest,
+# optionally extended by four more hex digits when two nodes collide on a path.
+_WARM_CHAIN_LABEL = re.compile(r"^[0-9a-f]{12}(_[0-9a-f]{4})?$")
+# ltree label budget: 2 header labels + the root + this many block labels.
+_WARM_CHAIN_MAX_PATH_BLOCKS = 253
+# 202608100006. Raw structural rows age on the same 90-day horizon as the rest
+# of the raw warm state; an edge whose child is gone has nothing left to say.
+_WARM_CHAIN_NODE_RETENTION_DAYS = 90
+# 202608100008. The airport-game attribution job. The hop bound is the depth
+# bound on the ancestry walk: a leaf that has not reached its root within this
+# many parent links is attributed FLAT (the whole ping on the leaf), which is
+# the conservative reading -- a partial ancestry would spread a cost across a
+# span nobody can prove was shared.
+_WARM_ATTRIBUTION_HOP_BOUND = 300
+# The daily statement and its residual footer are dollar accounting and retain
+# on the 400-day evidence horizon the rest of the accounting record uses. The
+# cost-miss log is a diagnostic keyed on a node digest and ages with the tree
+# it names.
+_WARM_ATTRIBUTION_RETENTION_DAYS = 400
+_WARM_ATTRIBUTION_MISS_RETENTION_DAYS = 90
+# Conservation tolerance. Every dollar of priced warming spend must land in
+# exactly one of: a customer's cost share, the speculative residual, or the
+# redundancy residual. Violating this raises rather than writes.
+_WARM_ATTRIBUTION_EPSILON = 1e-9
 # 'spent_unknown' is the conservative arm of 'warmed': the request left the
 # process, so the provider may have accepted and charged for it, but no readable
 # response proves what it cost. It books the FULL reservation as spend (never
@@ -94,9 +118,44 @@ _WARM_SETTLE_OUTCOMES = frozenset({
 # cap (202608100005), both in this file's claim loop. 'stopped' still has no
 # producer and by design: stop-losses are a candidate-query filter, so a stopped
 # row is never scored and never reaches a decision.
+# 'dedup_deferred' (202608100007) is the ONLY decision in this set that is not a
+# denial and not a ping: the candidate's keep-alive was made redundant by
+# another arm's, on a chain node they provably share, and it was pushed to the
+# horizon that other ping bought. It is written only after the group's leader
+# was actually claimed in the same invocation, so it can never stand in for a
+# ping the pre-dedup policy would have sent.
 _WARM_DECISIONS = frozenset({
     "pinged", "skipped_roi", "budget_denied", "cap_denied", "stopped", "holdout",
-    "skipped_lambda", "envelope_denied", "beta_denied"})
+    "skipped_lambda", "envelope_denied", "beta_denied", "dedup_deferred"})
+# Shared-parent group roles, mirroring 202608100007's CHECK.
+_WARM_DEDUP_ROLES = frozenset({"leader", "deferred"})
+# Per-provider minimum cacheable prefix, hard-coded exactly as the RPC does it:
+# below the floor the provider caches nothing, so a keep-alive on a node this
+# small buys no shared warmth and a group over it would be an accounting
+# fiction. Not a caller argument -- a caller-supplied floor is a caller-supplied
+# way to manufacture groups.
+_WARM_DEDUP_TOKEN_FLOOR = {"anthropic": 1024, "openai": 1024, "deepseek": 64}
+# token_cum is NOT counted on the provider's basis. It is count_tokens() over
+# canonical JSON, which on measured real prefixes runs 4-12% above the text-only
+# count the provider actually sees. Comparing it to the raw minimum admits nodes
+# whose true cacheable span is under that minimum -- the provider then caches
+# nothing and the "group" is the accounting fiction the floor exists to prevent.
+# Erring high costs a few marginal groups; erring low costs the whole premise.
+_WARM_DEDUP_FLOOR_HEADROOM = 1.25
+# The share of a deferred member's own prefix that the leader's ping must
+# actually keep warm. Below it the deferral is a downgrade, not a substitution:
+# the member keeps warmth over the shared span and loses everything past the
+# fork, and the leader rule (cheapest prefix first) maximizes exactly that loss.
+_WARM_DEDUP_MIN_COVERAGE = 0.25
+# Group HAZARD membership cap. Members past it still defer (deferral is a
+# correctness property of the shared cache entry) but contribute no probability
+# mass, which can only understate the group's return probability.
+_WARM_DEDUP_HAZARD_MEMBERS = 64
+# Two header labels (scheme, salt version) plus the root: a group node must
+# carry at least one BLOCK label past them, or it is the seed alone -- shared by
+# every arm with the same model, TTL tier and vary headers, and carrying no
+# content at all.
+_WARM_DEDUP_MIN_LABELS = 4
 _WARM_TTL_TIERS = frozenset({"5m", "1h", "auto"})
 _WARM_TTL_OUTCOMES = frozenset({"warm", "expired"})
 # 'canary' (202608100005) is a Brevitas-funded probe against a synthetic prefix
@@ -2196,6 +2255,23 @@ class UsageStore:
             if "lambda_updated_at" not in ledger_columns:
                 db.execute("ALTER TABLE warm_budget_ledger ADD COLUMN "
                            "lambda_updated_at TEXT")
+            # Dev/test mirror of 202608100006: the chain-hash prefix tree. Both
+            # tables are content-derived STRUCTURE, never content: a node digest
+            # is an HMAC the server computed over an unsalted block-chain value,
+            # so it cannot be inverted and cannot be matched across
+            # organizations. path mirrors the Postgres ltree column as text.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_prefix_node (organization_id TEXT NOT NULL, provider TEXT NOT NULL, salt_version INTEGER NOT NULL, node_digest TEXT NOT NULL, parent_digest TEXT, depth INTEGER NOT NULL, label TEXT NOT NULL, block_tokens INTEGER NOT NULL DEFAULT 0, token_cum INTEGER NOT NULL DEFAULT 0, block_elements INTEGER NOT NULL DEFAULT 0, path TEXT, path_truncated INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, last_touch_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,salt_version,node_digest))")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS warm_prefix_node_path_uq ON warm_prefix_node(organization_id,provider,salt_version,path) WHERE path IS NOT NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefix_node_parent_idx ON warm_prefix_node(organization_id,provider,salt_version,parent_digest)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefix_node_touch_idx ON warm_prefix_node(last_touch_at)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_prefix_edge (organization_id TEXT NOT NULL, provider TEXT NOT NULL, salt_version INTEGER NOT NULL, parent_digest TEXT NOT NULL, child_digest TEXT NOT NULL, PRIMARY KEY(organization_id,provider,salt_version,parent_digest,child_digest))")
+            for chain_column, chain_type in (("chain_leaf_digest", "TEXT"),
+                                             ("chain_path", "TEXT"),
+                                             ("chain_salt_version", "INTEGER")):
+                if chain_column not in {
+                        r[1] for r in db.execute("PRAGMA table_info(warm_prefixes)")}:
+                    db.execute("ALTER TABLE warm_prefixes ADD COLUMN "
+                               f"{chain_column} {chain_type}")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_due_idx ON warm_prefixes(next_due_at) WHERE state='active'")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_expiry_idx ON warm_prefixes(expires_at)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_org_idx ON warm_prefixes(organization_id, provider, last_seen_at DESC)")
@@ -2207,7 +2283,7 @@ class UsageStore:
             # warm_decision_log is per-customer behavioral evidence (erased with
             # the tenant); warm_ttl_observations is Plane G and deliberately
             # carries no tenant key, so tenant erasure must NOT touch it.
-            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT, index_score REAL, index_density REAL, v_hit_usd REAL, chain_cost_usd REAL, c_belief_usd REAL, p_alive REAL, organic_multiplier REAL, lambda_index REAL)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_decision_log (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL, provider TEXT NOT NULL, prefix_hash TEXT NOT NULL, ts TEXT NOT NULL, decision TEXT NOT NULL, p_return REAL NOT NULL, roi_floor REAL NOT NULL, reserve_usd REAL NOT NULL, prefix_tokens INTEGER NOT NULL, ewma_interarrival_s REAL, arrival_count INTEGER NOT NULL, pings_today INTEGER, rng_seed INTEGER, propensity REAL, settle_outcome TEXT, realized_net_usd REAL, organic_counterfactual INTEGER NOT NULL DEFAULT 0, claim_token TEXT, index_score REAL, index_density REAL, v_hit_usd REAL, chain_cost_usd REAL, c_belief_usd REAL, p_alive REAL, organic_multiplier REAL, lambda_index REAL, dedup_group TEXT, dedup_role TEXT, dedup_group_size INTEGER, dedup_node_digest TEXT)")
             decision_columns = {
                 r[1] for r in db.execute("PRAGMA table_info(warm_decision_log)")}
             # Dev/test mirror of 202608090002_warm_reward_join.sql.
@@ -2224,6 +2300,19 @@ class UsageStore:
                 if index_column not in decision_columns:
                     db.execute("ALTER TABLE warm_decision_log ADD COLUMN "
                                f"{index_column} REAL")
+            # Dev/test mirror of 202608100007_warm_parent_dedup.sql. Nullable
+            # and null on every row the dedup pre-pass did not group, which is
+            # every row at parent_dedup=False. dedup_node_digest is the
+            # load-bearing one: it names the SHARED NODE the group's single
+            # charge was made against, which is what the attribution job needs
+            # to reallocate that charge across the arms beneath it.
+            for dedup_column, dedup_type in (("dedup_group", "TEXT"),
+                                             ("dedup_role", "TEXT"),
+                                             ("dedup_group_size", "INTEGER"),
+                                             ("dedup_node_digest", "TEXT")):
+                if dedup_column not in decision_columns:
+                    db.execute("ALTER TABLE warm_decision_log ADD COLUMN "
+                               f"{dedup_column} {dedup_type}")
             db.execute("CREATE TABLE IF NOT EXISTS warm_ttl_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model_class TEXT NOT NULL DEFAULT '', ttl_tier TEXT NOT NULL, gap_seconds REAL NOT NULL, outcome TEXT NOT NULL, source TEXT NOT NULL, observed_at TEXT NOT NULL)")
             # Dev/test mirror of 202608100003_warm_customer_state_hazard.sql.
             # Plane B: the learned behavioural profile, per (organization,
@@ -2261,6 +2350,15 @@ class UsageStore:
             db.execute("CREATE TABLE IF NOT EXISTS warm_canary_probes (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', prefix_seed TEXT NOT NULL DEFAULT '', prefix_tokens INTEGER NOT NULL DEFAULT 0, written_at TEXT NOT NULL, probe_due_at TEXT NOT NULL, gap_target_s REAL NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_canary_probes_due_idx ON warm_canary_probes(state, probe_due_at)")
             db.execute("CREATE TABLE IF NOT EXISTS warm_canary_ledger (day TEXT NOT NULL, provider TEXT NOT NULL, probes INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day,provider))")
+            # 202608100008. The airport-game attribution statement, its
+            # residual footer and the cost-miss log. MEASURED-ONLY: no row here
+            # is ever a billed quantity, and verified_savings_usd below is a
+            # read-only display copy of usage_log's own number.
+            db.execute("CREATE TABLE IF NOT EXISTS warm_attribution_daily (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, customer_ref TEXT NOT NULL, nodes_read INTEGER NOT NULL DEFAULT 0, nodes_shared INTEGER NOT NULL DEFAULT 0, avg_split_denominator REAL, warming_cost_share_usd REAL NOT NULL DEFAULT 0, warm_attributed_savings_usd REAL NOT NULL DEFAULT 0, verified_savings_usd REAL NOT NULL DEFAULT 0, net_usd REAL NOT NULL DEFAULT 0, computed_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day,customer_ref))")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_attribution_daily_window_idx ON warm_attribution_daily(organization_id, provider, day)")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_attribution_residual (organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, total_warm_spend_usd REAL NOT NULL DEFAULT 0, allocated_usd REAL NOT NULL DEFAULT 0, unallocated_speculative_usd REAL NOT NULL DEFAULT 0, redundancy_usd REAL NOT NULL DEFAULT 0, unpriced_usd REAL NOT NULL DEFAULT 0, reward_join_delta_usd REAL, computed_at TEXT NOT NULL, PRIMARY KEY(organization_id,provider,day))")
+            db.execute("CREATE TABLE IF NOT EXISTS warm_prefix_cost_miss (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, provider TEXT NOT NULL, day TEXT NOT NULL, node_digest TEXT NOT NULL, epoch_start TEXT NOT NULL, usd REAL NOT NULL, predicted_customer_ref TEXT, p_return REAL)")
+            db.execute("CREATE INDEX IF NOT EXISTS warm_prefix_cost_miss_window_idx ON warm_prefix_cost_miss(organization_id, provider, day)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_tenant_idx ON warm_decision_log(organization_id, ts)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_subject_idx ON warm_decision_log(organization_id, customer_id, ts)")
             db.execute("CREATE INDEX IF NOT EXISTS warm_decision_log_retention_idx ON warm_decision_log(ts, id)")
@@ -3967,7 +4065,11 @@ class UsageStore:
             c_belief_usd: float | None = None,
             p_alive: float | None = None,
             organic_multiplier: float | None = None,
-            lambda_index: float | None = None) -> None:
+            lambda_index: float | None = None,
+            dedup_group: str | None = None,
+            dedup_role: str | None = None,
+            dedup_group_size: int | None = None,
+            dedup_node_digest: str | None = None) -> None:
         """Mirror of public.warm_decision_record, on an open transaction.
 
         Called from inside warm_due_claim's critical section, so its checks are
@@ -3976,7 +4078,9 @@ class UsageStore:
 
         The eight index arguments default to None, which is what a caller that
         predates 202608100002 produces and what the claim loop passes whenever
-        the index machinery is off.
+        the index machinery is off. The four shared-parent group arguments
+        (202608100007) default to None the same way, which is what every
+        candidate produces at parent_dedup=False.
         """
         if (not organization_id or not customer_id
                 or provider not in _WARM_PROVIDERS
@@ -3996,15 +4100,24 @@ class UsageStore:
                 or (p_alive is not None and not 0 <= float(p_alive) <= 1)
                 or (organic_multiplier is not None and float(organic_multiplier) < 0)
                 or (lambda_index is not None and float(lambda_index) < 0)
-                or (claim_token is not None and decision != "pinged")):
+                or (claim_token is not None and decision != "pinged")
+                or (dedup_role is not None and dedup_role not in _WARM_DEDUP_ROLES)
+                # A group id without a role, or a role without a group id, is a
+                # half-written stamp, and the attribution job would read it as
+                # one or the other.
+                or (dedup_group is None) != (dedup_role is None)
+                or (dedup_group_size is not None and int(dedup_group_size) < 2)
+                or (dedup_node_digest is not None
+                    and not _SHA256_DIGEST.fullmatch(str(dedup_node_digest)))):
             raise ValueError("warm decision arguments are invalid")
         db.execute(
             "INSERT INTO warm_decision_log(organization_id,customer_id,provider,"
             "prefix_hash,ts,decision,p_return,roi_floor,reserve_usd,prefix_tokens,"
             "ewma_interarrival_s,arrival_count,pings_today,claim_token,rng_seed,"
             "propensity,index_score,index_density,v_hit_usd,chain_cost_usd,"
-            "c_belief_usd,p_alive,organic_multiplier,lambda_index) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "c_belief_usd,p_alive,organic_multiplier,lambda_index,"
+            "dedup_group,dedup_role,dedup_group_size,dedup_node_digest) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (organization_id, customer_id, provider, prefix_hash, now.isoformat(),
              decision, float(p_return), float(roi_floor), float(reserve_usd),
              int(prefix_tokens),
@@ -4021,7 +4134,10 @@ class UsageStore:
              None if c_belief_usd is None else float(c_belief_usd),
              None if p_alive is None else float(p_alive),
              None if organic_multiplier is None else float(organic_multiplier),
-             None if lambda_index is None else float(lambda_index)))
+             None if lambda_index is None else float(lambda_index),
+             dedup_group or None, dedup_role or None,
+             None if dedup_group_size is None else int(dedup_group_size),
+             dedup_node_digest or None))
 
     def warm_usage_stamp_prefix(self, organization_id: str, key_hash: str,
                                 request_id: str,
@@ -4188,7 +4304,20 @@ class UsageStore:
                             safety_margin_seconds: int,
                             cache_read: bool, *,
                             ping_reserve_usd: float | None = None,
-                            model_class: str = "") -> dict[str, Any]:
+                            model_class: str = "",
+                            # 202608100006. The salted prefix chain, or nothing.
+                            # Nothing is the ordinary case for a deployment
+                            # without BREVITAS_WARM_CHAIN_SALT, and it is a
+                            # clean no-op: the arm is observed either way.
+                            chain_nodes: list[dict[str, Any]] | None = None,
+                            chain_path: str = "",
+                            chain_salt_version: int | None = None,
+                            # Accepted for signature parity with the observation
+                            # boundary. The tail is DERIVED downstream from
+                            # prefix_tokens - token_cum(leaf), so storing it
+                            # would be a second copy that could disagree.
+                            chain_tail_tokens: int = 0,
+                            chain_truncated: bool = False) -> dict[str, Any]:
         if not organization_id or not customer_id:
             raise ValueError("warm observation requires an organization and customer")
         if provider not in _WARM_PROVIDERS:
@@ -4278,6 +4407,15 @@ class UsageStore:
                      float(ping_reserve_usd or 0.0),
                      json.dumps({bucket: 1}), now.isoformat(), now.isoformat(),
                      now.isoformat(), next_due, expires))
+            # The structural key (202608100006). Written inside this same
+            # critical section so a tree row can never outlive the arm that
+            # produced it, and fenced by its own savepoint so a malformed or
+            # colliding chain skips the tree writes without failing the
+            # observation the response path depends on.
+            self._warm_chain_write_locked(
+                db, organization_id, customer_id, provider, prefix_hash,
+                chain_nodes, chain_path, chain_salt_version,
+                bool(chain_truncated), now)
             # The free sensor: a real arrival against a prefix we have already
             # touched is a censored TTL observation at zero cost, and cache_read
             # is the provider's own verdict on whether the entry survived the
@@ -4313,6 +4451,135 @@ class UsageStore:
                     provider, now)
         return {"schema": "brevitas.warm-observe.v1", "status": "observed",
                 "cache_read": bool(cache_read)}
+
+    @staticmethod
+    def _warm_chain_write_locked(db: Any, organization_id: str, customer_id: str,
+                                 provider: str, prefix_hash: str,
+                                 nodes: list[dict[str, Any]] | None,
+                                 path: str, salt_version: int | None,
+                                 truncated: bool, now: datetime) -> bool:
+        """Mirror of 202608100006's chain block inside warm_prefix_observe.
+
+        Returns True when the tree was written. Every rejection is SILENT and
+        total -- a chain that fails validation writes no node, no edge and no
+        stamp, rather than a partial tree that later reads would treat as a real
+        ancestry. The savepoint is what makes "no partial tree" true even for a
+        failure discovered on the last node.
+        """
+        if not nodes or salt_version is None:
+            return False
+        try:
+            version = int(salt_version)
+        except (TypeError, ValueError):
+            return False
+        if not 1 <= version <= 9999 or len(nodes) > 301:
+            return False
+        blocks = len(nodes) - 1
+        labels = str(path or "").split(".")
+        # Two header labels (scheme, salt version), the root, then one label per
+        # materialized block. Deeper nodes are adjacency-only by design.
+        if len(labels) != 3 + min(blocks, _WARM_CHAIN_MAX_PATH_BLOCKS):
+            return False
+        for depth, node in enumerate(nodes):
+            digest = str(node.get("digest") or "")
+            label = str(node.get("label") or "")
+            parent = str(node.get("parent") or "")
+            if (int(node.get("depth", -1)) != depth
+                    or not _SHA256_DIGEST.fullmatch(digest)
+                    or not _WARM_CHAIN_LABEL.fullmatch(label)
+                    or (depth == 0 and parent)
+                    or (depth > 0 and parent != str(nodes[depth - 1].get("digest") or ""))):
+                return False
+        # Distinct digests, so the single write below can never be asked to
+        # affect one row twice. The parent-linkage check above admits a chain
+        # whose node is its own parent; a repeated digest is malformed, and
+        # malformed means the whole chain is dropped.
+        if len({str(node["digest"]) for node in nodes}) != len(nodes):
+            return False
+        truncated = bool(truncated) or any(
+            bool(node.get("path_truncated")) for node in nodes)
+        # LABEL RESOLUTION, a pure read pass, mirroring 202608100006. Every
+        # depth's final label and path is settled before anything is written,
+        # so the tree lands as ONE write rather than as one exception-guarded
+        # statement per block. (In Postgres that shape is what keeps a 300-block
+        # chain from taking 300 subtransactions on the live request path.)
+        resolved: list[tuple[str, str | None]] = []
+        for depth, node in enumerate(nodes):
+            digest = str(node["digest"])
+            # A node this organization already holds keeps the label it was
+            # STORED with. Recomputing it would rebuild a descendant's path
+            # under an ancestor label that no row actually carries, and a block
+            # appended at the next depth in a later observation would land in
+            # the colliding sibling's subtree.
+            stored = db.execute(
+                "SELECT label FROM warm_prefix_node WHERE organization_id=? "
+                "AND provider=? AND salt_version=? AND node_digest=?",
+                (organization_id, provider, version, digest)).fetchone()
+            label = str(stored[0]) if stored else str(node["label"])
+            node_path: str | None = None
+            for attempt in (0, 1):
+                if attempt:
+                    # Collision escape: two distinct chains landed on the same
+                    # 48-bit label at the same depth. Extend THIS node's label
+                    # with four more hex digits and rebuild the path from it, so
+                    # the colliding subtrees separate and every descendant
+                    # inherits the extended ancestor label.
+                    label = digest[:12] + "_" + digest[12:16]
+                labels[2 + depth] = ("r" + label) if depth == 0 else label
+                node_path = (".".join(labels[:3 + depth])
+                             if depth <= _WARM_CHAIN_MAX_PATH_BLOCKS else None)
+                # A stored label is by definition already the one that row
+                # holds, so it cannot collide with itself.
+                if stored or node_path is None or db.execute(
+                        "SELECT 1 FROM warm_prefix_node WHERE organization_id=? "
+                        "AND provider=? AND salt_version=? AND path=? "
+                        "AND node_digest<>?",
+                        (organization_id, provider, version, node_path,
+                         digest)).fetchone() is None:
+                    break
+                if attempt:
+                    # A SECOND collision is not escaped: the structure is not
+                    # trustworthy and the whole chain is skipped.
+                    return False
+            resolved.append((label, node_path))
+        db.execute("SAVEPOINT warm_chain")
+        try:
+            db.executemany(
+                "INSERT INTO warm_prefix_node(organization_id,provider,"
+                "salt_version,node_digest,parent_digest,depth,label,"
+                "block_tokens,token_cum,block_elements,path,"
+                "path_truncated,created_at,last_touch_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(organization_id,provider,salt_version,"
+                "node_digest) DO UPDATE SET last_touch_at=excluded.last_touch_at",
+                [(organization_id, provider, version, str(node["digest"]),
+                  str(node.get("parent") or "") or None, depth,
+                  resolved[depth][0],
+                  max(0, int(node.get("block_tokens", 0) or 0)),
+                  max(0, int(node.get("token_cum", 0) or 0)),
+                  max(0, int(node.get("block_elements", 0) or 0)),
+                  resolved[depth][1], 1 if truncated else 0,
+                  now.isoformat(), now.isoformat())
+                 for depth, node in enumerate(nodes)])
+            for depth in range(1, len(nodes)):
+                db.execute(
+                    "INSERT OR IGNORE INTO warm_prefix_edge(organization_id,"
+                    "provider,salt_version,parent_digest,child_digest) "
+                    "VALUES(?,?,?,?,?)",
+                    (organization_id, provider, version,
+                     str(nodes[depth - 1]["digest"]), str(nodes[depth]["digest"])))
+            db.execute(
+                "UPDATE warm_prefixes SET chain_leaf_digest=?,chain_path=?,"
+                "chain_salt_version=? WHERE organization_id=? AND customer_id=? "
+                "AND provider=? AND prefix_hash=?",
+                (str(nodes[-1]["digest"]), str(path or ""), version,
+                 organization_id, customer_id, provider, prefix_hash))
+        except sqlite3.DatabaseError:
+            db.execute("ROLLBACK TO warm_chain")
+            db.execute("RELEASE warm_chain")
+            return False
+        db.execute("RELEASE warm_chain")
+        return True
 
     @staticmethod
     def _warm_customer_state_touch_locked(db: Any, organization_id: str,
@@ -4517,6 +4784,127 @@ class UsageStore:
             float(by_provider.get(row["provider"], roi_break_even_p)),
             0.0)["index_score"])
 
+    @staticmethod
+    def _warm_dedup_groups_locked(db: Any, candidates: list[Any], bucket: str,
+                                  now: datetime) -> dict[tuple[str, str, str, str],
+                                                         dict[str, Any]]:
+        """Mirror of 202608100007's shared-parent pre-pass, on an open transaction.
+
+        Runs ONCE per claim invocation, over the same candidate window the loop
+        is about to walk. Returns a map from (organization, customer, provider,
+        prefix hash) to that candidate's group facts, containing ONLY the
+        members of groups of two or more.
+
+        THE OBSERVATION IT ENCODES. A provider cache entry is keyed on CONTENT.
+        Two arms whose chain paths descend from one node have provably identical
+        bytes up to that node, so one keep-alive on the node keeps the entry
+        warm for both, and the second is a duplicate purchase rather than a
+        second unit of warmth.
+
+        A prefix P qualifies as a group node when it is (a) shared by at least
+        two window members of the same (organization, provider, salt version)
+        key space, (b) big enough for the provider to cache at all, and (c)
+        believed warm right now. V(m) is the DEEPEST qualifying P -- deeper
+        means more shared bytes -- and members that agree on V form the group.
+        """
+        members = [row for row in candidates
+                   if str(row["chain_path"] or "")
+                   and row["chain_salt_version"] is not None]
+        if len(members) < 2:
+            return {}
+
+        def hazard(row: Any) -> float:
+            histogram = json.loads(row["hour_histogram"] or "{}")
+            return min(1.0, float(histogram.get(bucket, 0))
+                       / max(int(row["arrival_count"]), 1))
+
+        # V(m) per member, then the members that agree on it.
+        by_node: dict[tuple[str, str, int, str], list[Any]] = defaultdict(list)
+        node_facts: dict[tuple[str, str, int, str], tuple[str, int]] = {}
+        for member in members:
+            organization_id = str(member["organization_id"])
+            provider = str(member["provider"])
+            salt_version = int(member["chain_salt_version"])
+            labels = str(member["chain_path"]).split(".")
+            floor = math.ceil(_WARM_DEDUP_FLOOR_HEADROOM
+                              * _WARM_DEDUP_TOKEN_FLOOR.get(provider, 1024))
+            for depth in range(len(labels), _WARM_DEDUP_MIN_LABELS - 1, -1):
+                ancestor = ".".join(labels[:depth])
+                # (a) At least two window members at or below this node. The
+                # seed already binds provider, model, TTL tier, vary headers and
+                # the cache-identity extras, so a shared block label past the
+                # root implies all of them -- nothing left to re-check.
+                shared = sum(
+                    1 for peer in members
+                    if str(peer["organization_id"]) == organization_id
+                    and str(peer["provider"]) == provider
+                    and int(peer["chain_salt_version"]) == salt_version
+                    and (str(peer["chain_path"]) == ancestor
+                         or str(peer["chain_path"]).startswith(ancestor + ".")))
+                if shared < 2:
+                    continue
+                # (b) The provider floor, read off the node the tree actually
+                # wrote. A node the observation never materialized (a collision
+                # escape rewrote its label, say) simply does not resolve, and an
+                # unresolvable node forms no group.
+                node = db.execute(
+                    "SELECT node_digest,token_cum FROM warm_prefix_node WHERE "
+                    "organization_id=? AND provider=? AND salt_version=? AND path=?",
+                    (organization_id, provider, salt_version, ancestor)).fetchone()
+                if node is None or int(node[1] or 0) < floor:
+                    continue
+                # (c) Warm: some arm under this node was touched inside THIS
+                # member's TTL. Without it a "group" is two cold arms agreeing
+                # to send one ping between them, which is precisely the ping the
+                # old policy would have sent and this one would not.
+                cutoff = (now - timedelta(
+                    seconds=int(member["provider_ttl_seconds"]))).isoformat()
+                if db.execute(
+                        "SELECT 1 FROM warm_prefixes WHERE organization_id=? AND "
+                        "provider=? AND chain_path IS NOT NULL AND "
+                        "(chain_path=? OR substr(chain_path,1,?)=?) AND "
+                        "last_touch_at>=? LIMIT 1",
+                        (organization_id, provider, ancestor,
+                         len(ancestor) + 1, ancestor + ".", cutoff)).fetchone() is None:
+                    continue
+                key = (organization_id, provider, salt_version, ancestor)
+                by_node[key].append(member)
+                node_facts[key] = (str(node[0]), int(node[1] or 0))
+                break
+
+        groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        for key, group in by_node.items():
+            # A group of one is not a group: condition (a) counts members at or
+            # below a node, and a member can still be alone at its own DEEPEST
+            # node. Size 1 must reduce exactly to current behaviour rather than
+            # log a group of one.
+            if len(group) < 2:
+                continue
+            digest, token_cum = node_facts[key]
+            group_id = str(uuid.uuid4())
+            leader = min(group, key=lambda row: (int(row["prefix_tokens"]),
+                                                 str(row["prefix_hash"])))
+            hazard_set = sorted(
+                group, key=lambda row: str(row["prefix_hash"])
+            )[:_WARM_DEDUP_HAZARD_MEMBERS]
+            peer_product = 1.0
+            for peer in hazard_set:
+                if peer is leader:
+                    continue
+                peer_product *= 1.0 - hazard(peer)
+            for member in group:
+                is_leader = member is leader
+                groups[(str(member["organization_id"]), str(member["customer_id"]),
+                        str(member["provider"]), str(member["prefix_hash"]))] = {
+                    "group": group_id,
+                    "role": "leader" if is_leader else "deferred",
+                    "size": len(group),
+                    "digest": digest,
+                    "token_cum": token_cum,
+                    "peer_product": peer_product if is_leader else None,
+                }
+        return groups
+
     def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
                        roi_min_arrivals: int, roi_min_p: float,
                        roi_break_even_p: float, stop_loss: int,
@@ -4530,6 +4918,7 @@ class UsageStore:
                        lambda_max: float | None = 1000.0,
                        hazard_v2: bool = False,
                        beta: float | None = 0.0,
+                       parent_dedup: bool = False,
                        ) -> dict[str, Any]:
         # Nulls coalesce to the RPC's own defaults, so a caller that predates
         # Phase 1 and a caller that passes None land on the same numbers.
@@ -4649,9 +5038,27 @@ class UsageStore:
                         candidate_sql
                         + "ORDER BY prefix.next_due_at, prefix.prefix_hash LIMIT ?",
                         (*candidate_args, int(claim_limit) * 4)).fetchall()
+                # THE SHARED-PARENT PRE-PASS (202608100007), over the SAME
+                # window the loop below walks, so a member of one is a member
+                # of the other. At parent_dedup=False it does not run at all
+                # and every group local below stays None, which is what makes
+                # the flag-off path byte-identical to 202608100005's.
+                dedup_groups: dict[tuple[str, str, str, str],
+                                   dict[str, Any]] = (
+                    self._warm_dedup_groups_locked(db, candidates, bucket, now)
+                    if parent_dedup else {})
+                # Group ids whose LEADER was actually claimed in this
+                # invocation. Deferral reads only this: a leader denied by any
+                # gate, or not yet visited (the loop order is the index order,
+                # not the group order), leaves its members to run every gate
+                # exactly as they would have without the flag.
+                dedup_leaders: set[str] = set()
                 for row in candidates:
                     if len(claimed) >= int(claim_limit):
                         break
+                    dedup = dedup_groups.get((
+                        str(row["organization_id"]), str(row["customer_id"]),
+                        str(row["provider"]), str(row["prefix_hash"])))
                     histogram = json.loads(row["hour_histogram"] or "{}")
                     p_return = min(1.0, float(histogram.get(bucket, 0))
                                    / max(int(row["arrival_count"]), 1))
@@ -4731,6 +5138,32 @@ class UsageStore:
                             int(row["provider_ttl_seconds"]),
                             int(safety_margin_seconds), break_even)
 
+                    # THE GROUP'S RETURN PROBABILITY (202608100007),
+                    # DIAGNOSTIC ONLY. The leader's ping is arguably worth a
+                    # return by ANY member, because any member's arrival reads
+                    # the shared entry it refreshed:
+                    #
+                    #   p_group = 1 - (1 - p_own) * prod_{i != leader}(1 - h_i)
+                    #
+                    # h_i is member i's own lifetime-histogram return
+                    # probability for this bucket, read off the window row.
+                    #
+                    # IT DOES NOT GATE. Substituting it for p_own before the
+                    # ROI floor lets the flag BUY a ping: two arms at
+                    # p_own = 0.06 under a 0.11 floor are both skipped_roi
+                    # with the flag off and combine to 0.1164 -- over the
+                    # floor -- with it on, which strictly increases warm
+                    # spend. Independence across members is an approximation
+                    # and a generous one; it is not a licence to spend. Every
+                    # gate below runs on p_own exactly as it does with the
+                    # flag off, so dedup can only ever REMOVE a redundant
+                    # ping. p_group rides out on the leader's claim row for
+                    # the analysis that would justify promoting it to a gate.
+                    p_group = None
+                    if dedup and dedup["role"] == "leader":
+                        p_group = min(1.0, max(0.0, 1.0 - (1.0 - p_return)
+                                               * float(dedup["peer_product"])))
+
                     floor = (float(roi_min_p)
                              if int(row["arrival_count"]) < int(roi_min_arrivals)
                              else break_even)
@@ -4776,15 +5209,37 @@ class UsageStore:
                                           else hazard_p_alive),
                                  n_chain=hazard_chain)
                              if index_enabled else None)
+                    # GROUPED: the value a return realizes is the value of the
+                    # SHARED span -- the group node's token_cum -- not the
+                    # leader's whole prefix. Scaled down; the reservation stays
+                    # the leader's full-prefix worst-case write. Conservative
+                    # in both directions: less claimed value, unchanged claimed
+                    # cost. index_score keeps its ratio form (p_eff/b - 1 -
+                    # n_chain), in which the prefix's dollar value cancels, so
+                    # this is a LOGGED quantity and not a second ranking.
+                    if (index is not None and dedup
+                            and index.get("v_hit_usd") is not None):
+                        index = dict(index)
+                        index["v_hit_usd"] = round(
+                            float(index["v_hit_usd"])
+                            * min(1.0, float(dedup["token_cum"])
+                                  / max(int(row["prefix_tokens"]), 1)), 10)
 
                     def _record(decision: str, pings: int | None = None,
                                 token: str | None = None,
                                 propensity: float | None = None,
                                 lambda_index: float | None = None,
+                                stamp_group: bool = False,
                                 _row: Any = row, _p: float = p_return,
                                 _floor: float = floor,
                                 _reserve: float = reserve,
-                                _index: dict[str, Any] | None = index) -> None:
+                                _index: dict[str, Any] | None = index,
+                                _dedup: dict[str, Any] | None = dedup) -> None:
+                        # The group stamp rides only the leader's 'pinged' row
+                        # and its members' 'dedup_deferred' rows -- the two
+                        # rows the attribution job reads to find the single
+                        # charge and the arms it covered.
+                        group = _dedup if (stamp_group and _dedup) else None
                         self._warm_decision_record_locked(
                             db, _row["organization_id"], _row["customer_id"],
                             _row["provider"], _row["prefix_hash"], decision,
@@ -4793,7 +5248,48 @@ class UsageStore:
                             int(_row["arrival_count"]), pings, token, now,
                             propensity=propensity,
                             lambda_index=lambda_index,
+                            dedup_group=(group or {}).get("group"),
+                            dedup_role=(group or {}).get("role"),
+                            dedup_group_size=(group or {}).get("size"),
+                            dedup_node_digest=(group or {}).get("digest"),
                             **(_index or {}))
+
+                    # DEFERRAL (202608100007). Placed ABOVE every gate, because
+                    # a deferred member must move no ledger, no envelope, no
+                    # cap accounting and no ping counter -- the leader already
+                    # bought the warmth, and charging twice for one write is
+                    # the whole thing this removes. next_due_at advances by the
+                    # horizon that write bought, the same horizon
+                    # warm_ping_settle would have set.
+                    #
+                    # Also gated on COVERAGE. The leader's ping warms the
+                    # leader's own prefix and nothing past the fork, so a
+                    # deferred member keeps warmth over token_cum tokens and
+                    # loses everything beyond it. The leader is chosen by
+                    # prefix_tokens ASC -- the cheapest ping available -- which
+                    # maximizes exactly that loss: an arm sharing 4k of a
+                    # 200k-token prefix would otherwise be deferred to save the
+                    # cheapest ping in the group. Requiring the shared span to
+                    # be at least a QUARTER of the member's prefix keeps the
+                    # deferral a substitution rather than a downgrade; a member
+                    # under the ratio runs every gate as it would with the flag
+                    # off.
+                    if (dedup and dedup["role"] == "deferred"
+                            and dedup["group"] in dedup_leaders
+                            and float(dedup["token_cum"] or 0)
+                            >= _WARM_DEDUP_MIN_COVERAGE
+                            * max(int(row["prefix_tokens"]), 1)):
+                        db.execute(
+                            "UPDATE warm_prefixes SET next_due_at=? "
+                            "WHERE organization_id=? AND customer_id=? "
+                            "AND provider=? AND prefix_hash=?",
+                            ((now + timedelta(seconds=max(
+                                60, int(row["provider_ttl_seconds"])
+                                - int(safety_margin_seconds)))).isoformat(),
+                             row["organization_id"], row["customer_id"],
+                             row["provider"], row["prefix_hash"]))
+                        _record("dedup_deferred", stamp_group=True)
+                        continue
 
                     if p_return < floor:
                         # pings_today is deliberately not read for a candidate
@@ -5028,6 +5524,11 @@ class UsageStore:
                          now.isoformat(), claim_token, row["organization_id"],
                          row["customer_id"], row["provider"], row["prefix_hash"]))
                     claimed_counts[customer_key] += 1
+                    # The leader is claimed: from here its members may defer.
+                    # Recorded AFTER the reservation, so a leader that never
+                    # reserved never authorizes a deferral.
+                    if dedup and dedup["role"] == "leader":
+                        dedup_leaders.add(dedup["group"])
                     # The treatment arm's own action probability, so an IPS
                     # estimator does not have to infer it from the other arm.
                     # Null while the arm is off: with no randomization there is
@@ -5035,7 +5536,9 @@ class UsageStore:
                     _record("pinged", int(pings_today), claim_token,
                             (1.0 - float(holdout_fraction))
                             if float(holdout_fraction) > 0 else None,
-                            lambda_index=lam)
+                            lambda_index=lam,
+                            stamp_group=bool(dedup
+                                             and dedup["role"] == "leader"))
                     claimed.append({
                         "schema": "brevitas.warm-claim.v1", "status": "claimed",
                         "organization_id": row["organization_id"],
@@ -5056,6 +5559,14 @@ class UsageStore:
                         "last_touch_at": (str(row["last_touch_at"] or "")
                                           or str(row["last_seen_at"] or "")),
                     })
+                    # Additive and ONLY on a leader, so a flag-off claimed row
+                    # is byte-identical to 202608100005's. The worker ignores
+                    # unknown keys; nothing downstream reads these yet.
+                    if dedup and dedup["role"] == "leader":
+                        claimed[-1]["dedup_group"] = dedup["group"]
+                        claimed[-1]["dedup_group_size"] = dedup["size"]
+                        # Reported, never gated. See the p_group block above.
+                        claimed[-1]["dedup_p_group"] = p_group
             return {"status": "ok", "rows": claimed}
         finally:
             _WARM_CLAIM_LOCK.release()
@@ -5441,6 +5952,473 @@ class UsageStore:
         return {"schema": "brevitas.warm-control-savings.v1",
                 "status": "refreshed", "days_scanned": days,
                 "rows_written": written, "mixed_units": mixed}
+
+    # --- airport-game attribution (202608100008) --------------------------
+    @staticmethod
+    def _warm_attribution_ancestry(db: Any, organization_id: str, provider: str,
+                                   salt_version: int, leaf_digest: str,
+                                   ) -> list[dict[str, Any]] | None:
+        """Root-to-leaf node list for a leaf digest, walked on parent_digest.
+
+        ADJACENCY IS THE SEMANTICS. 202608100006 stores an ltree path too, but
+        that column is an accelerator and is null past 253 blocks; a read that
+        depended on it would silently mean something different on a deep chain.
+        Both engines therefore walk the parent link, and both bound the walk at
+        _WARM_ATTRIBUTION_HOP_BOUND. Returning None means "no provable
+        ancestry" -- a missing node (retention pruned it), a cycle, or a chain
+        deeper than the bound -- and the caller falls back to flat per-leaf
+        attribution rather than to a partial path.
+        """
+        chain: list[dict[str, Any]] = []
+        digest = str(leaf_digest or "")
+        seen: set[str] = set()
+        for _ in range(_WARM_ATTRIBUTION_HOP_BOUND + 1):
+            if not digest or digest in seen:
+                return None
+            seen.add(digest)
+            row = db.execute(
+                "SELECT node_digest,parent_digest,depth,block_tokens,token_cum "
+                "FROM warm_prefix_node WHERE organization_id=? AND provider=? "
+                "AND salt_version=? AND node_digest=?",
+                (organization_id, provider, int(salt_version), digest)).fetchone()
+            if row is None:
+                return None
+            chain.append({"digest": str(row[0]), "depth": int(row[2] or 0),
+                          "block_tokens": max(0, int(row[3] or 0)),
+                          "token_cum": max(0, int(row[4] or 0))})
+            parent = str(row[1] or "")
+            if not parent:
+                chain.reverse()
+                return chain
+            digest = parent
+        return None
+
+    def warm_attribution_run(self, lookback_days: int = 2,
+                             close_days: int = 7) -> dict[str, Any]:
+        """Mirror of public.warm_attribution_run.
+
+        THE AIRPORT GAME. One warming ping keeps one provider cache entry warm,
+        and every customer whose request lands inside that entry's TTL flew in
+        on the runway it paid for. The cost of the ping is split along the
+        prefix tree by token weight, and each node's share is then split EQUALLY
+        among the distinct customers who actually read that node inside the
+        window -- the Shapley value of the airport game, which for a shared
+        runway is exactly the equal split among the arrivals it served.
+
+        THE DUMMY AXIOM IS BINDING. A ping nobody read allocates NOTHING. It is
+        Brevitas's speculative loss, recorded in
+        public.warm_attribution_residual and itemized in
+        public.warm_prefix_cost_miss beside the beneficiary the policy
+        predicted. Charging a customer for a bet made about them is the one
+        thing this job must never do.
+
+        MEASURED-ONLY. Nothing here writes usage_log, warm_budget_ledger, the
+        settlement sweep or any fee basis. warm spend is never billable, and
+        verified_savings_usd on the statement is a read-only copy.
+        """
+        if not 1 <= int(lookback_days) <= 31:
+            raise ValueError("warm attribution bounds are invalid")
+        if not 1 <= int(close_days) <= 400:
+            raise ValueError("warm attribution bounds are invalid")
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        days = 0
+        rows_written = 0
+        misses = 0
+        with self._conn() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for offset in range(int(lookback_days), 0, -1):
+                day = today - timedelta(days=offset)
+                # CLOSED DAYS ARE NEVER RECOMPUTED. A statement an operator has
+                # already read is history; a job that silently restated it
+                # would make every number in it provisional forever.
+                if day <= today - timedelta(days=int(close_days)):
+                    continue
+                days += 1
+                written, missed = self._warm_attribution_day_locked(db, day, now)
+                rows_written += written
+                misses += missed
+        return {"schema": "brevitas.warm-attribution.v1", "status": "computed",
+                "days_scanned": days, "rows_written": rows_written,
+                "cost_misses": misses}
+
+    def _warm_attribution_day_locked(self, db: Any, day: Any,
+                                     now: datetime) -> tuple[int, int]:
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        day_key = day.isoformat()
+        pairs = db.execute(
+            "SELECT DISTINCT organization_id,provider FROM usage_log "
+            "WHERE ts>=? AND ts<? AND warm_prefix_hash IS NOT NULL "
+            "AND organization_id IS NOT NULL AND organization_id<>''",
+            (start.isoformat(), end.isoformat())).fetchall()
+        written = 0
+        misses = 0
+        for organization_id, provider in pairs:
+            if provider not in _WARM_PROVIDERS:
+                continue
+            rows, missed = self._warm_attribution_pair_locked(
+                db, str(organization_id), str(provider), day_key, start, end, now)
+            written += rows
+            misses += missed
+        return written, misses
+
+    def _warm_attribution_pair_locked(self, db: Any, organization_id: str,
+                                      provider: str, day_key: str,
+                                      start: datetime, end: datetime,
+                                      now: datetime) -> tuple[int, int]:
+        events = db.execute(
+            "SELECT usage.customer_id,usage.warm_prefix_hash,usage.ts,"
+            "usage.strategy,usage.actual_cost_usd,usage.cache_attributable,"
+            "usage.native_cache_discount_usd,usage.verified_savings_usd,"
+            "usage.authoritative,prefix.chain_leaf_digest,"
+            "prefix.chain_salt_version,prefix.prefix_tokens,"
+            "prefix.provider_ttl_seconds,prefix.ping_reserve_usd "
+            "FROM usage_log usage JOIN warm_prefixes prefix ON "
+            "prefix.organization_id=usage.organization_id AND "
+            "prefix.customer_id=usage.customer_id AND "
+            "prefix.provider=usage.provider AND "
+            "prefix.prefix_hash=usage.warm_prefix_hash "
+            "WHERE usage.organization_id=? AND usage.provider=? AND "
+            "usage.ts>=? AND usage.ts<? AND usage.warm_prefix_hash IS NOT NULL "
+            "ORDER BY usage.ts,usage.id",
+            (organization_id, provider, start.isoformat(), end.isoformat())
+        ).fetchall()
+        events = [row for row in events
+                  if str(row[9] or "") and row[10] is not None
+                  and (str(row[3] or "") == "cache_warm" or row[8])]
+        if not events:
+            # Nothing chained on this day. Clear any stale statement and stop:
+            # a day that produced no attributable events must not keep
+            # yesterday's answer, and must not manufacture an all-zero one.
+            for table in ("warm_attribution_daily", "warm_attribution_residual",
+                          "warm_prefix_cost_miss"):
+                db.execute(
+                    f"DELETE FROM {table} WHERE organization_id=? AND "
+                    "provider=? AND day=?",
+                    (organization_id, provider, day_key))
+            return 0, 0
+        ancestry: dict[tuple[str, int], list[dict[str, Any]] | None] = {}
+
+        def path_for(leaf: str, salt: int) -> list[dict[str, Any]] | None:
+            key = (leaf, int(salt))
+            if key not in ancestry:
+                ancestry[key] = self._warm_attribution_ancestry(
+                    db, organization_id, provider, int(salt), leaf)
+            return ancestry[key]
+
+        # node digest -> list of brevitas epochs, and node digest -> reads
+        node_epochs: dict[str, list[dict[str, Any]]] = {}
+        node_reads: dict[str, list[tuple[datetime, str]]] = {}
+        leaf_benefit: list[tuple[str, datetime, str, float]] = []
+        customers: dict[str, dict[str, Any]] = {}
+        priced_total = 0.0
+        unpriced_total = 0.0
+        attributed_total = 0.0
+
+        def bucket(customer: str) -> dict[str, Any]:
+            return customers.setdefault(customer, {
+                "cost_share": 0.0, "savings": 0.0, "verified": 0.0,
+                "nodes_read": set(), "nodes_shared": set(), "splits": [],
+            })
+
+        for row in events:
+            (customer, prefix_hash, ts_text, strategy, cost, attributable,
+             discount, verified, authoritative, leaf, salt, prefix_tokens,
+             ttl_seconds, reserve) = row
+            leaf = str(leaf or "")
+            if not leaf or salt is None:
+                continue
+            moment = _parse_ts(ts_text)
+            if moment is None:
+                continue
+            ttl = max(1, int(ttl_seconds or 0))
+            nodes = path_for(leaf, int(salt))
+            flat = nodes is None
+            if str(strategy or "") == "cache_warm":
+                if cost is None:
+                    # An unpriced ping cannot be split along anything. Its
+                    # observer-priced worst case is reported beside the
+                    # allocation rather than smuggled into it.
+                    unpriced_total += max(0.0, float(reserve or 0.0))
+                    continue
+                amount = float(cost)
+                priced_total += amount
+                shares = self._warm_attribution_split(
+                    amount, nodes, leaf, int(prefix_tokens or 0), flat)
+                for digest, usd in shares:
+                    node_epochs.setdefault(digest, []).append({
+                        "start": moment,
+                        "end": min(moment + timedelta(seconds=ttl), end),
+                        "usd": usd, "prefix_hash": str(prefix_hash or ""),
+                    })
+                continue
+            if not authoritative:
+                continue
+            reader = str(customer or "")
+            if not reader:
+                continue
+            touched = [leaf] if flat else [node["digest"] for node in nodes]
+            for digest in touched:
+                node_reads.setdefault(digest, []).append((moment, reader))
+            entry = bucket(reader)
+            entry["nodes_read"].update(touched)
+            entry["verified"] += float(verified or 0.0)
+            if attributable:
+                leaf_benefit.append(
+                    (leaf, moment, reader, float(discount or 0.0)))
+
+        # --- redundancy collapse ------------------------------------------
+        redundancy = 0.0
+        collapsed: dict[str, list[dict[str, Any]]] = {}
+        for digest, epochs in node_epochs.items():
+            merged: list[dict[str, Any]] = []
+            for epoch in sorted(epochs, key=lambda item: item["start"]):
+                if merged and epoch["start"] <= merged[-1]["end"]:
+                    # One warm window, paid for more than once. The window
+                    # keeps the CHEAPEST price on it and the excess is
+                    # Brevitas's own waste -- which is exactly the number
+                    # 202608100007's dedup exists to drive to zero.
+                    run = merged[-1]
+                    run["usd"] = min(run["usd"], epoch["usd"])
+                    run["usd_total"] += epoch["usd"]
+                    run["end"] = max(run["end"], epoch["end"])
+                    continue
+                merged.append({"start": epoch["start"], "end": epoch["end"],
+                               "usd": epoch["usd"],
+                               "usd_total": epoch["usd"],
+                               "prefix_hash": epoch["prefix_hash"]})
+            for run in merged:
+                redundancy += run["usd_total"] - run["usd"]
+            collapsed[digest] = merged
+
+        # --- the airport rule ---------------------------------------------
+        allocated = 0.0
+        speculative = 0.0
+        misses = 0
+        db.execute(
+            "DELETE FROM warm_prefix_cost_miss WHERE organization_id=? AND "
+            "provider=? AND day=?", (organization_id, provider, day_key))
+        for digest in sorted(collapsed):
+            for epoch in collapsed[digest]:
+                usd = float(epoch["usd"])
+                if usd <= 0:
+                    # A free window, or a rounding crumb on a zero-token block.
+                    # There is nothing to allocate and nobody to apologize to,
+                    # but the dollar still has to land somewhere or conservation
+                    # would close with a residue term. It lands on Brevitas.
+                    speculative += usd
+                    continue
+                beneficiaries = sorted({
+                    reader for moment, reader in node_reads.get(digest, [])
+                    if epoch["start"] <= moment < epoch["end"]})
+                if not beneficiaries:
+                    speculative += usd
+                    predicted = db.execute(
+                        "SELECT customer_id,p_return FROM warm_decision_log "
+                        "WHERE organization_id=? AND provider=? AND "
+                        "prefix_hash=? AND decision='pinged' AND ts<=? "
+                        "ORDER BY ts DESC LIMIT 1",
+                        (organization_id, provider, epoch["prefix_hash"],
+                         epoch["start"].isoformat())).fetchone()
+                    db.execute(
+                        "INSERT INTO warm_prefix_cost_miss(organization_id,"
+                        "provider,day,node_digest,epoch_start,usd,"
+                        "predicted_customer_ref,p_return) VALUES(?,?,?,?,?,?,?,?)",
+                        (organization_id, provider, day_key, digest,
+                         epoch["start"].isoformat(), round(usd, 10),
+                         (str(predicted[0]) if predicted else None),
+                         (float(predicted[1]) if predicted
+                          and predicted[1] is not None else None)))
+                    misses += 1
+                    continue
+                denominator = len(beneficiaries)
+                remainder = usd
+                for index, reader in enumerate(beneficiaries):
+                    # Largest-remainder allocation: every beneficiary but the
+                    # last takes the rounded equal share and the last absorbs
+                    # what is left, so the split sums to the epoch cost EXACTLY
+                    # and the conservation invariant below is not a tolerance
+                    # test on rounding noise.
+                    share = (round(usd / denominator, 10)
+                             if index < denominator - 1 else remainder)
+                    remainder = round(remainder - share, 10)
+                    entry = bucket(reader)
+                    entry["cost_share"] += share
+                    entry["splits"].append(denominator)
+                    entry["nodes_read"].add(digest)
+                    if denominator >= 2:
+                        entry["nodes_shared"].add(digest)
+                allocated += usd
+
+        # --- benefit, once per arrival, leaf epoch only --------------------
+        for leaf, moment, reader, discount in leaf_benefit:
+            if any(epoch["start"] <= moment < epoch["end"]
+                   for epoch in collapsed.get(leaf, ())):
+                bucket(reader)["savings"] += discount
+                attributed_total += discount
+
+        # --- conservation --------------------------------------------------
+        drift = abs(allocated + speculative + redundancy - priced_total)
+        if drift > _WARM_ATTRIBUTION_EPSILON:
+            raise ValueError(
+                "warm attribution conservation invariant failed")
+
+        db.execute(
+            "DELETE FROM warm_attribution_daily WHERE organization_id=? AND "
+            "provider=? AND day=?", (organization_id, provider, day_key))
+        db.execute(
+            "DELETE FROM warm_attribution_residual WHERE organization_id=? AND "
+            "provider=? AND day=?", (organization_id, provider, day_key))
+        written = 0
+        for reader in sorted(customers):
+            entry = customers[reader]
+            splits = entry["splits"]
+            cost_share = round(entry["cost_share"], 10)
+            savings = round(entry["savings"], 10)
+            db.execute(
+                "INSERT INTO warm_attribution_daily(organization_id,provider,"
+                "day,customer_ref,nodes_read,nodes_shared,avg_split_denominator,"
+                "warming_cost_share_usd,warm_attributed_savings_usd,"
+                "verified_savings_usd,net_usd,computed_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (organization_id, provider, day_key, reader,
+                 len(entry["nodes_read"]), len(entry["nodes_shared"]),
+                 (sum(splits) / len(splits)) if splits else None,
+                 cost_share, savings, round(entry["verified"], 10),
+                 round(savings - cost_share, 10), now.isoformat()))
+            written += 1
+        reward = db.execute(
+            "SELECT COUNT(*),COALESCE(SUM(realized_net_usd),0) "
+            "FROM warm_decision_log WHERE organization_id=? AND provider=? "
+            "AND decision='pinged' AND realized_net_usd IS NOT NULL "
+            "AND ts>=? AND ts<?",
+            (organization_id, provider, start.isoformat(),
+             end.isoformat())).fetchone()
+        db.execute(
+            "INSERT INTO warm_attribution_residual(organization_id,provider,day,"
+            "total_warm_spend_usd,allocated_usd,unallocated_speculative_usd,"
+            "redundancy_usd,unpriced_usd,reward_join_delta_usd,computed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (organization_id, provider, day_key, round(priced_total, 10),
+             round(allocated, 10), round(speculative, 10),
+             round(redundancy, 10), round(unpriced_total, 10),
+             (round(attributed_total - float(reward[1] or 0.0), 10)
+              if reward and int(reward[0] or 0) else None),
+             now.isoformat()))
+        return written, misses
+
+    @staticmethod
+    def _warm_attribution_split(amount: float,
+                                nodes: list[dict[str, Any]] | None,
+                                leaf: str, prefix_tokens: int,
+                                flat: bool) -> list[tuple[str, float]]:
+        """Split one ping's cost along its ancestry by block token weight.
+
+        The denominator is the LEAF's token_cum, not warm_prefixes.prefix_tokens
+        -- the two are counted on different bases (prefix_tokens is text-only on
+        the anthropic path and runs 4-12% below token_cum), and normalizing by
+        the smaller one hands the shared ancestors MORE than the whole ping while
+        the leaf absorbs a negative remainder. token_cum is the same basis
+        block_tokens is differenced from, so the ancestor weights sum to at most
+        1 by construction.
+
+        The seed node (depth 0) carries no tokens and therefore no cost. The
+        leaf keeps its own block plus every rounding crumb, which is what makes
+        the shares sum to the ping cost EXACTLY with a non-negative leaf share.
+        `prefix_tokens` is retained for signature compatibility and is no longer
+        part of the arithmetic.
+        """
+        del prefix_tokens          # basis mismatch; see the docstring
+        denominator = int(nodes[-1].get("token_cum", 0) or 0) if nodes else 0
+        if flat or not nodes or denominator <= 0:
+            return [(leaf, amount)]
+        shares: list[tuple[str, float]] = []
+        remainder = amount
+        for node in nodes[:-1]:
+            share = round(amount * node["block_tokens"] / denominator, 10)
+            remainder = round(remainder - share, 10)
+            if share:
+                shares.append((str(node["digest"]), share))
+        # The leaf share is a remainder, so any basis mismatch surfaces here as
+        # a negative number -- a signed redistribution that the conservation
+        # identity cannot see, because it still sums to the ping. Fail closed.
+        if amount >= 0 and remainder < 0:
+            raise ValueError("warm attribution leaf share is negative")
+        shares.append((str(nodes[-1]["digest"]), remainder))
+        return shares
+
+    def warm_attribution_list(self, organization_id: str,
+                              provider: str | None = None,
+                              day_from: str | None = None,
+                              day_to: str | None = None,
+                              ) -> list[dict[str, Any]]:
+        """Mirror of public.warm_attribution_list."""
+        if provider is not None and provider not in _WARM_PROVIDERS:
+            raise ValueError("warm attribution arguments are invalid")
+        today = datetime.now(timezone.utc).date()
+        first = str(day_from or (today - timedelta(days=30)).isoformat())[:10]
+        last = str(day_to or today.isoformat())[:10]
+        clause = "" if provider is None else " AND provider=?"
+        params: list[Any] = [organization_id]
+        if provider is not None:
+            params.append(provider)
+        params.extend([first, last])
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT organization_id,provider,day,customer_ref,nodes_read,"
+                "nodes_shared,avg_split_denominator,warming_cost_share_usd,"
+                "warm_attributed_savings_usd,verified_savings_usd,net_usd,"
+                f"computed_at FROM warm_attribution_daily WHERE organization_id=?{clause} "
+                "AND day>=? AND day<=? ORDER BY day,provider,customer_ref",
+                tuple(params)).fetchall()
+        return [{
+            "organization_id": row[0], "provider": row[1], "day": row[2],
+            "customer_ref": row[3], "nodes_read": int(row[4] or 0),
+            "nodes_shared": int(row[5] or 0),
+            "avg_split_denominator": (None if row[6] is None else float(row[6])),
+            "warming_cost_share_usd": float(row[7] or 0.0),
+            "warm_attributed_savings_usd": float(row[8] or 0.0),
+            "verified_savings_usd": float(row[9] or 0.0),
+            "net_usd": float(row[10] or 0.0),
+            "erased": str(row[3]).startswith("erased:"),
+            "computed_at": row[11],
+        } for row in rows]
+
+    def warm_attribution_residual_get(self, organization_id: str,
+                                      provider: str | None = None,
+                                      day_from: str | None = None,
+                                      day_to: str | None = None,
+                                      ) -> list[dict[str, Any]]:
+        """Mirror of public.warm_attribution_residual_get."""
+        if provider is not None and provider not in _WARM_PROVIDERS:
+            raise ValueError("warm attribution arguments are invalid")
+        today = datetime.now(timezone.utc).date()
+        first = str(day_from or (today - timedelta(days=30)).isoformat())[:10]
+        last = str(day_to or today.isoformat())[:10]
+        clause = "" if provider is None else " AND provider=?"
+        params: list[Any] = [organization_id]
+        if provider is not None:
+            params.append(provider)
+        params.extend([first, last])
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT organization_id,provider,day,total_warm_spend_usd,"
+                "allocated_usd,unallocated_speculative_usd,redundancy_usd,"
+                "unpriced_usd,reward_join_delta_usd,computed_at "
+                f"FROM warm_attribution_residual WHERE organization_id=?{clause} "
+                "AND day>=? AND day<=? ORDER BY day,provider",
+                tuple(params)).fetchall()
+        return [{
+            "organization_id": row[0], "provider": row[1], "day": row[2],
+            "total_warm_spend_usd": float(row[3] or 0.0),
+            "allocated_usd": float(row[4] or 0.0),
+            "unallocated_speculative_usd": float(row[5] or 0.0),
+            "redundancy_usd": float(row[6] or 0.0),
+            "unpriced_usd": float(row[7] or 0.0),
+            "reward_join_delta_usd": (None if row[8] is None else float(row[8])),
+            "computed_at": row[9],
+        } for row in rows]
 
     def warm_org_mode_set(self, organization_id: str, provider: str,
                           mode: str, reason: str = "") -> dict[str, Any]:
@@ -5837,7 +6815,44 @@ class UsageStore:
             control_savings = db.execute(
                 "DELETE FROM warm_control_savings_daily WHERE day<?",
                 (evidence_cutoff,)).rowcount
+            # 202608100006. The prefix tree is raw warm state -- structure
+            # derived from prompt prefixes -- so it ages on the same 90-day
+            # horizon, and an edge outlives nothing: once the child node is
+            # gone the edge points at an ancestry that no longer exists.
+            chain_nodes = db.execute(
+                "DELETE FROM warm_prefix_node WHERE last_touch_at<?",
+                ((now - timedelta(
+                    days=_WARM_CHAIN_NODE_RETENTION_DAYS)).isoformat(),)).rowcount
+            chain_edges = db.execute(
+                "DELETE FROM warm_prefix_edge WHERE NOT EXISTS ("
+                "SELECT 1 FROM warm_prefix_node node WHERE "
+                "node.organization_id=warm_prefix_edge.organization_id AND "
+                "node.provider=warm_prefix_edge.provider AND "
+                "node.salt_version=warm_prefix_edge.salt_version AND "
+                "node.node_digest=warm_prefix_edge.child_digest)").rowcount
+            # 202608100008. The daily statement and its residual footer are
+            # dollar accounting on the 400-day evidence horizon; the cost-miss
+            # log is a node-keyed diagnostic and ages with the tree it names.
+            attribution_cutoff = (now.date() - timedelta(
+                days=_WARM_ATTRIBUTION_RETENTION_DAYS)).isoformat()
+            attribution_daily = db.execute(
+                "DELETE FROM warm_attribution_daily WHERE day<?",
+                (attribution_cutoff,)).rowcount
+            attribution_residual = db.execute(
+                "DELETE FROM warm_attribution_residual WHERE day<?",
+                (attribution_cutoff,)).rowcount
+            attribution_misses = db.execute(
+                "DELETE FROM warm_prefix_cost_miss WHERE day<?",
+                ((now.date() - timedelta(
+                    days=_WARM_ATTRIBUTION_MISS_RETENTION_DAYS)).isoformat(),)
+            ).rowcount
         return {"schema": "brevitas.warm-purge.v1", "status": "purged",
+                "attribution_daily_deleted": max(0, int(attribution_daily or 0)),
+                "attribution_residual_deleted": max(
+                    0, int(attribution_residual or 0)),
+                "attribution_misses_deleted": max(0, int(attribution_misses or 0)),
+                "prefix_nodes_deleted": max(0, int(chain_nodes or 0)),
+                "prefix_edges_deleted": max(0, int(chain_edges or 0)),
                 "prefixes_deleted": max(0, int(prefixes or 0)),
                 "ledger_deleted": max(0, int(ledger or 0)),
                 "observation_retention_days": _WARM_OBSERVATION_RETENTION_DAYS,
@@ -7118,7 +8133,12 @@ class SupabaseUsageStore:
                             safety_margin_seconds: int,
                             cache_read: bool, *,
                             ping_reserve_usd: float | None = None,
-                            model_class: str = "") -> dict[str, Any]:
+                            model_class: str = "",
+                            chain_nodes: list[dict[str, Any]] | None = None,
+                            chain_path: str = "",
+                            chain_salt_version: int | None = None,
+                            chain_tail_tokens: int = 0,
+                            chain_truncated: bool = False) -> dict[str, Any]:
         return _rpc_object(self._request("POST", "rpc/warm_prefix_observe", data={
             "p_organization_id": organization_id, "p_customer_id": customer_id,
             "p_provider": provider, "p_prefix_hash": prefix_hash,
@@ -7134,6 +8154,14 @@ class SupabaseUsageStore:
             # inside payload_ciphertext, which SQL cannot read; '' means unknown
             # and the observation is still recorded.
             "p_model_class": str(model_class or "")[:128],
+            # 202608100006. The salted chain, or three nulls. The RPC validates
+            # the array itself and skips the tree writes on anything it does not
+            # recognize, so a client that gets this wrong loses structure, never
+            # the observation.
+            "p_chain": chain_nodes or None,
+            "p_chain_path": str(chain_path or "") or None,
+            "p_chain_salt_version": (None if chain_salt_version is None
+                                     else int(chain_salt_version)),
         }))
 
     def warm_due_claim(self, claim_limit: int, *, reserve_usd_per_mtok: float,
@@ -7149,6 +8177,7 @@ class SupabaseUsageStore:
                        lambda_max: float | None = 1000.0,
                        hazard_v2: bool = False,
                        beta: float | None = 0.0,
+                       parent_dedup: bool = False,
                        ) -> dict[str, Any]:
         rows = self._request("POST", "rpc/warm_due_claim", data={
             "p_claim_limit": int(claim_limit),
@@ -7185,6 +8214,10 @@ class SupabaseUsageStore:
             # block does not run at all, so the loop is 202608100004's. It is
             # NOT "a cap of zero", which would deny every candidate.
             "p_beta": (0.0 if beta is None else float(beta)),
+            # false is the RPC's own default and the dedup pre-pass's off
+            # state: no temp table is created, no group is formed, no candidate
+            # is deferred and the loop is 202608100005's.
+            "p_parent_dedup": bool(parent_dedup),
         }) or []
         if rows and rows[0].get("status") == "lease_unavailable":
             return {"status": "lease_unavailable", "rows": []}
@@ -7319,6 +8352,41 @@ class SupabaseUsageStore:
             "POST", "rpc/warm_control_savings_refresh", data={
                 "p_max_days": int(max_days),
             }))
+
+    # --- airport-game attribution (202608100008) --------------------------
+    def warm_attribution_run(self, lookback_days: int = 2,
+                             close_days: int = 7) -> dict[str, Any]:
+        return _rpc_object(self._request(
+            "POST", "rpc/warm_attribution_run", data={
+                "p_lookback_days": int(lookback_days),
+                "p_close_days": int(close_days),
+            }))
+
+    def warm_attribution_list(self, organization_id: str,
+                              provider: str | None = None,
+                              day_from: str | None = None,
+                              day_to: str | None = None,
+                              ) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_attribution_list", data={
+            "p_organization_id": organization_id,
+            "p_provider": provider,
+            "p_day_from": day_from,
+            "p_day_to": day_to,
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def warm_attribution_residual_get(self, organization_id: str,
+                                      provider: str | None = None,
+                                      day_from: str | None = None,
+                                      day_to: str | None = None,
+                                      ) -> list[dict[str, Any]]:
+        rows = self._request("POST", "rpc/warm_attribution_residual_get", data={
+            "p_organization_id": organization_id,
+            "p_provider": provider,
+            "p_day_from": day_from,
+            "p_day_to": day_to,
+        }) or []
+        return [row for row in rows if isinstance(row, dict)]
 
     def warm_org_mode_set(self, organization_id: str, provider: str,
                           mode: str, reason: str = "") -> dict[str, Any]:

@@ -1455,3 +1455,205 @@ def test_warm_status_discloses_the_holdout_share(tmp_path, monkeypatch):
     assert not str("holdout_fraction").endswith("_usd")
     monkeypatch.delenv("BREVITAS_WARM_HOLDOUT_PCT")
     assert store.warm_status(ORG)["holdout_fraction"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# 202608100006: the chain-hash prefix tree (SQLite mirror).
+#
+# Node digests here are already SALTED -- the store never sees an unsalted
+# chain, because the HMAC happens at the observation boundary in api/server.py.
+# These fixtures therefore stand in for whatever that boundary produced.
+# --------------------------------------------------------------------------- #
+def chain_fixture(count=3, seed="alpha", salt_version=1, truncated=False):
+    digests = [hashlib.sha256(f"{seed}:{i}".encode()).hexdigest()
+               for i in range(count)]
+    labels = [digest[:12] for digest in digests]
+    path = ".".join([f"s1.k{salt_version}", "r" + labels[0]] + labels[1:])
+    nodes = []
+    for depth, digest in enumerate(digests):
+        nodes.append({
+            "digest": digest, "label": labels[depth],
+            "parent": digests[depth - 1] if depth else "",
+            "depth": depth,
+            "block_tokens": 0 if depth == 0 else 1000,
+            "token_cum": 0 if depth == 0 else 1000 * depth,
+            "block_elements": 0 if depth == 0 else 2,
+            "path_truncated": truncated,
+        })
+    return nodes, path
+
+
+def observe_with_chain(store, nodes, path, salt_version=1, *,
+                       prefix_hash=PREFIX_HASH, customer=CUSTOMER, org=ORG):
+    return store.warm_prefix_observe(
+        org, customer, "anthropic", prefix_hash, "enc:payload", 100_000,
+        provider_ttl_seconds=300, safety_margin_seconds=60, cache_read=False,
+        chain_nodes=nodes, chain_path=path, chain_salt_version=salt_version)
+
+
+def chain_rows(store, table="warm_prefix_node"):
+    with sqlite3.connect(store.db_path) as db:
+        db.row_factory = sqlite3.Row
+        return [dict(row) for row in db.execute(
+            f"SELECT * FROM {table} ORDER BY rowid")]
+
+
+def test_observe_writes_nodes_edges_and_stamps_leaf(tmp_path):
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=4)
+    assert observe_with_chain(store, nodes, path)["status"] == "observed"
+    rows = chain_rows(store)
+    assert [row["depth"] for row in rows] == [0, 1, 2, 3]
+    assert [row["node_digest"] for row in rows] == [n["digest"] for n in nodes]
+    assert rows[0]["parent_digest"] is None
+    assert rows[3]["parent_digest"] == nodes[2]["digest"]
+    # Every node's path is the arm path truncated to that node's depth, and the
+    # root label carries the 'r' prefix that keeps a header label from ever
+    # being confused with a block label.
+    assert rows[0]["path"] == ".".join(path.split(".")[:3])
+    assert rows[3]["path"] == path
+    assert rows[3]["token_cum"] == 3000
+    edges = chain_rows(store, "warm_prefix_edge")
+    assert [(e["parent_digest"], e["child_digest"]) for e in edges] == [
+        (nodes[i]["digest"], nodes[i + 1]["digest"]) for i in range(3)]
+    with sqlite3.connect(store.db_path) as db:
+        stamp = db.execute(
+            "SELECT chain_leaf_digest,chain_path,chain_salt_version "
+            "FROM warm_prefixes").fetchone()
+    assert stamp == (nodes[-1]["digest"], path, 1)
+
+
+def test_observe_chain_idempotent_touch(tmp_path):
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    observe_with_chain(store, nodes, path)
+    first = [row["last_touch_at"] for row in chain_rows(store)]
+    observe_with_chain(store, nodes, path)
+    rows = chain_rows(store)
+    assert len(rows) == 3                      # touched, never duplicated
+    assert len(chain_rows(store, "warm_prefix_edge")) == 2
+    assert all(row["last_touch_at"] >= first[i] for i, row in enumerate(rows))
+
+
+def test_observe_chain_salt_version_namespaces_rows(tmp_path):
+    """Rotation is (new master, new version) together: the old tree keeps its
+    rows and ages out beside the new one. Rotation is NEVER erasure."""
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    observe_with_chain(store, nodes, path, salt_version=1)
+    rotated, rotated_path = chain_fixture(count=3, seed="beta", salt_version=2)
+    observe_with_chain(store, rotated, rotated_path, salt_version=2)
+    rows = chain_rows(store)
+    assert sorted({row["salt_version"] for row in rows}) == [1, 2]
+    assert len(rows) == 6
+
+
+def test_observe_chain_rejects_malformed_without_failing_the_observation(tmp_path):
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    nodes[2]["depth"] = 5                      # depths must be contiguous from 0
+    assert observe_with_chain(store, nodes, path)["status"] == "observed"
+    assert chain_rows(store) == []             # total, not partial
+    assert chain_rows(store, "warm_prefix_edge") == []
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute(
+            "SELECT chain_leaf_digest FROM warm_prefixes").fetchone()[0] is None
+
+
+def test_observe_chain_collision_escapes_to_the_extended_label(tmp_path):
+    """Two distinct chains whose salted labels collide at the same depth must
+    separate, not overwrite each other."""
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    observe_with_chain(store, nodes, path)
+    collided, _ = chain_fixture(count=3, seed="gamma")
+    # Same 12-hex labels, different digests: a forced path collision.
+    for depth, node in enumerate(collided):
+        node["label"] = nodes[depth]["label"]
+    collided_path = path
+    assert observe_with_chain(
+        store, collided, collided_path,
+        prefix_hash=hashlib.sha256(b"prefix-2").hexdigest())["status"] == "observed"
+    rows = chain_rows(store)
+    assert len(rows) == 6
+    extended = [row for row in rows if "_" in row["label"]]
+    assert extended and all(
+        row["label"] == row["node_digest"][:12] + "_" + row["node_digest"][12:16]
+        for row in extended)
+    assert len({row["path"] for row in rows}) == 6
+
+
+def test_observe_chain_escaped_label_survives_a_later_appended_block(tmp_path):
+    """A block appended after an escape hangs off the ESCAPED ancestor label.
+
+    Re-observing an already-escaped chain conflicts on node_digest and takes the
+    DO UPDATE branch, which never rewrites `path`. Rebuilding the next depth
+    from the label this observation would have CHOSEN rather than the one the
+    row actually HOLDS would file the new block under the colliding sibling's
+    subtree, and every ltree descendant read would agree with it.
+    """
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    observe_with_chain(store, nodes, path)
+    collided, _ = chain_fixture(count=3, seed="gamma")
+    for depth, node in enumerate(collided):
+        node["label"] = nodes[depth]["label"]
+    second = hashlib.sha256(b"prefix-escape").hexdigest()
+    observe_with_chain(store, collided, path, prefix_hash=second)
+    escaped = {row["node_digest"]: row for row in chain_rows(store)}
+    # Only the root collides: once its label is extended every descendant path
+    # already differs, so the escape happens exactly once, at depth 0.
+    root = escaped[collided[0]["digest"]]
+    assert "_" in root["label"]
+    ancestor = escaped[collided[-1]["digest"]]
+    assert ancestor["path"].startswith("s1.k1.r" + root["label"])
+
+    # The same chain observed again, now one block longer.
+    longer, longer_path = chain_fixture(count=4, seed="gamma")
+    for depth, node in enumerate(longer[:3]):
+        node["label"] = nodes[depth]["label"]
+    longer_path = ".".join(
+        [f"s1.k1", "r" + longer[0]["label"]]
+        + [node["label"] for node in longer[1:]])
+    assert observe_with_chain(
+        store, longer, longer_path, prefix_hash=second)["status"] == "observed"
+    rows = {row["node_digest"]: row for row in chain_rows(store)}
+    appended = rows[longer[3]["digest"]]
+    # The new block sits UNDER the escaped ancestor, not under the sibling that
+    # owns the unescaped label.
+    assert appended["path"] == ancestor["path"] + "." + appended["label"]
+    assert appended["path"].startswith("s1.k1.r" + root["label"])
+    # And nothing was rewritten out from under the first chain.
+    assert rows[nodes[-1]["digest"]]["path"] == path
+    assert len({row["path"] for row in rows.values()}) == len(rows)
+
+
+def test_observe_without_chain_writes_nothing(tmp_path):
+    store = make_store(tmp_path)
+    enable_warming(store)
+    assert observe(store)["status"] == "observed"
+    assert chain_rows(store) == []
+    assert chain_rows(store, "warm_prefix_edge") == []
+
+
+def test_retention_prunes_stale_nodes(tmp_path):
+    store = make_store(tmp_path)
+    enable_warming(store)
+    nodes, path = chain_fixture(count=3)
+    observe_with_chain(store, nodes, path)
+    stale = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("UPDATE warm_prefix_node SET last_touch_at=? "
+                   "WHERE depth>0", (stale,))
+    purged = store.purge_warm_state(7)
+    assert purged["prefix_nodes_deleted"] == 2
+    # An edge whose child is gone points at an ancestry that no longer exists.
+    assert purged["prefix_edges_deleted"] == 2
+    assert [row["depth"] for row in chain_rows(store)] == [0]
+    assert chain_rows(store, "warm_prefix_edge") == []

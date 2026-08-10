@@ -7,6 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
 import concurrent.futures
+import hashlib
+import hmac
 import importlib
 import json
 import logging
@@ -20,7 +22,7 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
 import requests as _requests
@@ -3932,6 +3934,85 @@ def get_warming_customer_budgets(request: Request, provider: str | None = None,
     } for row in rows or []]}
 
 
+def _warm_attribution_day(value: str | None, default: date) -> str:
+    """YYYY-MM-DD or nothing. Strict for the same reason _warm_budget_period is:
+    a lenient parser silently reports the wrong day's accounting."""
+    if not value:
+        return default.isoformat()
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400,
+                            detail="from and to must be YYYY-MM-DD") from exc
+
+
+@app.get("/v1/warming/attribution")
+@limiter.limit("60/minute")
+def get_warming_attribution(request: Request, provider: str | None = None,
+                            from_: str | None = Query(default=None, alias="from"),
+                            to: str | None = None):
+    """The airport-game statement: what warming cost, and who flew in on it.
+
+    ORG-ADMIN ONLY, on the same billing gate the customer envelopes use. The
+    split denominator on a row is the number of DISTINCT customers who read a
+    shared prefix node, so exposing this to an end customer would leak the
+    existence -- and the count -- of their siblings.
+
+    Node digests, paths and anything derived from prompt content are never in
+    the response. The statement is dollars and counts.
+    """
+    _, organization = _member_organization(request)
+    _warm_budget_role_gate(organization)
+    if provider is not None and provider not in _WARM_PROVIDERS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown warming provider '{provider}'")
+    today = datetime.now(timezone.utc).date()
+    day_to = _warm_attribution_day(to, today)
+    day_from = _warm_attribution_day(from_, today - timedelta(days=30))
+    if day_from > day_to:
+        raise HTTPException(status_code=400, detail="from must not exceed to")
+    try:
+        rows = _store.warm_attribution_list(
+            organization["id"], provider, day_from, day_to)
+        residuals = _store.warm_attribution_residual_get(
+            organization["id"], provider, day_from, day_to)
+    except Exception as exc:
+        raise _key_admin_unavailable(exc) from exc
+    return {
+        "from": day_from, "to": day_to,
+        "rows": [{
+            "customer_id": str(row.get("customer_ref") or ""),
+            "provider": str(row.get("provider") or ""),
+            "day": str(row.get("day") or "")[:10],
+            "nodes_read": int(row.get("nodes_read") or 0),
+            "nodes_shared": int(row.get("nodes_shared") or 0),
+            "avg_split_denominator": (
+                None if row.get("avg_split_denominator") is None
+                else float(row.get("avg_split_denominator"))),
+            "warming_cost_share_usd": float(
+                row.get("warming_cost_share_usd") or 0.0),
+            "warm_attributed_savings_usd": float(
+                row.get("warm_attributed_savings_usd") or 0.0),
+            "verified_savings_usd": float(row.get("verified_savings_usd") or 0.0),
+            "net_usd": float(row.get("net_usd") or 0.0),
+            # A tombstoned ref is the residue of an erasure: the dollars are
+            # the organization's own accounting and stay, the key does not.
+            "erased": str(row.get("customer_ref") or "").startswith("erased:"),
+        } for row in rows or []],
+        "residuals": [{
+            "provider": str(row.get("provider") or ""),
+            "day": str(row.get("day") or "")[:10],
+            "total_warm_spend_usd": float(row.get("total_warm_spend_usd") or 0.0),
+            "allocated_usd": float(row.get("allocated_usd") or 0.0),
+            "speculative_usd": float(
+                row.get("unallocated_speculative_usd") or 0.0),
+            "redundancy_usd": float(row.get("redundancy_usd") or 0.0),
+            "unpriced_usd": float(row.get("unpriced_usd") or 0.0),
+        } for row in residuals or []],
+        "note": "Warming spend is borne by Brevitas and is never billed to you.",
+    }
+
+
 @app.put("/v1/warming/customer-budgets")
 @limiter.limit("30/minute")
 def set_warming_customer_budget(request: Request, body: WarmCustomerBudgetRequest):
@@ -6451,6 +6532,85 @@ def _hosted_proxy_receipt(raw_key: str, payload: dict) -> None:
         logger.error("hosted proxy receipt dropped reason=duplicate_request_id")
 
 
+_WARM_CHAIN_SALT_WARNED = False
+# ltree label budget: two header labels (scheme, salt version) + the root, so a
+# path can carry at most this many block labels. Deeper nodes still get rows and
+# still chain by parent_digest -- they simply have no materialized path.
+_WARM_CHAIN_MAX_PATH_BLOCKS = 253
+
+
+def _warm_chain_salt() -> tuple[bytes, int] | None:
+    """HKDF-extract the per-process master salt, or None when salting is not
+    configured. Unset is NOT an error: the observation proceeds, only the chain
+    is skipped, because an unsalted node digest is a content-derived identifier
+    of a customer's prompt prefix and must never be stored.
+
+    The master never leaves the hosted server. brevitas/ (the customer-installed
+    package) computes the UNSALTED chain; the HMAC that pseudonymizes it happens
+    here, at the observation boundary, once per node. That is a deliberate
+    deviation from a per-block salt inside the client: u_i already binds every
+    prior block and its own index, so a single HMAC over u_i has the same
+    pseudonymity and collision properties, and the key stays server-side.
+    """
+    global _WARM_CHAIN_SALT_WARNED
+    master = os.getenv("BREVITAS_WARM_CHAIN_SALT", "") or ""
+    if len(master) < 32:
+        if not _WARM_CHAIN_SALT_WARNED:
+            logger.warning("warm chain salting unavailable")
+            _WARM_CHAIN_SALT_WARNED = True
+        return None
+    try:
+        version = int(os.getenv("BREVITAS_WARM_CHAIN_SALT_VERSION", "1"))
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= version <= 9999:
+        return None
+    prk = hmac.new(b"brevitas-prefix-chain", master.encode("utf-8"),
+                   hashlib.sha256).digest()
+    return prk, version
+
+
+def _warm_chain_nodes(organization_id: str,
+                      chain: Any) -> tuple[list[dict[str, Any]], str, int] | None:
+    """Salt one unsalted chain into the rows the store persists.
+
+    Rotation is (new master, new version) TOGETHER: the version namespaces every
+    row, so an old-salt tree simply ages out beside the new one. Erasure is
+    NEVER implemented as rotation -- a rotated salt leaves the old rows exactly
+    where they were.
+    """
+    material = _warm_chain_salt()
+    if material is None or chain is None or not getattr(chain, "digests", None):
+        return None
+    prk, version = material
+    key = hmac.new(prk, f"v{version}:{organization_id}".encode("utf-8") + b"\x01",
+                   hashlib.sha256).digest()
+    salted = [hmac.new(key, bytes.fromhex(digest), hashlib.sha256).hexdigest()
+              for digest in chain.digests]
+    labels = [digest[:12] for digest in salted]
+    blocks = len(salted) - 1
+    path = ".".join(
+        [f"s{chain.scheme}", f"k{version}", "r" + labels[0]]
+        + labels[1:min(blocks, _WARM_CHAIN_MAX_PATH_BLOCKS) + 1])
+    truncated = bool(blocks > _WARM_CHAIN_MAX_PATH_BLOCKS or chain.truncated)
+    nodes: list[dict[str, Any]] = []
+    for depth, digest in enumerate(salted):
+        nodes.append({
+            "digest": digest,
+            "label": labels[depth],
+            # The seed node is the root: no parent, no tokens, no elements. It
+            # carries the cache identity (provider, model, ttl, vary, extras),
+            # which is what stops two different cache entries sharing a tree.
+            "parent": salted[depth - 1] if depth else "",
+            "depth": depth,
+            "block_tokens": chain.block_tokens[depth - 1] if depth else 0,
+            "token_cum": chain.token_cum[depth - 1] if depth else 0,
+            "block_elements": chain.block_elements[depth - 1] if depth else 0,
+            "path_truncated": truncated,
+        })
+    return nodes, path, version
+
+
 def _hosted_warm_observe(organization_id: str, customer_id: str,
                          prefix: WarmPrefix, cache_read: bool,
                          request_id: str = "") -> None:
@@ -6515,11 +6675,27 @@ def _hosted_warm_observe(organization_id: str, customer_id: str,
                                 price.get("write", price["input"]))
             ping_reserve_usd = round(
                 ping_rate * prefix.prefix_tokens / 1_000_000.0, 10)
+        # The structural key (Phase 1.5). Salted here and only here; absent
+        # whenever the client emitted no chain or the master salt is unset, and
+        # absent is always a clean no-op -- the arm is still observed, it simply
+        # carries no tree.
+        chain_nodes: list[dict[str, Any]] = []
+        chain_path = ""
+        chain_salt_version: int | None = None
+        salted = _warm_chain_nodes(organization_id, getattr(prefix, "chain", None))
+        if salted is not None:
+            chain_nodes, chain_path, chain_salt_version = salted
         observation = _store.warm_prefix_observe(
             organization_id, customer_id, prefix.provider, prefix.prefix_hash,
             payload_ciphertext, prefix.prefix_tokens, prefix.provider_ttl_seconds,
             int(os.getenv("BREVITAS_WARM_SAFETY_MARGIN_SECONDS", "60")),
             cache_read, ping_reserve_usd=ping_reserve_usd,
+            chain_nodes=chain_nodes or None, chain_path=chain_path,
+            chain_salt_version=chain_salt_version,
+            chain_tail_tokens=int(getattr(prefix.chain, "tail_tokens", 0) or 0)
+            if getattr(prefix, "chain", None) else 0,
+            chain_truncated=bool(getattr(prefix.chain, "truncated", False))
+            if getattr(prefix, "chain", None) else False,
             # Coarsened provider catalog model family, for the arrival-sourced
             # TTL observation the store records. Provider metadata, not customer
             # data: the encrypted payload is the only place the model otherwise

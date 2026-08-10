@@ -16,7 +16,7 @@ declare
     v_hash_b text := repeat('b3', 32);
     v_tenant_request uuid := '00000000-0000-4000-8000-000000110005';
     v_export_request uuid := '00000000-0000-4000-8000-000000110006';
-    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)';
+    v_claim_signature text := 'public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric,boolean)';
     v_day date := (clock_timestamp() at time zone 'utc')::date;
     v_bucket text;
     v_table text;
@@ -39,8 +39,9 @@ begin
     -- answer such a call with a 300 rather than a claim.
     -- ------------------------------------------------------------------
     if to_regprocedure(v_claim_signature) is null
+       or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean,numeric)') is not null
        or to_regprocedure('public.warm_due_claim(integer,numeric,integer,numeric,numeric,integer,integer,integer,integer,jsonb,double precision,boolean,numeric,numeric,boolean)') is not null then
-        raise exception 'warm_due_claim must be the sixteen-argument beta form only';
+        raise exception 'warm_due_claim must be the seventeen-argument dedup form only';
     end if;
     if has_function_privilege('anon', v_claim_signature, 'execute')
        or has_function_privilege('authenticated', v_claim_signature, 'execute')

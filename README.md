@@ -241,8 +241,10 @@ client = brevitas.wrap(openai.OpenAI())      # or anthropic.Anthropic()
 
 A router measures provider prefix-cache behavior and preserves stable prompt prefixes.
 OpenAI-compatible providers normally cache those prefixes automatically. For GPT-5.6,
-Brevitas can add a tenant-scoped `prompt_cache_key`; billable explicit breakpoints require
-`BREVITAS_OPENAI_CACHE_BREAKPOINTS=1`. Brevitas-owned Anthropic cache writes require
+Brevitas can add an opaque per-customer `prompt_cache_key` routing hint
+(`BREVITAS_OPENAI_CACHE_KEY=1`); billable explicit breakpoints require
+`BREVITAS_OPENAI_BREAKPOINTS=1` (legacy alias: `BREVITAS_OPENAI_CACHE_BREAKPOINTS`).
+Both are off by default. Brevitas-owned Anthropic cache writes require
 `BREVITAS_ANTHROPIC_CACHE=1`, because a write has a premium and no online router can prove
 that a future read will occur. Caller-owned cache policy is always preserved.
 
