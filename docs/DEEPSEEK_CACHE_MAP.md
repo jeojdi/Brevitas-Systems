@@ -38,6 +38,10 @@ hit is the entire economic surface here.
 
 ---
 
+## Block size RESOLVED: 128 tokens (proven 2026-08-10, +$0.0004)
+
+The initial sweep left 64-vs-128 ambiguous — every observed hit (128, 256, 512, 896, 1792, 1920) is a multiple of *both* 64 and 128, so it proved nothing. A targeted follow-up settles it: a **201-token prompt cached exactly 128, leaving 73 uncached** (`hit=128, miss=73`). If the block were 64 tokens, 201 would cache 192 (3×64) and strand only 9; instead the cacheable prefix rounds **down to the nearest 128**, stranding 73 (and 73 > 64, so a 64-block would have fit but did not form). **Block size = 128 tokens. Floor = 128 (one block).** The widely-quoted "64-token unit" figure is wrong for the live API. (This is the measurement discipline in miniature: the first sweep looked conclusive but wasn't, and one two-cent probe designed to *distinguish* the hypotheses settled it.)
+
 ## Headline results
 
 | Probe | Measured | DeepSeek docs | Verdict |
