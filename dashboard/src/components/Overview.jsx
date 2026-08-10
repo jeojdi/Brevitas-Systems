@@ -155,6 +155,8 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
       stats={stats}
       activity={activity}
       cacheStats={cacheStats}
+      accessToken={accessToken}
+      refreshTick={refreshTick}
     />
   )
 }
@@ -165,7 +167,7 @@ export default function Overview({ apiKey, darkMode, refreshTick, previewStats =
 // sections (provider cache, client activity) stay hidden while pending because their
 // existence is only known once the payloads arrive — pre-drawing them would shift the
 // page when they turn out absent.
-function OverviewBody({ pending = false, showInstallCommand, darkMode, loadStats, error = '', stats = null, activity = null, cacheStats = null }) {
+function OverviewBody({ pending = false, showInstallCommand, darkMode, loadStats, error = '', stats = null, activity = null, cacheStats = null, accessToken = '', refreshTick = 0 }) {
   // The API strips *_usd keys and sets spend_redacted for roles without billing
   // access; those sessions must see "Withheld", never a confident $0.00.
   const spendWithheld = spendRedacted(stats)
