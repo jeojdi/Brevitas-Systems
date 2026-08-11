@@ -94,8 +94,11 @@ against the native-cache baseline, not a cache-busted one.
 
 ## P2 — Minimum cacheable prefix + granularity (fast probe)
 
-The load-bearing fast probe. DeepSeek claims **64-token storage units** but
-documents **no floor** at which caching begins. We sweep target sizes, writing
+The load-bearing fast probe. The widely-quoted figure for DeepSeek's storage unit
+is **64 tokens** — refuted by the resolving probe above, which proves the block is
+**128** — and DeepSeek documents **no floor** at which caching begins. This sweep
+is what establishes the floor; it left the block size ambiguous, and the resolving
+probe above settled that separately. We sweep target sizes, writing
 each fresh prefix once and immediately resending it; `prompt_cache_hit_tokens > 0`
 on the resend means that size caches.
 
@@ -117,15 +120,16 @@ on the resend means that size caches.
 1. **Caching does NOT kick in at 64 tokens.** A 98-token prompt caches *nothing*.
    The floor sits in **(98, 163] prompt tokens**, and the smallest hit ever
    observed is **128 tokens (one 128-block)**. So the effective minimum cacheable
-   prefix is **≈128 tokens** — a *higher* floor than the single 64-token storage
-   unit implies, but **~8× lower than OpenAI's documented 1024-token floor** and
-   ~32× lower than Anthropic Haiku's measured 4096 (`ANTHROPIC_CACHE_MAP.md`).
+   prefix is **≈128 tokens** — twice what the widely-quoted 64-token storage unit
+   would imply (and that unit is itself refuted: the block is 128), but **~8×
+   lower than OpenAI's documented 1024-token floor** and ~32× lower than Anthropic
+   `claude-haiku-4-5`'s measured 4096 (`ANTHROPIC_CACHE_MAP.md`).
 2. **Hits are quantized to 128-token blocks, tail uncached** (proven: a 201-tok
    prefix caches 128, not 192, stranding 73 > 64). Every hit is a multiple of 128
    (128, 256, 512, `896=7×128`, `1792=14×128`, `1920=15×128`). The
    remainder above the last 128-boundary (e.g. `1015−896=119`, `2024−1920=104`; 896=7×128, 1920=15×128)
    always bills as a miss. DeepSeek rounds the cacheable prefix **down** to the
-   nearest 64.
+   nearest 128.
 
 **Docs comparison: NEW DATUM.** DeepSeek documents neither the floor nor the
 rounding direction. Both are measured here for the first time.
@@ -257,7 +261,7 @@ lever that depends on cross-tenant cache state.
 ## What we measured vs. what remains
 
 **Measured this run (all with live provider receipts):** automatic caching (P1),
-the minimum cacheable prefix (≈128 tok, **not** 64) and 64-block hit quantization
+the minimum cacheable prefix (≈128 tok, **not** 64) and 128-block hit quantization
 (P2), a hard TTL floor of **15 min untouched** (P3), the receipt's silence on
 time-of-day price (P5), and same-key account scoping (P6). Total **$0.002037**.
 
@@ -267,8 +271,13 @@ time-of-day price (P5), and same-key account scoping (P6). Total **$0.002037**.
   bracket it (trivial spend, long waits). Worth one scheduled long-gap read to
   turn "hours to days" into a number.
 - **Exact floor to ±1 block.** The floor is in (98, 163] prompt tokens with the
-  first hit at 128; a finer sweep (100/112/128/144 tok) would pin whether the
-  trigger is "prompt ≥ 128" or "prompt long enough to contain 2 full 64-blocks."
+  first hit at 128; a finer sweep (128/136/144/160 tok) would pin whether the
+  trigger is "prompt ≥ 128" — one full 128-block is enough — or "prompt strictly
+  exceeds one full 128-block," i.e. a block only forms once at least one token
+  follows it. Every hit we observed left a non-zero miss tail, so a prompt of
+  exactly 128 tokens might cache all 128 or nothing; nothing measured
+  distinguishes those yet. (Sizes under 128 are not worth spending on — they
+  cannot contain a block at all.)
 - **Peak surcharge activation.** Not live as of this run; a re-run once DeepSeek
   ships the 2× window would confirm it still never surfaces in the receipt (and
   force the time-banded rate-card row).

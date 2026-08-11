@@ -3,8 +3,9 @@
 This finishes the native-caching lever from REVAMP_PLAN.md:
 
 1. apply_anthropic_cache(): place cache_control breakpoints ONLY where the cached prefix
-   is >= the provider minimum (1024 tokens), on stable blocks (tools/system/prior turns),
-   never on the volatile last user message, using up to 4 breakpoints. (The existing
+   is >= the provider minimum (per-model, 1024 by default — see _ANTHROPIC_MIN), on
+   stable blocks (tools/system/prior turns), never on the volatile last user message,
+   using up to 4 breakpoints. (The existing
    optimizers/provider_cache/anthropic.py never actually counted tokens.)
 
 2. savings_from_usage(): read the REAL cache fields from the provider response and compute
@@ -12,9 +13,10 @@ This finishes the native-caching lever from REVAMP_PLAN.md:
      * Anthropic: cache_read_input_tokens (~0.1x), cache_creation_input_tokens (~1.25x)
      * OpenAI/DeepSeek: cached-token receipt fields (model-specific rates)
 
-Provider facts (docs): Anthropic min cacheable 1024 tok, cache read ~10% of input price;
-OpenAI automatic >=1024 tok with model-specific discounts; DeepSeek V4 Flash cache
-hits cost 2% of fresh input at the 2026-07-16 list price.
+Provider facts (docs): Anthropic min cacheable is per-model (512-4096; _ANTHROPIC_MIN,
+1024 default), cache read ~10% of input price; OpenAI automatic >=1024 tok with
+model-specific discounts; DeepSeek V4 Flash cache hits cost 2% of fresh input at the
+2026-07-16 list price, quantized to 128-token blocks (docs/DEEPSEEK_CACHE_MAP.md).
 """
 
 from __future__ import annotations
@@ -129,7 +131,17 @@ class CachePlan:
 # Anthropic per-model minimum cacheable prompt length (tokens), from the prompt-caching
 # docs (platform.claude.com/docs/.../prompt-caching, verified 2026-07-01). Prompts below
 # the minimum are silently not cached, so markers there are inert — but the ROUTER's
-# expectations must use the real threshold. Longest-prefix match; default 1024.
+# expectations must use the real threshold. Default 1024 for anything unlisted.
+#
+# Haiku 4.5's 4096 is the one row we have measured on live infra ourselves: the floor
+# sits in (4094, 4351] — see docs/ANTHROPIC_CACHE_MAP.md P3. The rest are docs-sourced.
+#
+# ORDER IS LOAD-BEARING. anthropic_min_tokens() returns the FIRST startswith() match,
+# not the longest one, so every specific prefix must precede the general prefix it
+# extends ("claude-haiku-4-5" before "claude-haiku", "claude-mythos-preview" before
+# "claude-mythos"). Appending a new specific row at the BOTTOM silently shadows it
+# behind the general row and hands back the wrong floor — which fails toward marking
+# prefixes the provider won't cache (an over-claim), not toward missing savings.
 _ANTHROPIC_MIN = [
     ("claude-mythos-preview", 2048),
     ("claude-fable", 512),
@@ -167,7 +179,19 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
     question" first turn) and are markable. Up to `max_breakpoints` are placed, preferring
     the blocks closest to the tail (maximum cached coverage).
 
-    Haiku-family models have a 2048-token cache minimum (Anthropic docs); others 1024.
+    The minimum is PER-MODEL, not global, and is read from `_ANTHROPIC_MIN` (see that
+    table for the authoritative values and their sourcing): 512 for Fable / Mythos /
+    Opus 5, 2048 for Opus 4.7 / Haiku 3.5 / Mythos-preview — and, via the generic
+    `claude-haiku` catch-all row, any other Haiku not matched above — 4096 for Haiku
+    4.5 and Opus 4.5-4.6, and the 1024 default for everything unlisted (the Sonnet
+    family, Opus 4.8/4.1/4; never a Haiku — the catch-all keeps unlisted Haikus at
+    2048). Note it is NOT uniform within a family — Haiku 4.5 needs 4096
+    where Haiku 3.5 needs 2048, and Opus spans 512 to 4096 across generations — so
+    never infer a floor from the family name. `min_tokens` is raised to this value,
+    never lowered: a caller asking for a larger prefix than the provider requires is
+    honored, but one asking for less would place markers the provider silently
+    ignores (HTTP 200, cache_creation=0), which reads downstream as a savings claim
+    for a cache write that never happened.
 
     Idempotent under reuse: callers (real customer code included) reuse message dicts
     across turns, so markers from previous calls persist in the history. Anthropic
@@ -178,7 +202,8 @@ def apply_anthropic_cache(body: dict, min_tokens: int = 1024,
         return CachePlan(0, 0, [])
     _strip_cache_control(body)
     # per-model minimum from the provider docs (Haiku 4.5 / Opus 4.5-4.6 need 4096;
-    # Fable/Mythos 512; default 1024) — markers below it are silently inert
+    # Opus 4.7 / Haiku 3.5 / any other Haiku / Mythos-preview 2048; Fable / Mythos /
+    # Opus 5 512; default 1024) — markers below it are silently inert
     min_tokens = max(min_tokens, anthropic_min_tokens(str(body.get("model", ""))))
     messages = body.get("messages", [])
     if not isinstance(messages, list) or not messages:

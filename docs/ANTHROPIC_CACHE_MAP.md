@@ -33,7 +33,7 @@ cache-write-1h 2.00 (2.00×) · output 5.00`.
 
 | Probe | Measured | Anthropic docs | Verdict |
 |---|---|---|---|
-| P3 min cacheable prefix | floor between **4094 and 4351 tok** (≈4096) | 4096 tok for Haiku | **MATCH** |
+| P3 min cacheable prefix | `claude-haiku-4-5`: floor between **4094 and 4351 tok** (≈4096) | 4096 tok for Haiku 4.5 | **MATCH** (this model only — the floor is per-model) |
 | P4 max `cache_control` breakpoints | 4 OK, **5 → hard HTTP 400** | max 4 | **MATCH** (fails closed) |
 | P1 raw TTL cliff (single read, uncontaminated) | HIT ≤300s, **MISS ≥330s** → TTL ∈ (300, 330] s | "at least 5 min", refreshed on use | **MATCH**, cliff just past 5:00 |
 | P1 refresh chain (read every ≤90s) | warm through **450s** (7.5 min) | reads refresh TTL | **MATCH** — indefinite with touches |
@@ -60,17 +60,45 @@ eligible size is the empirical floor. Sizes labeled by exact `count_tokens`.
 - 4351 tok → `{"input_tokens":13,"cache_creation_input_tokens":4338,"cache_creation":{"ephemeral_5m_input_tokens":4338}}`.
 
 **Docs comparison: MATCH.** Anthropic documents a **4096-token** minimum for
-Haiku (vs 1024 for Sonnet/Opus). The floor sits in (4094, 4351]; a 4094-token
-prefix caches nothing. The generic "1024" figure people quote from the Sonnet
-docs is **wrong for Haiku by 4×**.
+Haiku 4.5. The floor sits in (4094, 4351]; a 4094-token prefix caches nothing.
+The generic "1024" figure people quote from the Sonnet docs is **wrong for
+Haiku 4.5 by 4×**.
 
-**Brevitas lever.** Any prefix under ~4096 tokens on a Haiku route is
-**structurally unwarmable** — a keep-alive ping writes nothing and bills the
-customer for a ping that can never convert. The candidate filter must gate on a
-*model-specific* token floor (4096 for Haiku, 1024 elsewhere), not a global
-constant, or we overclaim on short-prefix Haiku traffic. The failure mode is
-silent (HTTP 200, `cache_creation=0`), so it cannot be caught by status codes —
-only by reading the receipt, which is exactly what the settlement path must do.
+### The floor is per-model, not global
+
+There is **no single Anthropic floor.** Only the `claude-haiku-4-5` row below is
+measured here; every other row is the value the shipped code actually gates on,
+read from `_ANTHROPIC_MIN` in
+`token_efficiency_model/lossless/provider_cache.py` (docs-sourced there, verified
+2026-07-01, **unverified on live infra by us**). Sourcing is stated per row —
+this file's discipline is measured vs. remains, and a docs number is not a
+measurement.
+
+| Floor (tok) | Models | Source |
+|---:|---|---|
+| **4096** | **`claude-haiku-4-5`** | **measured here** — (4094, 4351], receipts above |
+| 4096 | `claude-opus-4-6`, `claude-opus-4-5` | `provider_cache.py` `_ANTHROPIC_MIN` (docs) |
+| 2048 | `claude-opus-4-7`, `claude-haiku-3-5` / `claude-3-5-haiku`, `claude-mythos-preview`, and — via the generic `claude-haiku` catch-all row — any other Haiku not matched above | `provider_cache.py` `_ANTHROPIC_MIN` (docs) |
+| 1024 | everything unlisted — the Sonnet family, `claude-opus-4-8`, `claude-opus-4-1` (never a Haiku: the catch-all keeps unlisted Haikus at 2048) | `provider_cache.py` default |
+| 512 | `claude-fable`, `claude-mythos`, `claude-opus-5` | `provider_cache.py` `_ANTHROPIC_MIN` (docs) |
+
+Two consequences worth stating plainly, both visible in the table:
+
+- **The floor is not monotonic across generations, and not uniform within a
+  family.** Haiku 4.5 (4096) sits 2× above Haiku 3.5 (2048); Opus spans 512
+  (Opus 5) to 4096 (Opus 4.5/4.6). A floor inferred from the family name is a
+  coin flip. Only a per-model lookup is safe.
+- **Haiku 4.5 is the worst case we know of and the model we measured** — so the
+  4096 figure quoted elsewhere in this file is a *ceiling on the floors*, not a
+  constant.
+
+**Brevitas lever.** Any prefix under its model's floor is **structurally
+unwarmable** — a keep-alive ping writes nothing and bills the customer for a ping
+that can never convert. The candidate filter must gate on the *per-model* floor
+(the table above), not a global constant, or we overclaim on short-prefix traffic
+for every model whose floor exceeds the constant. The failure mode is silent
+(HTTP 200, `cache_creation=0`), so it cannot be caught by status codes — only by
+reading the receipt, which is exactly what the settlement path must do.
 
 ---
 
@@ -213,7 +241,8 @@ than reuse the 5m `write`.
 
 ## What we measured vs. what remains
 
-**Measured this run (all with live provider receipts):** min-token floor (4096),
+**Measured this run (all with live provider receipts):** `claude-haiku-4-5`'s
+min-token floor (4096 — that model only; the floor is per-model, see P3),
 breakpoint max (4, hard 400), raw TTL cliff (300–330 s), indefinite refresh via
 periodic reads (to 450 s), refresh-on-read bridging an 8-min gap, and the 1h tier
 outliving the 5m clock at 6 min. Total **$0.2336**.
@@ -224,8 +253,15 @@ outliving the 5m clock at 6 min. Total **$0.2336**.
 - **1h tier exact TTL.** Confirmed alive at 6 min; its own expiry (nominal 3600 s)
   is unmeasured — a single read at ~62 min would confirm the far cliff (~$0.02,
   but a 1-hour wait).
-- **Cross-model floors.** Only Haiku's 4096 floor is measured here; Sonnet/Opus
-  (documented 1024) are unverified on live infra.
+- **Cross-model floors.** Only `claude-haiku-4-5`'s 4096 floor is measured here.
+  **Every other row of the P3 tier table is docs-sourced and unverified on live
+  infra** — the **512 tier** (Fable / Mythos / Opus 5) is the one worth probing
+  first: it is the only tier that gates *below* the 1024 default, so if the real
+  floor is higher than the docs say, we mark prefixes that never cache and book a
+  write that never happened. An over-stated floor merely misses savings; an
+  under-stated one over-claims, so probe the low tier first. One boundary-pair
+  probe per tier (~$0.05 each, the P3 method) would convert the whole table from
+  docs to measured.
 - **Grace-window stability.** The (300, 330] grace was seen once; whether the
   cliff is 300 s hard or has a consistent ~15–30 s grace wants 2–3 repeats to
   distinguish jitter from a real grace band.
