@@ -99,6 +99,54 @@ Reduce the shrinkage prior from ~8 pseudo-hours of exposure to ~2 (tunable env `
 4. All existing gates: full pytest, verify-migrations (checksums recomputed — the four Phase-1 migrations are still uncommitted-editable… **NOTE: after Phase 1.5 commits, edits require a new migration instead**), harness both legs, v1-equivalence suite.
 5. Senior review pass on the diff.
 
+## ⚠️ GATES 1 AND 2 ARE INSUFFICIENT — measured 2026-08-11
+
+Both gates benchmark the learned index against `v1heuristic`, and `v1heuristic` was
+itself measured against a **never-warm** floor. But the shipped engine has never been
+never-warm: `engine.py:411-417` already selects `ttl="1h"` for observed session gaps in
+(300s, 3600s]. So both gates are passable by a policy that loses money against what
+production already delivers with zero pings — and the shipped policy does exactly that.
+
+Adding the honest `ttl-1h-only` baseline to the simulator (commit `bf8b16e`) measures,
+on the evaluation window:
+
+| trace | v1heuristic | learned-index-fixed | **ttl-1h-only** | learned vs 1h |
+|---|---|---|---|---|
+| cron | 2.904 | 3.954 | **4.524** | −0.570 (−13%) |
+| bursty | 1.130 | 3.146 | **8.425** | −5.279 (−63%) |
+| churned | 0.864 | 0.974 | **0.970** | +0.004 (+0%) |
+| company 8c/21d | 0.007 | 7.022 | **15.778** | −8.756 (−55%) |
+| company100 30d | 0.056 | 148.501 | **375.845** | −227.34 (−60%) |
+| company100 182d | 0.179 | 1207.83 | **2905.98** | −1698.15 (−58%) |
+
+The lift over v1 was real. It was measured against the wrong floor.
+
+And because production runs the tier *and* the warmer together, the decision-relevant
+number is worse: **warming on top of the tier is net-negative.** company100/182d goes
+$2,905.98 → $1,816.80 (−$1,089.18); 770,390 pings costing $1,503 bought $1.84 of
+savings over the tier alone. Once the hour holds the entry open, a keep-alive ping buys
+warmth the customer's own next arrival already had. It still wins on exactly one cohort,
+`power` (dense bursty), +$8.68 of a $2,906 pot.
+
+**Gate 1 and gate 2 must add `AND learned-index ≥ ttl-1h-only` before any warming flag
+is promoted.** As written they cannot distinguish a profitable policy from a
+money-losing one.
+
+**One measurement can still move this.** 1h refresh-on-read is provider-doc-asserted,
+not measured in-house (`ANTHROPIC_CACHE_MAP.md` lists the 1h exact TTL as unswept).
+Under the opposite hypothesis (`--long-refresh-on-read anthropic=0`) the verdict FLIPS
+on the 8-customer trace (learned $7.022 vs tier $6.634) while the tier still wins at
+100 customers. That ~$0.02 probe is now the highest-value measurement outstanding.
+Caveats held: `cache_blocked_until` is unmodelled so `ttl-1h-only` is optimistic, and
+every trace is synthetic because there has been no billable production traffic since
+2026-07-17.
+
+**Separate finding, about the engine not the warmer:** its own `gap > 3600 ⇒ no cache
+write` refusal costs $256.97 over 6 months (+8.8%). 65,157 of 65,298 refusals are that
+branch — bursty customers whose gap EWMA mixes minute-scale intra-burst gaps with
+hour-scale inter-burst gaps, lands above 3600s, and is then denied a write on the dense
+burst that follows.
+
 ## Process
 
 One Fable spec-check (this file is the spec; the lead validates it against the Phase 1.5-final code state), one Opus implementer (all four fixes are one coherent change to the same functions), simulator re-run, verifier, senior review. Same house rules as every round (dual store paths, compliance wiring, default-off flags unchanged).
