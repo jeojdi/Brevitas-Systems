@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Playground · Brevitas Systems</title>
+<meta name="description" content="A simulated Brevitas gateway you can play with. Send curated requests and watch cache hits, receipts, and verified savings accumulate at illustrative rates. No live calls.">
+<link href="/fonts/fonts.css" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<script src="theme-init.js" defer></script>
+<link rel="stylesheet" href="/responsive.css">
+<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+/* ------------------------------------------------------------------------
+   Playground layout. Everything below rides on theme.css tokens; the only
+   local decisions are a spacing scale and the dot-travel hop duration
+   (kept at 300ms so a five-node miss path lands inside the 1.6s budget).
+   Class-based grids on purpose: responsive.css flattens inline grid styles
+   on phones, and prompt/log rows must stay one line.
+   --------------------------------------------------------------------- */
+:root {
+  --pg-s1: 8px;
+  --pg-s2: 12px;
+  --pg-s3: 16px;
+  --pg-s4: 24px;
+  --pg-s5: 32px;
+  --pg-s6: 48px;
+  --pg-hop: 300ms;
+}
+
+.pg-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: var(--pg-s5);
+  align-items: start;
+}
+.pg-rail {
+  position: sticky;
+  top: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-s4);
+}
+.pg-block + .pg-block { margin-top: var(--pg-s6); }
+
+/* Prompt rail ---------------------------------------------------------- */
+.pg-family { border-top: 1px solid var(--line); padding: var(--pg-s4) 0 var(--pg-s2); }
+.pg-family-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--pg-s3);
+  flex-wrap: wrap;
+  margin-bottom: var(--pg-s3);
+}
+.pg-pill {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--stone-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.pg-prompt {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: var(--pg-s2);
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding: var(--pg-s2) 0;
+  border-radius: 2px;
+}
+.pg-prompt--warming { animation: pgWarmBg 1.2s ease-in-out 1; }
+.pg-idx { color: var(--stone); }
+.pg-title { margin: 0; color: var(--bone-dim); }
+.pg-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--pg-s2);
+}
+.pg-tok { color: var(--stone); white-space: nowrap; }
+.pg-btn { padding: 7px 14px; font-size: 13px; }
+.pg-btn[disabled], .pg-btn--disabled { opacity: 0.45; cursor: not-allowed; }
+.pg-guide { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bronze) 35%, transparent); }
+.pg-more { display: none; }
+.pg-expand {
+  display: none;
+  grid-column: 2 / -1;
+  align-items: center;
+  gap: var(--pg-s3);
+  padding-top: var(--pg-s1);
+}
+.pg-prompt--expanded .pg-expand { display: flex; }
+
+.pg-tag {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.pg-tag--miss { color: var(--oxblood); border-color: color-mix(in srgb, var(--oxblood) 45%, transparent); }
+.pg-tag--hit { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 45%, transparent); }
+.pg-tag--kept { color: var(--bronze); border-color: color-mix(in srgb, var(--bronze) 45%, transparent); }
+.pg-inflight {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--signal);
+  animation: pgPulse 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+/* Decision path -------------------------------------------------------- */
+.pg-path-wrap { position: relative; margin-top: var(--pg-s3); }
+.pg-path { display: flex; align-items: center; }
+.pg-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 10px 14px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--stone-2);
+  white-space: nowrap;
+  transition: border-color var(--dur-sm) var(--ease-out-standard),
+              color var(--dur-sm) var(--ease-out-standard),
+              opacity var(--dur-sm) var(--ease-out-standard);
+}
+.pg-node--done { color: var(--bone-dim); }
+.pg-node--active { border-color: var(--signal); color: var(--bone); }
+.pg-node--skipped { opacity: 0.35; }
+.pg-node-sub {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  height: 12px;
+  line-height: 12px;
+  color: var(--stone);
+}
+.pg-link { flex: 1 1 12px; min-width: 10px; height: 1px; background: var(--line); }
+.pg-travel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--signal);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--pg-hop) var(--ease-out-standard),
+              opacity var(--dur-sm) var(--ease-out-standard);
+}
+.pg-path-copy { min-height: 23px; margin: var(--pg-s3) 0 0; animation: pgFadeIn 200ms var(--ease-out-standard); }
+.pg-copy-node {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--stone);
+}
+.pg-note { max-width: 640px; margin: var(--pg-s4) 0 0; }
+
+/* Send log ------------------------------------------------------------- */
+.pg-log-scroll { max-height: 408px; overflow-y: auto; overscroll-behavior: contain; }
+.pg-log-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto auto;
+  gap: var(--pg-s2);
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding: var(--pg-s2) 0;
+}
+.pg-log-title {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-s2);
+  min-width: 0;
+}
+.pg-log-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pg-log-charged { color: var(--bone); }
+.pg-log-saved { color: var(--signal); }
+.pg-log-saved--zero { color: var(--stone); }
+.pg-ghost { opacity: 0.6; }
+.pg-ghost-caption { grid-column: 1 / -1; margin: 0; }
+
+/* Telemetry rail ------------------------------------------------------- */
+.pg-card {
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: var(--pg-s4);
+}
+.pg-cache-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--pg-s2);
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding: var(--pg-s2) 0;
+}
+.pg-cache-rows { margin-top: var(--pg-s3); }
+.pg-meter { display: flex; gap: 4px; }
+.pg-meter--flash { animation: pgFlash 600ms var(--ease-out-standard); }
+.pg-meter-sq { width: 8px; height: 8px; border: 1px solid var(--line); border-radius: 1px; }
+.pg-meter-sq--fill { background: var(--signal); border-color: var(--signal); }
+.pg-word { font-size: 11px; letter-spacing: 0.08em; min-width: 64px; text-align: right; }
+.pg-word--cold { color: var(--stone); }
+.pg-word--res { color: var(--signal); }
+.pg-word--warm { color: var(--bronze); }
+.pg-word--warming { color: var(--bronze); animation: pgPulse 1.2s ease-in-out infinite; }
+
+.pg-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--pg-s3);
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+.pg-stats { margin-top: var(--pg-s3); }
+.pg-mech { margin-top: var(--pg-s2); color: var(--stone-2); }
+.pg-mech > div { padding: 2px 0; }
+
+.pg-bill { border: 1px solid var(--line); border-radius: 2px; padding: var(--pg-s3); }
+.pg-bill p { margin: 0; }
+.pg-bill p + p { margin-top: var(--pg-s1); }
+
+.pg-callout {
+  border: 1px solid color-mix(in srgb, var(--bronze) 40%, transparent);
+  border-radius: 2px;
+  padding: var(--pg-s2) var(--pg-s3);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--pg-s2);
+}
+.pg-callout p { margin: 0; }
+.pg-x {
+  background: transparent;
+  border: 0;
+  color: var(--stone);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.pg-x:hover { color: var(--fg); }
+
+.pg-reset-confirm { display: flex; align-items: center; gap: var(--pg-s2); flex-wrap: wrap; }
+
+/* Mobile summary bar ---------------------------------------------------- */
+.pg-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pg-s3);
+  border-top: 1px solid var(--line);
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 10px calc(16px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+.pg-bar-summary {
+  background: transparent;
+  border: 0;
+  padding: 6px 0;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+/* Footnote CTA row ------------------------------------------------------ */
+.pg-cta-row { display: flex; align-items: center; gap: var(--pg-s3); flex-wrap: wrap; margin-top: var(--pg-s4); }
+
+/* Screen-reader-only live region ---------------------------------------- */
+.pg-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* JS failure fallback: hidden while the page boots, revealed if React
+   never mounts (mounting replaces #app's children entirely). */
+.pg-fallback {
+  opacity: 0;
+  animation: pgFadeIn 400ms ease 2s forwards;
+  padding: 140px 22px;
+  text-align: center;
+}
+
+@keyframes pgPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes pgFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pgFlash {
+  0% { background: color-mix(in srgb, var(--oxblood) 22%, transparent); }
+  100% { background: transparent; }
+}
+@keyframes pgWarmBg {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: color-mix(in srgb, var(--bronze) 8%, transparent); }
+}
+
+/* Stacked layout -------------------------------------------------------- */
+@media (max-width: 900px) {
+  .pg-grid { grid-template-columns: minmax(0, 1fr); }
+  .pg-rail { position: static; top: auto; }
+  .pg-path { flex-wrap: wrap; gap: var(--pg-s1); }
+  .pg-link, .pg-travel { display: none; }
+  .pg-bar--on { display: flex; }
+  .pg-block + .pg-block { margin-top: var(--pg-s5); }
+}
+@media (max-width: 720px) {
+  .pg-tok, .pg-var { display: none; }
+  .pg-more { display: inline-flex; }
+  .pg-prompt { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .pg-log-row { grid-template-columns: 44px minmax(0, 1fr) auto auto; gap: var(--pg-s1); }
+}
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app">
+  <div class="pg-fallback">
+    <p class="t-body">The playground needs JavaScript. <a href="/product" class="link" style="color: var(--bronze);">Read how the gateway works instead.</a></p>
+  </div>
+</div>
+<noscript>
+  <div style="padding: 80px 22px; text-align: center;">
+    <p class="t-body">The playground needs JavaScript. <a href="/product" style="color: var(--bronze); text-decoration: underline;">Read how the gateway works instead.</a></p>
+  </div>
+</noscript>
+
+<script>
+/* ==========================================================================
+   Simulation engine. Plain data in, plain data out, zero RNG: the same
+   sequence of sends always produces the same receipts. All money is kept in
+   integer nano-dollars ($1e-9) so accumulation never drifts; display rounds
+   once, at format time, to six decimals.
+   Rates are illustrative, DeepSeek-class: $0.60/M input, $0.06/M cached
+   input reads (a 90% cache discount), $1.70/M output.
+   ======================================================================= */
+var PG = (function () {
+  'use strict';
+
+  var RATE_NANO = { input: 600, cached: 60, output: 1700 }; /* nano-dollars per token */
+  var TTL_SENDS = 3;        /* recency clock: prefix survives this many other-family sends unaided (R3) */
+  var WARM_HOLD_SENDS = 3;  /* warming holds an idle prefix this many further other-family sends after the recency clock runs out, then lapses */
+  var QUEUE_MAX = 3;        /* pending sends beyond the in-flight one */
+  var STEP_MS = 300;        /* per-node hop; 5 nodes commit at 1.5s, under the 1.6s budget */
+  var REDUCED_COMMIT_MS = 200; /* reduced motion: per-send commit delay; states change with no travel animation */
+  var WARMING_MS = 1200;    /* R4: warming badge duration before WARM */
+  var VARIANT_PAYLOAD_TOK = 40;
+  var VARIANT_OUT_TOK = 30;
+
+  var FAMILIES = [
+    { id: 'A', index: '01', name: 'Support agent', prefixDesc: 'policy + tool schema', prefixTok: 2400 },
+    { id: 'B', index: '02', name: 'RAG doc-QA', prefixDesc: 'retrieved handbook chunks', prefixTok: 3100 },
+    { id: 'C', index: '03', name: 'Coding agent', prefixDesc: 'repo map + conventions', prefixTok: 1800 },
+  ];
+  var PROMPTS = [
+    { id: 'A1', family: 'A', title: 'Where is order #4189?', payloadTok: 140, outTok: 220 },
+    { id: 'A2', family: 'A', title: 'Refund a duplicate charge', payloadTok: 180, outTok: 310 },
+    { id: 'A3', family: 'A', title: 'Escalate: damaged item, angry customer', payloadTok: 240, outTok: 420 },
+    { id: 'B1', family: 'B', title: 'Summarize the PTO policy', payloadTok: 120, outTok: 260 },
+    { id: 'B2', family: 'B', title: 'Who approves travel over $2k?', payloadTok: 130, outTok: 180 },
+    { id: 'B3', family: 'B', title: 'Draft onboarding checklist from these docs', payloadTok: 210, outTok: 390 },
+    { id: 'C1', family: 'C', title: 'Add a retry to the fetch wrapper', payloadTok: 260, outTok: 340 },
+    { id: 'C2', family: 'C', title: 'Explain the auth middleware', payloadTok: 150, outTok: 280 },
+  ];
+  var FAMILY_BY_ID = {};
+  FAMILIES.forEach(function (f) { FAMILY_BY_ID[f.id] = f; });
+  var PROMPT_BY_ID = {};
+  PROMPTS.forEach(function (p) { PROMPT_BY_ID[p.id] = p; });
+
+  var NODES = ['SHAPE', 'EXACT CACHE', 'PREFIX CACHE', 'PROVIDER', 'RECEIPT'];
+
+  function fmtUSD(nano) { return '$' + (nano / 1e9).toFixed(6); }
+  function fmtTok(n) { return n.toLocaleString('en-US'); }
+
+  function tokensOf(req) {
+    var p = PROMPT_BY_ID[req.promptId];
+    return {
+      prefix: FAMILY_BY_ID[p.family].prefixTok,
+      payload: p.payloadTok + (req.variant ? VARIANT_PAYLOAD_TOK : 0),
+      out: p.outTok + (req.variant ? VARIANT_OUT_TOK : 0),
+    };
+  }
+  function byteKey(req) { return req.promptId + (req.variant ? '+variant' : ''); }
+  function missNano(t) { return (t.prefix + t.payload) * RATE_NANO.input + t.out * RATE_NANO.output; }
+  function hitNano(t) { return t.prefix * RATE_NANO.cached + t.payload * RATE_NANO.input + t.out * RATE_NANO.output; }
+
+  function makeInitialState() {
+    var fam = {}, prompts = {};
+    FAMILIES.forEach(function (f) {
+      fam[f.id] = { status: 'cold', ttl: 0, warm: 'none', hold: 0, hadExpired: false, flash: 0 };
+    });
+    PROMPTS.forEach(function (p) {
+      prompts[p.id] = { origSent: false, varSent: false, last: null };
+    });
+    return {
+      seq: 0,
+      queue: [],
+      anim: null,
+      lastPath: null,
+      exact: {},
+      fam: fam,
+      prompts: prompts,
+      log: [],
+      ledger: { sends: 0, hits: 0, replays: 0, cachedTok: 0, discountNano: 0, replayNano: 0, chargedNano: 0 },
+      announce: '',
+      calloutDismissed: false,
+      resetConfirm: false,
+    };
+  }
+
+  /* Outcome for a send against the current state. Pure; mutations happen in
+     applySend. R1 exact replay > R2 prefix hit > miss. "Kept warm" is a hit
+     on an entry the TTL clock has already run out on: warming, not recency,
+     is what kept it resident. */
+  function resolveSend(state, req) {
+    var p = PROMPT_BY_ID[req.promptId];
+    var fam = state.fam[p.family];
+    var t = tokensOf(req);
+    var baselineNano = missNano(t);
+    if (state.exact[byteKey(req)]) {
+      return { kind: 'replay', familyId: p.family, tokens: t, chargedNano: 0, baselineNano: baselineNano, savedNano: baselineNano };
+    }
+    if (fam.status === 'resident') {
+      var kind = (fam.warm !== 'none' && fam.ttl === 0) ? 'keptwarm' : 'hit';
+      var chargedNano = hitNano(t);
+      return { kind: kind, familyId: p.family, tokens: t, chargedNano: chargedNano, baselineNano: baselineNano, savedNano: baselineNano - chargedNano };
+    }
+    return { kind: 'miss', familyId: p.family, tokens: t, chargedNano: baselineNano, baselineNano: baselineNano, savedNano: 0, rewrite: fam.hadExpired };
+  }
+
+  function buildPath(result) {
+    var copies = {
+      0: 'Cache directives attached. Content untouched.',
+      1: result.kind === 'replay' ? 'Byte-identical response found. Call avoided.' : 'No identical prior request.',
+      2: result.kind === 'hit' ? 'Prefix resident. Cached reads billed at the provider discount.'
+        : result.kind === 'keptwarm' ? 'Prefix held resident by predictive warming.'
+        : result.rewrite ? 'Prefix expired upstream. Rewriting.'
+        : 'Cold prefix. Writing it on this call.',
+      3: 'Request passes through byte-for-byte.',
+      4: result.kind === 'replay'
+        ? 'Charged ' + fmtUSD(result.chargedNano) + ' · saved ' + fmtUSD(result.savedNano)
+          + ' against the price of the call that was avoided.'
+        : 'Charged ' + fmtUSD(result.chargedNano) + ' · would have been ' + fmtUSD(result.baselineNano)
+          + ' · saved ' + fmtUSD(result.savedNano) + ', from the provider\'s own usage accounting.',
+    };
+    var nodes = result.kind === 'replay' ? [0, 1, 4] : [0, 1, 2, 3, 4];
+    return {
+      steps: nodes.map(function (n) { return { node: n, copy: copies[n] }; }),
+      skipped: result.kind === 'replay' ? [2, 3] : [],
+    };
+  }
+
+  function announcementFor(result) {
+    var money = 'Charged ' + fmtUSD(result.chargedNano) + ', saved ' + fmtUSD(result.savedNano) + '.';
+    if (result.kind === 'replay') return 'Replay. Call avoided. ' + money;
+    if (result.kind === 'keptwarm') return 'Prefix hit, kept warm. ' + money;
+    if (result.kind === 'hit') return 'Prefix hit. ' + money;
+    return 'Cache miss. ' + money;
+  }
+
+  /* Commit one resolved send: cache residency (R2-R4), exact-cache key (R1),
+     ledger, log, prompt-card state. Expiry (R3): the recency clock drains
+     first, then warming holds the idle prefix for WARM_HOLD_SENDS further
+     other-family sends, then it lapses and the entry goes cold. */
+  function applySend(prev, req, result) {
+    var p = PROMPT_BY_ID[req.promptId];
+    var isHit = result.kind === 'hit' || result.kind === 'keptwarm';
+    var fam = {};
+    FAMILIES.forEach(function (f) {
+      var cur = prev.fam[f.id];
+      if (f.id === p.family) {
+        if (result.kind === 'miss') {
+          fam[f.id] = { status: 'resident', ttl: TTL_SENDS, warm: 'warming', hold: WARM_HOLD_SENDS, hadExpired: false, flash: cur.flash };
+        } else if (isHit) {
+          fam[f.id] = { status: cur.status, ttl: TTL_SENDS, warm: cur.warm, hold: WARM_HOLD_SENDS, hadExpired: cur.hadExpired, flash: cur.flash };
+        } else {
+          fam[f.id] = cur; /* replay never reaches the provider */
+        }
+      } else if (cur.status === 'resident') {
+        /* Other families' clocks advance on every send, replays included:
+           the TTL proxies wall-clock time passing, not provider calls made
+           (the sent family's own entry, by contrast, only refreshes when the
+           provider is actually touched). */
+        var ttl = Math.max(0, cur.ttl - 1);
+        var hold = cur.hold;
+        var expired = false;
+        if (ttl === 0) {
+          if (cur.warm === 'none') {
+            expired = true;
+          } else if (cur.warm === 'warm' && cur.ttl === 0) {
+            /* Recency already ran out before this send; warming's hold drains. */
+            hold = cur.hold - 1;
+            expired = hold <= 0;
+          }
+          /* warm === 'warming', or the clock just hit zero this send: held. */
+        }
+        fam[f.id] = expired
+          ? { status: 'cold', ttl: 0, warm: 'none', hold: 0, hadExpired: true, flash: cur.flash + 1 }
+          : { status: cur.status, ttl: ttl, warm: cur.warm, hold: hold, hadExpired: cur.hadExpired, flash: cur.flash };
+      } else {
+        fam[f.id] = cur;
+      }
+    });
+
+    var led = prev.ledger;
+    var ledger = {
+      sends: led.sends + 1,
+      hits: led.hits + (isHit ? 1 : 0),
+      replays: led.replays + (result.kind === 'replay' ? 1 : 0),
+      cachedTok: led.cachedTok + (isHit ? result.tokens.prefix : 0),
+      discountNano: led.discountNano + (isHit ? result.savedNano : 0),
+      replayNano: led.replayNano + (result.kind === 'replay' ? result.savedNano : 0),
+      chargedNano: led.chargedNano + result.chargedNano,
+    };
+
+    var seq = prev.seq + 1;
+    var exact = {};
+    Object.keys(prev.exact).forEach(function (k) { exact[k] = true; });
+    exact[byteKey(req)] = true;
+
+    var prompts = {};
+    Object.keys(prev.prompts).forEach(function (k) { prompts[k] = prev.prompts[k]; });
+    var ps = prev.prompts[p.id];
+    prompts[p.id] = {
+      origSent: ps.origSent || !req.variant,
+      varSent: ps.varSent || !!req.variant,
+      last: result.kind,
+    };
+
+    var entry = {
+      seq: seq,
+      promptId: p.id,
+      title: p.title,
+      variant: !!req.variant,
+      kind: result.kind,
+      chargedNano: result.chargedNano,
+      savedNano: result.savedNano,
+    };
+
+    var next = {};
+    Object.keys(prev).forEach(function (k) { next[k] = prev[k]; });
+    next.seq = seq;
+    next.exact = exact;
+    next.fam = fam;
+    next.prompts = prompts;
+    next.log = [entry].concat(prev.log);
+    next.ledger = ledger;
+    next.announce = announcementFor(result);
+    return next;
+  }
+
+  function completeWarming(prev, famId) {
+    var cur = prev.fam[famId];
+    if (!cur || cur.warm !== 'warming') return prev;
+    var fam = {};
+    Object.keys(prev.fam).forEach(function (k) { fam[k] = prev.fam[k]; });
+    fam[famId] = { status: cur.status, ttl: cur.ttl, warm: 'warm', hold: cur.hold, hadExpired: cur.hadExpired, flash: cur.flash };
+    var next = {};
+    Object.keys(prev).forEach(function (k) { next[k] = prev[k]; });
+    next.fam = fam;
+    return next;
+  }
+
+  return {
+    RATE_NANO: RATE_NANO,
+    TTL_SENDS: TTL_SENDS,
+    WARM_HOLD_SENDS: WARM_HOLD_SENDS,
+    QUEUE_MAX: QUEUE_MAX,
+    STEP_MS: STEP_MS,
+    REDUCED_COMMIT_MS: REDUCED_COMMIT_MS,
+    WARMING_MS: WARMING_MS,
+    FAMILIES: FAMILIES,
+    PROMPTS: PROMPTS,
+    FAMILY_BY_ID: FAMILY_BY_ID,
+    PROMPT_BY_ID: PROMPT_BY_ID,
+    NODES: NODES,
+    fmtUSD: fmtUSD,
+    fmtTok: fmtTok,
+    tokensOf: tokensOf,
+    byteKey: byteKey,
+    missNano: missNano,
+    hitNano: hitNano,
+    makeInitialState: makeInitialState,
+    resolveSend: resolveSend,
+    buildPath: buildPath,
+    announcementFor: announcementFor,
+    applySend: applySend,
+    completeWarming: completeWarming,
+  };
+})();
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="animations.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+function isReducedMotion() {
+  return document.documentElement.getAttribute('data-reduce-motion') === 'true'
+    || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+const OUTCOME_TAG = {
+  miss: { label: 'MISS', cls: 'pg-tag--miss' },
+  hit: { label: 'HIT', cls: 'pg-tag--hit' },
+  replay: { label: 'REPLAY', cls: 'pg-tag--hit' },
+  keptwarm: { label: 'KEPT WARM', cls: 'pg-tag--kept' },
+};
+
+/* --- Prompt rail -------------------------------------------------------- */
+
+function PromptRow({ prompt, pState, inFlight, queueFull, guided, warming, onSend, onHint }) {
+  const [expanded, setExpanded] = useState(false);
+  const sendLabel = pState.origSent ? 'Resend' : 'Send';
+  const sendDisabled = inFlight || queueFull;
+  const variantDisabled = !pState.origSent || queueFull;
+  /* Blocked buttons stay clickable (aria-disabled, not disabled) so the hint
+     reaches keyboard, touch, and screen-reader users: the click announces it
+     via the live region, and aria-describedby names it on the control. */
+  const sendHint = inFlight ? 'This request is already in flight.' : (queueFull ? 'Queue is full.' : null);
+  const variantHint = !pState.origSent ? 'Send the original once first.' : (queueFull ? 'Queue is full.' : null);
+  const sendHintId = 'pg-hint-send-' + prompt.id;
+  const variantHintId = 'pg-hint-var-' + prompt.id;
+  const trySend = (variant) => {
+    const blocked = variant ? variantDisabled : sendDisabled;
+    if (blocked) {
+      const hint = variant ? variantHint : sendHint;
+      if (hint) onHint(hint);
+      return;
+    }
+    onSend(prompt.id, variant);
+  };
+  const tag = pState.last ? OUTCOME_TAG[pState.last] : null;
+  return (
+    <div className={'pg-prompt' + (warming ? ' pg-prompt--warming' : '') + (expanded ? ' pg-prompt--expanded' : '')}>
+      <div className="t-mono pg-idx">{prompt.id}</div>
+      <p className="t-body pg-title">{prompt.title}</p>
+      <div className="pg-actions">
+        <span className="t-mono pg-tok tabular">{prompt.payloadTok} in · {prompt.outTok} out</span>
+        {inFlight
+          ? <span className="pg-inflight" aria-hidden="true" />
+          : tag && <span className={'pg-tag ' + tag.cls}>{tag.label}</span>}
+        <button
+          type="button"
+          className={'btn btn-secondary pg-btn' + (guided ? ' pg-guide' : '') + (sendDisabled ? ' pg-btn--disabled' : '')}
+          aria-disabled={sendDisabled || undefined}
+          aria-describedby={sendHint ? sendHintId : undefined}
+          title={sendHint || undefined}
+          onClick={() => trySend(false)}
+        >{sendLabel}</button>
+        <button
+          type="button"
+          className={'btn btn-ghost underline pg-btn pg-var' + (variantDisabled ? ' pg-btn--disabled' : '')}
+          aria-disabled={variantDisabled || undefined}
+          aria-describedby={variantHint ? variantHintId : undefined}
+          title={variantHint || undefined}
+          onClick={() => trySend(true)}
+        >Variant</button>
+        <button
+          type="button"
+          className="btn btn-ghost underline pg-btn pg-more"
+          aria-expanded={expanded}
+          aria-label="More actions"
+          onClick={() => setExpanded(!expanded)}
+        >…</button>
+        {sendHint && <span id={sendHintId} className="pg-sr">{sendHint}</span>}
+        {variantHint && <span id={variantHintId} className="pg-sr">{variantHint}</span>}
+      </div>
+      <div className="pg-expand">
+        <span className="t-mono stone-2 tabular">{prompt.payloadTok} in · {prompt.outTok} out</span>
+        <button
+          type="button"
+          className={'btn btn-ghost underline pg-btn' + (variantDisabled ? ' pg-btn--disabled' : '')}
+          aria-disabled={variantDisabled || undefined}
+          aria-describedby={variantHint ? variantHintId : undefined}
+          title={variantHint || undefined}
+          onClick={() => trySend(true)}
+        >Variant</button>
+      </div>
+    </div>
+  );
+}
+
+function PromptRail({ state, onSend, onHint }) {
+  const queueFull = state.queue.length >= PG.QUEUE_MAX;
+  const inFlightId = state.anim ? state.anim.req.promptId : null;
+  const lastSentId = state.log.length > 0 ? state.log[0].promptId : null;
+  return (
+    <div>
+      <Overline>CURATED REQUESTS</Overline>
+      <div style={{ marginTop: 20 }}>
+        {PG.FAMILIES.map((f) => (
+          <div key={f.id} className="pg-family">
+            <div className="pg-family-head">
+              <span className="t-mono pg-idx">{f.index}</span>
+              <h3 className="t-h3" style={{ margin: 0 }}>{f.name}</h3>
+              <span className="pg-pill">PREFIX {PG.fmtTok(f.prefixTok)} TOK · BYTE-STABLE</span>
+              <span className="t-small" style={{ color: 'var(--stone)' }}>{f.prefixDesc}</span>
+            </div>
+            {PG.PROMPTS.filter((p) => p.family === f.id).map((p) => (
+              <PromptRow
+                key={p.id}
+                prompt={p}
+                pState={state.prompts[p.id]}
+                inFlight={inFlightId === p.id}
+                queueFull={queueFull}
+                guided={state.ledger.sends === 0 && p.id === 'A1'}
+                warming={state.fam[f.id].warm === 'warming' && p.id !== lastSentId}
+                onSend={onSend}
+                onHint={onHint}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* --- Decision path ------------------------------------------------------ */
+
+function DecisionPath({ view }) {
+  const wrapRef = useRef(null);
+  const dotRef = useRef(null);
+  const nodeRefs = useRef([]);
+  const lastTokenRef = useRef(null);
+  const reduced = isReducedMotion();
+  const activeNode = view ? view.steps[view.stepIdx].node : -1;
+  const doneNodes = view ? view.steps.slice(0, view.stepIdx).map((s) => s.node) : [];
+  const skipped = view ? view.skipped : [];
+  const copy = view ? view.steps[view.stepIdx].copy : 'Send a request to trace its route.';
+  const copyLabel = view ? PG.NODES[activeNode] : null;
+
+  useEffect(() => {
+    const dot = dotRef.current;
+    const wrap = wrapRef.current;
+    if (!dot || !wrap) return;
+    const positionDot = () => {
+      const mobile = window.matchMedia('(max-width: 900px)').matches;
+      if (activeNode < 0 || mobile || isReducedMotion()) { dot.style.opacity = '0'; return; }
+      const el = nodeRefs.current[activeNode];
+      if (!el) return;
+      /* A new send starts at node 0. Snap the dot there with the transition
+         off, rather than sweeping it backwards across the whole rail from
+         wherever the previous receipt left it. */
+      const snap = view && (view.stepIdx === 0 || lastTokenRef.current !== view.token);
+      if (snap) dot.style.transition = 'none';
+      const wr = wrap.getBoundingClientRect();
+      const nr = el.getBoundingClientRect();
+      dot.style.opacity = '1';
+      dot.style.transform = 'translate(' + (nr.left - wr.left + nr.width / 2 - 3) + 'px, ' + (nr.top - wr.top + nr.height / 2 - 3) + 'px)';
+      if (snap) {
+        dot.getBoundingClientRect(); /* force reflow so the snap commits untransitioned */
+        dot.style.transition = '';
+      }
+      lastTokenRef.current = view ? view.token : null;
+    };
+    positionDot();
+    window.addEventListener('resize', positionDot);
+    return () => window.removeEventListener('resize', positionDot);
+  }, [activeNode, view]);
+
+  return (
+    <div className="pg-block">
+      <Overline>DECISION PATH</Overline>
+      <div className="pg-path-wrap" ref={wrapRef}>
+        <div className="pg-path">
+          {PG.NODES.map((label, i) => (
+            <React.Fragment key={label}>
+              {i > 0 && <span className="pg-link" aria-hidden="true" />}
+              <span
+                ref={(el) => { nodeRefs.current[i] = el; }}
+                className={'pg-node'
+                  + (i === activeNode ? ' pg-node--active' : '')
+                  + (doneNodes.indexOf(i) >= 0 ? ' pg-node--done' : '')
+                  + (skipped.indexOf(i) >= 0 ? ' pg-node--skipped' : '')}
+              >
+                <span>{label}</span>
+                <span className="pg-node-sub">{skipped.indexOf(i) >= 0 ? 'SKIPPED' : ''}</span>
+              </span>
+            </React.Fragment>
+          ))}
+        </div>
+        <span className="pg-travel" ref={dotRef} aria-hidden="true" />
+      </div>
+      {view && reduced ? (
+        /* Reduced motion skips the node-by-node walk, so stack every step's
+           explanation statically instead of showing only the receipt line. */
+        <div className="pg-path-copy" key={'stack-' + view.token}>
+          {view.steps.map((s) => (
+            <p key={s.node} className="t-small" style={{ margin: '4px 0 0' }}>
+              <span className="pg-copy-node">{PG.NODES[s.node]} · </span>
+              {s.copy}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p className="t-small pg-path-copy" key={(view ? view.token : 'idle') + '-' + activeNode}>
+          {copyLabel && <span className="pg-copy-node">{copyLabel} · </span>}
+          {copy}
+        </p>
+      )}
+      <p className="t-small pg-note">
+        How a hit is provably safe: a replay is byte-identical to a complete prior response.
+        A prefix hit changes nothing about your request; only the cache metadata riding
+        alongside it changes, so the model sees the same bytes. Receipts are built from the
+        provider's own usage accounting, checked against a live unoptimized control arm and a
+        sequential quality gate; if a lever's quality drops, billing for it stops automatically.
+      </p>
+    </div>
+  );
+}
+
+/* --- Send log ----------------------------------------------------------- */
+
+/* Static preview receipt for the empty log's ghost row; computed once. */
+const GHOST_A1 = PG.resolveSend(PG.makeInitialState(), { promptId: 'A1', variant: false });
+
+function SendLog({ log }) {
+  return (
+    <div className="pg-block">
+      <Overline>RECEIPTS</Overline>
+      <div className="pg-log-scroll" style={{ marginTop: 16 }}>
+        {log.map((e) => {
+          const tag = OUTCOME_TAG[e.kind];
+          return (
+            <div key={e.seq} className="pg-log-row">
+              <span className="t-mono pg-idx tabular">#{String(e.seq).padStart(2, '0')}</span>
+              <span className="pg-log-title">
+                <span className="t-small" style={{ color: 'var(--bone-dim)' }}>
+                  {e.promptId} · {e.title}{e.variant ? ' · variant' : ''}
+                </span>
+                <span className={'pg-tag ' + tag.cls}>{tag.label}</span>
+              </span>
+              <span className="t-mono tabular pg-log-charged">{PG.fmtUSD(e.chargedNano)}</span>
+              <span className={'t-mono tabular ' + (e.savedNano > 0 ? 'pg-log-saved' : 'pg-log-saved--zero')}>
+                {e.savedNano > 0 ? '+' : ''}{PG.fmtUSD(e.savedNano)}
+              </span>
+            </div>
+          );
+        })}
+        {log.length === 0 && (
+          <div className="pg-log-row pg-ghost">
+            <span className="t-mono pg-idx tabular">#00</span>
+            <span className="pg-log-title">
+              <span className="t-small" style={{ color: 'var(--bone-dim)' }}>Support agent A1</span>
+              <span className="pg-tag pg-tag--miss">MISS</span>
+            </span>
+            <span className="t-mono tabular pg-log-charged">{PG.fmtUSD(GHOST_A1.baselineNano)}</span>
+            <span className="t-mono tabular pg-log-saved--zero">{PG.fmtUSD(0)}</span>
+            <p className="t-small pg-ghost-caption">
+              Your first send of any family is a miss. It writes the prefix. Everything after it in this family gets cheaper.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* --- Telemetry rail ----------------------------------------------------- */
+
+function CachePanel({ fam }) {
+  return (
+    <div className="pg-card">
+      <Overline>PROVIDER CACHE</Overline>
+      <div className="pg-cache-rows">
+        {PG.FAMILIES.map((f) => {
+          const s = fam[f.id];
+          const word = s.status !== 'resident' ? 'COLD'
+            : s.warm === 'warm' ? 'WARM'
+            : s.warm === 'warming' ? 'WARMING'
+            : 'RESIDENT';
+          const wordCls = word === 'COLD' ? 'pg-word--cold'
+            : word === 'RESIDENT' ? 'pg-word--res'
+            : word === 'WARMING' ? 'pg-word--warming'
+            : 'pg-word--warm';
+          return (
+            <div key={f.id} className="pg-cache-row">
+              <span className="t-small" style={{ color: 'var(--bone-dim)' }}>{f.name}</span>
+              {/* The squares are the recency clock. An empty meter on a WARM
+                  row reads as intended: recency ran out, warming holds it. */}
+              <span key={s.flash} className={'pg-meter' + (s.flash > 0 && s.status !== 'resident' ? ' pg-meter--flash' : '')} aria-hidden="true">
+                {[0, 1, 2].map((i) => (
+                  <span key={i} className={'pg-meter-sq' + (s.status === 'resident' && i < s.ttl ? ' pg-meter-sq--fill' : '')} />
+                ))}
+              </span>
+              <span className={'t-mono pg-word ' + wordCls}>{word}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="t-small" style={{ margin: '12px 0 0' }}>
+        Warming keeps hot prefixes resident before your next request arrives.
+      </p>
+    </div>
+  );
+}
+
+function SavingsLedger({ ledger }) {
+  const hitRate = ledger.sends > 0 ? Math.round(100 * (ledger.hits + ledger.replays) / ledger.sends) : 0;
+  const totalNano = ledger.discountNano + ledger.replayNano;
+  return (
+    <div id="pg-ledger">
+      <Overline>SAVINGS LEDGER</Overline>
+      <p className="t-small" style={{ margin: '8px 0 0', color: 'var(--stone)' }}>Illustrative rates, DeepSeek-class.</p>
+      <div className="pg-stats">
+        <div className="pg-stat">
+          <span className="t-small">Tokens billed at cache rate</span>
+          <span className="t-mono tabular">{PG.fmtTok(ledger.cachedTok)}</span>
+        </div>
+        <div className="pg-stat">
+          <span className="t-small">Model calls avoided</span>
+          <span className="t-mono tabular">{ledger.replays}</span>
+        </div>
+        <div className="pg-stat">
+          <span className="t-small">Hit rate</span>
+          <span className="t-mono tabular">{hitRate}%</span>
+        </div>
+        <div className="pg-stat">
+          <span className="t-small">Total saved</span>
+          <span className="t-mono-lg tabular signal">{PG.fmtUSD(totalNano)}</span>
+        </div>
+      </div>
+      <div className="pg-mech">
+        <div className="t-mono tabular">native-cache discount {PG.fmtUSD(ledger.discountNano)}</div>
+        <div className="t-mono tabular">calls avoided {PG.fmtUSD(ledger.replayNano)}</div>
+      </div>
+    </div>
+  );
+}
+
+function BillingLine({ ledger }) {
+  const totalNano = ledger.discountNano + ledger.replayNano;
+  const invoiceNano = ledger.discountNano * 0.25;
+  return (
+    <div className="pg-bill">
+      <Overline>YOUR INVOICE, SIMULATED</Overline>
+      <div style={{ marginTop: 10 }}>
+        {ledger.sends === 0 ? (
+          <p className="t-body">Nothing to bill. If verified savings are zero, so is your invoice.</p>
+        ) : totalNano > 0 && ledger.discountNano === 0 ? (
+          <>
+            <p className="t-body">25% of verified savings: {PG.fmtUSD(0)}. All of your savings so far are replays. Those are free.</p>
+            <p className="t-small" style={{ color: 'var(--stone)' }}>
+              Billed every seven days on verified savings only. Savings from cache replays currently settle at $0, so calls avoided are free.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="t-body">25% of verified savings: <span className="tabular">{PG.fmtUSD(invoiceNano)}</span></p>
+            <p className="t-small" style={{ color: 'var(--stone)' }}>
+              Billed every seven days on verified savings only. Savings from cache replays currently settle at $0, so calls avoided are free.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResetControl({ confirming, onConfirmChange, onReset }) {
+  if (!confirming) {
+    return (
+      <button id="pg-reset" type="button" className="btn btn-ghost underline" style={{ alignSelf: 'flex-start' }} onClick={() => onConfirmChange(true)}>
+        Reset the playground
+      </button>
+    );
+  }
+  return (
+    <div id="pg-reset" className="pg-reset-confirm">
+      <span className="t-small">Clear all sends?</span>
+      <button type="button" className="btn btn-ghost underline pg-btn" onClick={onReset}>Yes</button>
+      <button type="button" className="btn btn-ghost underline pg-btn" onClick={() => onConfirmChange(false)}>Keep</button>
+    </div>
+  );
+}
+
+function MobileBar({ ledger, onResetTap }) {
+  const totalNano = ledger.discountNano + ledger.replayNano;
+  const hitRate = ledger.sends > 0 ? Math.round(100 * (ledger.hits + ledger.replays) / ledger.sends) : 0;
+  const scrollToLedger = () => {
+    const el = document.getElementById('pg-ledger');
+    if (el) el.scrollIntoView({ behavior: isReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  };
+  return (
+    <div className={'pg-bar' + (ledger.sends > 0 ? ' pg-bar--on' : '')}>
+      <button type="button" className="pg-bar-summary t-mono tabular" onClick={scrollToLedger}>
+        Saved {PG.fmtUSD(totalNano)} · hit rate {hitRate}%
+      </button>
+      <button type="button" className="btn btn-ghost underline pg-btn" onClick={onResetTap}>Reset</button>
+    </div>
+  );
+}
+
+/* --- Page --------------------------------------------------------------- */
+
+function PlaygroundPage() {
+  useFadeUpReveal();
+  const [state, setState] = useState(PG.makeInitialState);
+  const timersRef = useRef([]);
+
+  const schedule = (fn, ms) => {
+    const id = setTimeout(() => {
+      timersRef.current = timersRef.current.filter((t) => t !== id);
+      fn();
+    }, ms);
+    timersRef.current.push(id);
+  };
+  useEffect(() => () => { timersRef.current.forEach(clearTimeout); }, []);
+
+  /* Dequeue: start the next send whenever nothing is in flight. Outcome is
+     resolved here, against fully committed state, so it is deterministic. */
+  useEffect(() => {
+    if (state.anim || state.queue.length === 0) return;
+    setState((prev) => {
+      if (prev.anim || prev.queue.length === 0) return prev;
+      const req = prev.queue[0];
+      const result = PG.resolveSend(prev, req);
+      const path = PG.buildPath(result);
+      const reduced = isReducedMotion();
+      const next = { ...prev, queue: prev.queue.slice(1) };
+      next.anim = {
+        token: prev.seq + 1,
+        req,
+        result,
+        steps: path.steps,
+        skipped: path.skipped,
+        stepIdx: reduced ? path.steps.length - 1 : 0,
+        reduced,
+      };
+      return next;
+    });
+  }, [state.anim, state.queue]);
+
+  /* Step the dot node-to-node, then commit the receipt to the ledger. */
+  useEffect(() => {
+    const a = state.anim;
+    if (!a) return;
+    const last = a.stepIdx >= a.steps.length - 1;
+    const delay = a.reduced ? PG.REDUCED_COMMIT_MS : PG.STEP_MS;
+    const id = setTimeout(() => {
+      if (!last) {
+        setState((prev) => prev.anim ? { ...prev, anim: { ...prev.anim, stepIdx: prev.anim.stepIdx + 1 } } : prev);
+        return;
+      }
+      setState((prev) => {
+        if (!prev.anim) return prev;
+        const committed = PG.applySend(prev, prev.anim.req, prev.anim.result);
+        committed.anim = null;
+        committed.lastPath = {
+          token: prev.anim.token,
+          steps: prev.anim.steps,
+          skipped: prev.anim.skipped,
+          stepIdx: prev.anim.steps.length - 1,
+        };
+        return committed;
+      });
+      if (a.result.kind === 'miss') {
+        schedule(() => setState((prev) => PG.completeWarming(prev, a.result.familyId)), PG.WARMING_MS);
+      }
+    }, delay);
+    return () => clearTimeout(id);
+  }, [state.anim]);
+
+  const requestSend = (promptId, variant) => {
+    setState((prev) => {
+      if (prev.queue.length >= PG.QUEUE_MAX) return prev;
+      return { ...prev, queue: [...prev.queue, { promptId, variant }], resetConfirm: false };
+    });
+  };
+
+  const doReset = () => {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+    setState(PG.makeInitialState());
+  };
+
+  const setResetConfirm = (v) => setState((prev) => ({ ...prev, resetConfirm: v }));
+  const announceHint = (msg) => setState((prev) => ({ ...prev, announce: msg }));
+  const dismissCallout = () => setState((prev) => ({ ...prev, calloutDismissed: true }));
+  const onBarReset = () => {
+    setResetConfirm(true);
+    const el = document.getElementById('pg-reset');
+    if (el) el.scrollIntoView({ behavior: isReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  };
+
+  const view = state.anim || state.lastPath;
+  const showCallout = state.ledger.sends >= 5 && !state.calloutDismissed;
+
+  return (
+    <>
+      <Nav current="product" />
+
+      <SectionShell overline="PLAYGROUND · SIMULATED TRAFFIC">
+        <h1 className="t-display fade-up in" style={{ margin: '0 0 24px', maxWidth: 900 }}>
+          Watch the discount <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>actually land.</em>
+        </h1>
+        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, margin: 0 }}>
+          Eight realistic requests, one simulated gateway. Send them, resend them, vary them.
+          Every number below is computed from the provider's own published cache mechanics, at
+          illustrative rates. No live calls are made.
+        </p>
+        {/* Stays mounted after the first send and fades instead of unmounting,
+            so the grid does not jump under the cursor mid-animation. */}
+        <p
+          className="t-small fade-up delay-2 in"
+          aria-hidden={state.ledger.sends > 0 || undefined}
+          style={{
+            margin: '20px 0 0',
+            ...(state.ledger.sends > 0
+              ? { opacity: 0, visibility: 'hidden', transition: 'opacity var(--dur-sm) var(--ease-out-standard), visibility 0s var(--dur-sm)' }
+              : null),
+          }}
+        >
+          Start anywhere. A good first minute: send A1, resend it, then send A2.
+        </p>
+      </SectionShell>
+
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div className="pg-grid">
+            <div>
+              <PromptRail state={state} onSend={requestSend} onHint={announceHint} />
+              <DecisionPath view={view} />
+              <SendLog log={state.log} />
+            </div>
+            <aside className="pg-rail">
+              <CachePanel fam={state.fam} />
+              <SavingsLedger ledger={state.ledger} />
+              {showCallout && (
+                <div className="pg-callout">
+                  <p className="t-small">This is the whole integration. Your code changes by one base URL and two headers.</p>
+                  <button type="button" className="pg-x" aria-label="Dismiss" onClick={dismissCallout}>×</button>
+                </div>
+              )}
+              <BillingLine ledger={state.ledger} />
+              <ResetControl confirming={state.resetConfirm} onConfirmChange={setResetConfirm} onReset={doReset} />
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)' }}>
+        <div className="container" style={{ maxWidth: 880 }}>
+          <p className="t-small fade-up" style={{ margin: 0 }}>
+            Simulated traffic at illustrative DeepSeek-class rates: $0.60 per million input tokens,
+            $0.06 cached, $1.70 output. Providers advertise cache discounts of 50 to 90 percent;
+            this playground uses 90. No requests leave this page. Real receipts record what you
+            were charged, what you would have been charged, and the difference. Historical
+            benchmark percentages are not product claims.
+          </p>
+          <div className="pg-cta-row fade-up delay-1">
+            <a className="btn btn-primary" href="/pricing">Route real traffic <span className="arrow" aria-hidden="true">→</span></a>
+            <a className="btn btn-ghost underline" href="/docs">Read the docs</a>
+          </div>
+        </div>
+      </section>
+
+      <Footer />
+
+      <MobileBar ledger={state.ledger} onResetTap={onBarReset} />
+      <div className="pg-sr" aria-live="polite">{state.announce}</div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PlaygroundPage />);
+</script>
+</body>
+</html>

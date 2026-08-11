@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Demo · Brevitas Systems</title>
+<meta name="description" content="Brevitas in half a minute: twenty seats, one saved answer, one smaller bill.">
+<link href="/fonts/fonts.css" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<script src="theme-init.js" defer></script>
+<link rel="stylesheet" href="/responsive.css">
+<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+  /* ---- stage ---- */
+  .stage {
+    --mover-glow: rgba(142, 166, 255, 0.18);
+    position: relative;
+    min-height: 100vh;
+    min-height: 100svh;
+    overflow: clip;
+    background: var(--bg);
+  }
+  .wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+    min-height: 100vh;
+    min-height: 100svh;
+    padding: clamp(24px, 5vw, 48px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(26px, 5vh, 52px);
+  }
+
+  /* Every animated element starts hidden; the scheduler adds .on */
+  .fx {
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 600ms var(--ease-out-standard),
+                transform 600ms var(--ease-out-standard);
+  }
+  .fx.on { opacity: 1; transform: translateY(0); }
+  .fx.fx-fade { transform: none; }
+
+  .no-anim, .no-anim *, .no-anim *::before, .no-anim *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+  :root[data-reduce-motion="true"] .stage *,
+  :root[data-reduce-motion="true"] .stage *::before,
+  :root[data-reduce-motion="true"] .stage *::after {
+    transition-duration: 1ms !important;
+    animation: none !important;
+  }
+
+  /* ---- top chrome ---- */
+  .overline {
+    position: absolute;
+    top: 24px; left: 24px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--stone);
+  }
+  #pauseBtn {
+    position: absolute;
+    top: 24px; right: 24px;
+    z-index: 5;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    color: var(--stone-2);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 7px 16px;
+    cursor: pointer;
+  }
+  #pauseBtn:hover { color: var(--bone); border-color: var(--stone); }
+  #pauseBtn:focus-visible { outline: 2px solid var(--bronze); outline-offset: 2px; }
+
+  .score {
+    position: absolute;
+    top: 68px; right: 24px;
+    text-align: right;
+  }
+  .score-label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--stone);
+  }
+  .score-fig {
+    font-family: 'Newsreader', Georgia, serif;
+    font-size: 30px;
+    color: var(--signal);
+    margin-top: 2px;
+  }
+
+  /* ---- the one sentence ---- */
+  .line {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 400;
+    font-size: clamp(30px, 5.4vw, 54px);
+    line-height: 1.18;
+    text-align: center;
+    color: var(--bone);
+    min-height: 2.6em;
+    margin: 0;
+  }
+  .line em {
+    font-style: italic;
+    color: var(--bronze);
+  }
+  .subline {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    color: var(--stone);
+    text-align: center;
+    min-height: 18px;
+  }
+
+  /* ---- price tag ---- */
+  .price { text-align: center; min-height: 118px; }
+  .price-fig {
+    font-family: 'Newsreader', Georgia, serif;
+    font-size: clamp(52px, 8vw, 84px);
+    line-height: 1;
+    color: var(--bone);
+  }
+  .price.free .price-fig { color: var(--signal); }
+  .price-label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    color: var(--stone);
+    margin-top: 10px;
+  }
+
+  /* ---- wire: seat grid, two stops, one moving dot ---- */
+  .wire { position: relative; height: 160px; }
+  .track {
+    position: absolute;
+    left: 4%; right: 4%; top: 70px;
+    height: 1px;
+    background: var(--line);
+  }
+  .stop { position: absolute; top: 70px; }
+  .stop-dot {
+    position: absolute;
+    top: 0; left: 0;
+    width: 8px; height: 8px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--ink-3);
+    border: 1px solid var(--stone);
+  }
+  .stop-label {
+    position: absolute;
+    top: 18px; left: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    color: var(--stone);
+  }
+  .seats {
+    position: absolute;
+    left: 0; top: 0;
+    transform: translate(-50%, -50%);
+    display: grid;
+    grid-template-columns: repeat(4, 9px);
+    grid-auto-rows: 9px;
+    gap: 8px;
+  }
+  .seat {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    border: 1px solid var(--stone);
+    transition: background 300ms, border-color 300ms, box-shadow 300ms;
+  }
+  .seat.pay {
+    background: var(--bronze);
+    border-color: var(--bronze);
+    box-shadow: 0 0 0 3px var(--mover-glow);
+  }
+  .seat.free { background: var(--signal); border-color: var(--signal); }
+  .seat.sim { background: var(--bronze-deep); border-color: var(--bronze); }
+  .grid-label {
+    top: 46px;
+    transform: translateX(-50%);
+    white-space: normal;
+    width: 110px;
+    text-align: center;
+    line-height: 1.6;
+  }
+  #mover {
+    position: absolute;
+    top: 70px; left: 8%;
+    width: 12px; height: 12px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--bronze);
+    box-shadow: 0 0 0 4px var(--mover-glow);
+    opacity: 0;
+    transition: opacity 400ms var(--ease-out-standard);
+  }
+  #mover.on { opacity: 1; }
+
+  #memChip {
+    position: absolute;
+    left: 50%; top: 104px;
+    transform: translateX(-50%) translateY(6px);
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--stone-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 14px;
+    opacity: 0;
+    transition: opacity 500ms var(--ease-out-standard),
+                transform 500ms var(--ease-out-standard),
+                color 300ms, border-color 300ms;
+  }
+  #memChip.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #memChip.used { color: var(--signal); border-color: var(--signal); }
+
+  /* ---- summary ---- */
+  .center-stack { transition: opacity 700ms var(--ease-out-standard); }
+  .dimmed .center-stack { opacity: 0; }
+  .summary {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: clamp(24px, 5vw, 48px);
+  }
+  .sum-head {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 400;
+    font-size: clamp(32px, 5.6vw, 56px);
+    color: var(--bone);
+    text-align: center;
+    margin: 0 0 26px;
+  }
+  .sum-head em { font-style: italic; color: var(--bronze); }
+  .sum-row {
+    width: min(540px, 100%);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    font-family: 'Newsreader', Georgia, serif;
+    font-size: clamp(20px, 3vw, 28px);
+    color: var(--stone);
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sum-row .fig { font-variant-numeric: tabular-nums; }
+  .sum-row.with { color: var(--bone); }
+  .sum-row.saved {
+    color: var(--signal);
+    font-size: clamp(26px, 4vw, 38px);
+    border-bottom: 0;
+    padding-top: 16px;
+  }
+  .sum-foot {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    line-height: 1.8;
+    color: var(--stone);
+    text-align: center;
+    max-width: 560px;
+    margin-top: 26px;
+  }
+
+  /* ---- loop progress ---- */
+  .loop-track {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 2px;
+    background: var(--line);
+  }
+  .loop-fill {
+    height: 100%;
+    background: var(--bronze-deep);
+    transform-origin: left;
+    transform: scaleX(0);
+  }
+
+  @media (max-width: 560px) {
+    .stop-label { font-size: 9.5px; letter-spacing: 0.1em; }
+    .seats {
+      grid-template-columns: repeat(4, 7px);
+      grid-auto-rows: 7px;
+      gap: 6px;
+    }
+    .seat { width: 7px; height: 7px; }
+    .grid-label { width: 84px; font-size: 9px; letter-spacing: 0.08em; }
+    .subline { min-height: 36px; }
+    .score { top: 64px; right: 16px; }
+    .score-fig { font-size: 24px; }
+    .overline { display: none; }
+    .line { min-height: 3.6em; }
+  }
+</style>
+</head>
+<body>
+<main class="stage" id="stage">
+  <div class="overline">BREVITAS &middot; A HALF-MINUTE LOOP &middot; PLAYS BY ITSELF</div>
+  <button id="pauseBtn" type="button" aria-pressed="false">Pause</button>
+
+  <div class="score fx fx-fade" id="score" aria-live="off">
+    <div class="score-label">SAVED SO FAR</div>
+    <div class="score-fig" id="scoreFig">$0.00</div>
+  </div>
+
+  <div class="wrap center-stack" id="centerStack">
+    <div class="price fx fx-fade" id="price">
+      <div class="price-fig" id="priceFig">$1.00</div>
+      <div class="price-label" id="priceLabel">PAID TO THE AI PROVIDER</div>
+    </div>
+
+    <div class="wire">
+      <div class="track"></div>
+      <div class="stop" style="left: 8%;">
+        <div class="seats" id="seats" aria-hidden="true"></div>
+        <div class="stop-label grid-label">YOUR BUSINESS &middot; 20 SEATS</div>
+      </div>
+      <div class="stop" style="left: 50%;">
+        <div class="stop-dot"></div>
+        <div class="stop-label">BREVITAS</div>
+      </div>
+      <div class="stop" style="left: 92%;">
+        <div class="stop-dot"></div>
+        <div class="stop-label">ANY AI PROVIDER</div>
+      </div>
+      <div id="mover"></div>
+      <div id="memChip">answers ready &#10003;</div>
+    </div>
+
+    <h1 class="line fx fx-fade" id="line"></h1>
+    <p class="subline fx fx-fade" id="subline"></p>
+  </div>
+
+  <div class="summary" id="summaryView" style="display: none;">
+    <h2 class="sum-head fx" id="sumHead">Same answers. <em>Smaller bill.</em></h2>
+    <div class="sum-row fx" id="sumRow1"><span>Without Brevitas</span><span class="fig">$20.00</span></div>
+    <div class="sum-row with fx" id="sumRow2"><span>With Brevitas</span><span class="fig">$2.00</span></div>
+    <div class="sum-row saved fx" id="sumRow3"><span>You saved</span><span class="fig">$18.00</span></div>
+    <p class="sum-foot fx" id="sumFoot">Our fee is 25% of what you save &mdash; $4.50 here. Save nothing, pay nothing.<br>One URL change. Works across every AI provider. Play numbers &mdash; the real gateway meters your real traffic.</p>
+  </div>
+
+  <div class="loop-track"><div class="loop-fill" id="loopFill"></div></div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ------------------------------------------------------------------ *
+   * Brevitas showcase demo, simple edition. One 45s loop, one moving
+   * dot, one sentence at a time. Driven by a beats array and a single
+   * requestAnimationFrame clock.
+   *
+   * The arithmetic: 20 seats, each ask worth $1.00.
+   *   Seat 1 pays $1.00 (first ask, real AI call)
+   *   14 seats x $0.00  (same ask, predicted answer replayed)
+   *   5 seats  x $0.20  (similar ask, only the new part costs)
+   * With: 1 x 1.00 + 14 x 0 + 5 x 0.20 = $2.00. Without: 20 x 1.00 = $20.00.
+   * Saved: $18.00 / 25% fee: $4.50.
+   * Score path: free ripple 0 -> $14.00 ($1.00/seat);
+   * similar ripple $14.00 -> $18.00 ($0.80/seat).
+   * ------------------------------------------------------------------ */
+
+  var LOOP_MS = 45000;
+  var SPEED = 1.35; /* playback rate: 45s of beats runs in ~33s */
+  var STOP = { grid: 8, brevitas: 50, provider: 92 }; /* % along the wire */
+  var MAX_FRAME_MS = 100; /* clock never jumps after tab throttling */
+
+  var doc = document;
+  var root = doc.documentElement;
+  function byId(id) { return doc.getElementById(id); }
+  function reduced() { return root.getAttribute('data-reduce-motion') === 'true'; }
+
+  var el = {
+    stage: byId('stage'),
+    score: byId('score'),
+    scoreFig: byId('scoreFig'),
+    line: byId('line'),
+    subline: byId('subline'),
+    price: byId('price'),
+    priceFig: byId('priceFig'),
+    priceLabel: byId('priceLabel'),
+    mover: byId('mover'),
+    memChip: byId('memChip'),
+    summaryView: byId('summaryView'),
+    loopFill: byId('loopFill')
+  };
+  var summaryEls = [byId('sumHead'), byId('sumRow1'), byId('sumRow2'), byId('sumRow3'), byId('sumFoot')];
+
+  /* ---- the 20-seat grid ---- *
+   * seat 0 = payer; seats 1-14 = the 14 free seats; seats 15-19 = the
+   * 5 similar seats. Ripple order is DOM order: a top-left to
+   * bottom-right sweep. */
+  var seatsBox = byId('seats');
+  var seats = [];
+  for (var s = 0; s < 20; s++) {
+    var seat = doc.createElement('i');
+    seat.className = 'seat';
+    seatsBox.appendChild(seat);
+    seats.push(seat);
+  }
+
+  /* ---- easing ---- */
+  function easeInOut(p) {
+    return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+  }
+  function easeOut(p) { return 1 - Math.pow(1 - p, 3); }
+
+  /* ---- clock + tween engine ---- */
+  var clock = 0;
+  var lastTs = null;
+  var cueIx = 0;
+  var tweens = [];
+
+  function tween(dur, update, ease) {
+    if (reduced()) { update(1); return; }
+    tweens.push({ t0: clock, dur: dur, update: update, ease: ease || easeOut });
+  }
+
+  function show(target) { target.classList.add('on'); }
+  function hide(target) { target.classList.remove('on'); }
+
+  /* ---- the few things that move ---- */
+  function setLine(html) { el.line.innerHTML = html; show(el.line); }
+  function setSub(text) { el.subline.textContent = text; show(el.subline); }
+
+  function moveDot(fromPct, toPct, dur) {
+    tween(dur, function (p) {
+      el.mover.style.left = (fromPct + (toPct - fromPct) * p) + '%';
+    }, easeInOut);
+  }
+
+  function setPrice(fig, label, free) {
+    el.priceFig.textContent = fig;
+    el.priceLabel.textContent = label;
+    el.price.classList.toggle('free', !!free);
+    show(el.price);
+  }
+
+  function countPrice(to, dur) {
+    tween(dur, function (p) {
+      el.priceFig.textContent = '$' + (to * p).toFixed(2);
+    });
+  }
+
+  var scoreVal = 0;
+
+  /* Light seats [startIx, startIx + count) one by one and tick the
+     score with each seat. Runs on the shared clock; under reduced
+     motion tween() jumps to p = 1, lighting everything at once. */
+  function ripple(startIx, count, cls, dur, scoreFrom, scorePer) {
+    tween(dur, function (p) {
+      var n = Math.min(count, Math.floor(p * count + 1e-4));
+      for (var i = 0; i < n; i++) { seats[startIx + i].classList.add(cls); }
+      scoreVal = scoreFrom + n * scorePer;
+      el.scoreFig.textContent = '$' + scoreVal.toFixed(2);
+    }, easeOut);
+  }
+
+  function showSummary() {
+    el.summaryView.style.display = 'flex';
+    /* next frame so the display flip does not swallow the transition */
+    requestAnimationFrame(function () {
+      for (var i = 0; i < summaryEls.length; i++) { show(summaryEls[i]); }
+    });
+  }
+
+  /* ---- full reset to the empty stage ---- */
+  function hardReset() {
+    el.stage.classList.add('no-anim');
+    el.stage.classList.remove('dimmed');
+    tweens.length = 0;
+
+    var lit = doc.querySelectorAll('#stage .on');
+    for (var i = 0; i < lit.length; i++) { lit[i].classList.remove('on'); }
+
+    el.line.innerHTML = '';
+    el.subline.textContent = '';
+    el.mover.style.left = STOP.grid + '%';
+    el.memChip.classList.remove('used');
+    for (var j = 0; j < seats.length; j++) {
+      seats[j].classList.remove('pay', 'free', 'sim');
+    }
+    el.summaryView.style.display = 'none';
+    scoreVal = 0;
+    el.scoreFig.textContent = '$0.00';
+
+    /* flush styles with transitions off, then re-arm them */
+    void el.stage.offsetWidth;
+    el.stage.classList.remove('no-anim');
+  }
+
+  /* ------------------------------------------------------------------ *
+   * The beat script. Offsets are ms from each beat's start.
+   * ------------------------------------------------------------------ */
+  var BEATS = [
+
+    { name: 'setup', start: 0, actions: [
+      [300, function () {
+        setLine('You run a business. <em>Twenty people</em>, AI in every workflow.');
+      }],
+      [1500, function () { setSub('EVERY SEAT ASKS THE SAME THINGS. EVERY ANSWER COSTS MONEY.'); }],
+      [6100, function () { hide(el.line); hide(el.subline); }]
+    ] },
+
+    { name: 'first request', start: 7000, actions: [
+      [0, function () {
+        setLine('Seat one asks. The AI answers.');
+        show(el.mover);
+        seats[0].classList.add('pay');
+      }],
+      [800, function () { moveDot(STOP.grid, STOP.provider, 1600); }],
+      [2600, function () { setPrice('$0.00', 'PAID TO THE AI PROVIDER'); countPrice(1.00, 900); }],
+      [3700, function () { moveDot(STOP.provider, STOP.grid, 1400); }],
+      /* .fx fades run 600ms real; cue-ms tick 1.35x faster, so a clean
+         out-then-in swap needs a >= 810 cue-ms gap. 900 throughout. */
+      [5300, function () { hide(el.line); }],
+      [6200, function () { setLine('The first request costs <em>full price</em>.'); }]
+    ] },
+
+    { name: 'the save', start: 15000, actions: [
+      [0, function () { hide(el.line); hide(el.price); }],
+      [900, function () {
+        setLine('Brevitas saves it &mdash; and <em>predicts</em> what your business asks next.');
+        show(el.memChip);
+      }]
+    ] },
+
+    { name: 'the cascade', start: 20000, actions: [
+      [0, function () { hide(el.line); }],
+      [900, function () { setLine('Fourteen seats ask the same thing. <em>Free.</em>'); }],
+      [1200, function () { moveDot(STOP.grid, STOP.brevitas, 900); }],
+      [1600, function () {
+        setPrice('$0.00', 'READY BEFORE THEY ASKED. THE AI IS NEVER CALLED.', true);
+        show(el.score);
+        /* seats 1-14 sweep green ~157ms apart while the mover is still
+           bouncing home; score ticks $1.00 per seat to $14.00 */
+        ripple(1, 14, 'free', 2200, 0, 1.00);
+      }],
+      [2100, function () { el.memChip.classList.add('used'); moveDot(STOP.brevitas, STOP.grid, 900); }]
+    ] },
+
+    { name: 'the similar five', start: 28000, actions: [
+      [0, function () { hide(el.line); hide(el.price); el.memChip.classList.remove('used'); }],
+      [900, function () { setLine('Five ask something <em>similar</em>. Twenty cents each.'); }],
+      [1200, function () { moveDot(STOP.grid, STOP.brevitas, 900); }],
+      [2100, function () { el.memChip.classList.add('used'); moveDot(STOP.brevitas, STOP.provider, 900); }],
+      [3200, function () { moveDot(STOP.provider, STOP.grid, 1300); }],
+      [3500, function () {
+        setPrice('$0.20', 'ONLY THE NEW PART COSTS MONEY');
+        /* score $14.00 -> $18.00, $0.80 per seat */
+        ripple(15, 5, 'sim', 1000, 14.00, 0.80);
+      }]
+    ] },
+
+    { name: 'the bill', start: 36000, actions: [
+      [0, function () { el.stage.classList.add('dimmed'); hide(el.score); }],
+      [600, function () { showSummary(); }]
+      /* hardReset un-dims + clears seats at the loop point with transitions off */
+    ] }
+  ];
+
+  var CUES = [];
+  for (var b = 0; b < BEATS.length; b++) {
+    var beat = BEATS[b];
+    for (var a = 0; a < beat.actions.length; a++) {
+      CUES.push({ at: beat.start + beat.actions[a][0], fn: beat.actions[a][1] });
+    }
+  }
+  CUES.sort(function (x, y) { return x.at - y.at; });
+
+  /* ---- pause control (WCAG 2.2.2) ---- */
+  var paused = false;
+  var pauseBtn = byId('pauseBtn');
+  pauseBtn.addEventListener('click', function () {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    pauseBtn.setAttribute('aria-pressed', String(paused));
+  });
+
+  /* ---- the one clock ---- */
+  /* Uses performance.now() rather than the rAF timestamp: forced frames
+     (screen capture, automation) can carry synthetic timestamps. */
+  function frame() {
+    var ts = performance.now();
+    if (lastTs === null) { lastTs = ts; }
+    if (!paused) { clock += Math.min(ts - lastTs, MAX_FRAME_MS) * SPEED; }
+    lastTs = ts;
+
+    if (clock >= LOOP_MS) {
+      clock = clock % LOOP_MS;
+      cueIx = 0;
+      hardReset();
+    }
+
+    while (cueIx < CUES.length && CUES[cueIx].at <= clock) {
+      CUES[cueIx].fn();
+      cueIx += 1;
+    }
+
+    for (var i = tweens.length - 1; i >= 0; i--) {
+      var tw = tweens[i];
+      var p = Math.min(1, (clock - tw.t0) / tw.dur);
+      tw.update(tw.ease(p));
+      if (p >= 1) { tweens.splice(i, 1); }
+    }
+
+    el.loopFill.style.transform = 'scaleX(' + (clock / LOOP_MS) + ')';
+    requestAnimationFrame(frame);
+  }
+
+  /* A hidden tab stops delivering frames; on return the capped frame
+     delta means the loop resumes where it left off instead of lurching. */
+  doc.addEventListener('visibilitychange', function () { lastTs = null; });
+
+  hardReset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
