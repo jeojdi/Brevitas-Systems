@@ -9,8 +9,9 @@ Fixes over the earlier prototype gate (see CODEBASE_WEAKNESSES W6.5, brief b4):
     b5 isotonic calibration can replace the default without touching this module;
   * degraded assessments (judge unavailable) NEVER pass — unverified ⇒ unbilled.
 
-The judge backend is any OpenAI-compatible endpoint; keys come from the local
-environment. Nothing here imports archived legacy code.
+The judge backend is any OpenAI-compatible endpoint, but it is EXPLICIT-OPT-IN ONLY
+(BREVITAS_JUDGE_BACKEND) because running it egresses customer-derived text to a third
+party — see _load_key. Nothing here imports archived legacy code.
 """
 from __future__ import annotations
 
@@ -120,21 +121,101 @@ def lever_allowed(lever: str, key: str = "") -> bool:
         return False
 
 
-def _load_key(names=("Deepseek_api_key", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")) -> tuple[str, str, str]:
-    """Return (key, base_url, model) for the cheapest configured judge backend."""
-    env = dict(os.environ)
-    envfile = Path(__file__).resolve().parents[2] / ".env.local"
-    if envfile.exists():
-        for line in envfile.read_text().splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                k, v = line.split("=", 1)
-                env.setdefault(k.strip(), v.strip())
-    if env.get(names[0]) or env.get(names[1]):
-        return (env.get(names[0]) or env.get(names[1]), "https://api.deepseek.com/v1",
-                "deepseek-chat")
-    if env.get("OPENAI_API_KEY"):
-        return env["OPENAI_API_KEY"], "https://api.openai.com/v1", "gpt-4o-mini"
-    return "", "", ""
+# ── Judge backend selection (fail-closed egress control) ─────────────────────
+# Running the judge ships CUSTOMER-DERIVED TEXT — their question and both answers — to a
+# third-party API. Picking a backend is therefore a SUBPROCESSOR decision, not a
+# convenience default, so it is EXPLICIT-OPT-IN ONLY: BREVITAS_JUDGE_BACKEND must name it.
+#
+# What this replaces: the previous _load_key walked a hardcoded preference list and
+# scraped every KEY=value out of the repo's .env.local into its lookup dict. Merely
+# *having* a DeepSeek key on the box — a probe key, a benchmark key, anything unrelated —
+# silently routed customer text to DeepSeek that nobody opted into. This repo's own
+# .env.local carries both DEEPSEEK_API_KEY and OPENAI_API_KEY, so that was live, not
+# theoretical (see docs/AI_NATIVE_REDIS_BRIEF_REVIEW.md part 12).
+#
+# Unset now means NO JUDGE, which is a safe state, not a broken one: assess() already
+# treats a missing judge exactly like a judge outage — it falls back to the local,
+# in-process embedding similarity (_embedding_similarity, no network), reports it for
+# observability, and marks the assessment degraded=True / passed=False. Unverified ⇒
+# unbilled is preserved; nothing here can widen what is billable.
+#
+# backend name -> (credential env vars in precedence order, base_url, model)
+_JUDGE_BACKENDS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "deepseek": (("Deepseek_api_key", "DEEPSEEK_API_KEY"),
+                 "https://api.deepseek.com/v1", "deepseek-chat"),
+    "openai": (("OPENAI_API_KEY",), "https://api.openai.com/v1", "gpt-4o-mini"),
+}
+
+# Module-level so tests can redirect it; only ever read once a backend is named (below).
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env.local"
+
+
+def _judge_backend_name(explicit: Optional[str] = None) -> str:
+    """The opted-in backend name, normalized. Empty string == no judge (the default)."""
+    raw = explicit if explicit is not None else os.environ.get("BREVITAS_JUDGE_BACKEND", "")
+    return (raw or "").strip().lower()
+
+
+def _env_file_credential(names: tuple[str, ...]) -> str:
+    """First value in .env.local matching one of `names`, in `names` order.
+
+    Deliberately narrow: only the *named backend's own* credential names are looked up,
+    never the whole file into a dict, so an unrelated provider's key sitting in that file
+    can never become the judge's egress target. Any read/parse failure is a miss — a judge
+    we cannot configure must fail closed, not raise out of QualityGate.__init__.
+    """
+    try:
+        if not _ENV_FILE.exists():
+            return ""
+        found: dict[str, str] = {}
+        for line in _ENV_FILE.read_text().splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            k = k.strip()
+            if k in names and k not in found:      # first occurrence wins, as before
+                found[k] = v.strip()
+        for n in names:
+            if found.get(n):
+                return found[n]
+        return ""
+    except Exception as e:
+        logger.warning(f"quality gate: could not read {_ENV_FILE.name} for the judge "
+                       f"credential: {e}")
+        return ""
+
+
+def _load_key(backend: Optional[str] = None) -> tuple[str, str, str]:
+    """Return (key, base_url, model) for the EXPLICITLY opted-in judge backend, or the
+    empty triple — which callers read as "no judge" — in every other case.
+
+    FAILS CLOSED, and never substitutes a provider for the one that was named:
+      * BREVITAS_JUDGE_BACKEND unset/blank -> ("", "", "") and .env.local is NEVER read
+      * unknown backend name (a typo)      -> ("", "", ""); a typo must not fall through
+                                              to some other subprocessor
+      * named backend's credential missing -> ("", "", ""); never borrow a different
+                                              provider's key to satisfy the request
+    Process env wins over .env.local, as it did before.
+    """
+    name = _judge_backend_name(backend)
+    if not name:
+        return "", "", ""                          # no opt-in ⇒ no judge, no file read
+    spec = _JUDGE_BACKENDS.get(name)
+    if spec is None:
+        logger.error("quality gate: BREVITAS_JUDGE_BACKEND=%r is not a known judge backend "
+                     "(%s) — judge disabled", name, "/".join(sorted(_JUDGE_BACKENDS)))
+        return "", "", ""
+    cred_names, base_url, model = spec
+    key = next((os.environ[n] for n in cred_names if os.environ.get(n)), "")
+    if not key:
+        key = _env_file_credential(cred_names)
+    if not key:
+        logger.error("quality gate: judge backend %r opted in but none of %s is set — "
+                     "judge disabled (no fallback to another provider)",
+                     name, "/".join(cred_names))
+        return "", "", ""
+    return key, base_url, model
 
 
 @dataclass
@@ -191,8 +272,13 @@ class QualityGate:
         self._model_tried = False
         self.judge_key, self.judge_base, self.judge_model = _load_key()
         if not self.judge_key:
-            logger.error("quality gate: no judge API key configured — assessments "
-                         "will be degraded (embedding-only) and can never pass")
+            # Expected whenever nobody opted a backend in — the fail-closed default. Still
+            # logged at error level: anyone who constructed a gate expecting verdicts is
+            # about to get assessments that can never pass, and should know why.
+            logger.error("quality gate: no judge backend configured (set "
+                         "BREVITAS_JUDGE_BACKEND to one of %s plus that backend's API key) "
+                         "— assessments will be degraded (embedding-only) and can never pass",
+                         "/".join(sorted(_JUDGE_BACKENDS)))
 
     # ------------------------------------------------------------------ public
     def assess(self, optimized_answer: str, reference_answer: str,
@@ -244,7 +330,9 @@ class QualityGate:
     def _judge(self, optimized: str, reference: str, question: str):
         """Position-swapped deterministic judge. Returns (score|None, reasoning, why)."""
         if not self.judge_key:
-            return None, None, "no judge key configured"
+            # No opt-in (or the opted-in credential is missing): do not call anyone. The
+            # caller degrades to the local embedding path; degraded can never pass.
+            return None, None, "no judge backend configured (BREVITAS_JUDGE_BACKEND)"
         s1 = self._judge_once(reference, optimized, question)   # A=ref, B=opt
         if s1 is None:
             return None, None, "judge call failed"
