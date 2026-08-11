@@ -248,16 +248,19 @@ def price(usage: dict, write_mult: float = PRICES["write"]) -> float:
 # --------------------------------------------------------------------------
 
 class Ledger:
-    def __init__(self) -> None:
+    def __init__(self, cap_usd: float = SPEND_CAP_USD) -> None:
         self.calls: list[Call] = []
         self.spend_usd = 0.0
+        # Per-run cap. Defaults to the module cap so the original probes are
+        # byte-for-byte unchanged in behaviour; E3 passes a tighter one.
+        self.cap_usd = float(cap_usd)
 
     def guard(self, projected_usd: float) -> None:
-        if self.spend_usd + projected_usd > SPEND_CAP_USD:
+        if self.spend_usd + projected_usd > self.cap_usd:
             raise RuntimeError(
                 f"aborting: ${self.spend_usd:.6f} spent and the next call is "
                 f"projected at ${projected_usd:.6f}, which would cross the "
-                f"${SPEND_CAP_USD:.2f} cap")
+                f"${self.cap_usd:.2f} cap")
 
     def record(self, call: Call) -> None:
         self.calls.append(call)
@@ -267,16 +270,16 @@ class Ledger:
             print(f"    {tag}: prefix={call.prefix_tokens} "
                   f"read={call.cache_read} write={call.cache_write} "
                   f"fresh={call.fresh_input} spend=${call.spend_usd:.6f}  "
-                  f"[running ${self.spend_usd:.6f}/${SPEND_CAP_USD:.2f}]",
+                  f"[running ${self.spend_usd:.6f}/${self.cap_usd:.2f}]",
                   flush=True)
         else:
             print(f"    {tag}: status={call.status} {call.error[:160]}  "
-                  f"[running ${self.spend_usd:.6f}/${SPEND_CAP_USD:.2f}]",
+                  f"[running ${self.spend_usd:.6f}/${self.cap_usd:.2f}]",
                   flush=True)
-        if self.spend_usd > SPEND_CAP_USD:
+        if self.spend_usd > self.cap_usd:
             raise RuntimeError(
                 f"aborting: cumulative spend ${self.spend_usd:.6f} crossed the "
-                f"${SPEND_CAP_USD:.2f} cap")
+                f"${self.cap_usd:.2f} cap")
 
 
 def send(ledger: Ledger, key: str, probe: str, label: str, body: dict,
@@ -469,6 +472,203 @@ def run_slow(key: str, ledger: Ledger) -> list[Call]:
 
 
 # --------------------------------------------------------------------------
+# E3 -- determinism cost + bounded 1h-tier mechanics
+# --------------------------------------------------------------------------
+
+E3_CAP_USD = 0.50
+# E3a: two cacheable system blocks, breakpoints at ~5k and ~10k cumulative tokens.
+# Both are above haiku's proven 4096 floor, so both regions really cache.
+E3A_BLOCK_TOKENS = 5_000
+# E3b: one block per arm, comfortably above the floor. Kept smaller than E3a
+# because four arms x three calls each is where the money actually goes.
+E3B_TOKENS = 6_000
+# Late read for every E3b arm. The default cliff is measured at (300, 330]s, and
+# the intervening read lands at ~45s, so a 5-minute clock started by that read
+# expires by ~375s at the latest. 445s leaves ~70s of margin on the far side.
+E3B_MID_READ_S = 45.0
+E3B_LATE_READ_S = 445.0
+
+# A realistic stray timestamp -- the exact thing the brief says destroys a prefix.
+def _volatile_token() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _words_for(key: str, target_tokens: int) -> int:
+    """Calibrate words->tokens once against the live counter, so the blocks land
+    on real token targets instead of guessed ones."""
+    cal_words = 1_000
+    cal = count_tokens(key, [{"type": "text", "text": build_prefix("e3cal", cal_words)}])
+    tpw = (cal / cal_words) if cal > 0 else 1.35
+    return max(1, round(target_tokens / tpw))
+
+
+def _e3a_system(base1: str, base2: str, inject: str, where: str) -> list:
+    """Two breakpointed system blocks, optionally with a volatile token injected.
+
+    where='none'  clean baseline
+    where='top'   position 0 of block 1 -- ahead of BOTH breakpoints
+    where='mid'   halfway through block 2 -- after breakpoint 1, before breakpoint 2
+    (the 'tail' case is not a system-block edit at all: it goes in the user turn,
+     below the last breakpoint, and so cannot touch any cached region)
+    """
+    b1, b2 = base1, base2
+    if where == "top":
+        b1 = f"{inject}\n\n{base1}"
+    elif where == "mid":
+        half = len(base2) // 2
+        b2 = f"{base2[:half]}\n\n{inject}\n\n{base2[half:]}"
+    return [
+        {"type": "text", "text": b1, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": b2, "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def probe_volatile_token(key: str, ledger: Ledger) -> list[Call]:
+    """E3a: what one stray timestamp costs, as a function of WHERE it sits.
+
+    Writes a 2-breakpoint ~10k-token prefix, reads it warm to prove a HIT, then
+    re-sends the same prefix three times with a timestamp injected above the
+    first breakpoint, between the breakpoints, and below the last breakpoint.
+    A closing clean read is the validity sentinel: if it misses, the TTL expired
+    mid-sequence and the whole sub-experiment is contaminated.
+    """
+    print("\n=== E3a  COST OF ONE VOLATILE TOKEN ===", flush=True)
+    words = _words_for(key, E3A_BLOCK_TOKENS)
+    base1 = build_prefix("e3a_b1", words)
+    base2 = build_prefix("e3a_b2", words)
+    clean = _e3a_system(base1, base2, "", "none")
+    n1 = count_tokens(key, [clean[0]])
+    n_all = count_tokens(key, clean)
+    print(f"  sized: block1={n1} tok, block1+block2={n_all} tok "
+          f"(haiku floor 4096; both breakpoint regions clear it)", flush=True)
+
+    calls: list[Call] = []
+    t0 = time.monotonic()
+
+    def fire(label: str, system: list, user: str, note: str) -> Call:
+        body = {"model": MODEL, "max_tokens": 8, "system": system,
+                "messages": [{"role": "user", "content": user}]}
+        c = send(ledger, key, "E3a", label, body,
+                 at_s=round(time.monotonic() - t0, 2),
+                 projected_tokens=int(E3A_BLOCK_TOKENS * 2.4))
+        c.note = note
+        calls.append(c)
+        return c
+
+    ask = "Reply with the single word OK."
+    fire("1-cold-write", clean, ask, "cold write of the clean 2-breakpoint prefix")
+    fire("2-clean-read", clean, ask, "warm read; must HIT before any injection means anything")
+
+    ts = _volatile_token()
+    tok_top = count_tokens(key, _e3a_system(base1, base2, ts, "top"))
+    fire("3-inject-TOP", _e3a_system(base1, base2, ts, "top"), ask,
+         f"timestamp {ts!r} at position 0 (above breakpoint 1); "
+         f"prefix now {tok_top} tok vs clean {n_all}")
+    tok_mid = count_tokens(key, _e3a_system(base1, base2, ts, "mid"))
+    fire("4-inject-MID", _e3a_system(base1, base2, ts, "mid"), ask,
+         f"timestamp {ts!r} halfway through block 2 (between breakpoints); "
+         f"prefix now {tok_mid} tok vs clean {n_all}")
+    fire("5-inject-TAIL", clean, f"[{ts}] {ask}",
+         f"timestamp {ts!r} in the user turn, BELOW the last breakpoint")
+    fire("6-sentinel", clean, ask,
+         "clean re-read; a MISS here means TTL expired and E3a is contaminated")
+    return calls
+
+
+def probe_1h_bounded(key: str, ledger: Ledger) -> list[Call]:
+    """E3b (BOUNDED): does the ttl on a READ govern the entry's refreshed clock?
+
+    The definitive 1h refresh test needs >60 minutes of wall clock and cannot be
+    run here. What IS decidable in ~7.5 minutes is the mechanism underneath it:
+    when a read refreshes an entry, does the refreshed lifetime come from the
+    ttl requested on THAT read, or from the tier the entry was written in?
+
+    2x2, all four arms written at t=0, all four read late at t=+445s (well past
+    the measured (300,330]s default cliff):
+
+      H1  write ttl=1h  -> read at +45s with NO ttl   -> read at +445s
+      H2  write ttl=1h  ->        (no mid read)       -> read at +445s   [control]
+      F1  write 5m      -> read at +45s with ttl=1h   -> read at +445s
+      F2  write 5m      -> read at +45s with NO ttl   -> read at +445s   [control]
+
+    H1 vs H2 asks whether a mis-tiered keep-alive ping DEMOTES a 1h entry to a
+    5-minute clock (if it does, H1 dies by ~375s and misses while H2 hits).
+    F1 vs F2 asks whether ttl=1h on a read PROMOTES a 5m entry (if it does, F1
+    hits at 445s while F2 -- refreshed at 45s on a 5m clock -- misses).
+    """
+    print("\n=== E3b  1h TIER, BOUNDED (see caveats: NOT the >60min refresh test) ===",
+          flush=True)
+    words = _words_for(key, E3B_TOKENS)
+    arms = {name: build_prefix(f"e3b_{name}", words) for name in ("H1", "H2", "F1", "F2")}
+    sized = count_tokens(key, [{"type": "text", "text": arms["H1"]}])
+    print(f"  sized: each arm {sized} tok (floor 4096)", flush=True)
+    ask = "Reply with the single word OK."
+    calls: list[Call] = []
+    t0 = time.monotonic()
+
+    def fire(arm: str, label: str, ttl: str | None, note: str) -> Call:
+        c = sys_call(key, ledger, "E3b", f"{arm}/{label}", arms[arm], ask,
+                     at_s=round(time.monotonic() - t0, 2), ttl=ttl)
+        c.note = note
+        calls.append(c)
+        return c
+
+    print("t=0  writes (H1/H2 on the 1h tier at 2.0x, F1/F2 on the default 5m tier at 1.25x)",
+          flush=True)
+    fire("H1", "write(ttl=1h)", "1h", "1h write; will get a MIS-TIERED read at +45s")
+    fire("H2", "write(ttl=1h)", "1h", "1h write; CONTROL, untouched until the late read")
+    fire("F1", "write(5m)", None, "default-tier write; will get a ttl=1h read at +45s")
+    fire("F2", "write(5m)", None, "default-tier write; CONTROL, plain read at +45s")
+
+    sleep_until(t0, E3B_MID_READ_S)
+    fire("H1", "read+45s(NO ttl)", None,
+         "mis-tiered keep-alive: does omitting ttl demote the 1h entry to a 5m clock?")
+    fire("F1", "read+45s(ttl=1h)", "1h",
+         "promotion probe: does ttl=1h on a read upgrade a 5m entry's clock?")
+    fire("F2", "read+45s(NO ttl)", None,
+         "control for F1: identical call except the requested ttl")
+
+    sleep_until(t0, E3B_LATE_READ_S)
+    fire("H1", "read+445s(ttl=1h)", "1h", "HIT => the mis-tiered read did not demote H1")
+    fire("H2", "read+445s(ttl=1h)", "1h", "control; a MISS here contaminates the whole arm set")
+    fire("F1", "read+445s(ttl=1h)", "1h", "HIT => the ttl=1h read promoted F1 past the 5m clock")
+    fire("F2", "read+445s(NO ttl)", None, "control; MISS expected on a refreshed 5m clock")
+    return calls
+
+
+def main_e3() -> int:
+    """E3 entry point. Separate from main() so the original probes stay runnable
+    and untouched. Hard cap $0.50, projected per-call BEFORE sending."""
+    if os.getenv(ACK_ENV, "") != "1":
+        print(f"refusing to spend: set {ACK_ENV}=1 to run this probe")
+        return 2
+    key = load_probe_key()
+    if not key:
+        print(f"missing probe key {PROBE_KEY_NAME} in {ENV_FILE} or env")
+        return 2
+    print(f"E3 determinism/1h probe: model={MODEL} cap=${E3_CAP_USD:.2f} "
+          f"seed={PREFIX_SEED}", flush=True)
+    ledger = Ledger(cap_usd=E3_CAP_USD)
+    try:
+        probe_volatile_token(key, ledger)
+        print(f"\n--- E3a done, running spend ${ledger.spend_usd:.6f} ---", flush=True)
+        probe_1h_bounded(key, ledger)
+    except RuntimeError as exc:
+        print(f"\nSPEND GUARD: {exc}", flush=True)
+        dump(ledger)
+        return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted", flush=True)
+        dump(ledger)
+        return 1
+    dump(ledger)
+    print(f"\nTOTAL LIVE SPEND ${ledger.spend_usd:.6f}  (cap ${E3_CAP_USD:.2f})", flush=True)
+    assert ledger.spend_usd < E3_CAP_USD, (
+        f"probe spent ${ledger.spend_usd:.6f}, over the ${E3_CAP_USD:.2f} cap")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # output
 # --------------------------------------------------------------------------
 
@@ -477,7 +677,7 @@ def dump(ledger: Ledger) -> None:
         REPO_ROOT, "anthropic_cache_probe_receipts.json")
     payload = {
         "model": MODEL, "prices": PRICES, "spend_usd": ledger.spend_usd,
-        "cap_usd": SPEND_CAP_USD,
+        "cap_usd": ledger.cap_usd, "write_mult_1h": WRITE_MULT_1H,
         "calls": [
             {"probe": c.probe, "label": c.label, "at_s": c.at_s,
              "status": c.status, "usage": c.usage, "spend_usd": c.spend_usd,
@@ -531,4 +731,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # `... anthropic_cache_probe.py e3` runs only the E3 probes under their own
+    # $0.50 cap. No argument = the original P1-P5 run, unchanged.
+    if len(sys.argv) > 1 and sys.argv[1] == "e3":
+        raise SystemExit(main_e3())
     raise SystemExit(main())
