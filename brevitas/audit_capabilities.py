@@ -166,13 +166,38 @@ CAPABILITIES = [
         "id": "predictive_cache_warming",
         "name": "Predictive cache warming",
         "description": "Pings provider caches ahead of predicted traffic so expiring prefixes stay warm instead of re-billing as fresh writes.",
-        # Must mirror brevitas.warming.provider_warmable(): warming pings can
-        # only pay for themselves on these providers. groq/fireworks cached
-        # reads bill 0.50x (a ping costs what a hit saves), perplexity has no
-        # cached-input discount, mistral/xai/together/openrouter have
-        # undocumented TTLs. Claiming warming as an "opportunity" there is a
-        # prospect-refutable false claim — keep them not_applicable.
-        "providers": ["anthropic", "openai", "deepseek"],
+        # Must stay a SUBSET of brevitas.warming.provider_warmable(): that is
+        # the capture screen for providers where a keep-alive ping could in
+        # principle pay; this list additionally requires that it demonstrably
+        # does. Never widen past provider_warmable().
+        #
+        # groq/fireworks cached reads bill 0.50x (a ping costs what a hit
+        # saves), perplexity has no cached-input discount,
+        # mistral/xai/together/openrouter have undocumented TTLs. Claiming
+        # warming as an "opportunity" there is a prospect-refutable false
+        # claim — keep them not_applicable.
+        #
+        # deepseek REMOVED 2026-08-11 by the same bar, on measurement rather
+        # than price: its 0.02x cached reads are the best warming economics we
+        # have, but the cache earning that discount is automatic and write-free,
+        # and a prefix measured still FULLY WARM at a 900s untouched gap (1792
+        # hit / 47 miss, docs/DEEPSEEK_CACHE_MAP.md P3 — a lower bound; the docs
+        # say hours to days). A keep-alive ping therefore converts no cold read
+        # into a warm one, and the live n=36 A/B against a customer already on
+        # native caching measured -1.27% incremental savings
+        # (benchmarks/native_cache_baseline_results_deepseek_n36.json). The API
+        # now refuses DeepSeek enablement outright (api/server.py
+        # _WARM_ACTIVE_PROVIDERS is anthropic-only, see _WARM_INACTIVE_REASONS),
+        # so telling a prospect we can warm their DeepSeek traffic is both
+        # refutable and unshippable. On DeepSeek the product is measurement and
+        # settlement, not a warmed cache — deepseek stays on
+        # stream_usage_receipts (and on every "all" capability), which is
+        # exactly that product.
+        #
+        # provider_warmable() still admits deepseek: it is the capture/observe
+        # screen, deliberately wider than what may be spent on. This list is a
+        # customer-facing sales claim, so it tracks the narrower policy gate.
+        "providers": ["anthropic", "openai"],
         "detect": "both",
         "weight": 5,
         "static_signals": [

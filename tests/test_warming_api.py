@@ -110,29 +110,50 @@ def test_warming_keep_existing_key_and_unknown_provider(tmp_path, monkeypatch):
                          headers={"Authorization": "Bearer admin-session"}).status_code == 400
 
 
-def test_warming_deepseek_enable_requires_consent_then_succeeds(tmp_path, monkeypatch):
-    # DeepSeek is warm-active (0.02x automatic-cache reads, hours-long
-    # lifetime), and the SQLite allowlist admits it natively — no monkeypatch:
-    # this exercises the exact store the dev-parity backend ships.
+def test_warming_deepseek_enable_is_refused_as_measured_unprofitable(tmp_path, monkeypatch):
+    # DeepSeek reads at 0.02x, which reads like the best warming economics we
+    # have — and is exactly why the refusal must be pinned. The cache those
+    # reads discount is automatic and was measured still fully warm at a 900s
+    # untouched gap (docs/DEEPSEEK_CACHE_MAP.md P3), so a keep-alive ping
+    # converts no cold read into a warm one; the live n=36 A/B against a
+    # customer already on native caching measured -1.27% incremental savings.
+    # Consenting to that spend bills a customer for pings that provably save
+    # nothing, so the PUT must 400 and carry the measurement in the detail.
     server, store, organization, client = _setup(tmp_path, monkeypatch, "warm-deepseek")
 
+    assert "deepseek" not in server._WARM_ACTIVE_PROVIDERS
+
+    refused = _enroll(client, provider="deepseek")
+    assert refused.status_code == 400
+    detail = refused.json()["detail"]
+    assert "not active" in detail
+    assert "automatic" in detail
+    # The refusal cites the measurement, not a hunch: an operator reading the
+    # 400 can find the receipts behind it.
+    assert "-1.27%" in detail and "n=36" in detail
+    assert store.warm_credentials_get(organization["id"], "deepseek") is None
+    assert store.warm_enabled(organization["id"]) is False
+
+    # The economics gate runs before the spend-consent gate, so withholding
+    # consent cannot be mistaken for the reason DeepSeek was refused.
     no_consent = _enroll(client, provider="deepseek", accept_spend_terms=False)
     assert no_consent.status_code == 400
-    assert "accept_spend_terms" in no_consent.json()["detail"]
+    assert "not active" in no_consent.json()["detail"]
     assert store.warm_credentials_get(organization["id"], "deepseek") is None
 
-    saved = _enroll(client, provider="deepseek")
-    assert saved.status_code == 200
-    assert saved.json()["provider"] == "deepseek"
-    assert saved.json()["enabled"] is True
-    assert saved.json()["credential_state"] == "active"
-    stored = store.warm_credentials_get(organization["id"], "deepseek")
-    assert stored["enabled"] is True and stored["consent_at"]
-    assert store.warm_enabled(organization["id"]) is True
+    # deepseek stays a KNOWN provider so an org enrolled before the demotion
+    # can still wind down: disabling and purging must not 400. The SQLite
+    # allowlist admits it natively — no monkeypatch: this exercises the exact
+    # store the dev-parity backend ships.
+    wound_down = _enroll(client, provider="deepseek", enabled=False)
+    assert wound_down.status_code == 200
+    assert wound_down.json()["enabled"] is False
+    assert store.warm_enabled(organization["id"]) is False
 
     assert client.delete("/v1/warming/deepseek",
                          headers={"Authorization": "Bearer admin-session"}
                          ).status_code == 200
+    assert store.warm_credentials_get(organization["id"], "deepseek") is None
 
 
 def test_server_and_store_warm_provider_allowlists_agree():
@@ -145,6 +166,19 @@ def test_server_and_store_warm_provider_allowlists_agree():
 
     assert set(server._WARM_PROVIDERS) == set(store_module._WARM_PROVIDERS)
     assert set(server._WARM_ACTIVE_PROVIDERS) <= set(store_module._WARM_PROVIDERS)
+    # Enable-able means a ping converts a read that would otherwise have been
+    # cold — not merely that cached reads are cheap. Anthropic is the only
+    # provider measured to satisfy that: its default entry is dead by 330s and
+    # a 0.10x read refreshes the TTL for free. OpenAI has no documented
+    # refresh-on-read, and DeepSeek's cache is automatic and still warm past
+    # 15 min for free (docs/DEEPSEEK_CACHE_MAP.md P3; -1.27% incremental at
+    # n=36), so warming it is spend that provably converts nothing.
+    assert set(server._WARM_ACTIVE_PROVIDERS) == {"anthropic"}
+    # Every known-but-inactive provider must carry its own reason, or the 400
+    # degrades to the generic "no keep-alive ping pipeline exists" fallback and
+    # the operator never learns which economics refused their spend.
+    inactive = set(server._WARM_PROVIDERS) - set(server._WARM_ACTIVE_PROVIDERS)
+    assert inactive == set(server._WARM_INACTIVE_REASONS)
 
 
 def test_warming_delete_purges_credential_and_prefixes(tmp_path, monkeypatch):

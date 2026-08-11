@@ -4,7 +4,19 @@ import { fetchWarmingCustomerBudgets, setWarmingCustomerBudget } from '../lib/ap
 // Only the providers warming can actually be enabled for. openai is a warming
 // provider in the schema but has no keep-alive pipeline, so offering it here
 // would offer a ceiling on spend that cannot happen.
-const PROVIDERS = ['anthropic', 'deepseek']
+//
+// deepseek dropped 2026-08-11 as the same kind of dead ceiling, though on
+// measurement rather than a missing pipeline. The enrollment endpoint now
+// returns 400 on enabling it (api/server.py _WARM_ACTIVE_PROVIDERS is
+// anthropic-only; _WARM_INACTIVE_REASONS carries the deepseek reason), because
+// DeepSeek's cache is automatic and write-free and a prefix measured STILL
+// FULLY WARM at a 900s untouched gap — 1792 hit / 47 miss
+// (docs/DEEPSEEK_CACHE_MAP.md P3) — so a keep-alive ping converts no cold read
+// into a warm one, and a live n=36 A/B against native caching put warming it at
+// -1.27% incremental savings. Note the PUT itself still accepts any provider in
+// the schema's _WARM_PROVIDERS, so this list is the only thing keeping an
+// operator from budgeting for spend that can never be incurred.
+const PROVIDERS = ['anthropic']
 
 const money = (value) => `$${Number(value || 0).toFixed(4)}`
 

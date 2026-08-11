@@ -406,9 +406,20 @@ def test_credentials_purge_deletes_prefixes_keeps_ledger(tmp_path):
 
 
 def test_deepseek_admitted_end_to_end_on_sqlite(tmp_path):
-    # server._WARM_ACTIVE_PROVIDERS advertises deepseek as enable-able, so the
-    # SQLite backend must accept it end to end (upsert -> observe -> claim ->
-    # settle -> purge) or PUT /v1/warming 400s on the dev-parity backend.
+    # The API no longer advertises deepseek as enable-able: its cache is
+    # automatic and measured still warm past 15 min for free, so pings convert
+    # nothing (docs/DEEPSEEK_CACHE_MAP.md P3; -1.27% incremental at n=36) —
+    # server._WARM_ACTIVE_PROVIDERS is anthropic-only and the refusal is a
+    # policy gate at the API, asserted in tests/test_warming_api.py.
+    # The STORE must still admit deepseek end to end (upsert -> observe ->
+    # claim -> settle -> purge). Rows written before the demotion still hold
+    # real reserved and spent dollars: a store that rejected the provider
+    # would strand that money mid-flight — settle could not book it and purge
+    # could not release it — and would 400 the wind-down path an enrolled org
+    # needs. Money already in the ledger must always be settleable.
+    import api.server as server
+
+    assert "deepseek" not in server._WARM_ACTIVE_PROVIDERS
     store = make_store(tmp_path)
     saved = store.warm_credentials_upsert(
         ORG, "deepseek", "enc:ds-credential", True, "actor-1", 10.0, 100, 288)

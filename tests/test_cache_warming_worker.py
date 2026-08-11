@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -485,7 +486,37 @@ def test_provider_without_keepalive_spec_stops_prefix_before_provider_call(monke
         assert store.settles[0][7] == "prefix_invalid"
 
 
-def test_deepseek_due_row_pings_chat_completions_and_settles_warmed(monkeypatch):
+def test_deepseek_is_not_a_warm_provider_spec():
+    """PIN. Re-adding deepseek here must fail loudly, so read the measurement
+    first.
+
+    DeepSeek's cache is AUTOMATIC and write-free, and docs/DEEPSEEK_CACHE_MAP.md
+    P3 measured a prefix still fully warm (hit=1792 / miss=47) after a 900s
+    UNTOUCHED gap: nothing was going cold, so a keep-alive ping converts no cold
+    read into a warm one and is pure spend on the customer's own key. Measured
+    head-on, benchmarks/native_cache_baseline_results_deepseek_n36.json puts the
+    incremental saving at -1.27% (n=36: 3 sessions x 12 turns per arm) versus a
+    customer already using native caching -- warming DeepSeek costs its
+    customers money.
+
+    api/server.py's _WARM_ACTIVE_PROVIDERS blocks only NEW enables; this dict is
+    what stops an org that enabled deepseek before that from still buying pings,
+    which is why the pin lives here too.
+    """
+    assert "deepseek" not in worker.WARM_PROVIDER_SPECS
+    assert set(worker.WARM_PROVIDER_SPECS) == {"anthropic"}
+
+
+def test_deepseek_due_row_is_never_pinged_and_its_reservation_comes_back(monkeypatch):
+    """The claim RPC keys off the store's own provider list, not
+    WARM_PROVIDER_SPECS, so a prefix enabled before the demotion still arrives
+    here with real reserved dollars against it. This gate is what actually stops
+    the spend: no lease, no provider call, no usage row -- and the reservation is
+    released rather than stranded (settle books 0.0 and echoes the reservation
+    back), with the prefix stopped for good so it is claimed at most once more.
+
+    See test_deepseek_is_not_a_warm_provider_spec for the measurement.
+    """
     monkeypatch.setenv("BREVITAS_WARMING", "true")
     monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
     store = Store(rows=[_deepseek_claim_row()])
@@ -500,45 +531,112 @@ def test_deepseek_due_row_pings_chat_completions_and_settles_warmed(monkeypatch)
 
     asyncio.run(_run_one_warming_cycle(store))
 
-    assert len(pool.calls) == 1
-    call = pool.calls[0]
-    assert (call["provider"], call["operation"]) == ("deepseek", "chat.completions")
-    # The keep-alive must target the same upstream the proxy routes deepseek to.
-    assert call["url"] == f"{_UPSTREAMS['deepseek']}/v1/chat/completions"
-    body = call["json"]
-    assert body["model"] == "deepseek-chat"
-    assert body["max_tokens"] == 1
-    assert body["stream"] is False
-    assert "temperature" not in body
-    assert body["messages"] == [
-        {"role": "system", "content": "cached system prompt"},
-        {"role": "user", "content": "."}]
-    assert call["headers"]["Authorization"] == "Bearer sk-deepseek-warm-test"
+    assert pool.calls == []
+    # The stop is upstream of the rate limiter, so warming never even competes
+    # with live traffic for a deepseek prefix's token budget.
+    assert limiter.acquired == []
+    assert recorded == []
 
-    identity, tokens, _ = limiter.acquired[0]
-    assert (identity.key_id, identity.provider) == (RECORDED_BY, "deepseek")
-    assert tokens == 2048
-    assert limiter.lease.released == 1
-
-    assert len(recorded) == 1
-    usage = recorded[0]
-    assert usage["strategy"] == "cache_warm"
-    assert usage["provider"] == "deepseek"
-    assert usage["cached_input_tokens"] == 2048
-    assert usage["measured_savings_usd"] == 0.0
-    assert usage["actual_cost_usd"] == usage["baseline_cost_usd"]
-    assert usage["actual_cost_usd"] > 0
-
+    assert len(store.settles) == 1
     settle = store.settles[0]
     assert settle[:4] == (ORG, CUSTOMER, "deepseek", PREFIX_HASH)
-    assert settle[6] > 0                    # spent_usd booked from the receipt
-    assert settle[7] == "warmed"
+    assert settle[4:6] == ("2026-07-27", 0.0096)   # reservation echoed back
+    assert settle[6] == 0.0                        # nothing booked as spend
+    assert settle[7] == "prefix_invalid"
+    # The settle arguments come off the stored row, not the (absent) spec: the
+    # row's own 14_400s TTL rides through, which is why a spec-less provider can
+    # still be settled at all.
     assert settle[8:] == (14_400, 60, CLAIM_TOKEN)
 
 
-def test_unpriced_deepseek_model_stops_prefix_before_provider_call(monkeypatch):
+def test_in_flight_deepseek_reservation_settles_and_releases_on_a_real_store(
+        tmp_path, monkeypatch):
+    """MONEY SAFETY, end to end against the real store. Rows reserved before the
+    demotion hold real dollars; a worker that simply refused to recognize the
+    provider could leave them reserved forever, silently eating the org's daily
+    warming envelope and the fee ceiling computed from it.
+
+    Reserve for real (upsert -> observe -> claim), run the worker, then prove
+    the ledger came back to zero, the prefix stopped, and the wind-down purge
+    still works. Nothing is faked here except the crypto and the key lookup.
+    """
     monkeypatch.setenv("BREVITAS_WARMING", "true")
     monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    store = UsageStore(str(tmp_path / "warm-deepseek-inflight.db"))
+    store.warm_credentials_upsert(
+        ORG, "deepseek", "sk-deepseek-warm-test", True, "actor-1", 10.0, 100, 288)
+    assert store.warm_prefix_observe(
+        ORG, CUSTOMER, "deepseek", PREFIX_HASH,
+        _deepseek_claim_row()["payload_ciphertext"], 100_000,
+        provider_ttl_seconds=14_400, safety_margin_seconds=60,
+        cache_read=False)["status"] == "observed"
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("UPDATE warm_prefixes SET next_due_at=? WHERE organization_id=?",
+                   ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+                    ORG))
+
+    # The reserve/claim loop does NOT skip providers missing from the specs --
+    # warm_due_claim only consults the store's _WARM_PROVIDERS and falls back to
+    # the flat anthropic-calibrated break-even for anything absent from
+    # roi_break_even_by_provider. So the dollars really are held before the
+    # worker ever looks at the row.
+    claimed = store.warm_due_claim(50, **worker._warm_claim_kwargs())
+    assert claimed["status"] == "ok"
+    row = claimed["rows"][0]
+    assert row["provider"] == "deepseek" and row["reserved_usd"] > 0
+    held = store.warm_status(ORG)["providers"][0]
+    assert held["reserved_today_usd"] == pytest.approx(row["reserved_usd"])
+
+    pool = Pool()
+    limiter = Limiter()
+    recorded = []
+    _install_warm_fakes(monkeypatch, store=store, pool=pool, limiter=limiter,
+                        recorded_usage=recorded)
+    asyncio.run(worker._warm_one(row, 1_770_000_000, 60))
+
+    assert pool.calls == [] and limiter.acquired == [] and recorded == []
+    settled = store.warm_status(ORG)["providers"][0]
+    assert settled["reserved_today_usd"] == pytest.approx(0.0)
+    # Released, not booked: the ping never happened, so no dollar may appear in
+    # the ledger the fee ceiling is computed from.
+    assert settled["spent_today_usd"] == pytest.approx(0.0)
+    assert settled["warm_pings"] == 0
+    # Stopped, so the row is not re-claimed every cycle forever.
+    assert settled["active_prefixes"] == 0
+    # And the wind-down path an enrolled org needs still works.
+    purged = store.warm_credentials_purge(ORG, "deepseek")
+    assert (purged["credentials_deleted"], purged["prefixes_deleted"]) == (1, 1)
+
+
+def _hypothetical_openai_compatible_spec(monkeypatch):
+    """Give deepseek a keep-alive spec for the duration of ONE test.
+
+    This does not re-enable warming: monkeypatch restores the dict, and
+    test_deepseek_is_not_a_warm_provider_spec pins the shipped state with the
+    measurement that put it there. It exists because _warm_one's unpriced-model
+    gate and observed-upstream gate both sit DOWNSTREAM of the spec gate, and
+    anthropic -- the only shipped spec -- records no upstream, so those two
+    money guards would otherwise have no live coverage until the next
+    OpenAI-compatible provider earns a spec and inherits them.
+    """
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("the gate under test must stop before the ping")
+
+    monkeypatch.setitem(worker.WARM_PROVIDER_SPECS, "deepseek", {
+        "endpoint_url": f"{_UPSTREAMS['deepseek']}/v1/chat/completions",
+        "operation": "chat.completions",
+        "build_body": unreachable,
+        "build_headers": unreachable,
+        "read_cost_fraction": 0.02,
+        "ttl_seconds": 14_400,
+    })
+
+
+def test_unpriced_openai_compatible_model_stops_prefix_before_provider_call(
+        monkeypatch):
+    monkeypatch.setenv("BREVITAS_WARMING", "true")
+    monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    _hypothetical_openai_compatible_spec(monkeypatch)
     store = Store(rows=[_deepseek_claim_row(model="deepseek-unreleased-9")])
     pool = Pool()
     recorded = []
@@ -547,8 +645,8 @@ def test_unpriced_deepseek_model_stops_prefix_before_provider_call(monkeypatch):
 
     asyncio.run(_run_one_warming_cycle(store))
 
-    # The unpriced gate is per provider: an unmeterable deepseek ping would
-    # settle warmed with spent_usd=0, so it must stop before dollars move.
+    # The unpriced gate is per provider: an unmeterable ping would settle warmed
+    # with spent_usd=0, so it must stop before dollars move.
     assert pool.calls == []
     assert recorded == []
     settle = store.settles[0]
@@ -571,14 +669,33 @@ def test_claim_kwargs_thread_provider_correct_roi(monkeypatch):
     # shape no store ever accepted must stay dead.
     assert "provider_roi" not in kwargs
     by_provider = kwargs["roi_break_even_by_provider"]
-    # The scalar env knob stays the anthropic-calibrated global fallback.
+    # The scalar env knob stays the anthropic-calibrated global fallback, and
+    # dropping deepseek's row did not move it.
     assert by_provider["anthropic"] == kwargs["roi_break_even_p"]
-    # DeepSeek break-even follows its own 0.02x reads (f / (1 - f)); reserve
-    # has no per-provider channel — ping_reserve_usd is observer-priced per
-    # row and the flat floor only ever over-reserves.
-    assert by_provider["deepseek"] == 0.020408
     # Providers without a keep-alive spec never get ROI rows: measurement only.
-    assert set(by_provider) == {"anthropic", "deepseek"}
+    # deepseek's derived 0.020408 left with its spec -- f / (1 - f) prices a
+    # ping against a full-price MISS, and DEEPSEEK_CACHE_MAP.md P3 (still fully
+    # warm at a 900s untouched gap) shows the alternative is a free hit, so the
+    # rule was answering a question that provider's automatic cache never asks.
+    assert "deepseek" not in by_provider
+    assert set(by_provider) == {"anthropic"}
+
+
+def test_break_even_map_derives_only_anthropic_and_leaves_it_untouched():
+    """The map is derived from WARM_PROVIDER_SPECS, so removing a row must not
+    perturb anthropic's number: it is passed through from the env knob, never
+    computed. Checked across the knob's whole range so a future derivation that
+    starts touching anthropic fails here rather than in a claim."""
+    for knob in (0.0, 0.02, 0.11, 0.35, 1.0):
+        assert worker._warm_break_even_by_provider(knob) == {"anthropic": knob}
+    # A provider absent from the map is not thereby unclaimable -- warm_due_claim
+    # falls back to this same flat scalar for it (api/store.py, migration
+    # 202607280003). At the shipped default that fallback is STRICTER than the
+    # f / (1 - f) row deepseek used to carry, so the removal can only ever claim
+    # fewer rows, never more -- and the ones still claimed stop at the spec gate.
+    retired_deepseek = round(0.02 / (1 - 0.02), 6)
+    assert retired_deepseek == 0.020408
+    assert worker._warm_break_even_by_provider(0.11)["anthropic"] > retired_deepseek
 
 
 def test_claim_kwargs_bind_to_every_real_store_backend(tmp_path):
@@ -594,9 +711,10 @@ def test_claim_kwargs_bind_to_every_real_store_backend(tmp_path):
     inspect.signature(SupabaseUsageStore.warm_due_claim).bind(None, 50, **kwargs)
 
 
-def test_deepseek_prefix_observed_on_alternate_upstream_stops_before_ping(monkeypatch):
+def test_prefix_observed_on_alternate_upstream_stops_before_ping(monkeypatch):
     monkeypatch.setenv("BREVITAS_WARMING", "true")
     monkeypatch.setattr(worker, "_WORKER_ACCEPTING", True)
+    _hypothetical_openai_compatible_spec(monkeypatch)
     # x-brevitas-upstream can route provider="deepseek" traffic to another
     # allowlisted host; live requests then never read api.deepseek.com's
     # cache, so a ping there is pure spend against nothing — and the

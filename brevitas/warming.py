@@ -45,11 +45,15 @@ _VARY_HEADERS = ("anthropic-version", "anthropic-beta")
 _TTL_SECONDS = {"1h": 3600, "": 300}
 
 # Automatic-prefix-cache providers extraction supports, from the 2026-07 provider
-# capability research. A provider earns a row ONLY where warming can provably net
-# positive: the cached-read price must be a deep discount (one warm return buys
-# back many pings) AND the provider must document a TTL that reads/pings extend.
-# Everything else is measurement-only BY DESIGN — extraction returns None and the
-# warming worker never sees it:
+# capability research. A provider earns a row ONLY where a keep-alive ping could
+# even in principle pay: the cached-read price must be a deep discount (one warm
+# return buys back many pings) AND the provider must at least describe a lifetime
+# that staying in use extends. That is a CAPTURE screen, not a verdict that
+# warming pays — both rows below currently fail the API enablement gate on
+# measurement (openai: refresh-on-read undocumented; deepseek: pings measured net
+# NEGATIVE, see the floors note further down and api/server.py
+# _WARM_INACTIVE_REASONS). Everything else is measurement-only BY DESIGN —
+# extraction returns None and the warming worker never sees it:
 #   groq / fireworks   cached reads bill 0.50x input: a keep-alive ping costs
 #                      exactly what a warm return saves — warming can NEVER pay;
 #   perplexity         no cached-input discount exists at all — nothing to warm;
@@ -57,15 +61,45 @@ _TTL_SECONDS = {"1h": 3600, "": 300}
 #   together /         undocumented, so pings would be speculative spend against
 #   openrouter         an unknown eviction policy (openrouter adds unverifiable
 #                      pass-through routing on top).
+#
+# min_prefix_tokens is the provider's MINIMUM CACHEABLE PREFIX — below it the
+# provider silently caches nothing (no error, just a full-price miss), so a ping
+# has no entry to keep alive and is pure spend:
+#   openai    1024, OpenAI's own documented automatic-cache floor.
+#   deepseek  128, MEASURED — DeepSeek publishes no floor at all. It is NOT 64:
+#             a 201-token prompt cached exactly 128 and stranded 73
+#             (hit=128, miss=73); a 64-token block would have cached 192 and
+#             stranded 9, so the block size — and therefore the one-block floor —
+#             is 128 (docs/DEEPSEEK_CACHE_MAP.md, "Block size RESOLVED" + P2).
+#             Corroborating: a 98-token prompt caches nothing, the first hit
+#             appears at a 163-token prompt as exactly 128, and every hit ever
+#             observed is a multiple of 128 (128/256/512/896/1792/1920). A prefix
+#             of 64..127 tokens can therefore NEVER form a block, which is what
+#             the old 64 authorized: captures that provably could not warm.
+# These floors gate CAPTURE ONLY — whether a prefix is even shaped like something
+# a ping could keep alive. Whether a customer may turn warming ON for a provider
+# is a separate policy gate (api/server.py) and is decided on different evidence:
+# DeepSeek's cache is automatic, write-free and still warm at 900 s untouched, so
+# an idle prefix stays warm for free and a keep-alive ping is near-pure cost (a
+# live n=36 A/B against native caching measured -1.27% incremental savings), which
+# is ample reason for that policy to refuse DeepSeek enablement outright. The two
+# gates are independent: a provider can be correctly captured and measured here
+# while being correctly refused enablement there, and a floor of 64 was wrong for
+# either purpose.
 _AUTO_WARMABLE = {
     "openai":   {"min_prefix_tokens": 1024},
-    "deepseek": {"min_prefix_tokens": 64},
+    "deepseek": {"min_prefix_tokens": 128},
 }
 
 
 def provider_warmable(provider: str) -> bool:
-    """True when warming pings can mathematically pay for themselves on this
-    provider. Everything else stays measurement-only (see _AUTO_WARMABLE)."""
+    """True when the provider's cache is shaped so a keep-alive ping COULD pay
+    (Anthropic's marker cache, or a deep-discount automatic cache) — the
+    capture/observation screen only, NOT the spend decision. Whether warming may
+    actually be enabled is api/server.py's measurement-driven policy gate
+    (_WARM_ACTIVE_PROVIDERS, anthropic-only: DeepSeek pings measured -1.27%
+    incremental at n=36). Everything else stays measurement-only (see
+    _AUTO_WARMABLE)."""
     return provider == "anthropic" or provider in _AUTO_WARMABLE
 
 
@@ -74,7 +108,17 @@ def _auto_ttl_seconds(provider: str, model: str) -> int:
     documented FLOOR, never an optimistic estimate — overestimating TTL means the
     entry evicts before the ping and the spend buys nothing."""
     if provider == "deepseek":
-        return 14400               # hours-scale persistence while a prefix stays in use
+        # 4h = the low end of the only lifetime DeepSeek publishes ("a few hours to
+        # a few days", KV-cache guide) — prose, so this is the floor of the
+        # documented range, not a measured expiry. Our receipts put a hard MEASURED
+        # floor of 900 s under it: an untouched entry was still fully warm at
+        # 60/300/900 s (docs/DEEPSEEK_CACHE_MAP.md P3), and a prior probe saw
+        # >55 min. The cliff was never found, so do NOT retune this down to 900:
+        # 900 s is a lower bound on a LIVE entry, not an eviction time, and
+        # assuming it would schedule ~16x more pings on the one provider whose
+        # cache is already free and long-lived (i.e. where each extra ping is
+        # closest to pure cost).
+        return 14400
     if (model or "").lower().startswith("gpt-5.6"):
         return 1800                # explicit-mode "30m" is a documented minimum lifetime
     return 300                     # pre-5.6 automatic: 5-10min inactivity eviction floor

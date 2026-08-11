@@ -3768,12 +3768,17 @@ def ollama_models(request: Request, kh: str = Depends(_authenticated)):
 # ── Predictive cache warming ──────────────────────────────────────────────────
 
 _WARM_PROVIDERS = ("anthropic", "openai", "deepseek")
-# Warming is active only where the cache math works AND a worker keep-alive
-# path exists. Anthropic: 0.10x reads that refresh the TTL for free. DeepSeek:
-# 0.02x reads on an automatic cache that persists hours while in use. Enabling
-# any other provider would consent to spend that can never verifiably warm a
-# cache; the per-provider reason below is surfaced in the 400.
-_WARM_ACTIVE_PROVIDERS = ("anthropic", "deepseek")
+# Warming is active only where a ping can convert a read that would otherwise
+# have been cold AND a worker keep-alive path exists. That is a much narrower
+# test than "cheap cached reads": the cache must also be short-lived enough
+# that the gap between customer requests would actually kill it. Anthropic
+# passes — the default entry is dead by 330s (docs/ANTHROPIC_CACHE_MAP.md P1)
+# and a 0.10x read refreshes the TTL for free, so a sub-300s ping is the whole
+# warming economy. Cheap reads alone are NOT sufficient, and no provider is
+# admitted here on read price. Enabling anything else would consent to spend
+# that can never verifiably warm a cache; the per-provider reason below is
+# surfaced in the 400.
+_WARM_ACTIVE_PROVIDERS = ("anthropic",)
 _WARM_INACTIVE_REASONS = {
     # Economics work on gpt-5.6+ (0.10x cached reads, explicit breakpoints),
     # but OpenAI does not document TTL refresh on read, so keep-alive pings
@@ -3781,6 +3786,23 @@ _WARM_INACTIVE_REASONS = {
     "openai": "gpt-5.6+ reads at 0.10x, but OpenAI does not document TTL "
               "refresh on read, so keep-alive pings cannot verifiably keep a "
               "cache warm",
+    # Demoted on measurement, not on price. DeepSeek's 0.02x reads look like
+    # the best warming economics we have; the cache they discount is the
+    # reason warming cannot work. It is automatic (no write, no breakpoint)
+    # and a fresh prefix was still FULLY warm at a 900s untouched gap —
+    # 1792 hit / 47 miss (docs/DEEPSEEK_CACHE_MAP.md P3, a lower bound: docs
+    # say hours to days). Any realistic conversational or batch cadence is
+    # organically warm, so a keep-alive ping converts no cold read into a warm
+    # one; it is close to pure cost billed to the customer. The live n=36 A/B
+    # against a customer already running native caching measured -1.27%
+    # incremental savings — warming DeepSeek loses money
+    # (benchmarks/native_cache_baseline_results_deepseek_n36.json). On
+    # DeepSeek the product is measuring and settling the discount the customer
+    # already gets, not warming a cache.
+    "deepseek": "DeepSeek's prefix cache is automatic and measured still warm "
+                "past 15 minutes for free, so keep-alive pings convert nothing "
+                "and only bill the customer — a live n=36 A/B against native "
+                "caching measured -1.27% incremental savings",
 }
 
 

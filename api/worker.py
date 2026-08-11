@@ -440,31 +440,6 @@ def _warm_anthropic_headers(credential: str, vary: dict) -> dict:
     return headers
 
 
-def _warm_deepseek_body(payload: dict) -> dict:
-    """DeepSeek keep-alive: OpenAI-compatible replay of the stored prefix plus
-    one minimal user turn. The cache is automatic (no markers), so byte-identical
-    prefix order is the entire addressing scheme."""
-    # No sampling params: a rejected param would 400 and permanently stop the
-    # prefix, and a keep-alive needs nothing beyond one generated token.
-    body: dict[str, Any] = {
-        "model": str(payload.get("model") or ""),
-        "max_tokens": 1,
-        "stream": False,
-        "messages": [*(payload.get("messages_prefix") or []),
-                     {"role": "user", "content": "."}],
-    }
-    if payload.get("tools"):
-        body["tools"] = payload["tools"]
-    return body
-
-
-def _warm_deepseek_headers(credential: str, vary: dict) -> dict:
-    return {
-        "Authorization": f"Bearer {credential}",
-        "Content-Type": "application/json",
-    }
-
-
 # Keep-alive dispatch: a provider is warmable only when a spec here defines a
 # dedicated endpoint (credentials are never replayed against another provider's
 # URL) and its cache math can work. Fractions/TTLs from the 2026-07 capability
@@ -472,9 +447,35 @@ def _warm_deepseek_headers(credential: str, vary: dict) -> dict:
 #   - openai: gpt-5.6+ reads at 0.10x, but OpenAI does not document TTL refresh
 #     on read, so keep-alive pings are unverifiable spend (mirrors
 #     _WARM_INACTIVE_REASONS in api/server.py).
+#   - deepseek: on paper the most warmable provider here (0.02x reads, no write
+#     premium, hours-long entries) and spec'd as such until 2026-08-11 — but
+#     the cache is AUTOMATIC and write-free, and docs/DEEPSEEK_CACHE_MAP.md P3
+#     measured a prefix still FULLY warm (hit=1792 / miss=47) after a 900s
+#     UNTOUCHED gap. Nothing was going cold, so a keep-alive converts no cold
+#     read into a warm one; it is pure spend billed to the customer's own key.
+#     Measured head-on rather than argued:
+#     benchmarks/native_cache_baseline_results_deepseek_n36.json puts warming's
+#     incremental saving at -1.27% (n=36: 3 sessions x 12 turns per arm) against
+#     a customer already on native caching — negative, i.e. the pings cost more
+#     than they save. Same demotion, same citations, one layer up in
+#     _WARM_INACTIVE_REASONS (api/server.py), which only blocks NEW enables;
+#     this map is what stops an org that enabled deepseek BEFORE that from still
+#     buying pings. Per the map's own P3 conclusion ("Brevitas lever — this is
+#     why DeepSeek's product is measurement, not warming"): warming DeepSeek is
+#     structurally unprofitable and the policy must not schedule DeepSeek pings
+#     on short gaps. There, Brevitas sells proof and settlement, not a cache.
 #   - groq/fireworks: 0.50x reads — a ping costs exactly what a return saves,
 #     so warming can never net positive.
 #   - perplexity: no cached-input discount exists; there is nothing to warm.
+#
+# DROPPING A PROVIDER FROM THIS MAP STRANDS NO MONEY. Reservations are made and
+# released by the store, which keys off its own _WARM_PROVIDERS (api/store.py)
+# and not this dict, so a row reserved before a demotion still claims, still
+# settles and still purges. What changes is _warm_one: with no spec it stops
+# before the rate limiter and before any provider call, and settles
+# 'prefix_invalid' — which books $0, releases the entire reservation and stops
+# the prefix permanently, so the row is claimed at most once more and never
+# pinged again.
 WARM_PROVIDER_SPECS: dict[str, dict[str, Any]] = {
     "anthropic": {
         "endpoint_url": "https://api.anthropic.com/v1/messages",
@@ -485,18 +486,6 @@ WARM_PROVIDER_SPECS: dict[str, dict[str, Any]] = {
         # are calibrated to this provider (see _warm_break_even_by_provider).
         "read_cost_fraction": 0.10,
         "ttl_seconds": 300,
-    },
-    "deepseek": {
-        # OpenAI-compatible chat/completions at the same base URL the proxy
-        # routes deepseek traffic to (brevitas/proxy _UPSTREAMS).
-        "endpoint_url": "https://api.deepseek.com/v1/chat/completions",
-        "operation": "chat.completions",
-        "build_body": _warm_deepseek_body,
-        "build_headers": _warm_deepseek_headers,
-        # Automatic prefix cache: hits bill at 0.02x of input with no write
-        # premium, and the entry persists hours while in use.
-        "read_cost_fraction": 0.02,
-        "ttl_seconds": 14_400,
     },
 }
 
@@ -512,7 +501,20 @@ def _warm_break_even_by_provider(roi_break_even_p: float) -> dict[str, float]:
     ping_reserve_usd is already observer-priced per row at the stored model,
     and the flat reserve_usd_per_mtok floor only ever over-reserves (a safe
     upper bound), matching the warm_due_claim contract in migration
-    202607280003."""
+    202607280003.
+
+    ONE ROW TODAY, and that is not a bug in the derivation. deepseek's 0.0204
+    came out of this exact rule and left with its spec on 2026-08-11: the rule
+    prices a ping against a full-price MISS, and DEEPSEEK_CACHE_MAP.md P3
+    (prefix still fully warm at a 900s untouched gap) shows the alternative to
+    pinging DeepSeek is a free hit, not a miss — so f / (1 - f) was answering a
+    question DeepSeek's automatic cache never asks. Absence from this map does
+    NOT make a provider unclaimable: warm_due_claim falls back to the flat
+    anthropic-calibrated scalar for anything missing (api/store.py, mirroring
+    migration 202607280003's jsonb validator). That fallback is 0.11 against
+    deepseek's old 0.0204, so dropping the row can only claim FEWER rows, never
+    more — and the ones still claimed hit _warm_one's spec gate and settle
+    'prefix_invalid' before a single dollar moves."""
     return {
         provider: (
             roi_break_even_p if provider == "anthropic"
@@ -1415,11 +1417,25 @@ def _canary_actual_usd(provider: str, model: str, receipt: Any,
     return float(estimate)
 
 
+# Where each probe leg is sent. Its own literal table, deliberately NOT read
+# off WARM_PROVIDER_SPECS: the canary is Brevitas-funded measurement on a
+# Brevitas-owned probe key against Brevitas's own account, so it is not gated on
+# a provider being warmable — deepseek left the warm specs on 2026-08-11
+# precisely BECAUSE measurement said warming it converts nothing, and the job
+# that produces that kind of measurement has to keep running. Reading the warm
+# specs here would have made a demotion there KeyError a probe mid-cycle.
+_CANARY_ENDPOINTS: dict[str, tuple[str, str]] = {
+    "anthropic": ("https://api.anthropic.com/v1/messages", "messages"),
+    "deepseek": ("https://api.deepseek.com/v1/chat/completions",
+                 "chat.completions"),
+}
+
+
 async def _canary_send(provider: str, model: str, prefix: str) -> tuple[int, dict]:
-    spec = WARM_PROVIDER_SPECS[provider]
+    endpoint_url, operation = _CANARY_ENDPOINTS[provider]
     return await asyncio.to_thread(
         _send_warm_ping, provider,
-        {"endpoint_url": spec["endpoint_url"], "operation": spec["operation"]},
+        {"endpoint_url": endpoint_url, "operation": operation},
         _canary_body(provider, model, prefix),
         _canary_headers(provider, _canary_key(provider)))
 
