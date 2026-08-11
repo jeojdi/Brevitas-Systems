@@ -345,16 +345,25 @@ edits. A catalog alert from `min(...)` identifies at least one invalid replica; 
 `absent(...)` alert means the authoritative loop is not reporting at all. Manual recovery
 remains authenticated and auditable.
 
-**Billing-volume alerts and how to arm them.** `BillableSavingsStalledWhileServingTraffic`
-(page) and `VerifiedSavingsDollarsCollapsedWhileRowsContinue` (ticket) are the only two
-"too little good" rules — every other billing alert is a "too much bad" rule and reads
-green when the money path produces nothing at all, which is exactly the 2026-07-17 stall.
-The rows rule watches `brevitas_billing_savings_rows_total{billable="true"}` against live
-external traffic; the dollars rule watches `brevitas_billing_verified_savings_usd_total`
-against those same rows, because a pipeline that keeps writing rows repriced to nothing
-(2026-07-29) leaves the rows rule green.
+**Billing-volume alerts and how to arm them.** The "too little good" rules — every other
+billing alert is a "too much bad" rule and reads green when the money path produces
+nothing at all, which is exactly the 2026-07-17 stall — are now five:
+`BillableSavingsStalledWhileServingTraffic` (page) and
+`VerifiedSavingsDollarsCollapsedWhileRowsContinue` (ticket), plus the three ratio rules
+added 2026-08-11 — `AuthoritativeUsageRowRatioCollapsed` (page),
+`VerifiedSavingsConversionCollapsed` (page) and `VerifiedSavingsRowRatioDegraded`
+(ticket; its 0.50 threshold is uncalibrated and MUST be recalibrated against the first
+armed week — see its `arming` annotation). The rows rule watches
+`brevitas_billing_savings_rows_total{billable="true"}` against live external traffic; the
+dollars rule watches `brevitas_billing_verified_savings_usd_total` against those same
+rows, because a pipeline that keeps writing rows repriced to nothing (2026-07-29) leaves
+the rows rule green. A sixth rule, `BillingDetectiveControlsDisarmedWhileServingTraffic`
+(ticket), is deliberately UNGATED: it fires while `brevitas_alerting_armed_billing_volume`
+stays at `vector(0)` with external traffic flowing, so a disarmed detective control can no
+longer read as the same green as a healthy one.
 
-Both are **disarmed** and cannot fire today. Arming is a one-line change in
+All five gated rules are **disarmed** and cannot fire today — flipping
+`brevitas_alerting_armed_billing_volume` arms all five at once. Arming is a one-line change in
 `observability/prometheus/alerts.yml`: change the recorded gate's `expr` from `vector(0)`
 to `vector(1)` and flip its `labels.gate` from `"disarmed"` to `"armed"` so the label stays
 accurate. The three gates and their preconditions:
