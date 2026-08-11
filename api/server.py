@@ -6324,25 +6324,153 @@ def admin_analytics(
     return _posthog_admin_summary(int(range[:-1]))
 
 
+# ── Date-range filtering for the per-dimension stats lists ────────────────────
+# The store predicate these routes ultimately hit is usage_grouped, defined in
+# supabase/migrations/202607280035_usage_read_tenant_scope.sql:371-372:
+#     and (p_start is null or usage.ts >= p_start)
+#     and (p_end   is null or usage.ts <  p_end)
+# — a HALF-OPEN [p_start, p_end) window over a timestamptz column.
+#
+# This API surface deliberately speaks CALENDAR DAYS instead, inclusive on BOTH
+# ends, because the question being asked is "what did last Tuesday cost?": a
+# caller sending start=end=2026-08-04 means all of that Tuesday. Passing those
+# two dates straight through to a half-open predicate would return NOTHING
+# (ts >= Tue 00:00 AND ts < Tue 00:00 is empty), so _stats_range_window ends the
+# window at end+1 day midnight. That +1 day is the whole reason this conversion
+# exists; tests/test_stats_date_range.py pins it against the migration text so a
+# future refactor cannot quietly drop the last day of every range.
+#
+# UTC, never local time: usage_log.ts is timestamptz and the warming holdout
+# keys on the UTC day, so a stats "day" that drifted with the caller's timezone
+# would stop reconciling against /v1/warming/attribution — which already uses
+# this same YYYY-MM-DD-in-UTC convention (_warm_attribution_day).
+_STATS_RANGE_MAX_DAYS = 366
+# One leap-safe year is the widest question a customer actually asks (year-over
+# -year), and bounding it is what stops one authenticated request from ordering
+# a full-table timestamptz scan. The RPC's own p_limit caps ROWS RETURNED
+# (ADMIN_RESULT_MAX) but not the rows SCANNED, so the bound has to live here.
+_STATS_RANGE_DEFAULT_DAYS = 30
+# Only reached when exactly one of start/end is supplied; mirrors the 30-day
+# default window /v1/warming/attribution already uses, rather than inventing a
+# second default for the same shape of question.
+
+
+def _stats_range_day(value: str, field: str, default: date) -> date:
+    """YYYY-MM-DD or nothing, parsed exactly as _warm_attribution_day parses its
+    own from/to — same convention, same strictness, so the two date-scoped read
+    surfaces cannot disagree about what a day is.
+
+    Measured, not assumed: %Y-%m-%d rejects trailing junk ('2026-08-04 x'),
+    two-digit years ('26-08-04') and impossible dates ('2026-02-30'), while
+    accepting optional zero-padding ('2026-8-4'). Every spelling it accepts
+    resolves to the SAME calendar day, so the one bit of leniency here cannot
+    land a caller on the wrong day's money. tests/test_stats_date_range.py pins
+    both halves of that.
+    """
+    if not value:
+        return default
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"{field} must be YYYY-MM-DD") from exc
+
+
+def _stats_day_start_iso(day: date) -> str:
+    """Midnight UTC on `day` — the instant usage_grouped compares usage.ts to."""
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+
+
+def _store_honors_stats_date_range() -> bool:
+    """Does the active store actually FILTER on start/end, or merely accept them?
+
+    hasattr cannot answer this: BOTH stores expose get_stats_by_*(..., start,
+    end) with identical signatures, and only one of them applies the dates.
+      * SupabaseUsageStore._usage_group forwards them as p_start/p_end to the
+        usage_grouped RPC, which filters on them (migration 202607280035).
+      * UsageStore.get_stats_by_* accept start/end and then call
+        _legacy_group(key_hash, field, pipeline) — the dates are DISCARDED, so
+        the call returns the ALL-TIME aggregate.
+    Threading dates into that second store would answer "what did last Tuesday
+    cost?" with the lifetime total wearing Tuesday's label, which is the exact
+    class of confidently-wrong money number this codebase refuses to emit. So a
+    store that cannot filter refuses loudly instead (501) and never guesses.
+
+    Production is unaffected: make_store() raises unless BREVITAS_STORE=supabase
+    with credentials in a hosted runtime, so the live backend is always the one
+    that filters. A store can override the probe by declaring
+    `supports_stats_date_range`; the fallback is the same Supabase-vs-SQLite
+    discriminator already used to pick the job store at module import.
+    """
+    declared = getattr(_store, "supports_stats_date_range", None)
+    if isinstance(declared, bool):
+        return declared
+    return hasattr(_store, "_request")
+
+
+def _stats_range_window(start: str, end: str) -> dict[str, str]:
+    """Optional inclusive YYYY-MM-DD pair -> store kwargs for the stats getters.
+
+    Returns an EMPTY dict when the caller passed neither, so the store call is
+    byte-for-byte the one that shipped before this feature existed. That is the
+    backward-compatibility guarantee, and it is enforced at the CALL, not just
+    on the result: some store getters take no start/end at all (SupabaseUsageStore
+    .get_stats_by_run has no **_ignored), so unconditionally passing start=""/
+    end="" would turn a working request into a TypeError.
+
+    Validation order is deliberate: malformed input is a client error on every
+    backend, so the 400s are raised before the backend-capability 501.
+    """
+    if not start and not end:
+        return {}
+    today = datetime.now(timezone.utc).date()
+    day_end = _stats_range_day(end, "end", today)
+    day_start = _stats_range_day(
+        start, "start", day_end - timedelta(days=_STATS_RANGE_DEFAULT_DAYS))
+    if day_start > day_end:
+        raise HTTPException(status_code=400, detail="start must not exceed end")
+    # Inclusive on both ends, so a single-day request spans 1, not 0.
+    if (day_end - day_start).days + 1 > _STATS_RANGE_MAX_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"start..end must span at most {_STATS_RANGE_MAX_DAYS} days")
+    if not _store_honors_stats_date_range():
+        raise HTTPException(
+            status_code=501,
+            detail="Date-range stats are not supported by this store backend")
+    return {"start": _stats_day_start_iso(day_start),
+            # +1 day: the predicate is `ts < p_end`, so the exclusive bound has
+            # to be the midnight AFTER the last day the caller asked for.
+            "end": _stats_day_start_iso(day_end + timedelta(days=1))}
+
+
 @app.get("/v1/stats/pipelines")
 @limiter.limit("120/minute")
-def stats_pipelines(request: Request, kh: str = Depends(_authenticated)):
+def stats_pipelines(request: Request, start: str = Query(""), end: str = Query(""),
+                    kh: str = Depends(_authenticated)):
     context = _require_scope(request, kh, "usage:read_own")
-    return _spend_filtered_rows(context, _store.get_stats_by_pipeline(kh))
+    window = _stats_range_window(start, end)
+    return _spend_filtered_rows(context, _store.get_stats_by_pipeline(kh, **window))
 
 
 @app.get("/v1/stats/agents")
 @limiter.limit("120/minute")
-def stats_agents(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
+def stats_agents(request: Request, pipeline: str = "", start: str = Query(""),
+                 end: str = Query(""), kh: str = Depends(_authenticated)):
     context = _require_scope(request, kh, "usage:read_own")
-    return _spend_filtered_rows(context, _store.get_stats_by_agent(kh, pipeline=pipeline))
+    window = _stats_range_window(start, end)
+    return _spend_filtered_rows(
+        context, _store.get_stats_by_agent(kh, pipeline=pipeline, **window))
 
 
 @app.get("/v1/stats/runs")
 @limiter.limit("120/minute")
-def stats_runs(request: Request, pipeline: str = "", kh: str = Depends(_authenticated)):
+def stats_runs(request: Request, pipeline: str = "", start: str = Query(""),
+               end: str = Query(""), kh: str = Depends(_authenticated)):
     context = _require_scope(request, kh, "usage:read_own")
-    return _spend_filtered_rows(context, _store.get_stats_by_run(kh, pipeline=pipeline))
+    window = _stats_range_window(start, end)
+    return _spend_filtered_rows(
+        context, _store.get_stats_by_run(kh, pipeline=pipeline, **window))
 
 
 _COMPRESSOR_STATUS: dict = {"ts": 0.0, "data": None}
