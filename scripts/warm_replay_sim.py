@@ -27,6 +27,7 @@ ping time, write-priced when the chain has lapsed. Every touch (arrival or ping)
 refreshes the entry to now + TTL.
 
   net(policy) = incremental_savings(policy) - ping_cost(policy)
+                - tier_premium(policy)
 
 where incremental savings counts only arrivals that landed warm under the policy
 AND would have landed cold under never-warm. That "would have been cold" clause
@@ -35,6 +36,18 @@ to claim, and billing it would be exactly the overclaim invariant 1 forbids.
 Savings are non-negative by construction because pings only ever refresh an
 entry -- warmth is monotone in touches, so policy-warm arrivals are a superset
 of baseline-warm arrivals.
+
+WRITE TIERS (why the never-warm baseline is not the only counterfactual)
+-----------------------------------------------------------------------
+An Anthropic request also CHOOSES what a write buys: the 5m tier (1.25x, 300s)
+or the 1h tier (2.0x, 3600s), or no cache_control at all (1.0x, no read). The
+shipped engine already picks between all three per request on observed session
+spacing (token_efficiency_model/lossless/engine.py:406-442), so "never-warm" is
+not what a customer without the warmer actually gets -- `ttl-1h-only` is. Every
+policy declares a tier per arrival (default: the provider default, which leaves
+the pre-tier policies bit-identical), the extra dollars a tier costs on the
+customer's own arrivals are charged as `tier_premium`, and net is the one
+subtraction against the baseline's per-arrival bill.
 
 CACHE KEY GRANULARITY (the SUTVA point)
 ---------------------------------------
@@ -59,7 +72,7 @@ import os
 import random
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -70,20 +83,58 @@ SCHEMA = "brevitas.warm-replay-sim.v1"
 # (input / cached / write for claude-sonnet-5 and deepseek-chat):
 #   anthropic  3.0 input, 0.3 cached (0.10x), 3.75 write (1.25x), 300s TTL
 #   deepseek   0.14 input, 0.0028 cached (0.02x), 0.14 write (1.00x), 14400s
+#
+# ANTHROPIC'S SECOND TIER (long_*), added so the shipped engine's own default is
+# representable here. Every number is sourced, not assumed:
+#   * long_write_multiplier 2.0 -- docs/ANTHROPIC_CACHE_MAP.md "Pricing basis"
+#     (`cache-write-5m 1.25x - cache-write-1h 2.00x`), and the code that bills
+#     it: brevitas/receipts.py:432 prices `cache_write_1h_tokens` at
+#     `price.get("write_1h", price["input"] * 2.0)`. Anthropic's published
+#     prompt-caching rates are the same 1.25x / 2x pair.
+#   * read 0.10x in BOTH tiers -- there is one cache-read rate; the tier changes
+#     what a write costs and how long the entry lives, not what a read costs
+#     (MODEL_PRICES has a single `cached` rate; P5's 1h read billed as an
+#     ordinary `cache_read_input_tokens`).
+#   * long_ttl_seconds 3600 -- nominal. MEASUREMENT STATUS: P5 proved the tier
+#     is live and outlives the 5m clock (write ttl:"1h" -> HIT at 360s while the
+#     same-timeline 5m fan prefixes were already cold), but the map lists "1h
+#     tier exact TTL" under what remains unmeasured: it was never swept to its
+#     own expiry. 3600 is the provider's stated hour, not our stopwatch.
+#   * refresh-on-read is PROVEN for the 5m tier (P1: read@4min => HIT@8min; no
+#     read => MISS@8min). For the 1h tier it is provider-doc-asserted and
+#     inherited from token_efficiency_model/lossless/engine.py:406-412, which
+#     ships on that assumption. If it is wrong, every 1h number below is
+#     OPTIMISTIC for the 1h tier -- see the sensitivity note in selftest.
 DEFAULT_PHYSICS: dict[str, dict[str, float]] = {
     "anthropic": {
         "ttl_seconds": 300.0,
         "read_cost_fraction": 0.10,
         "write_multiplier": 1.25,
         "input_price_per_mtok": 3.0,
+        "long_ttl_seconds": 3_600.0,
+        "long_write_multiplier": 2.00,
+        # 1.0 = a read refreshes the hour (what the shipped engine assumes).
+        # Flip to 0.0 (--long-refresh-on-read anthropic=0) to price the opposite
+        # hypothesis: the entry dies 3600s after its WRITE whatever reads it.
+        # A float because the whole physics spec is float-typed end to end, so
+        # the CLI override plumbing works unchanged.
+        "long_refresh_on_read": 1.0,
     },
     "deepseek": {
+        # No second tier: DeepSeek's cache is automatic, with no per-request TTL
+        # control to choose. long_* stay 0.0 = "this provider has one tier".
         "ttl_seconds": 14_400.0,
         "read_cost_fraction": 0.02,
         "write_multiplier": 1.00,
         "input_price_per_mtok": 0.14,
     },
 }
+
+# Write tiers a policy may ask for on a given touch. The simulator prices all
+# three; which ones a policy can name is the policy's business.
+TIER_5M = "5m"      # anthropic default ephemeral: 1.25x write, 300s
+TIER_1H = "1h"      # anthropic extended tier: 2.0x write, 3600s
+TIER_NONE = "none"  # no cache_control at all: 1.0x input, no read, no write
 
 # v1 knob defaults, from api/worker.py _warm_claim_kwargs().
 V1_DEFAULTS: dict[str, float] = {
@@ -127,6 +178,11 @@ class Physics:
     oracle's per-gap decomposition below depends on the hard-TTL assumption.
     Feed Plane G's `warm_ttl_observations` posterior in via --provider-ttl once
     it has enough mass to argue with.
+
+    `long_ttl_seconds` / `long_write_multiplier` are the provider's SECOND write
+    tier when it sells one (anthropic's 1h: 3600s at 2.0x). Both zero means one
+    tier, which is the honest model for deepseek -- its cache is automatic, so
+    there is no tier a request could select.
     """
 
     provider: str
@@ -134,6 +190,40 @@ class Physics:
     read_cost_fraction: float
     write_multiplier: float
     input_price_per_mtok: float
+    # Second (long) write tier, 0.0 when the provider has none. See the
+    # DEFAULT_PHYSICS block for where 3600s / 2.0x come from and what is
+    # measured versus stated.
+    long_ttl_seconds: float = 0.0
+    long_write_multiplier: float = 0.0
+    long_refresh_on_read: float = 1.0
+
+    @property
+    def has_long_tier(self) -> bool:
+        return self.long_ttl_seconds > 0.0 and self.long_write_multiplier > 0.0
+
+    def refreshes_on_read(self, tier: str) -> bool:
+        """Does a cache HIT restart this tier's clock?
+
+        For the 5m tier: PROVEN yes (docs/ANTHROPIC_CACHE_MAP.md P1 -- a read at
+        t=4min carried a 7704-token prefix across an 8-minute gap that killed
+        the un-read control). For the 1h tier: provider-doc-asserted, never
+        swept in-house, and switchable here precisely so the exposure is a
+        measured band rather than a footnote.
+        """
+        if tier == TIER_1H and self.has_long_tier:
+            return self.long_refresh_on_read > 0.0
+        return True
+
+    def ttl_for(self, tier: str) -> float:
+        """Seconds of warmth a touch at `tier` buys."""
+        if tier == TIER_1H and self.has_long_tier:
+            return self.long_ttl_seconds
+        return self.ttl_seconds
+
+    def write_multiplier_for(self, tier: str) -> float:
+        if tier == TIER_1H and self.has_long_tier:
+            return self.long_write_multiplier
+        return self.write_multiplier
 
     def base_usd(self, tokens: int) -> float:
         """Undiscounted input cost of `tokens` prefix tokens."""
@@ -142,8 +232,8 @@ class Physics:
     def read_usd(self, tokens: int) -> float:
         return self.read_cost_fraction * self.base_usd(tokens)
 
-    def write_usd(self, tokens: int) -> float:
-        return self.write_multiplier * self.base_usd(tokens)
+    def write_usd(self, tokens: int, tier: str = TIER_5M) -> float:
+        return self.write_multiplier_for(tier) * self.base_usd(tokens)
 
     def hit_savings_usd(self, tokens: int) -> float:
         """Dollars an arrival saves by landing warm instead of cold."""
@@ -650,6 +740,9 @@ class PingRequest:
     customer: str
     prefix_tokens: int
     reserved_usd: float
+    # Write tier this ping asks for. The shipped worker pings on the provider's
+    # default tier, so TIER_5M keeps every pre-existing policy byte-identical.
+    tier: str = TIER_5M
 
 
 class Policy:
@@ -663,6 +756,22 @@ class Policy:
 
     def on_arrival(self, arrival: Arrival, cache_read: bool) -> None:
         raise NotImplementedError
+
+    def write_tier(self, arrival: Arrival) -> str:
+        """Which cache tier this arrival's own request should ask for.
+
+        Called by the engine EXACTLY ONCE per arrival, BEFORE the arrival is
+        priced and before on_arrival. A policy may mutate its own state here --
+        the shipped engine reads `router.session_gap()` *after* `router.decide()`
+        has already folded this request's gap into the EWMA
+        (token_efficiency_model/lossless/engine.py:411 vs router.py:266-268), so
+        the tier a request gets is chosen with that request's own gap included.
+        Modelling it any other way would lag the shipped decision by one call.
+
+        The default is the provider's default tier, which is what every
+        ping-based policy in this file has always assumed.
+        """
+        return TIER_5M
 
     def on_tick(self, now: float) -> list[PingRequest]:
         raise NotImplementedError
@@ -693,6 +802,148 @@ class NeverWarmPolicy(Policy):
 
     def on_settle(self, req: PingRequest, now: float, spent_usd: float) -> None:
         return None
+
+
+@dataclass
+class _TierState:
+    """Per-session state the shipped tier decision reads: router.py's gap EWMA,
+    its repeat counter, and the last-seen clock the EWMA is computed from."""
+
+    gap_ewma: float = -1.0     # router.py:92 -- -1.0 means "no gap observed yet"
+    repeats: int = 0           # router.py `repeat_observations`
+    last_ts: float = 0.0
+
+
+def _hits_to_break_even(phys: Physics, tier: str) -> int:
+    """router.py cache_write_allowed: how many later reads a write of this tier
+    must earn before it is allowed at all.
+
+    ceil(write_premium / read_gain) with read_gain = 1 - read_fraction. At
+    anthropic defaults that is ceil(0.25/0.90) = 1 for the 5m tier and
+    ceil(1.00/0.90) = 2 for the 1h tier -- the shipped constants, derived here
+    from physics instead of hardcoded so an overridden price sheet stays
+    self-consistent.
+    """
+    read_gain = max(1e-6, 1.0 - phys.read_cost_fraction)
+    premium = max(0.0, phys.write_multiplier_for(tier) - 1.0)
+    return max(1, math.ceil(premium / read_gain))
+
+
+class _AnthropicTierMixin(Policy):
+    """The shipped engine's Anthropic TTL-tier decision, replayed.
+
+    This exists because every Anthropic warming number this simulator has ever
+    produced was measured against a never-warm counterfactual the company's own
+    shipped engine already beats. token_efficiency_model/lossless/engine.py
+    :406-442 does this on EVERY Anthropic request, warming or no warming:
+
+        gap = router.session_gap(session_id)            # EWMA, -1 if unknown
+        ttl = "1h" if 300.0 < gap <= 3600.0 else ""
+        if gap > 3600.0: allowed = False                # reuse_outside_cache_ttl
+        else:            allowed, _ = router.cache_write_allowed(session_id, ttl)
+        if allowed: apply_anthropic_cache(body, ttl=ttl)   # else NO cache_control
+
+    with router.py:266-268's EWMA (`gap if ewma < 0 else 0.5*ewma + 0.5*gap`)
+    and router.py's ROI gate (see _hits_to_break_even).
+
+    A "session" here is one `warm_prefixes` row (org, customer, provider,
+    prefix_hash) -- the closest analogue the trace carries to the proxy's
+    session_id, and the same granularity the engine's gap EWMA lives at. Note
+    the cache itself stays org-scoped (Arrival.cache_key), so siblings still
+    keep each other warm across differing tier decisions; that asymmetry is
+    real, not a modelling shortcut.
+
+    Two knobs, both defaulting to shipped behaviour, keep the finding
+    decomposable instead of confounded:
+
+      * `refuse_beyond_1h` -- the gap>3600 refusal. An arrival there sends NO
+        cache_control: it pays 1.0x plain input (CHEAPER than the 1.25x write
+        the never-warm baseline pays) and gets no read even if a sibling left
+        the entry warm, because a read needs a breakpoint too.
+      * `roi_gate` -- the repeat-observations gate. Off, the tier lever is
+        measured on its own; on, you get what production actually does.
+
+    NOT modelled: router.py's `cache_blocked_until` cooldown after writes that
+    never converted. Direction of the omission is stated rather than guessed --
+    without it this policy writes at least as often as production would, so its
+    numbers are an UPPER bound on the shipped engine, never a lower one.
+    """
+
+    refuse_beyond_1h = True
+    roi_gate = True
+
+    def reset(self, cfg: "SimConfig", physics: dict[str, Physics]) -> None:
+        super().reset(cfg, physics)
+        self._tier_physics = physics
+        self._tier_state: dict[tuple[str, str, str, str], _TierState] = {}
+        # V1-derived policies already own a decisions counter; NeverWarm does
+        # not. Either way the tier verdicts land in the same report line.
+        if getattr(self, "decisions", None) is None:
+            self.decisions = defaultdict(int)
+
+    def write_tier(self, arrival: Arrival) -> str:
+        phys = self._tier_physics.get(arrival.provider)
+        if phys is None or not phys.has_long_tier:
+            # A provider with one tier has no decision to make.
+            return TIER_5M
+        key = arrival.prefix_key
+        state = self._tier_state.get(key)
+        if state is None:
+            # First request of a session: router._observe finds no stored
+            # fingerprint, so lcp is 0, repeat_observations stays 0 and no gap
+            # exists. gap_ewma reads -1 -> the 5m tier, and the ROI gate (which
+            # needs >= 1 repeat) refuses the write outright.
+            state = _TierState()
+            self._tier_state[key] = state
+        else:
+            gap = arrival.ts - state.last_ts
+            state.gap_ewma = (gap if state.gap_ewma < 0.0
+                              else 0.5 * state.gap_ewma + 0.5 * gap)
+            # Same prefix_hash => byte-identical prefix => lcp_frac > 0.
+            state.repeats += 1
+        state.last_ts = arrival.ts
+
+        gap_ewma = state.gap_ewma
+        tier = TIER_1H if 300.0 < gap_ewma <= 3600.0 else TIER_5M
+        if self.refuse_beyond_1h and gap_ewma > 3600.0:
+            self.decisions["tier_no_write_outside_ttl"] += 1
+            return TIER_NONE
+        if self.roi_gate and state.repeats < _hits_to_break_even(phys, tier):
+            self.decisions[f"tier_no_write_unproven_{tier}"] += 1
+            return TIER_NONE
+        self.decisions[f"tier_{tier}"] += 1
+        return tier
+
+    def on_arrival(self, arrival: Arrival, cache_read: bool) -> None:
+        # Tier state is advanced in write_tier (which the engine calls first);
+        # everything else is the wrapped policy's business.
+        super().on_arrival(arrival, cache_read)
+
+
+class Ttl1hOnlyPolicy(_AnthropicTierMixin, NeverWarmPolicy):
+    """THE HONEST ANTHROPIC COUNTERFACTUAL: no keep-alive pings at all, just the
+    shipped engine's TTL tiering.
+
+    This is what a customer already gets today with the warmer switched off, so
+    it -- not never-warm -- is the bar any warming policy has to clear to be
+    worth its own code. It pings nothing, so its entire net comes from writing
+    at the tier the observed session gap justifies.
+    """
+
+    name = "ttl-1h-only"
+
+
+class Ttl1hTierOnlyPolicy(Ttl1hOnlyPolicy):
+    """ttl-1h-only with the engine's two refusals switched off: always write,
+    tier chosen by gap.
+
+    Isolates the TTL lever from the ROI gate and the >1h refusal, so the
+    headline comparison cannot be blamed on either. Not a shipped candidate.
+    """
+
+    name = "ttl-1h-tier-only"
+    refuse_beyond_1h = False
+    roi_gate = False
 
 
 @dataclass
@@ -1823,6 +2074,25 @@ class LearnedIndexFixedWindowPolicy(LearnedIndexFixedPolicy):
     horizon_mode = "window"
 
 
+class V1HeuristicTtl1hPolicy(_AnthropicTierMixin, V1HeuristicPolicy):
+    """v1's keep-alive pings ON TOP OF the shipped TTL tiering.
+
+    This is what production actually runs when the warmer is enabled, and the
+    only comparison that answers the operator's question: given the engine is
+    already tiering, does warming still add money? Pings stay on the provider
+    default tier (that is what the worker sends); the tier only moves because
+    the customer's own arrivals move it.
+    """
+
+    name = "v1heuristic+ttl-1h"
+
+
+class LearnedIndexFixedTtl1hPolicy(_AnthropicTierMixin, LearnedIndexFixedPolicy):
+    """The shipped-converged learned index ON TOP OF the shipped TTL tiering."""
+
+    name = "learned-index-fixed+ttl-1h"
+
+
 POLICIES: dict[str, Callable[[], Policy]] = {
     "v1heuristic": V1HeuristicPolicy,
     "never-warm": NeverWarmPolicy,
@@ -1830,6 +2100,10 @@ POLICIES: dict[str, Callable[[], Policy]] = {
     "learned-index-stoploss": LearnedIndexStopLossPolicy,
     "learned-index-fixed": LearnedIndexFixedPolicy,
     "learned-index-fixed-window": LearnedIndexFixedWindowPolicy,
+    "ttl-1h-only": Ttl1hOnlyPolicy,
+    "ttl-1h-tier-only": Ttl1hTierOnlyPolicy,
+    "v1heuristic+ttl-1h": V1HeuristicTtl1hPolicy,
+    "learned-index-fixed+ttl-1h": LearnedIndexFixedTtl1hPolicy,
 }
 
 
@@ -1876,10 +2150,16 @@ class CustomerStats:
     ping_cost_usd: float = 0.0
     pings: int = 0
     pings_after_last_arrival: int = 0
+    # Dollars this policy's TIER choices added to the customer's own arrivals
+    # relative to the never-warm baseline: a 2.0x 1h write where the baseline
+    # paid 1.25x, or a full-price uncached arrival where the baseline read a
+    # warm entry for 0.10x. Always a cost, never a saving -- the cheaper
+    # direction lands in savings_usd, and both come from one per-arrival delta.
+    arrival_premium_usd: float = 0.0
 
     @property
     def net_usd(self) -> float:
-        return self.savings_usd - self.ping_cost_usd
+        return self.savings_usd - self.ping_cost_usd - self.arrival_premium_usd
 
 
 @dataclass
@@ -1890,6 +2170,18 @@ class ReplayResult:
     pings: int = 0
     pings_after_last_arrival: int = 0
     savings_usd: float = 0.0
+    # Extra dollars this policy's tier choices cost on the customers' own
+    # arrivals (see CustomerStats.arrival_premium_usd). Zero for every policy
+    # that writes on the provider default tier, which is all of the pre-tier
+    # ones, so their numbers are unchanged to the last cent.
+    arrival_premium_usd: float = 0.0
+    # What each arrival's prefix actually cost under this policy (write, read,
+    # or plain uncached input). The baseline pass's copy is the counterfactual
+    # every other policy is differenced against.
+    arrival_costs: list[float] = field(default_factory=list)
+    # Arrivals where the policy sent no cache_control at all. Warmth is NOT
+    # monotone across these -- see replay().
+    declined_writes: int = 0
     ticks: int = 0
     per_customer: dict[str, CustomerStats] = field(default_factory=dict)
     decisions: dict[str, int] = field(default_factory=dict)
@@ -1897,15 +2189,22 @@ class ReplayResult:
     # without re-running the replay. (ts, customer_label, usd).
     savings_events: list[tuple[float, str, float]] = field(default_factory=list)
     ping_events: list[tuple[float, str, float]] = field(default_factory=list)
+    premium_events: list[tuple[float, str, float]] = field(default_factory=list)
     # Whatever the policy learned, if it learned anything.
     learned: dict[str, Any] = field(default_factory=dict)
 
     @property
     def net_usd(self) -> float:
-        return self.savings_usd - self.ping_cost_usd
+        return self.savings_usd - self.ping_cost_usd - self.arrival_premium_usd
 
     def window(self, start_ts: float) -> tuple[float, float, dict[str, tuple[float, float]]]:
-        """(savings, ping cost, per-customer (savings, cost)) at ts >= start."""
+        """(savings, SPEND, per-customer (savings, spend)) at ts >= start.
+
+        Spend is pings plus tier premium, so `savings - spend` is net dollars
+        for a tiering policy exactly as it always was for a pinging one. Every
+        caller of this method computes net that way; folding the premium in
+        here is what keeps them right without touching them.
+        """
         savings = 0.0
         cost = 0.0
         per: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
@@ -1913,10 +2212,11 @@ class ReplayResult:
             if ts >= start_ts:
                 savings += usd
                 per[label][0] += usd
-        for ts, label, usd in self.ping_events:
-            if ts >= start_ts:
-                cost += usd
-                per[label][1] += usd
+        for events in (self.ping_events, self.premium_events):
+            for ts, label, usd in events:
+                if ts >= start_ts:
+                    cost += usd
+                    per[label][1] += usd
         return savings, cost, {k: (v[0], v[1]) for k, v in per.items()}
 
 
@@ -1925,17 +2225,34 @@ def _customer_label(org: str, customer: str) -> str:
 
 
 def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
-           baseline_warm: Sequence[bool] | None = None) -> ReplayResult:
+           baseline: "ReplayResult | None" = None) -> ReplayResult:
     """Replay `arrivals` under `policy`, returning exact dollars.
 
-    `baseline_warm` is the never-warm warm/cold verdict per arrival index. When
-    given, savings are the incremental ones only; when omitted (the baseline
-    pass itself) savings are zero by definition.
+    `baseline` is the never-warm pass. When given, money is the INCREMENTAL
+    difference against it, per arrival; when omitted (the baseline pass itself)
+    savings and premium are zero by definition.
+
+    THE MONEY IS ONE SUBTRACTION. Each arrival pays for its prefix under this
+    policy -- a write at the tier the policy asked for, a read if the entry is
+    warm, or plain uncached input if the policy sent no cache_control -- and the
+    delta against what the same arrival paid under never-warm is booked as a
+    saving when positive and as a tier premium when negative. With every policy
+    on the provider default tier the two branches collapse to the old
+    `hit_savings_usd()` on newly-warm arrivals and exactly zero elsewhere, which
+    is why the pre-tier policies' numbers do not move.
     """
     policy.reset(cfg, cfg.physics)
     expiry: dict[tuple[str, str, str], float] = {}
     warm_flags: list[bool] = []
-    result = ReplayResult(policy=policy.name, warm_flags=warm_flags)
+    arrival_costs: list[float] = []
+    baseline_warm = baseline.warm_flags if baseline is not None else None
+    baseline_costs = baseline.arrival_costs if baseline is not None else None
+    # Warmth is monotone in touches only while every tier's clock restarts on a
+    # read. Priced under the opposite hypothesis it is not, and the check below
+    # has to know that rather than fire on a legitimate outcome.
+    warmth_monotone = all(p.refreshes_on_read(TIER_1H) for p in cfg.physics.values())
+    result = ReplayResult(policy=policy.name, warm_flags=warm_flags,
+                          arrival_costs=arrival_costs)
     per_customer: dict[str, CustomerStats] = defaultdict(CustomerStats)
 
     # One string object per customer rather than one per event: at a million
@@ -1987,24 +2304,65 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
                     f"no physics configured for provider {arrival.provider!r}; "
                     f"known: {','.join(sorted(cfg.physics))}. Add one with "
                     f"--provider-ttl/--read-fraction/--write-multiplier/--input-price")
-            cache_read = expiry.get(arrival.cache_key, float("-inf")) > arrival.ts
-            expiry[arrival.cache_key] = arrival.ts + phys.ttl_seconds
+            tier = policy.write_tier(arrival)
+            if tier == TIER_NONE:
+                # No cache_control on the request: no write premium, and no read
+                # discount either -- a provider cache read needs a breakpoint,
+                # so a warm entry a sibling is holding open goes unused.
+                cache_read = False
+                paid = phys.base_usd(arrival.prefix_tokens)
+                result.declined_writes += 1
+            else:
+                cache_read = expiry.get(arrival.cache_key, float("-inf")) > arrival.ts
+                paid = (phys.read_usd(arrival.prefix_tokens) if cache_read
+                        else phys.write_usd(arrival.prefix_tokens, tier))
+                # A touch refreshes to now + the tier's TTL, and never shortens
+                # an entry that a longer-tier touch already extended. With one
+                # tier this is identical to the old unconditional assignment.
+                # The exception is a HIT on a tier whose clock reads do not
+                # restart (see Physics.refreshes_on_read): the entry keeps
+                # running down from its write.
+                if not cache_read or phys.refreshes_on_read(tier):
+                    expiry[arrival.cache_key] = max(
+                        expiry.get(arrival.cache_key, float("-inf")),
+                        arrival.ts + phys.ttl_for(tier))
             warm_flags.append(cache_read)
+            arrival_costs.append(paid)
             label = label_for(arrival.org, arrival.customer)
             stats = per_customer[label]
             stats.arrivals += 1
             stats.warm_arrivals += int(cache_read)
-            if baseline_warm is not None:
-                base = baseline_warm[len(warm_flags) - 1]
-                if cache_read and not base:
-                    gain = phys.hit_savings_usd(arrival.prefix_tokens)
+            if baseline_costs is not None and baseline_warm is not None:
+                base_warm = baseline_warm[len(warm_flags) - 1]
+                delta = baseline_costs[len(warm_flags) - 1] - paid
+                if delta > 0.0:
+                    stats.savings_usd += delta
+                    result.savings_usd += delta
+                    result.savings_events.append((arrival.ts, label, delta))
+                elif delta < 0.0:
+                    premium = -delta
+                    stats.arrival_premium_usd += premium
+                    result.arrival_premium_usd += premium
+                    result.premium_events.append((arrival.ts, label, premium))
+                if cache_read and not base_warm:
                     stats.incremental_warm_arrivals += 1
-                    stats.savings_usd += gain
-                    result.savings_usd += gain
-                    result.savings_events.append((arrival.ts, label, gain))
-                elif base and not cache_read:
-                    # Impossible: pings only add touches, and warmth is monotone
-                    # in touches. A violation means the engine lost a refresh.
+                elif (base_warm and not cache_read
+                        and result.declined_writes == 0 and warmth_monotone):
+                    # While a policy caches on every arrival, warmth is monotone
+                    # in touches (tiers only ever extend an entry), so this is
+                    # impossible and means the engine lost a refresh.
+                    #
+                    # Two things legitimately retire the invariant, and both
+                    # disarm the check rather than weaken it for everyone:
+                    #   * the policy declined a write -- the skipped write never
+                    #     refreshed the entry, so arrivals AFTER it can be cold
+                    #     here and warm in the baseline;
+                    #   * the physics say a tier's clock does not restart on a
+                    #     read (--long-refresh-on-read P=0), under which a long
+                    #     entry can die while the baseline's read-refreshed 5m
+                    #     entry lives.
+                    # Either way the loss is real money and is already charged:
+                    # the delta above books it as premium.
                     raise AssertionError(
                         "policy turned a baseline-warm arrival cold; "
                         "cache accounting is broken")
@@ -2018,8 +2376,11 @@ def replay(arrivals: Sequence[Arrival], cfg: SimConfig, policy: Policy,
             phys = cfg.physics[req.provider]
             warm_at_ping = expiry.get(req.cache_key, float("-inf")) > tick_ts
             spent = (phys.read_usd(req.prefix_tokens) if warm_at_ping
-                     else phys.write_usd(req.prefix_tokens))
-            expiry[req.cache_key] = tick_ts + phys.ttl_seconds
+                     else phys.write_usd(req.prefix_tokens, req.tier))
+            if not warm_at_ping or phys.refreshes_on_read(req.tier):
+                expiry[req.cache_key] = max(
+                    expiry.get(req.cache_key, float("-inf")),
+                    tick_ts + phys.ttl_for(req.tier))
             result.ping_cost_usd += spent
             result.pings += 1
             label = label_for(req.prefix_key[0], req.customer)
@@ -2071,6 +2432,15 @@ class OracleResult:
 
 def hindsight_oracle(arrivals: Sequence[Arrival], cfg: SimConfig) -> OracleResult:
     """The best any ping schedule could have done, knowing the whole trace.
+
+    SCOPE, AND IT MATTERS: this is the optimum over PING SCHEDULES at the
+    provider's default write tier. It is not the optimum over everything a
+    policy may do. A policy that also chooses Anthropic's 1h tier can and does
+    beat this number on periodic traces -- an hour of warmth for one 2.0x write
+    is not a schedule of 0.10x pings, so it is outside the space this bound is
+    taken over. Read a >100% of-oracle as "the oracle is the wrong yardstick for
+    that policy", never as an accounting bug. A tier-aware oracle would be a
+    different (small, per-gap DP) computation; it is not attempted here.
 
     For a hard-TTL provider the backward pass collapses to a per-gap decision,
     and the collapse is exact rather than a heuristic:
@@ -2165,7 +2535,7 @@ def evaluate(arrivals: Sequence[Arrival], cfg: SimConfig,
         factory = POLICIES.get(name)
         if factory is None:
             raise KeyError(f"unknown policy {name!r}; known: {sorted(POLICIES)}")
-        results.append((name, replay(arrivals, cfg, factory(), baseline.warm_flags)))
+        results.append((name, replay(arrivals, cfg, factory(), baseline)))
 
     span = arrivals[-1].ts - arrivals[0].ts
     payload: dict[str, Any] = {
@@ -2202,6 +2572,8 @@ def evaluate(arrivals: Sequence[Arrival], cfg: SimConfig,
             "net_usd": res.net_usd,
             "savings_usd": res.savings_usd,
             "ping_cost_usd": res.ping_cost_usd,
+            "arrival_premium_usd": res.arrival_premium_usd,
+            "declined_writes": res.declined_writes,
             "pings": res.pings,
             "pings_after_last_arrival": res.pings_after_last_arrival,
             "warm_arrivals": sum(res.warm_flags),
@@ -2218,6 +2590,7 @@ def evaluate(arrivals: Sequence[Arrival], cfg: SimConfig,
                     "net_usd": st.net_usd,
                     "savings_usd": st.savings_usd,
                     "ping_cost_usd": st.ping_cost_usd,
+                    "arrival_premium_usd": st.arrival_premium_usd,
                     "pings": st.pings,
                     "pings_after_last_arrival": st.pings_after_last_arrival,
                     "oracle_fraction": oracle_fraction(
@@ -2260,6 +2633,15 @@ def render(payload: dict[str, Any], title: str = "") -> str:
         lines.append(f"      ping cost {_usd(pol['ping_cost_usd'])}"
                      f" over {pol['pings']} pings"
                      f" ({pol['pings_after_last_arrival']} after the last arrival)")
+        if pol.get("arrival_premium_usd") or pol.get("declined_writes"):
+            lines.append(f"      tier premium {_usd(pol['arrival_premium_usd'])}"
+                         f" on the customers' own arrivals"
+                         f"   uncached arrivals {pol.get('declined_writes', 0)}")
+        if (pol["oracle_fraction"] or 0.0) > 1.0:
+            lines.append("      NOTE of-oracle > 100% is not a bug: the hindsight"
+                         " oracle optimises PING SCHEDULES at the provider's")
+            lines.append("           default tier only. A policy that changes the"
+                         " TTL tier is playing a game the oracle cannot.")
         if pol["decisions"]:
             detail = "  ".join(f"{k}={v}" for k, v in sorted(pol["decisions"].items()))
             lines.append(f"      claim decisions: {detail}   ticks={pol['ticks']}")
@@ -2319,8 +2701,12 @@ def render_learning(payload: dict[str, Any], title: str = "",
     lines.append("-" * 92)
     lines.append("EVALUATION WINDOW -- net dollars and fraction of the hindsight optimum")
     lines.append("-" * 92)
+    lines.append("  spend = keep-alive pings + any tier premium paid on the "
+                 "customers' own arrivals;")
+    lines.append("  of-oracle can exceed 100% for a tiering policy -- the oracle "
+                 "bounds PING schedules at the default tier only.")
     lines.append(f"  {'policy':<24}{'net $':>14}{'savings $':>14}"
-                 f"{'ping cost $':>14}{'pings':>9}{'of oracle':>13}")
+                 f"{'spend $':>14}{'pings':>9}{'of oracle':>13}")
     rows: list[tuple[str, float, float, float, int]] = [
         ("never-warm", 0.0, 0.0, 0.0, 0)]
     windows: dict[str, tuple[float, float, dict[str, tuple[float, float]]]] = {}
@@ -2785,6 +3171,123 @@ def selftest(cfg_factory: Callable[[], SimConfig]) -> int:
             "[p_alive] ten silent days after 200 arrivals should read as churn")
     checks += 1
 
+    # -- anthropic's second write tier --------------------------------------
+    # The physics first. These three numbers ARE the tier lever, and a typo in
+    # any of them silently re-rates every 1h figure this file produces.
+    tier_cfg = cfg_factory()
+    aphys = tier_cfg.physics["anthropic"]
+    _assert(aphys.has_long_tier, "anthropic must carry a long (1h) write tier")
+    _assert(aphys.long_ttl_seconds == 3_600.0,
+            f"1h tier TTL drifted from the provider's hour: {aphys.long_ttl_seconds}")
+    _assert(aphys.long_write_multiplier == 2.00,
+            "1h write multiplier drifted from docs/ANTHROPIC_CACHE_MAP.md's 2.00x "
+            f"(and receipts.py's write_1h default): {aphys.long_write_multiplier}")
+    mtok = 1_000_000
+    _assert(abs(aphys.write_usd(mtok, TIER_1H)
+                - 2.00 * aphys.base_usd(mtok)) < 1e-12
+            and abs(aphys.write_usd(mtok, TIER_5M)
+                    - 1.25 * aphys.base_usd(mtok)) < 1e-12,
+            "tier write pricing does not follow the multipliers")
+    # One read rate, both tiers: the tier buys clock and costs write premium; it
+    # does not change what a hit costs.
+    _assert(abs(aphys.read_usd(mtok) - 0.10 * aphys.base_usd(mtok)) < 1e-12,
+            "cache read drifted from 0.10x")
+    _assert(not tier_cfg.physics["deepseek"].has_long_tier,
+            "deepseek has no selectable TTL tier and must not be given one")
+    checks += 6
+
+    # Hand-computable tier economics on the cron trace: 36 arrivals, 600s apart,
+    # 40k tokens at $3/Mtok => P = $0.12. Arrival 1 has no observed gap (EWMA
+    # -1) so it writes 5m and lands cold; arrival 2 sees gap 600 -> 1h tier, and
+    # the 5m entry is already dead, so it pays the 2.0x write (premium 0.75*P
+    # over what never-warm paid). Arrivals 3..36 then read at 0.10x an entry the
+    # hour keeps alive, saving (1.25 - 0.10)*P each.
+    cron_arrivals = SCENARIOS["cron"](0)
+    tier_payload = evaluate(cron_arrivals, cfg_factory(),
+                            ["ttl-1h-tier-only", "ttl-1h-only", "v1heuristic",
+                             "learned-index-fixed"])
+    tier_by = {p["policy"]: p for p in tier_payload["policies"]}
+    unit = 40_000 / 1e6 * 3.0
+    expected = 34 * (1.25 - 0.10) * unit - (2.00 - 1.25) * unit
+    _assert(abs(tier_by["ttl-1h-tier-only"]["net_usd"] - expected) < 1e-9,
+            f"[cron] 1h tier arithmetic: expected {expected}, got "
+            f"{tier_by['ttl-1h-tier-only']['net_usd']}")
+    _assert(abs(tier_by["ttl-1h-tier-only"]["arrival_premium_usd"]
+                - 0.75 * unit) < 1e-9,
+            "[cron] the 1h write premium must be charged, not absorbed")
+    _assert(tier_by["ttl-1h-only"]["pings"] == 0
+            and tier_by["ttl-1h-tier-only"]["pings"] == 0,
+            "a ttl-only policy that pinged is not a ttl-only policy")
+    checks += 3
+
+    # MONEY CONSERVATION. The incremental accounting (savings - pings - premium)
+    # must equal the difference of the two ABSOLUTE bills, arrival by arrival
+    # plus pings. Any double-count, any dollar booked in two places, and any
+    # tier cost quietly absorbed instead of charged breaks this identity -- it
+    # is the one check that does not trust the bookkeeping it is auditing.
+    for scen_name in ("cron", "bursty", "churned"):
+        scen_arrivals = SCENARIOS[scen_name](0)
+        conserved = evaluate(scen_arrivals, cfg_factory(),
+                             ["ttl-1h-only", "ttl-1h-tier-only",
+                              "v1heuristic+ttl-1h", "learned-index-fixed"])
+        base_obj = conserved["_objects"]["baseline"]
+        base_bill = sum(base_obj.arrival_costs) + base_obj.ping_cost_usd
+        for name, res in conserved["_objects"]["results"]:
+            bill = sum(res.arrival_costs) + res.ping_cost_usd
+            _assert(abs((base_bill - bill) - res.net_usd) < 1e-9,
+                    f"[{scen_name}] {name}: net {res.net_usd} does not equal the "
+                    f"bill difference {base_bill - bill}")
+            checks += 1
+
+    # No free warmth: degrade the 1h tier's clock to the 5m tier's and the same
+    # policy must LOSE money, because all it is then doing is paying 2.0x for
+    # 300s. This is also the sensitivity floor on the one unmeasured assumption
+    # in the tier model -- if 1h entries did NOT refresh on read, the truth
+    # would sit between this run and the one above, never above it.
+    degraded = cfg_factory()
+    degraded.physics["anthropic"] = replace(
+        aphys, long_ttl_seconds=aphys.ttl_seconds)
+    deg = evaluate(cron_arrivals, degraded, ["ttl-1h-tier-only"])["policies"][0]
+    _assert(deg["net_usd"] < 0.0,
+            f"[cron] a 1h price with a 5m clock must lose money, got "
+            f"{deg['net_usd']}")
+    checks += 1
+
+    # -- THE COMPARISON THIS FILE EXISTED WITHOUT FOR TOO LONG ---------------
+    # Reported, not asserted, for the same reason the learned-vs-v1 headline
+    # above is: the trace decides, and freezing the current verdict into an
+    # assertion would let a green bar stand in for a measurement.
+    tier_company = evaluate(company, cfg_factory(),
+                            ["never-warm", "ttl-1h-only", "learned-index-fixed",
+                             "learned-index-fixed+ttl-1h"])
+    tier_objs = tier_company["_objects"]
+    tier_by_policy = dict(tier_objs["results"])
+    t_eval_start = tier_objs["start_ts"] + WARMUP_DAYS * _SEC_PER_DAY
+
+    def _tier_net(name: str) -> float:
+        savings, spend, _ = tier_by_policy[name].window(t_eval_start)
+        return savings - spend
+
+    ttl_net = _tier_net("ttl-1h-only")
+    fixed_net = _tier_net("learned-index-fixed")
+    both_net = _tier_net("learned-index-fixed+ttl-1h")
+    _assert(abs(_tier_net("never-warm")) < 1e-12,
+            "[company] never-warm eval net must be zero under tier accounting")
+    checks += 1
+    print("\n" + "!" * 78)
+    print("HEADLINE FINDING #2 (reported, not asserted -- see selftest source)")
+    print("  Anthropic warming has always been scored against never-warm, which")
+    print("  the SHIPPED engine already beats by tiering TTL on its own.")
+    print(f"  company eval window   ttl-1h-only              net {_usd(ttl_net)}")
+    print(f"                        learned-index-fixed      net {_usd(fixed_net)}")
+    print(f"                        learned + ttl-1h         net {_usd(both_net)}")
+    print(f"  learned-index-fixed >= ttl-1h-only : "
+          f"{'HOLDS' if fixed_net >= ttl_net - 1e-12 else 'DOES NOT HOLD'}")
+    print(f"  warming still pays ON TOP of the tier: "
+          f"{'YES' if both_net >= ttl_net - 1e-12 else 'NO'} "
+          f"(delta {_usd(both_net - ttl_net)})")
+    print("!" * 78 + "\n")
+
     print(f"\nselftest OK: {checks} invariants asserted across "
           f"{len(SCENARIOS)} synthetic scenarios")
     return 0
@@ -2813,6 +3316,11 @@ def build_physics(args: argparse.Namespace) -> dict[str, Physics]:
         ("read_cost_fraction", _kv_floats(args.read_fraction)),
         ("write_multiplier", _kv_floats(args.write_multiplier)),
         ("input_price_per_mtok", _kv_floats(args.input_price)),
+        ("long_ttl_seconds", _kv_floats(getattr(args, "long_ttl", None))),
+        ("long_write_multiplier",
+         _kv_floats(getattr(args, "long_write_multiplier", None))),
+        ("long_refresh_on_read",
+         _kv_floats(getattr(args, "long_refresh_on_read", None))),
     )
     for field_name, mapping in overrides:
         for provider, value in mapping.items():
@@ -2827,6 +3335,20 @@ def build_physics(args: argparse.Namespace) -> dict[str, Physics]:
             raise ValueError(
                 f"{provider}: write_multiplier below read_cost_fraction leaves "
                 "warming with nothing to save")
+        long_ttl = values.get("long_ttl_seconds", 0.0)
+        long_write = values.get("long_write_multiplier", 0.0)
+        if (long_ttl > 0.0) != (long_write > 0.0):
+            raise ValueError(
+                f"{provider}: a long tier needs BOTH long_ttl_seconds and "
+                "long_write_multiplier; one alone would price a tier that has "
+                "no clock or clock a tier that has no price")
+        if not 0.0 <= values.get("long_refresh_on_read", 1.0) <= 1.0:
+            raise ValueError(
+                f"{provider}: long_refresh_on_read is a flag, 0 or 1")
+        if long_ttl > 0.0 and long_ttl < values["ttl_seconds"]:
+            raise ValueError(
+                f"{provider}: long_ttl_seconds {long_ttl} is shorter than the "
+                f"default tier's {values['ttl_seconds']}")
         physics[provider] = Physics(provider=provider, **values)
     return physics
 
@@ -2876,6 +3398,15 @@ def build_parser() -> argparse.ArgumentParser:
     phy.add_argument("--read-fraction", action="append", metavar="P=FRACTION")
     phy.add_argument("--write-multiplier", action="append", metavar="P=MULT")
     phy.add_argument("--input-price", action="append", metavar="P=USD_PER_MTOK")
+    phy.add_argument("--long-ttl", action="append", metavar="P=SECONDS",
+                     help=("second write tier's TTL (anthropic 1h tier: 3600). "
+                           "Set with --long-write-multiplier or not at all"))
+    phy.add_argument("--long-write-multiplier", action="append", metavar="P=MULT",
+                     help="second write tier's write multiplier (anthropic: 2.0)")
+    phy.add_argument("--long-refresh-on-read", action="append", metavar="P=0|1",
+                     help=("does a hit restart the long tier's clock? 1 (default) "
+                           "is what the shipped engine assumes and what provider "
+                           "docs state; 0 prices the unmeasured alternative"))
 
     knob = parser.add_argument_group("v1 policy knobs (defaults = shipped worker)")
     knob.add_argument("--tick-seconds", type=int, default=int(V1_DEFAULTS["tick_seconds"]))
