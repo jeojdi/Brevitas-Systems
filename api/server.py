@@ -28,6 +28,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Header, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -1254,6 +1255,83 @@ for _prefix in _PROXY_PATH_PREFIXES:
             f"proxy path prefix must be a whole-segment literal: {_prefix!r}")
 del _prefix
 
+
+def _is_proxy_path(path: str) -> bool:
+    """True when `path` is one of the model-proxy routes the gateway fronts."""
+    return path in _PROXY_PATHS or path.startswith(_PROXY_PATH_PREFIXES)
+
+
+# Gateway-origin errors on a proxy path (auth, admission, rate limit, store
+# outages) must speak the PROVIDER's error dialect, not FastAPI's {"detail": …}.
+# Clients like Claude Code and the OpenAI SDK parse the provider error envelope
+# to surface a message and to decide ret/no-retry; a bare {"detail": …} is an
+# unrecognized shape that surfaces as a raw, unactionable "API error" and can
+# kill a running session. /v1/messages speaks Anthropic; every other proxy route
+# is OpenAI-compatible, so it gets the OpenAI envelope.
+_ANTHROPIC_ERROR_TYPES = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+    500: "api_error",
+    503: "overloaded_error",
+    529: "overloaded_error",
+}
+
+
+def _openai_error_fields(status_code: int) -> tuple[str, Optional[str]]:
+    if status_code == 401:
+        return "invalid_request_error", "invalid_api_key"
+    if status_code == 429:
+        return "rate_limit_error", "rate_limit_exceeded"
+    if status_code >= 500:
+        return "api_error", None
+    return "invalid_request_error", None
+
+
+def _proxy_error_content(path: str, status_code: int, message: str) -> dict:
+    """Provider-shaped error body for a gateway error on proxy path `path`."""
+    if path == "/v1/messages":
+        etype = _ANTHROPIC_ERROR_TYPES.get(status_code, "api_error")
+        return {"type": "error", "error": {"type": etype, "message": message}}
+    otype, code = _openai_error_fields(status_code)
+    return {"error": {"message": message, "type": otype, "param": None, "code": code}}
+
+
+def _proxy_error_response(
+    path: str, status_code: int, message: str, headers: Optional[dict] = None,
+) -> JSONResponse:
+    """Build a provider-shaped JSONResponse for a gateway error on a proxy path."""
+    return JSONResponse(
+        status_code=status_code,
+        content=_proxy_error_content(path, status_code, message),
+        headers=headers,
+    )
+
+
+async def _proxy_aware_http_exception_handler(
+    request: Request, exc: StarletteHTTPException,
+) -> JSONResponse:
+    """Reshape raised HTTPExceptions on proxy paths into the provider envelope.
+
+    Non-proxy routes keep FastAPI's default {"detail": …} body byte-for-byte, so
+    the dashboard/control-plane API is unchanged. Only the model-proxy routes —
+    the ones an LLM SDK is on the other end of — get the provider dialect.
+    """
+    detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
+    headers = getattr(exc, "headers", None)
+    if _is_proxy_path(request.url.path):
+        return _proxy_error_response(
+            request.url.path, exc.status_code, detail, headers=headers)
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
+app.add_exception_handler(
+    StarletteHTTPException, _proxy_aware_http_exception_handler)
+
 # Percent escapes that may not appear in a raw proxy path. Each one is a way to
 # make the string the router matches differ from the string an upstream, a CDN or
 # a log reader sees: encoded separators (%2f, %5c), encoded dot segments (%2e),
@@ -1907,21 +1985,21 @@ async def _protect_model_proxy(request: Request, call_next):
         # through: falling through is what would hand a crafted path to a proxy
         # handler with no authentication at all.
         logger.warning("proxy path refused reason=non_canonical_path")
-        return JSONResponse(status_code=400, content={"detail": "Malformed proxy path"})
+        return _proxy_error_response(request.url.path, 400, "Malformed proxy path")
     raw_key = request.headers.get("x-brevitas-key", "")
     if _production_runtime() and not _proxy_auth_enabled():
-        return JSONResponse(status_code=503, content={"detail": "Proxy authentication unavailable"})
+        return _proxy_error_response(request.url.path, 503, "Proxy authentication unavailable")
     if not raw_key and _proxy_auth_enabled():
-        return JSONResponse(status_code=401, content={"detail": "Missing X-Brevitas-Key header"})
+        return _proxy_error_response(request.url.path, 401, "Missing X-Brevitas-Key header")
     if not raw_key and _production_runtime():
-        return JSONResponse(status_code=503, content={"detail": "Proxy authentication unavailable"})
+        return _proxy_error_response(request.url.path, 503, "Proxy authentication unavailable")
     kh = hash_key(raw_key) if raw_key else f"ip:{request.client.host if request.client else 'unknown'}"
     auth_context = None
     try:
         customer_external_id = normalize_customer_id(
             request.headers.get(CUSTOMER_ID_HEADER, ""))
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return _proxy_error_response(request.url.path, 400, str(exc))
     request.state.brevitas_key_hash = kh
     request.state.brevitas_tenant_key = (
         tenant_key(raw_key, customer_external_id) if raw_key else kh)
@@ -1931,11 +2009,12 @@ async def _protect_model_proxy(request: Request, call_next):
                 _auth_context_for_key, kh,
                 customer_external_id)
             if not auth_context.permits("proxy:invoke"):
-                return JSONResponse(status_code=403, content={"detail": "Key lacks proxy:invoke scope"})
+                return _proxy_error_response(
+                    request.url.path, 403, "Key lacks proxy:invoke scope")
             if auth_context.key_type == "organization_service" and not auth_context.customer_id:
-                return JSONResponse(status_code=400, content={
-                    "detail": "Organization service proxy calls require X-Brevitas-Customer-ID"
-                })
+                return _proxy_error_response(
+                    request.url.path, 400,
+                    "Organization service proxy calls require X-Brevitas-Customer-ID")
             request.state.auth_context = auth_context
             request.state.brevitas_organization_id = auth_context.organization_id
             request.state.brevitas_customer_id = auth_context.customer_id
@@ -1954,16 +2033,13 @@ async def _protect_model_proxy(request: Request, call_next):
             # lifetime reason.
             bind_circuit_scope(auth_context.organization_id)
         except HTTPException as exc:
-            return JSONResponse(
-                status_code=exc.status_code, content={"detail": exc.detail},
-                headers=exc.headers,
-            )
+            detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
+            return _proxy_error_response(
+                request.url.path, exc.status_code, detail, headers=exc.headers)
         except Exception:
-            return JSONResponse(
-                status_code=503,
-                content={"detail": "Authentication store unavailable"},
-                headers={"Retry-After": "1"},
-            )
+            return _proxy_error_response(
+                request.url.path, 503, "Authentication store unavailable",
+                headers={"Retry-After": "1"})
     lease = None
     local_admitted = False
     if auth_context:
@@ -1984,26 +2060,24 @@ async def _protect_model_proxy(request: Request, call_next):
                 request_id="",
             )
         except LimiterUnavailable:
-            return JSONResponse(status_code=503,
-                                content={"detail": "Admission control unavailable"},
-                                headers={"Retry-After": "1"})
+            return _proxy_error_response(
+                request.url.path, 503, "Admission control unavailable",
+                headers={"Retry-After": "1"})
         if not lease.allowed:
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded", "limit": lease.reason},
+            return _proxy_error_response(
+                request.url.path, 429, "Rate limit exceeded",
                 headers={
                     "Retry-After": str(lease.retry_after),
                     "X-RateLimit-Remaining": str(lease.remaining_requests),
                     "X-RateLimit-Reset": str(lease.reset_seconds),
-                },
-            )
+                })
 
     # Local fallback is development-only. Even a misconfigured/fake limiter must never put
     # production traffic into process-local admission state.
     if _production_runtime() and (lease is None or lease._limiter is None):
-        return JSONResponse(status_code=503,
-                            content={"detail": "Admission control unavailable"},
-                            headers={"Retry-After": "1"})
+        return _proxy_error_response(
+            request.url.path, 503, "Admission control unavailable",
+            headers={"Retry-After": "1"})
     if lease is None or lease._limiter is None:
         now = _time.monotonic()
         rpm = int(os.getenv("BREVITAS_PROXY_RPM", "300"))
@@ -2018,8 +2092,9 @@ async def _protect_model_proxy(request: Request, call_next):
             if rpm_blocked or concurrency_blocked:
                 retry_after = (max(1, int(61 - (now - window[0])))
                                if rpm_blocked and window else 1)
-                return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"},
-                                    headers={"Retry-After": str(retry_after)})
+                return _proxy_error_response(
+                    request.url.path, 429, "Rate limit exceeded",
+                    headers={"Retry-After": str(retry_after)})
             window.append(now)
             _proxy_windows.put(kh, window)
             _proxy_active.put(kh, active + 1)
