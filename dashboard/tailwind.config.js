@@ -15,8 +15,10 @@ export default {
           surface:          '#ffffff',
           navy:             '#0d1530',
           'navy-mid':       '#2d3561',
-          blue:             '#4f5fc4',
+          blue:             '#2f2df5',
           'blue-dim':       '#eceeff',
+          sidebar:          '#2f2df5',   // vivid electric blue — left-rail fill only
+          'blue-vivid':     '#2f2df5',
           teal:             '#2d8a6e',
           'teal-dim':       '#e4f4ef',
           muted:            '#8b93b8',
@@ -41,6 +43,15 @@ export default {
       },
       letterSpacing: {
         widest: '0.2em',
+      },
+      // Near-square corners site-wide — the editorial look wants minimal rounding.
+      // rounded-full (pills, avatars) is intentionally left alone.
+      borderRadius: {
+        DEFAULT: '0.125rem', // 2px (was 4px)
+        md: '0.1875rem',     // 3px (was 6px)
+        lg: '0.1875rem',     // 3px (was 8px)
+        xl: '0.25rem',       // 4px (was 12px)
+        '2xl': '0.3125rem',  // 5px (was 16px)
       },
     },
   },

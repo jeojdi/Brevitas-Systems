@@ -671,7 +671,7 @@ function LandingPage() {
         {/* Layer 3: content — text-shadow lifts every element off the image */}
         <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#8ea6ff' }}>
           <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff', letterSpacing: '-0.035em' }}>
-            we make your agents spend <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>less</em> tokens.
+            we make your agents spend <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>less</em> money.
           </h1>
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
             most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
@@ -945,9 +945,16 @@ function LandingPage() {
               We work with a small group of teams. Sign up and we'll show you exactly what we'd cut and how much it'd save.
             </p>
             <Button variant="primary" href="/signup" className="hero-btn hero-cta">Get started</Button>
-            <p style={{ marginTop: 48, paddingTop: 28, borderTop: '1px solid var(--line)', maxWidth: 520, marginLeft: 'auto', marginRight: 'auto', marginBottom: 0, fontSize: 15, lineHeight: 1.65, color: 'var(--stone-2)' }}>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: 'var(--bone-dim)' }}>brevitas</span> <span style={{ fontStyle: 'italic' }}>(Latin)</span> — shortness, concision. A rhetorical virtue: saying more with less.
-            </p>
+            <div style={{ marginTop: 48, paddingTop: 32, borderTop: '1px solid var(--line)', maxWidth: 620, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center' }}>
+              <div style={{ marginBottom: 14 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 30, fontWeight: 500, color: 'var(--fg)', letterSpacing: '-0.01em' }}>brevitas</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: 'var(--stone-2)', marginLeft: 14 }}>/ˈbre.wi.taːs/</span>
+                <span style={{ fontStyle: 'italic', fontSize: 16, color: 'var(--stone-2)', marginLeft: 14 }}>noun · Latin</span>
+              </div>
+              <p style={{ margin: 0, fontSize: 21, lineHeight: 1.6, color: 'var(--bone-dim)' }}>
+                shortness, concision. A rhetorical virtue: <span style={{ fontStyle: 'italic', color: 'var(--fg)' }}>saying more with less.</span>
+              </p>
+            </div>
           </div>
         </div>
       </section>

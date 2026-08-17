@@ -1,15 +1,17 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
+import { motion, MotionConfig } from 'motion/react'
 import { authModeForPath, cacheApiKey, clearSessionKeyCache, supabase, supabaseMisconfigured, getOrCreateApiKey, invalidateCachedApiKey, LOGIN_AUDIENCE, loginAudienceForPath } from './lib/supabase.js'
 import { activateCompany, fetchCompanyContext, normalizeCompanyContext } from './lib/company-context.js'
 import { configureApiAuthenticationRecovery } from './lib/api.js'
 import { bootstrapWorkspace, completeOnboarding, fetchOnboardingStatus } from './lib/onboarding-api.js'
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
+import Sidebar from './components/Sidebar.jsx'
 import Playground from './components/Playground.jsx'
 import Docs from './components/Docs.jsx'
 import Billing from './components/Billing.jsx'
+import Footer from './components/Footer.jsx'
 import Projects from './components/Projects.jsx'
-import Audit from './components/Audit.jsx'
 import Admin from './components/Admin.jsx'
 import ApiKeys from './components/ApiKeys.jsx'
 import DeviceConnect from './components/DeviceConnect.jsx'
@@ -29,8 +31,8 @@ import {
 import { capture, identify, resetAnalytics } from './lib/analytics.js'
 import { WORKSPACE_TYPE } from './lib/onboarding-workspace.js'
 
-const PERSONAL_TABS = ['Overview', 'Projects', 'Audit', 'Connect', 'Workspace', 'Playground', 'Docs', 'Savings']
-const ENTERPRISE_TABS = ['Overview', 'Repositories', 'Audit', 'Connect', 'Team & keys', 'API Keys', 'Playground', 'Docs', 'Savings']
+const PERSONAL_TABS = ['Overview', 'Projects', 'Activity', 'Connect', 'Workspace', 'Playground', 'Docs', 'Savings']
+const ENTERPRISE_TABS = ['Overview', 'Repositories', 'Activity', 'Connect', 'Team & keys', 'API Keys', 'Playground', 'Docs', 'Savings']
 const LIVE_REFRESH_MS = 10_000
 const PREVIEW_SECTION = new URLSearchParams(window.location.search).get('preview')
 const PREVIEW_MODE = ['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -101,6 +103,20 @@ const PREVIEW_BILLING = {
   needs_review: 0,
   capped_entries: 0,
 }
+// Credit-based-pricing preview data (micro-USD; 1 unit = $0.000001) so the Billing
+// preview renders the credits card + Buy row without a backend.
+const PREVIEW_CREDITS = {
+  balance_micro: 42_500_000,
+  spent_7d_micro: 8_200_000,
+  daily_burn_micro: 1_171_428,
+  days_to_exhaustion: 36,
+  low_balance: false,
+}
+const PREVIEW_CREDIT_PACKS = [
+  { priceId: 'price_preview_10', amountUsd: 10, creditMicro: 10_000_000, label: '$10 credit pack' },
+  { priceId: 'price_preview_50', amountUsd: 50, creditMicro: 50_000_000, label: '$50 credit pack' },
+  { priceId: 'price_preview_100', amountUsd: 100, creditMicro: 100_000_000, label: '$100 credit pack' },
+]
 const emptyCompanyContext = (loading = false) => ({
   companies: [], activeCompanyId: '', selectedCompanyId: '', loading, error: '',
   needsOnboarding: false, workspaceCreated: false, setupComplete: true,
@@ -211,14 +227,8 @@ function WorkspaceStart({ enterprise, onNavigate }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-brand-border bg-white dark:border-brand-dark-border dark:bg-brand-dark-surface">
       <div className="grid gap-0 lg:grid-cols-[1.15fr_1fr]">
-        <div className="p-6 sm:p-8">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-brand-blue-dim px-3 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-brand-blue dark:bg-brand-dark-blue-dim">
-              {enterprise ? 'Enterprise workspace' : 'Personal workspace'}
-            </span>
-            <span className="text-xs text-brand-teal">Ready</span>
-          </div>
-          <h1 className="mt-5 max-w-xl font-serif text-4xl leading-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
+        <div className="flex flex-col px-6 pt-5 pb-5 sm:px-8 sm:pt-6 sm:pb-6">
+          <h1 className="max-w-xl font-sans font-semibold text-4xl leading-tight tracking-tight text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
             {enterprise ? 'One shared boundary for people and production.' : 'Your AI setup, without the admin overhead.'}
           </h1>
           <p className="mt-4 max-w-xl text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
@@ -226,7 +236,7 @@ function WorkspaceStart({ enterprise, onNavigate }) {
               ? 'Centralize repositories, roles, service credentials, usage, and billing while keeping every device and backend independently revocable.'
               : 'Connect a local tool, keep using it normally, and see verified savings in one private workspace.'}
           </p>
-          <div className="mt-6 flex flex-wrap gap-3">
+          <div className="mt-6 flex flex-wrap gap-3 lg:mt-auto lg:pt-6">
             <button type="button" onClick={() => onNavigate('Connect')} className="min-h-11 rounded-xl bg-brand-blue px-5 py-3 text-sm font-medium text-white hover:opacity-90">
               {enterprise ? 'Connect first admin tool' : 'Connect my tool'}
             </button>
@@ -342,7 +352,7 @@ function DashboardPreview({ darkMode, onToggleDark }) {
             {loadingPreview
               ? <SkeletonTabs />
               : (billingPreview ? ['Savings'] : previewTabs).map((tab, index) => (
-                <span key={tab} className={`inline-flex min-h-11 shrink-0 items-center rounded-xl px-4 py-2.5 text-[11px] font-medium uppercase tracking-widest ${index === 0 ? 'bg-brand-blue-dim text-brand-blue dark:bg-brand-dark-blue-dim' : 'text-brand-muted dark:text-brand-dark-muted'}`}>
+                <span key={tab} className={`inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 py-2.5 -mb-2.5 sm:-mb-3 font-sans text-sm ${index === 0 ? 'border-brand-blue text-brand-blue font-semibold' : 'border-transparent text-brand-muted dark:text-brand-dark-muted font-medium'}`}>
                   {tab}
                 </span>
               ))}
@@ -364,7 +374,7 @@ function DashboardPreview({ darkMode, onToggleDark }) {
             <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} showInstallCommand={false} />
           </div>
         ) : billingPreview
-          ? <Billing apiKey="preview" accessToken="preview" refreshTick={0} previewStats={PREVIEW_STATS} previewBilling={PREVIEW_BILLING} />
+          ? <Billing apiKey="preview" accessToken="preview" refreshTick={0} enterprise={enterprisePreview} previewStats={PREVIEW_STATS} previewBilling={PREVIEW_BILLING} previewCredits={PREVIEW_CREDITS} previewPacks={PREVIEW_CREDIT_PACKS} />
           : <Overview apiKey="preview" darkMode={darkMode} refreshTick={0} previewStats={PREVIEW_STATS} />}
       </main>
     </div>
@@ -380,6 +390,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [recoveringPassword, setRecoveringPassword] = useState(false)
   const [activeTab, setActiveTab] = useState('Overview')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
   const [isAdmin, setIsAdmin]     = useState(false)
   const [refreshTick, setRefreshTick] = useState(0)
@@ -846,111 +857,39 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col">
-      {/* ── Dashboard header ── */}
-      <div className="sticky top-0 z-50 px-2 sm:px-6 pt-2 sm:pt-5 pb-2 sm:pb-3">
-        <header className="bg-white dark:bg-brand-dark-surface rounded-xl sm:rounded-2xl border border-brand-border dark:border-brand-dark-border shadow-sm max-w-7xl mx-auto overflow-hidden">
-          <div className="px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-3 sm:gap-5">
-            <a href="/" className="shrink-0 no-underline" aria-label="Brevitas Systems home">
-              <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto dark:hidden" />
-              <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-6 sm:h-7 w-auto hidden dark:block" />
-            </a>
-
-            {/* Right: dark toggle + user email + sign out */}
-            <div className="flex items-center gap-1 sm:gap-4 shrink-0">
-              <span className="annotation hidden lg:flex items-center gap-1.5" title="Tracking runs server-side, even when this dashboard is closed">
-                <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> tracking active
-              </span>
-              <button
-                onClick={toggleDark}
-                className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
-                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              >
-                {darkMode ? <SunIcon /> : <MoonIcon />}
-              </button>
-              {/* A workspace switch keeps the whole layout up (the key reset already
-                  returns the numbers to shimmer), so this inline annotation is the
-                  only switching indicator — a full-page block would discard exactly
-                  the chrome stability the skeleton-first layout exists for. */}
-              {companySwitching && (
-                <span className="annotation hidden sm:inline" aria-live="polite">Switching workspace…</span>
-              )}
-              {!workspaceKnown ? (
-                <span className="skeleton hidden h-6 w-44 rounded-full md:block" aria-hidden="true" />
-              ) : companyContext.companies.length > 1 ? (
-                <label className="block">
-                  <span className="sr-only">Active workspace</span>
-                  <select
-                    value={companyContext.activeCompanyId}
-                    onChange={event => switchCompany(event.target.value)}
-                    disabled={companySwitching}
-                    className="max-w-36 rounded-lg border border-brand-border bg-brand-bg px-2 py-2 text-[11px] text-brand-navy dark:border-brand-dark-border dark:bg-brand-dark-bg dark:text-brand-dark-navy sm:max-w-52"
-                  >
-                    {companyContext.companies.map(company => (
-                      <option key={company.company_id} value={company.company_id}>{company.company_name}</option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                <div className="hidden max-w-52 items-center gap-2 md:flex">
-                  <span className="rounded-full bg-brand-blue-dim px-2 py-1 text-[9px] font-medium uppercase tracking-wider text-brand-blue dark:bg-brand-dark-blue-dim">
-                    {enterpriseWorkspace ? 'Enterprise' : 'Personal'}
-                  </span>
-                  <span className="truncate text-[11px] text-brand-muted dark:text-brand-dark-muted">
-                    {companyContext.companies[0]?.company_name}
-                  </span>
-                </div>
-              )}
-              <span data-ph-sensitive className="text-[11px] text-brand-muted dark:text-brand-dark-muted hidden sm:block">
-                {session.user.email}
-              </span>
-              <button
-                onClick={signOut}
-                className="min-h-10 px-2 text-[11px] text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors tracking-wide"
-              >
-                Sign out
-              </button>
-            </div>
-          </div>
-
-          {!workspaceKnown ? (
-            <nav
-              className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
-              aria-label="Dashboard sections"
-              aria-busy="true"
-            >
-              <SkeletonTabs />
-            </nav>
-          ) : (
-          <nav
-            className="border-t border-brand-border dark:border-brand-dark-border px-2 sm:px-5 py-2.5 sm:py-3 flex items-center gap-2 overflow-x-auto"
-            aria-label="Dashboard sections"
-          >
-            {/* Highlight follows renderTab, not activeTab: while data is pending
-                the panel is pinned to Overview, and a nav that highlights a tab
-                the main area is not showing reads as a bug. The two converge
-                again the moment the key lands. */}
-            {visibleTabs.map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                aria-current={renderTab === tab ? 'page' : undefined}
-                className={`shrink-0 min-h-11 px-4 py-2.5 rounded-xl text-[11px] tracking-widest uppercase font-medium transition-colors ${
-                  renderTab === tab
-                    ? 'bg-brand-blue-dim dark:bg-brand-dark-blue-dim text-brand-blue'
-                    : 'text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy hover:bg-brand-bg dark:hover:bg-brand-dark-elevated'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
-          )}
-        </header>
+    <MotionConfig reducedMotion="user">
+    <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg lg:flex">
+      {/* Mobile top bar — the sidebar is a slide-in drawer below lg. */}
+      <div className="lg:hidden sticky top-0 z-30 flex items-center justify-between border-b border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface px-4 py-3">
+        <a href="/" aria-label="Brevitas Systems home">
+          <img src="/assets/b-logo-tight.png" alt="Brevitas" className="h-6 w-auto dark:hidden" />
+          <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-6 w-auto hidden dark:block" />
+        </a>
+        <button type="button" onClick={() => setSidebarOpen(true)} className="p-2 text-brand-navy dark:text-brand-dark-navy" aria-label="Open menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
       </div>
 
+      <Sidebar
+        tabs={visibleTabs}
+        activeTab={renderTab}
+        onSelect={tab => { setActiveTab(tab); setSidebarOpen(false) }}
+        darkMode={darkMode}
+        onToggleDark={toggleDark}
+        email={session.user.email}
+        companyContext={companyContext}
+        onSwitchCompany={switchCompany}
+        onSignOut={signOut}
+        companySwitching={companySwitching}
+        workspaceKnown={workspaceKnown}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      {/* Content column */}
+      <div className="flex min-w-0 flex-1 flex-col">
       {/* ── Page content ── */}
-      <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-7xl mx-auto w-full">
+      <main className="flex-1 min-w-0 px-3 sm:px-6 pt-6 sm:pt-8 pb-12 sm:pb-16 max-w-6xl mx-auto w-full">
         {/* Signup does not wait on a confirmation link, so the address is proven
             from here instead. Nothing in the dashboard is gated on it. */}
         {needsEmailVerification(session.user) && (
@@ -985,21 +924,20 @@ export default function App() {
           ? <div className="space-y-10"><WorkspaceStart enterprise={enterpriseWorkspace} onNavigate={setActiveTab} /><Overview apiKey={apiKey} accessToken={session.access_token} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} /></div>
           : <Overview apiKey={apiKey} accessToken={session.access_token} darkMode={darkMode} refreshTick={refreshTick} showInstallCommand={false} />)}
         {(renderTab === 'Repositories' || renderTab === 'Projects') && <Projects apiKey={apiKey} refreshTick={refreshTick} />}
-        {renderTab === 'Audit'      && <Audit apiKey={apiKey} refreshTick={refreshTick} />}
+        {renderTab === 'Activity'   && <CompanyAdministration view="activity" apiKey={apiKey} key={`activity:${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {renderTab === 'Connect' && <ConnectionPage enterprise={enterpriseWorkspace} />}
         {renderTab === 'API Keys'   && <ApiKeys      apiKey={apiKey} accessToken={session.access_token} onApiKeyChange={activateApiKey} />}
         {renderTab === 'Team & keys' && <CompanyAdministration key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {renderTab === 'Workspace' && <CompanyAdministration personal key={`${session.user.id}:${companyContext.activeCompanyId}`} accessToken={session.access_token} onCompanyContextChange={acceptCompanyCapabilities} />}
         {renderTab === 'Playground' && <Playground   apiKey={apiKey} />}
         {renderTab === 'Docs'       && <Docs />}
-        {renderTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} />}
+        {renderTab === 'Savings'    && <Billing apiKey={apiKey} accessToken={session.access_token} refreshTick={refreshTick} enterprise={enterpriseWorkspace} />}
         {renderTab === 'Admin'      && <Admin accessToken={session.access_token} refreshTick={refreshTick} />}
         </PanelErrorBoundary>
       </main>
-      <footer className="pb-8 flex justify-center gap-4 text-[11px] text-brand-muted dark:text-brand-dark-muted">
-        <a href="/privacy" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Privacy</a>
-        <a href="/terms" className="hover:text-brand-navy dark:hover:text-brand-dark-navy">Terms</a>
-      </footer>
+      <Footer />
+      </div>
     </div>
+    </MotionConfig>
   )
 }

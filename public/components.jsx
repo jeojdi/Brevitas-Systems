@@ -953,7 +953,7 @@ function Nav({ current }) {
 const FOOTER_COLS = [
   { title: 'Product', links: [['Product', '/product'], ['Benchmarks', '/benchmarks'], ['Pricing', '/pricing']] },
   { title: 'Company', links: [['Blog', '/blog'], ['Contact', 'mailto:james@brevitassystems.com']] },
-  { title: 'Resources', links: [['Docs', 'mailto:james@brevitassystems.com'], ['Changelog', 'mailto:james@brevitassystems.com']] },
+  { title: 'Resources', links: [['Docs', '/docs'], ['Changelog', 'mailto:james@brevitassystems.com']] },
   { title: 'Legal', links: [['Privacy', '/privacy'], ['Terms', '/terms']] },
 ];
 

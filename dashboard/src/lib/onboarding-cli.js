@@ -38,4 +38,6 @@ export const BVX_COMMANDS = Object.freeze({
   status: 'bvx status',
   diagnose: 'bvx doctor',
   verifyRequest: 'bvx stats',
+  connect: 'bvx connect',
+  disconnect: 'bvx disconnect',
 })

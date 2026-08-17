@@ -153,7 +153,7 @@ export default function Pipelines({ apiKey }) {
                   <XAxis dataKey="pipeline" />
                   <YAxis />
                   <Tooltip formatter={(value) => fmtK(value)} />
-                  <Bar dataKey="provider_input_tokens_avoided" fill="#4f5fc4" name="Input tokens avoided" />
+                  <Bar dataKey="provider_input_tokens_avoided" fill="#2f2df5" name="Input tokens avoided" />
                 </BarChart>
               </ResponsiveContainer>
             </div>

@@ -212,7 +212,7 @@ export default function Admin({ accessToken, refreshTick }) {
         </div>
         <div className="grid lg:grid-cols-[2fr_1fr] gap-4">
           <div className="h-72 bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-5" data-ph-sensitive>
-            <ResponsiveContainer width="100%" height="100%"><LineChart data={traffic.trend}><CartesianGrid strokeDasharray="3 3" stroke="#e2e4f0"/><XAxis dataKey="date" tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }}/><Tooltip/><Line type="monotone" dataKey="visitors" stroke="#4f5fc4" strokeWidth={2} dot={false}/><Line type="monotone" dataKey="pageviews" stroke="#2d8a6e" strokeWidth={2} dot={false}/></LineChart></ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%"><LineChart data={traffic.trend}><CartesianGrid strokeDasharray="3 3" stroke="#e2e4f0"/><XAxis dataKey="date" tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }}/><Tooltip/><Line type="monotone" dataKey="visitors" stroke="#2f2df5" strokeWidth={2} dot={false}/><Line type="monotone" dataKey="pageviews" stroke="#2d8a6e" strokeWidth={2} dot={false}/></LineChart></ResponsiveContainer>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-1 gap-4"><StatCard label="Pageviews" value={num(traffic.pageviews)} /><StatCard label="Signup submitted" value={signupSummary(traffic)} accent="text-brand-teal" /></div>
         </div>

@@ -1,354 +1,210 @@
 # Brevitas Integration Guide
 
-Brevitas optimizes multi-agent pipelines by reducing token usage across every turn — without changing your agents or prompts. There are two ways to integrate it: the **Python SDK** (pip package) for in-process use, and the **REST API** for language-agnostic or server-side use.
+Brevitas is middleware between your code and the model providers (Anthropic, OpenAI,
+DeepSeek, Groq, plus Azure OpenAI and AWS Bedrock for Claude). You reach it by pointing
+your existing SDK at the Brevitas **base URL** and adding two headers — your app, prompts,
+and provider keys are otherwise unchanged.
 
-To get an API key, [contact us](mailto:contact@brevitas.systems).
+There are two ways in:
+
+- **Hosted gateway (recommended, billable path).** A base-URL change. Requests route
+  through Brevitas, which forwards them to the provider with your own provider key,
+  measures usage from the provider's receipt, and returns the response unchanged.
+- **Local proxy.** A zero-code install that keeps every byte on your machine. Great for a
+  private savings dashboard, but its receipts are non-authoritative and **not** billable —
+  see [README](README.md#local-proxy--privacy-first-not-on-savings-based-pricing).
+
+This guide covers the hosted gateway.
 
 ---
 
-## Python SDK
-
-### Install
+## 1. Connect
 
 ```bash
 pip install brevitas-systems
+brevitas connect
 ```
 
-### Authenticate
+`brevitas connect` opens your browser, you approve as a workspace owner or admin, and it
+mints an organization service key (`bvt_...`) scoped to your workspace, registers your
+tenant id, and prints ready-to-paste snippets. Store the key with `--env-file .env` or
+`--store-key` (OS keyring); it is shown once.
 
-Set your API key as an environment variable (recommended) or pass it directly:
+You now have three values:
+
+| Value | What it is | Where it goes |
+|---|---|---|
+| Your **provider key** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) | Bills you directly; forwarded upstream unchanged, never stored | the SDK's normal `api_key=` |
+| `BREVITAS_API_KEY` (`bvt_...`) | Identifies you to Brevitas | the `X-Brevitas-Key` header |
+| `BREVITAS_CUSTOMER_ID` | The tenant to attribute usage to | the `X-Brevitas-Customer-ID` header |
+
+### Using local AI coding tools instead of your own code?
+
+If your traffic comes from tools like Claude Code, Cursor, or Copilot — not code you
+control — install the [BVX CLI](README.md) and run one command instead of editing base URLs:
 
 ```bash
-export BREVITAS_API_KEY=bvt_your_key_here
-# Optional. Defaults to https://api.brevitassystems.com — set this ONLY when you run
-# your own Brevitas API (self-hosted or local). No /v1 suffix: the SDK appends /v1
-# itself, so a /v1 base yields /v1/v1.
-export BREVITAS_BASE_URL=http://localhost:8000
+brew install Brevitas-ai/brevitas/bvx
+bvx connect
 ```
+
+`bvx connect` signs you in, then routes your detected tools through the hosted gateway
+(attaching `X-Brevitas-Key` for you), so their usage is metered on the **same billable
+path** as the SDK below — with no per-tool base-URL or header edits. `bvx disconnect`
+returns them to calling providers directly. It reuses BVX's local proxy as the forwarder,
+so keep the background service running (`bvx start`).
+
+---
+
+## 2. Point your client at the gateway
+
+### Option A — one line with `brevitas.hosted()` (recommended)
+
+`brevitas.hosted()` sets the gateway base URL and both headers for you, reading
+`BREVITAS_API_KEY` / `BREVITAS_CUSTOMER_ID` from the environment when you don't pass them.
 
 ```python
-# or configure in code
-from brevitas import configure
-configure(api_key="bvt_your_key_here")
+from openai import OpenAI
+import brevitas
+
+# OPENAI_API_KEY, BREVITAS_API_KEY, BREVITAS_CUSTOMER_ID in the environment
+client = brevitas.hosted(OpenAI(), customer_id="acme")
+
+client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "ping"}],
+)
 ```
 
-### Basic usage
+Anthropic is identical with the Anthropic SDK:
 
 ```python
-from brevitas import optimize
-from my_pipeline import architect, builder, reviewer
+from anthropic import Anthropic
+import brevitas
 
-pipeline = optimize([architect, builder, reviewer])
-result = pipeline.run("Build a REST API with auth and rate limiting")
-
-# ↳ 59% fewer tokens. 47% lower cost. 99% quality parity.
-print(result.model_response)
-print(f"{result.savings_pct:.0f}% tokens saved")
+client = brevitas.hosted(Anthropic(), customer_id="acme")
+client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "ping"}],
+)
 ```
 
-`optimize()` accepts any list of callables. Each agent receives the previous agent's output as its input. Brevitas compresses, prunes, and routes between turns — your agent code is unchanged.
-
-### `optimize()` parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `agents` | `list` | required | Agent callables. Each receives the prior agent's output. |
-| `api_key` | `str` | env var | Your `bvt_` prefixed Brevitas key. |
-| `quality_floor` | `float` | `0.98` | Minimum quality score (0–1) before compression stops. |
-| `savings_target` | `float` | `59.0` | Token savings % to target per turn. |
-| `compression_level` | `int` | `2` | Message compression aggressiveness (1–3). |
-| `prune_budget` | `int` | `5` | Max context chunks retained per turn. |
-| `protocol_mode` | `str` | `"compact"` | Wire format: `"compact"` or `"verbose"`. |
-| `delta_mode` | `str` | `"on"` | Send only changes between turns: `"on"` or `"off"`. |
-
-### `pipeline.run()` parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `task` | `str` | required | Task description / prompt. |
-| `incoming_messages` | `list[str]` | `[]` | Additional messages to include in this turn. |
-| `complexity` | `float` | `0.5` | Task complexity hint (0–1). Higher values retain more context. |
-| `urgency` | `float` | `0.5` | Urgency hint (0–1). Higher values favor recency over breadth. |
-| `task_id` | `str` | `"brevitas-task"` | Stable ID for delta caching across turns. |
-
-### `PipelineResult` fields
-
-```python
-result.model_response      # str   — concatenated agent outputs
-result.savings_pct         # float — % tokens saved vs. baseline
-result.baseline_tokens     # int   — unoptimized token count
-result.optimized_tokens    # int   — actual token count sent
-result.quality_proxy       # float — estimated quality retention (0–1)
-result.routed_model        # str   — model the router selected
-result.debug               # dict  — compression, sampling, pruning internals
-```
-
-### Multi-turn example
-
-`pipeline.run()` is stateful — context from each call is automatically retained and pruned for the next.
-
-```python
-pipeline = optimize([architect, builder, reviewer])
-
-r1 = pipeline.run("Design the database schema")
-r2 = pipeline.run("Now implement the API endpoints")
-r3 = pipeline.run("Write tests for the auth layer")
-# Each turn reuses compressed context from the previous turns.
-```
-
-### Using with LangChain / custom agent objects
-
-Any object with a `run()` or `invoke()` method works as an agent:
-
-```python
-from langchain.agents import AgentExecutor
-from brevitas import optimize
-
-pipeline = optimize([agent_executor_1, agent_executor_2])
-result = pipeline.run("Summarize Q3 earnings and flag risks")
-```
-
----
-
-## REST API
-
-The Brevitas REST API exposes the same optimization engine over HTTP. Authenticate all requests with your API key in the `X-API-Key` header.
-
-```
-Base URL: https://api.brevitas.systems
-```
-
-### Authentication
-
-```bash
-curl https://api.brevitas.systems/v1/health \
-  -H "X-API-Key: bvt_your_key_here"
-```
-
-All endpoints except `/v1/health` and `/v1/providers` require `X-API-Key`.
-
----
-
-### Endpoints
-
-#### `POST /v1/compress`
-
-Compress a list of messages and prune context for the next agent turn.
-
-**Rate limit:** 60 requests / minute
-
-**Request body**
-
-```json
-{
-  "messages":          ["<agent message 1>", "<agent message 2>"],
-  "prior_context":     ["<context chunk 1>", "<context chunk 2>"],
-  "task":              "optional task description for better routing",
-  "complexity":        0.5,
-  "urgency":           0.5,
-  "compression_level": 2,
-  "prune_budget":      5,
-  "delta_mode":        "off",
-  "wire_mode":         "json"
-}
-```
-
-| Field | Type | Default | Constraints |
-|---|---|---|---|
-| `messages` | `string[]` | required | max 100 items, each ≤ 50,000 chars |
-| `prior_context` | `string[]` | `[]` | max 200 items, each ≤ 50,000 chars |
-| `task` | `string` | `""` | max 2,000 chars |
-| `complexity` | `float` | `0.5` | 0.0 – 1.0 |
-| `urgency` | `float` | `0.5` | 0.0 – 1.0 |
-| `compression_level` | `int` | `2` | 1 – 3 |
-| `prune_budget` | `int` | `5` | 1 – 50 |
-| `delta_mode` | `string` | `"off"` | `"on"` or `"off"` |
-| `wire_mode` | `string` | `"json"` | `"json"` or `"msgpack"` |
-
-**Response**
-
-```json
-{
-  "compressed_messages": ["..."],
-  "pruned_context":      ["..."],
-  "baseline_tokens":     412,
-  "optimized_tokens":    171,
-  "savings_pct":         58.5,
-  "quality_proxy":       0.9921,
-  "routed_model_hint":   "llama3.2",
-  "model_response":      "...",
-  "state_id":            "abc123"
-}
-```
-
-**Example**
-
-```bash
-curl -X POST https://api.brevitas.systems/v1/compress \
-  -H "X-API-Key: bvt_your_key_here" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": ["Agent A finished the plan. Here are the steps: ..."],
-    "prior_context": ["User wants a FastAPI app", "Auth is JWT-based"],
-    "task": "implement the endpoints",
-    "complexity": 0.7
-  }'
-```
-
----
-
-#### `GET /v1/stats`
-
-Usage statistics for the authenticated key.
-
-**Rate limit:** 120 requests / minute
-
-**Response**
-
-```json
-{
-  "total_calls":           142,
-  "total_tokens_saved":    58210,
-  "avg_savings_pct":       57.3,
-  "avg_quality_proxy":     0.9918,
-  "total_baseline_tokens": 98400,
-  "total_optimized_tokens": 42190,
-  "history": [
-    {
-      "timestamp":        "2026-06-13T18:42:00Z",
-      "baseline_tokens":  412,
-      "optimized_tokens": 171,
-      "savings_pct":      58.5,
-      "quality_proxy":    0.9921
-    }
-  ]
-}
-```
-
----
-
-#### `PUT /v1/provider`
-
-Configure the model provider used to run tasks through your pipeline.
-
-**Rate limit:** 30 requests / minute
-
-**Supported providers**
-
-| Provider | Models |
-|---|---|
-| `ollama` | `llama3.2`, `llama3.1`, `mistral`, `gemma3`, `phi4`, `qwen2.5` |
-| `anthropic` | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
-| `openai` | `gpt-4o`, `gpt-4o-mini`, `o3-mini` |
-| `grok` | `grok-3`, `grok-3-mini` |
-| `deepseek` | `deepseek-chat`, `deepseek-reasoner` |
-
-**Request body**
-
-```json
-{
-  "provider":         "anthropic",
-  "provider_api_key": "sk-ant-...",
-  "model":            "claude-sonnet-4-6"
-}
-```
-
-`provider_api_key` is not required for `ollama`.
-
-**Example**
-
-```bash
-curl -X PUT https://api.brevitas.systems/v1/provider \
-  -H "X-API-Key: bvt_your_key_here" \
-  -H "Content-Type: application/json" \
-  -d '{"provider": "openai", "provider_api_key": "sk-...", "model": "gpt-4o-mini"}'
-```
-
----
-
-#### `GET /v1/provider`
-
-Get the currently configured provider for the authenticated key. The provider API key is masked.
-
----
-
-#### `GET /v1/providers`
-
-List all supported providers and their available models. No authentication required.
-
----
-
-#### `GET /v1/health`
-
-```json
-{ "status": "ok" }
-```
-
-No authentication required. Use for uptime checks.
-
----
-
-### Error responses
-
-| Status | Meaning |
-|---|---|
-| `401` | Missing or invalid `X-API-Key` |
-| `400` | Validation error (see `detail` field) |
-| `413` | Request body exceeds 2 MB |
-| `429` | Rate limit exceeded |
-
----
-
-## End-to-end integration example
-
-This example shows a full three-agent pipeline using the Python SDK with an Anthropic backend configured via the API.
+`hosted()` returns a configured copy of your client; use it exactly like the original. It
+does **not** apply client-side optimization (the gateway does that server-side), so don't
+also wrap it with `brevitas.wrap()`.
+
+### Option B — set the base URL and headers yourself
 
 ```python
 import os
-import requests
-from brevitas import optimize
+from openai import OpenAI
 
-BREVITAS_KEY = os.environ["BREVITAS_API_KEY"]
-
-# 1. Configure your model provider once (or via dashboard)
-requests.put(
-    "https://api.brevitas.systems/v1/provider",
-    headers={"X-API-Key": BREVITAS_KEY},
-    json={
-        "provider":         "anthropic",
-        "provider_api_key": os.environ["ANTHROPIC_API_KEY"],
-        "model":            "claude-sonnet-4-6",
+client = OpenAI(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],          # your provider key, forwarded upstream
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",
     },
 )
-
-# 2. Define your agents (plain callables)
-def architect(task: str) -> str:
-    # your agent logic here
-    return f"Architecture plan for: {task}"
-
-def builder(plan: str) -> str:
-    return f"Implementation of: {plan}"
-
-def reviewer(code: str) -> str:
-    return f"Review complete. Issues found: none. {code[:40]}..."
-
-# 3. Wrap with Brevitas
-pipeline = optimize([architect, builder, reviewer])
-
-# 4. Run
-result = pipeline.run(
-    "Build a rate-limited REST API with JWT auth",
-    complexity=0.8,
-    urgency=0.4,
-)
-
-print(result.model_response)
-print(f"Saved {result.savings_pct:.0f}% of tokens this turn")
-
-# 5. Check cumulative usage
-stats = requests.get(
-    "https://api.brevitas.systems/v1/stats",
-    headers={"X-API-Key": BREVITAS_KEY},
-).json()
-print(f"Total tokens saved: {stats['total_tokens_saved']:,}")
 ```
+
+Node (OpenAI SDK):
+
+```javascript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.brevitassystems.com/v1",
+  apiKey: process.env.OPENAI_API_KEY,              // your provider key, forwarded upstream
+  defaultHeaders: {
+    "X-Brevitas-Key": process.env.BREVITAS_API_KEY,
+    "X-Brevitas-Customer-ID": "acme",
+  },
+});
+```
+
+curl:
+
+```bash
+curl https://api.brevitassystems.com/v1/chat/completions \
+  -H "X-Brevitas-Key: $BREVITAS_API_KEY" \
+  -H "X-Brevitas-Customer-ID: acme" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'
+```
+
+---
+
+## 3. Two headers, and the #1 first-call failure
+
+- **`X-Brevitas-Key`** is the only header the gateway authenticates on. It is **not**
+  `Authorization` — on the hosted gateway `Authorization` carries *your provider key* and
+  is forwarded upstream. Passing the Brevitas key as `api_key=`/`Authorization` returns
+  `401 Missing X-Brevitas-Key header`.
+- **`X-Brevitas-Customer-ID`** attributes the request to a tenant. An organization service
+  key **rejects every proxy call without it**:
+
+  ```
+  400  {"detail": "Organization service proxy calls require X-Brevitas-Customer-ID"}
+  ```
+
+  This is the single most common reason a first request fails. If you are the tenant, use
+  one stable id (e.g. your company slug); if you resell, send each end customer's stable id
+  from your own database.
+
+---
+
+## 4. Supported providers
+
+The gateway natively proxies **Anthropic Messages** and **OpenAI** Chat Completions,
+Responses, Completions, and Embeddings (including OpenAI-compatible providers such as
+DeepSeek and Groq, routed by model name), plus **Azure OpenAI** and **AWS Bedrock**
+(Claude). See the [README](README.md) for the Azure and Bedrock lanes and their
+constraints. Gemini is not currently a native proxy integration; `report_receipt()` can
+still normalize Gemini usage for accounting.
+
+Unknown models are metered but shown as **Unpriced** rather than being charged a guessed
+price.
+
+---
+
+## 5. Base URL, without the footgun
+
+- The **gateway** base URL your SDK talks to is `https://api.brevitassystems.com/v1` — the
+  SDK appends the rest of the path (`/chat/completions`, `/messages`, …). `brevitas.hosted()`
+  builds this for you.
+- `BREVITAS_BASE_URL` is a **different** setting — the control-plane origin the SDK uses to
+  report receipts — and must be the **bare origin with no `/v1`** (the SDK appends `/v1`
+  itself, so a `/v1` suffix yields `/v1/v1` and 404s). Only set it if you self-host.
+
+---
+
+## 6. How pricing works
+
+Brevitas is moving to **credit-based pricing**:
+
+- **Bring your own provider key.** The provider bills you directly for tokens, unchanged.
+- **Per-request credits.** Each hosted-gateway request draws a small, flat number of
+  Brevitas credits — independent of token volume.
+- **Free trial credits** are granted to every new workspace so you can integrate and see
+  value before paying.
+- **Buy more** via prepaid credit packs (self-serve) or a subscription (larger accounts).
+
+Verified savings are always measured and shown in your dashboard — that is the feature, not
+the meter. Billing is rolling out; while it is, no per-request fee is charged. Check your
+status any time in the dashboard, or with `brevitas billing-check`. (Implementation detail:
+[CREDIT_PRICING_PLAN.md](CREDIT_PRICING_PLAN.md).)
+
+---
+
+## 7. Verify it's working
+
+- Make one call through the gateway, then open the dashboard — your usage should appear.
+- `brevitas connect` records non-secret connection metadata (endpoint, org id, key prefix,
+  expiry) in `~/.config/brevitas/connection.json`. Service keys expire (default 90 days);
+  rotate before then with another `brevitas connect`.
+
+Questions: [contact@brevitas.systems](mailto:contact@brevitas.systems).
