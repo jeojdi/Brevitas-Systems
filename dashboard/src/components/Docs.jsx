@@ -59,6 +59,7 @@ const INSTALL_NAV = [
   { id: 'install',         label: 'Install' },
   { id: 'setup',           label: 'First-time setup' },
   { id: 'providers',       label: 'Providers' },
+  { id: 'gateway',         label: 'Hosted gateway' },
   { id: 'verify',          label: 'Verify it works' },
   { id: 'service',         label: 'Background service' },
   { id: 'update',          label: 'Updating' },
@@ -85,6 +86,7 @@ const COMMANDS = [
   ['bvx logs',      'Print (or follow, with -f) the proxy logs'],
   ['bvx config',    'Print or edit Brevitas configuration'],
   ['bvx login / logout', 'Connect through the dashboard / remove the stored key'],
+  ['bvx connect / disconnect', 'Route your tools through the hosted Brevitas gateway (metered) or back to direct'],
   ['bvx onboard',   'Scan a company backend and import existing customers safely'],
   ['bvx serve / optimizer', 'Run the proxy or optimization adapter in the foreground'],
   ['bvx update',    'Check for BVX and optimization-engine updates'],
@@ -324,6 +326,29 @@ export OPENAI_API_KEY=sk-or-...   # your OpenRouter key, forwarded upstream unch
             To choose the provider per request instead of for the whole proxy, send the{' '}
             <code className="font-mono text-brand-blue text-xs">x-brevitas-provider: openrouter</code> header on that call.
             Everything else — install, the local proxy, stats, and savings reporting — is identical to any other provider.
+          </p>
+        </Section>
+
+        <Section id="gateway" title="Hosted gateway">
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            By default BVX keeps every request on your machine and calls providers directly — private, but its receipts
+            are non-authoritative and not eligible for savings-based pricing. To route the same tools through the{' '}
+            <span className="font-medium text-brand-navy dark:text-brand-dark-navy">hosted Brevitas gateway</span> instead,
+            where usage is metered authoritatively and billable, run one command:
+          </p>
+          <CodeBlock lang="bash" code={`bvx connect      # sign in, then forward your tools through the hosted gateway
+bvx disconnect   # go back to calling providers directly`} />
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Your tools keep pointing at the local proxy — <code className="font-mono text-brand-blue text-xs">bvx connect</code>{' '}
+            just switches what it forwards to, attaching your Brevitas key to each request. Nothing changes in your tools
+            or code, and the gateway (not the local proxy) does the optimizing and metering, so usage is never
+            double-counted. It reuses the background service, so keep it running with{' '}
+            <code className="font-mono text-brand-blue text-xs">bvx start</code>. Confirm the mode any time with{' '}
+            <code className="font-mono text-brand-blue text-xs">bvx status</code> — it shows a <span className="font-medium">Gateway</span> line.
+          </p>
+          <p className="text-sm text-brand-muted dark:text-brand-dark-muted leading-relaxed">
+            Point the gateway elsewhere (staging or a self-hosted control plane) with{' '}
+            <code className="font-mono text-brand-blue text-xs">BREVITAS_GATEWAY_URL</code>.
           </p>
         </Section>
 

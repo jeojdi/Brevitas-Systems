@@ -25,39 +25,37 @@ test('customer UI separates input reduction, native caching, avoided calls, and 
     assert.doesNotMatch(component, /Math\.abs/)
   }
   assert.match(billing, /Verified savings/)
+  assert.match(overview, /Saved through Brevitas/)
+  assert.match(overview, /cache hit rate/)
   assert.match(overview, /provider input tokens avoided/)
   assert.match(overview, /model calls avoided/)
-  assert.match(overview, /net native-cache discount/)
-  assert.match(overview, /paired control/)
-  assert.match(projects, /Input avoided/)
-  assert.match(projects, /Calls avoided/)
+  assert.match(overview, /verified savings/)
+  // Projects surfaces the measured native-cache discount, not the always-zero
+  // avoidance/verified fields it used to.
+  assert.match(projects, /Cache savings/)
 })
 
 test('dashboard navigation is separated and exposes its active section', async () => {
-  const app = await readFile(new URL('../App.jsx', import.meta.url), 'utf8')
-  assert.match(app, /aria-label="Dashboard sections"/)
-  // renderTab, not activeTab: while data is pending the main area is pinned to
-  // Overview, and the highlighted tab must follow what is actually shown or the
-  // nav claims a section the page is not displaying.
-  assert.match(app, /aria-current=\{renderTab === tab \? 'page' : undefined\}/)
+  const [app, sidebar] = await Promise.all([
+    readFile(new URL('../App.jsx', import.meta.url), 'utf8'),
+    source('Sidebar'),
+  ])
+  // The nav lives in the left sidebar now; App wires the tab list and the active
+  // section (renderTab, not activeTab — the highlight must follow what is shown).
+  assert.match(sidebar, /aria-label="Dashboard sections"/)
+  assert.match(sidebar, /aria-current=\{active \? 'page' : undefined\}/)
+  assert.match(app, /tabs=\{visibleTabs\}/)
+  assert.match(app, /activeTab=\{renderTab\}/)
 })
 
-test('overview uses an input-avoidance per-call area chart', async () => {
+test('overview leads with a savings hero and hit-rate ring, with no chart library', async () => {
   const overview = await source('Overview')
-  assert.match(overview, /AreaChart, Area/)
-  assert.match(overview, /dataKey="inputAvoided"/)
-  assert.match(overview, /fill="url\(#savedArea\)"/)
-  assert.doesNotMatch(overview, /notSavedArea|totalNotSaved/)
-  // Two single-series monotone areas: input avoidance + weekly native-cache discount.
-  assert.equal((overview.match(/type="monotone"/g) || []).length, 2)
-  assert.match(overview, /dataKey="discount"/)
-  assert.match(overview, /fill="url\(#cacheDiscountArea\)"/)
-  assert.match(overview, /dot=\{\{ r: 5\.5,/)
-  assert.match(overview, /fmtAxis/)
-  assert.match(overview, /width=\{58\}/)
-  assert.match(overview, /const savedColor\s*=\s*'#4f5fc4'/)
-  assert.doesNotMatch(overview, /cached input rate|cachedInputRate/i)
-  assert.doesNotMatch(overview, /BarChart|LineChart|ComposedChart|<Bar\b|<Line\b/)
+  assert.match(overview, /Saved through Brevitas/)
+  assert.match(overview, /cache hit rate/)
+  assert.match(overview, /const savedColor\s*=\s*'#2f2df5'/)
+  // The recharts per-call area chart was removed; nothing pulls a chart library now.
+  assert.doesNotMatch(overview, /from 'recharts'/)
+  assert.doesNotMatch(overview, /AreaChart|BarChart|LineChart|ComposedChart|<Bar\b|<Line\b/)
 })
 
 test('dashboard preview is restricted to localhost and keeps production auth intact', async () => {
@@ -94,7 +92,8 @@ test('the admin tab survives the unknown-tab reset guard', async () => {
   // tab rendered but was unreachable when those two lists diverged.
   assert.match(app, /visibleTabs = useMemo\(\s*\(\) => \(isAdmin \? \[\.\.\.dashboardTabs, 'Admin'\] : dashboardTabs\)/)
   assert.match(app, /if \(!visibleTabs\.includes\(activeTab\)\) setActiveTab\('Overview'\)/)
-  assert.match(app, /\{visibleTabs\.map\(tab =>/)
+  // The rendered list is now handed to the sidebar rather than mapped inline.
+  assert.match(app, /tabs=\{visibleTabs\}/)
   assert.doesNotMatch(app, /!dashboardTabs\.includes\(activeTab\)/)
 })
 

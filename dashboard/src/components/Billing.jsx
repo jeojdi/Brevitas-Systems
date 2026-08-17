@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchStats, fetchCacheStats, fetchBillingStatus, openBillingPortal, startBillingCheckout } from '../lib/api.js'
+import { fetchStats, fetchCacheStats, fetchBillingStatus, fetchCredits, fetchCreditPacks, startCreditCheckout, openBillingPortal, startBillingCheckout } from '../lib/api.js'
 import { WITHHELD, spendRedacted } from '../lib/spend.js'
 
 function fmt(n, decimals = 2) {
@@ -44,21 +44,30 @@ function fmtDate(value) {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
 }
+// Credit balances are stored as micro-dollars (1 unit = $0.000001), matching the µUSD
+// meter. Show them as plain dollars.
+function fmtCredits(micro) {
+  return `$${(Number(micro || 0) / 1_000_000).toFixed(2)}`
+}
 
 function StatCard({ label, value, sub, accent = false }) {
   return (
     <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6">
       <p className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-3">{label}</p>
-      <p className={`font-serif text-3xl ${accent ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'} leading-none mb-1`}>{value}</p>
+      <p className={`font-sans font-semibold text-3xl ${accent ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'} leading-none mb-1`}>{value}</p>
       {sub && <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-2">{sub}</p>}
     </div>
   )
 }
 
-export default function Billing({ apiKey, accessToken, refreshTick, previewStats, previewBilling }) {
+export default function Billing({ apiKey, accessToken, refreshTick, enterprise = false, previewStats, previewBilling, previewCredits, previewPacks }) {
   const [stats, setStats]   = useState(previewStats || null)
   const [cacheStats, setCacheStats] = useState(null)
   const [billing, setBilling] = useState(previewBilling || null)
+  const [credits, setCredits] = useState(null)
+  const [creditPacks, setCreditPacks] = useState([])
+  const [creditAction, setCreditAction] = useState('')
+  const [creditError, setCreditError] = useState('')
   const [loading, setLoading] = useState(!previewStats)
   const [error, setError]   = useState('')
   // Two independent failures, two independent lines. The 10s poll owns
@@ -121,6 +130,37 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
   }, [accessToken, previewBilling])
 
   useEffect(() => { loadBilling() }, [loadBilling, refreshTick])
+
+  const loadCredits = useCallback(async () => {
+    if (previewCredits) { setCredits(previewCredits); return }
+    if (!accessToken) return
+    // A read-only balance; a failure just hides the card rather than blocking the page.
+    try { setCredits(await fetchCredits(accessToken)) } catch { /* keep prior snapshot */ }
+  }, [accessToken, previewCredits])
+
+  useEffect(() => { loadCredits() }, [loadCredits, refreshTick])
+
+  useEffect(() => {
+    if (previewPacks) { setCreditPacks(previewPacks); return }
+    if (!accessToken) return
+    // Packs change rarely; load once. No packs => the Buy row simply doesn't render.
+    fetchCreditPacks(accessToken)
+      .then(data => setCreditPacks(Array.isArray(data?.packs) ? data.packs : []))
+      .catch(() => setCreditPacks([]))
+  }, [accessToken, previewPacks])
+
+  const buyCredits = async priceId => {
+    setCreditAction(priceId)
+    setCreditError('')
+    try {
+      const { url } = await startCreditCheckout(accessToken, priceId)
+      window.location.assign(url)
+    } catch (e) {
+      setCreditError(e.message)
+    } finally {
+      setCreditAction('')
+    }
+  }
 
   const goToStripe = async kind => {
     setBillingAction(kind)
@@ -188,8 +228,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
     <div className="space-y-10" data-ph-sensitive>
       {error && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 dark:border-red-900/40 p-4"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={load} className="annotation hover:text-brand-blue">retry</button></div>}
       <div>
-        <p className="annotation tracking-widest uppercase mb-4">Savings</p>
-        <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy leading-tight">
+        <h2 className="font-sans text-4xl font-semibold text-brand-navy dark:text-brand-dark-navy leading-tight">
           Track what Brevitas saves.
         </h2>
         <p className="text-brand-muted dark:text-brand-dark-muted text-base mt-3 max-w-lg leading-relaxed">
@@ -197,7 +236,53 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
         </p>
       </div>
 
-      {/* Stripe-hosted usage billing */}
+      {/* Credit balance (credit-based pricing) — personal accounts only. */}
+      {!enterprise && credits && (
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 sm:p-8">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6">
+            <div>
+              <p className="annotation tracking-widest uppercase mb-2">Credits</p>
+              <p className={`font-sans font-semibold text-4xl leading-none ${credits.low_balance ? 'text-amber-600' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
+                {fmtCredits(credits.balance_micro)}
+              </p>
+              <p className="font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted mt-3">
+                {credits.days_to_exhaustion != null
+                  ? `${fmtCredits(credits.spent_7d_micro)} used in the last 7 days · ~${credits.days_to_exhaustion} days left at that pace`
+                  : 'No recent usage to project a runway from'}
+              </p>
+              {credits.low_balance && (
+                <p className="font-mono text-[11px] text-amber-600 mt-1">
+                  Balance is empty — top up to keep serving requests.
+                </p>
+              )}
+            </div>
+            {creditPacks.length > 0 && (
+              <div className="flex flex-col items-stretch gap-2 sm:items-end">
+                <p className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">Buy credits</p>
+                <div className="flex flex-wrap gap-2">
+                  {creditPacks.map(pack => (
+                    <button
+                      key={pack.priceId}
+                      type="button"
+                      onClick={() => buyCredits(pack.priceId)}
+                      disabled={creditAction === pack.priceId}
+                      className="min-h-10 rounded-xl bg-brand-blue px-4 py-2 text-[11px] font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                    >
+                      {creditAction === pack.priceId
+                        ? '…'
+                        : (pack.amountUsd != null ? `$${pack.amountUsd}` : (pack.label || 'Buy'))}
+                    </button>
+                  ))}
+                </div>
+                {creditError && <p className="font-mono text-[11px] text-red-500">{creditError}</p>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Stripe-hosted usage billing (25% of verified savings) — enterprise accounts only. */}
+      {enterprise && (
       <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 sm:p-8">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="max-w-2xl">
@@ -209,7 +294,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
                 </span>
               )}
             </div>
-            <h3 className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">25% of verified savings. Nothing else.</h3>
+            <h3 className="font-sans font-semibold text-2xl text-brand-navy dark:text-brand-dark-navy">25% of verified savings. Nothing else.</h3>
             <p className="text-sm text-brand-muted dark:text-brand-dark-muted mt-2 leading-relaxed">
               Stripe hosts card collection and the billing portal; Brevitas never receives card details. Usage is floored to micro-dollars, deduplicated{billing?.weekly_safety_cap_usd ? `, and constrained by a $${fmt(billing.weekly_safety_cap_usd, 0)} weekly safety cap` : ''}. Stripe closes and bills each metered period every seven days.
             </p>
@@ -273,12 +358,14 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
           <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-4">Billing enrollment is not enabled in this environment.</p>
         )}
       </div>
+      )}
 
       {/* Settled weeks. The usage history table further down is derived from
           /v1/stats and reports verified savings; this one is the billing ledger
           of record and reports what was settled and sent to Stripe. The two are
-          different quantities and must not be read as one number twice. */}
-      {settlementHistory.length > 0 && (
+          different quantities and must not be read as one number twice.
+          Enterprise-only: the settlement ledger belongs to the 25% fee model. */}
+      {enterprise && settlementHistory.length > 0 && (
         <div>
           <p className="annotation tracking-widest uppercase mb-4">// settled weeks</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
@@ -395,7 +482,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, previewStats
       {/* Empty state */}
       {weeks.length === 0 && (
         <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-10 sm:p-16 text-center">
-          <p className="font-serif text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-2">No usage yet.</p>
+          <p className="font-sans font-semibold text-2xl text-brand-navy-mid dark:text-brand-dark-navy-mid mb-2">No usage yet.</p>
           <p className="annotation">// start compressing to see usage and savings here</p>
         </div>
       )}

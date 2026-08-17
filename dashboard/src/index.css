@@ -48,12 +48,12 @@ body,
   height: 1.75rem;
   border-radius: 9999px;
   border: 2px solid #e2e4f0;
-  border-top-color: #4f5fc4;
+  border-top-color: #2f2df5;
   animation: boot-spin 0.8s linear infinite;
 }
 .dark .boot-spinner {
   border-color: #2a2a2a;
-  border-top-color: #4f5fc4;
+  border-top-color: #2f2df5;
 }
 @keyframes boot-spin {
   to { transform: rotate(360deg); }
@@ -157,4 +157,52 @@ body,
 
   .dashboard-app .gap-12 { gap: 1.5rem; }
   .dashboard-app .w-36 { width: auto; }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Apple-style micro-interactions — respond on press, everywhere.
+   Controls highlight the instant they are pressed (a small scale-down) with a
+   snappy ease-out, so the interface feels direct rather than waiting for release.
+   focus-visible gives keyboard users a clear ring without flashing it on click.
+   ────────────────────────────────────────────────────────────────────────── */
+.dashboard-app button,
+.dashboard-app [role="option"] {
+  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 140ms ease, color 140ms ease,
+              border-color 140ms ease, opacity 140ms ease;
+}
+.dashboard-app button:not(:disabled):active,
+.dashboard-app [role="option"]:active {
+  transform: scale(0.97);
+}
+.dashboard-app button:focus-visible,
+.dashboard-app a:focus-visible,
+.dashboard-app input:focus-visible,
+.dashboard-app select:focus-visible,
+.dashboard-app [tabindex]:focus-visible {
+  outline: 2px solid #2f2df5;
+  outline-offset: 2px;
+}
+
+/* Translucent chrome — a floating material layer content scrolls under, rather
+   than an opaque strip. Weight (blur + tint) reads as a real surface. */
+.app-chrome {
+  background-color: rgba(255, 255, 255, 0.68);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+.dark .app-chrome { background-color: rgba(20, 20, 20, 0.66); }
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-chrome {
+    background-color: #ffffff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .dark .app-chrome { background-color: #141414; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-app button:not(:disabled):active,
+  .dashboard-app [role="option"]:active { transform: none; }
 }

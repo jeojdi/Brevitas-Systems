@@ -66,6 +66,10 @@ export async function apiJson(path, apiKey, { body, request = fetch, headers, ..
 
 export const fetchStats = (apiKey, options) => apiJson('/v1/stats', apiKey, options)
 export const fetchBreakdown = (apiKey, options) => apiJson('/v1/stats/breakdown', apiKey, options)
+// Repository display-name aliases (decorate usage-discovered repos; see api/server.py).
+export const fetchRepoMeta = (apiKey, options) => apiJson('/v1/repositories/meta', apiKey, options)
+export const upsertRepoMeta = (apiKey, body, options = {}) => apiJson('/v1/repositories/meta', apiKey, { ...options, method: 'POST', body })
+export const deleteRepoMeta = (apiKey, repo, options = {}) => apiJson(`/v1/repositories/meta?repo=${encodeURIComponent(repo)}`, apiKey, { ...options, method: 'DELETE' })
 export const fetchActivity = (apiKey, options) => apiJson('/v1/stats/activity', apiKey, options)
 export const fetchCacheStats = (apiKey, options) => apiJson('/v1/stats/cache', apiKey, options)
 export const fetchAudit = (apiKey, options) => apiJson('/v1/audit', apiKey, options)
@@ -90,6 +94,7 @@ export const createKey = (accessToken, name, options = {}) => managementJson('/v
 export const revokeKey = (accessToken, id, options = {}) => managementJson(`/v1/keys/${id}`, accessToken, {
   ...options, method: 'DELETE',
 })
+export const fetchCredits = (accessToken, options) => managementJson('/v1/organization/credits', accessToken, options)
 export const fetchProvider = (apiKey, options) => apiJson('/v1/provider', apiKey, options)
 export const fetchProviders = (apiKey, options) => apiJson('/v1/providers', apiKey, options)
 export const fetchOllamaModels = (apiKey, options) => apiJson('/v1/ollama/models', apiKey, options)
@@ -114,6 +119,15 @@ export const fetchBillingStatus = (accessToken, options) =>
   billingJson('/api/billing/status', accessToken, options)
 export const startBillingCheckout = (accessToken, options = {}) =>
   billingJson('/api/billing/checkout', accessToken, { ...options, method: 'POST' })
+export const fetchCreditPacks = (accessToken, options) =>
+  billingJson('/api/billing/credit-checkout', accessToken, options)
+export const startCreditCheckout = (accessToken, priceId, options = {}) =>
+  billingJson('/api/billing/credit-checkout', accessToken, {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    body: JSON.stringify({ priceId }),
+  })
 export const openBillingPortal = (accessToken, options = {}) =>
   billingJson('/api/billing/portal', accessToken, { ...options, method: 'POST' })
 export const compress = (apiKey, body, options = {}) => apiJson('/v1/compress', apiKey, {

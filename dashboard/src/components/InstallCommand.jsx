@@ -46,17 +46,26 @@ const HOSTED = Object.freeze({
   baseUrl: 'https://api.brevitassystems.com/v1',
 })
 
-// X-Brevitas-Key is REQUIRED and is the header the gateway actually reads
-// (api/server.py:1731). It has NO fallback: `api_key=` becomes an Authorization
-// bearer, and nothing maps that to x-brevitas-key, so a snippet carrying only
-// the customer id returns `401 Missing X-Brevitas-Key header` on the very first
-// request. This block used to omit it.
+// The simplest path: brevitas.hosted() sets the gateway base URL and the two headers
+// for you, reading BREVITAS_API_KEY / BREVITAS_CUSTOMER_ID from the environment. A
+// single-tenant key pinned by `brevitas connect` needs no customer id at all.
+const HOSTED_SNIPPET_WRAPPER = `from openai import OpenAI
+import brevitas
+
+# BREVITAS_API_KEY in your environment (brevitas connect can write it to .env).
+client = brevitas.hosted(OpenAI())`
+
+// Or configure the client by hand. X-Brevitas-Key is REQUIRED — it is the header the
+// gateway authenticates on and has no fallback (`api_key=` becomes the forwarded
+// provider Authorization, which nothing maps to x-brevitas-key, so omitting it returns
+// `401 Missing X-Brevitas-Key header`). X-Brevitas-Customer-ID is optional for a
+// single-tenant pinned key and required for multi-tenant keys.
 const HOSTED_SNIPPET = `client = OpenAI(
     base_url="${HOSTED.baseUrl}",
     api_key=os.environ["OPENAI_API_KEY"],
     default_headers={
         "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
-        "X-Brevitas-Customer-ID": "acme",
+        "X-Brevitas-Customer-ID": "acme",   # optional once the key is pinned
     },
 )`
 
@@ -108,8 +117,9 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
               3. Point your client at the gateway
             </p>
             {[
-              ['OpenAI-compatible', HOSTED_SNIPPET],
-              ['Anthropic (Claude)', HOSTED_SNIPPET_ANTHROPIC],
+              ['Recommended · brevitas.hosted()', HOSTED_SNIPPET_WRAPPER],
+              ['OpenAI — by hand', HOSTED_SNIPPET],
+              ['Anthropic (Claude) — by hand', HOSTED_SNIPPET_ANTHROPIC],
               ['Environment only (Claude Code)', HOSTED_SNIPPET_ENV],
             ].map(([label, snippet]) => (
               <div key={label} className="mt-2 first:mt-0">
@@ -125,17 +135,17 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
 
           <div className="rounded-xl border border-brand-blue/30 bg-brand-blue-dim px-4 py-3 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">
             <p className="font-medium">
-              <code className="font-mono text-brand-blue">X-Brevitas-Customer-ID</code> is required on every hosted request.
+              <code className="font-mono text-brand-blue">X-Brevitas-Customer-ID</code> — optional for a single-tenant
+              key, required for multi-tenant keys.
             </p>
             <p className="mt-1.5 text-brand-muted dark:text-brand-dark-muted">
-              An organization service key returns{' '}
-              <code className="font-mono">400 Organization service proxy calls require X-Brevitas-Customer-ID</code>{' '}
-              without it. This is the most common reason a first request fails. One key can route traffic for many end
-              customers, and the header says which — attribution is exact and stable, never inferred.{' '}
-              <code className="font-mono text-brand-blue">brevitas connect</code> pins your own id to the key it mints so
-              a missing header resolves rather than fails; send it anyway. Reselling to your own customers? Use{' '}
-              <code className="font-mono text-brand-blue">brevitas connect --multi-tenant</code>, which leaves the key
-              unpinned so a missing header stays a hard 400.
+              <code className="font-mono text-brand-blue">brevitas connect</code> pins your workspace's own id to the
+              single-tenant key it mints, so a header-less call resolves to it automatically — you can drop the header
+              (an explicitly sent one always wins). Reselling to your own customers? Use{' '}
+              <code className="font-mono text-brand-blue">brevitas connect --multi-tenant</code>: it leaves the key
+              unpinned, so every request must carry the header or the key returns{' '}
+              <code className="font-mono">400 Organization service proxy calls require X-Brevitas-Customer-ID</code>.
+              Attribution is exact and stable, never inferred.
             </p>
           </div>
 
@@ -168,6 +178,18 @@ export default function InstallCommand({ phase = 'all', audience = 'personal' })
               accounting; this path is <span className="font-medium">not</span> eligible for savings-based pricing. Use
               the hosted gateway above for that.
             </p>
+            <div className="mt-3 rounded-xl border border-brand-blue/30 bg-brand-blue-dim px-4 py-3 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">
+              <p className="font-medium">
+                Want BVX's auto-config <span className="italic">and</span> the billable hosted path? Run{' '}
+                <code className="font-mono text-brand-blue">bvx connect</code>.
+              </p>
+              <p className="mt-1.5 text-brand-muted dark:text-brand-dark-muted">
+                Your tools keep pointing at the local proxy; it forwards to the hosted gateway with your key attached, so
+                usage is metered <span className="font-medium">authoritatively</span> — the same billable path as the SDK
+                above, with nothing to change in your code.{' '}
+                <code className="font-mono text-brand-blue">bvx disconnect</code> returns to direct, local-only routing.
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => setShowLocal(value => !value)}
