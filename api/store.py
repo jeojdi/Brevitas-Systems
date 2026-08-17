@@ -1557,6 +1557,9 @@ class UsageStore:
                 "status": "TEXT NOT NULL DEFAULT 'active'",
                 "expires_at": "TEXT NOT NULL DEFAULT ''",
                 "revoked_at": "TEXT NOT NULL DEFAULT ''",
+                # Single-tenant pin read by service_account_key_context; mirrors the
+                # Postgres column added in 202608130001 and the company_admin bootstrap.
+                "default_customer_external_id": "TEXT NOT NULL DEFAULT ''",
             }.items():
                 if name not in service_account_cols:
                     db.execute(
@@ -1611,6 +1614,7 @@ class UsageStore:
             db.execute("CREATE INDEX IF NOT EXISTS warm_prefixes_org_idx ON warm_prefixes(organization_id, provider, last_seen_at DESC)")
             db.execute("CREATE TABLE IF NOT EXISTS bvx_device_auth (device_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '', encrypted_key TEXT NOT NULL DEFAULT '', approved_at TEXT NOT NULL DEFAULT '')")
             db.execute("CREATE TABLE IF NOT EXISTS key_repositories (key_hash TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'bvx', installed_at TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (key_hash, repo))")
+            db.execute("CREATE TABLE IF NOT EXISTS repo_meta (organization_id TEXT NOT NULL, repo TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (organization_id, repo))")
             device_cols = {r[1] for r in db.execute("PRAGMA table_info(bvx_device_auth)")}
             if "key_hash" not in device_cols:
                 db.execute("ALTER TABLE bvx_device_auth ADD COLUMN key_hash TEXT NOT NULL DEFAULT ''")
@@ -1692,6 +1696,18 @@ class UsageStore:
             for column in ("project", "client", "provider", "model", "pipeline", "agent", "run_id"):
                 db.execute(f"CREATE INDEX IF NOT EXISTS usage_org_{column}_idx ON usage_log(organization_id, {column}, ts DESC, id DESC)")
             db.execute("UPDATE usage_log SET measured_savings_usd=cost_saved_usd, verified_savings_usd=cost_saved_usd WHERE measured_savings_usd IS NULL")
+            # ── Credit ledger (credit-based pricing; see CREDIT_PRICING_PLAN.md) ──
+            # Append-only source of truth plus a materialized per-org balance that is the
+            # O(1) atomic-decrement target. Dev/test mirror of migration 202608130002;
+            # Postgres exposes the debit through a security-definer RPC. Idempotency is
+            # fenced by partial unique indexes: one usage debit per request_id, one grant
+            # per stripe_event_id, one trial grant per organization.
+            db.execute("CREATE TABLE IF NOT EXISTS credit_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id TEXT NOT NULL, customer_id TEXT NOT NULL DEFAULT '', entry_type TEXT NOT NULL, amount_micro INTEGER NOT NULL, request_id TEXT NOT NULL DEFAULT '', stripe_event_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', occurred_at TEXT NOT NULL)")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS credit_ledger_usage_request_idx ON credit_ledger(request_id) WHERE entry_type='usage' AND request_id<>''")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS credit_ledger_event_idx ON credit_ledger(stripe_event_id) WHERE stripe_event_id<>''")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS credit_ledger_trial_idx ON credit_ledger(organization_id) WHERE entry_type='grant' AND reason='trial'")
+            db.execute("CREATE INDEX IF NOT EXISTS credit_ledger_org_idx ON credit_ledger(organization_id, occurred_at DESC, id DESC)")
+            db.execute("CREATE TABLE IF NOT EXISTS credit_balances (organization_id TEXT PRIMARY KEY, balance_micro INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '')")
 
     def ensure_organization(self, user_id: str, name: str = "",
                             account_type: str = "company") -> dict[str, Any]:
@@ -2050,6 +2066,105 @@ class UsageStore:
                                  (int(enabled), organization_id))
             if not cur.rowcount:
                 raise ValueError("cache tenant not found")
+
+    def credit_balance(self, organization_id: str) -> int:
+        """Current micro-credit balance for an organization (0 if none).
+
+        May be negative: soft-overage is deliberate because a BYO-key request already
+        cost the caller money at the provider before the gateway can debit.
+        """
+        if not organization_id:
+            return 0
+        with self._conn() as db:
+            row = db.execute("SELECT balance_micro FROM credit_balances WHERE organization_id=?",
+                             (organization_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def organization_id_for_owner(self, owner_id: str) -> str:
+        """The org a personal owner bills to (organizations.billing_owner_id).
+
+        Local-proxy usage reports often carry no organization on the key, so the credit
+        debit resolves the owner's org here to find a credit balance to charge.
+        """
+        owner_id = str(owner_id or "").strip()
+        if not owner_id:
+            return ""
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT id FROM organizations WHERE billing_owner_id=? ORDER BY created_at ASC LIMIT 1",
+                (owner_id,)).fetchone()
+            return str(row[0]) if row else ""
+
+    def debit_credits_for_request(self, organization_id: str, customer_id: str,
+                                  request_id: str, amount_micro: int) -> bool:
+        """Atomically debit a flat per-request amount, idempotent on request_id.
+
+        Returns True when a new debit was applied, False when this request was already
+        debited or the inputs are unusable. The ledger insert (fenced by
+        credit_ledger_usage_request_idx) and the balance decrement run in one SQLite
+        transaction, so concurrent calls serialize and a request is never double-charged.
+        """
+        if not organization_id or not request_id or amount_micro <= 0:
+            return False
+        now = _now()
+        with self._conn() as db:
+            cur = db.execute(
+                "INSERT OR IGNORE INTO credit_ledger"
+                "(organization_id,customer_id,entry_type,amount_micro,request_id,occurred_at) "
+                "VALUES(?,?,'usage',?,?,?)",
+                (organization_id, customer_id or "", -int(amount_micro), request_id, now))
+            if not cur.rowcount:
+                return False  # request_id already debited
+            db.execute(
+                "INSERT INTO credit_balances(organization_id,balance_micro,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(organization_id) DO UPDATE SET "
+                "balance_micro=balance_micro-?,updated_at=?",
+                (organization_id, -int(amount_micro), now, int(amount_micro), now))
+        return True
+
+    def grant_credits(self, organization_id: str, amount_micro: int, *,
+                      entry_type: str = "grant", reason: str = "",
+                      stripe_event_id: str = "", customer_id: str = "") -> bool:
+        """Add credits (trial grant, Stripe purchase, adjustment).
+
+        Idempotent on stripe_event_id when provided, and one-per-org for a trial grant
+        (reason='trial'). Returns True when applied, False on a deduped/invalid call.
+        """
+        if not organization_id or amount_micro <= 0:
+            return False
+        now = _now()
+        with self._conn() as db:
+            cur = db.execute(
+                "INSERT OR IGNORE INTO credit_ledger"
+                "(organization_id,customer_id,entry_type,amount_micro,stripe_event_id,reason,occurred_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (organization_id, customer_id or "", entry_type, int(amount_micro),
+                 stripe_event_id or "", reason or "", now))
+            if not cur.rowcount:
+                return False  # duplicate stripe_event_id or trial already granted
+            db.execute(
+                "INSERT INTO credit_balances(organization_id,balance_micro,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(organization_id) DO UPDATE SET "
+                "balance_micro=balance_micro+?,updated_at=?",
+                (organization_id, int(amount_micro), now, int(amount_micro), now))
+        return True
+
+    def credit_summary(self, organization_id: str) -> dict:
+        """Materialized balance plus rolling 7-day usage spend (micro-credits) for the
+        dashboard burn-down."""
+        if not organization_id:
+            return {"balance_micro": 0, "spent_7d_micro": 0}
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        with self._conn() as db:
+            bal = db.execute(
+                "SELECT balance_micro FROM credit_balances WHERE organization_id=?",
+                (organization_id,)).fetchone()
+            spent = db.execute(
+                "SELECT COALESCE(SUM(-amount_micro),0) FROM credit_ledger "
+                "WHERE organization_id=? AND entry_type='usage' AND occurred_at>=?",
+                (organization_id, since)).fetchone()
+        return {"balance_micro": int(bal[0]) if bal else 0,
+                "spent_7d_micro": int(spent[0] or 0)}
 
     def create_device_request(self, device_hash: str, expires_at: str) -> None:
         with self._conn() as db:
@@ -2850,6 +2965,52 @@ class UsageStore:
                 "owner_id=excluded.owner_id,source=excluded.source,last_seen=excluded.last_seen",
                 (key_hash, owner, repo, source, now, now),
             )
+
+    # ── repository display-name aliases (decorate usage-discovered repos) ──
+    # Scoped by organization_id, resolved from the key. A key with no organization
+    # (legacy owner-only key) gets a no-op alias layer: reads return [] and writes
+    # are rejected, so the Projects tab still works, just without aliases.
+    def _repo_meta_org(self, key_hash: str) -> str:
+        return str((self.key_context(key_hash) or {}).get("organization_id") or "")
+
+    def repo_meta_list(self, key_hash: str) -> list[dict[str, Any]]:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            return []
+        with self._conn() as db:
+            return [{"repo": row["repo"], "display_name": row["display_name"], "added": bool(row["added"])}
+                    for row in db.execute(
+                        "SELECT repo,display_name,added FROM repo_meta WHERE organization_id=? "
+                        "ORDER BY updated_at DESC", (organization_id,))]
+
+    def repo_meta_upsert(self, key_hash: str, repo: str, display_name: str = "",
+                         added: bool = False) -> dict[str, Any]:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            raise ValueError("no organization is bound to this key")
+        now = _now()
+        with self._conn() as db:
+            # `added` is sticky: renaming a discovered repo (added=false) must never
+            # clear the flag on a repo the user pre-added.
+            db.execute(
+                "INSERT INTO repo_meta(organization_id,repo,display_name,added,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(organization_id,repo) DO UPDATE SET "
+                "display_name=excluded.display_name,added=repo_meta.added OR excluded.added,"
+                "updated_at=excluded.updated_at",
+                (organization_id, repo, display_name, 1 if added else 0, now, now),
+            )
+            row = db.execute(
+                "SELECT repo,display_name,added FROM repo_meta WHERE organization_id=? AND repo=?",
+                (organization_id, repo)).fetchone()
+        return {"repo": row["repo"], "display_name": row["display_name"], "added": bool(row["added"])}
+
+    def repo_meta_delete(self, key_hash: str, repo: str) -> None:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            return
+        with self._conn() as db:
+            db.execute("DELETE FROM repo_meta WHERE organization_id=? AND repo=?",
+                       (organization_id, repo))
 
     def get_admin_key_inventory(self) -> dict[str, Any]:
         with self._conn() as db:
@@ -3780,6 +3941,80 @@ class SupabaseUsageStore:
         if not rows:
             raise ValueError("cache tenant not found")
 
+    def credit_balance(self, organization_id: str) -> int:
+        """Materialized micro-credit balance. Degrades to 0 if the credit tables are not
+        yet deployed, so a read never 500s during a code-before-migration window."""
+        if not organization_id:
+            return 0
+        try:
+            rows = self._request("GET", "credit_balances", params={
+                "select": "balance_micro", "organization_id": f"eq.{organization_id}",
+                "limit": "1",
+            }) or []
+        except Exception:
+            return 0
+        if rows and rows[0].get("balance_micro") is not None:
+            return int(rows[0]["balance_micro"])
+        return 0
+
+    def organization_id_for_owner(self, owner_id: str) -> str:
+        """The org a personal owner bills to (organizations.billing_owner_id) — used to
+        resolve a credit target when a local-proxy usage report carries no org on the key.
+        Degrades to '' if the organizations table is unavailable."""
+        owner_id = str(owner_id or "").strip()
+        if not owner_id:
+            return ""
+        try:
+            rows = self._request("GET", "organizations", params={
+                "select": "id", "billing_owner_id": f"eq.{owner_id}",
+                "order": "created_at.asc", "limit": "1",
+            }) or []
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+            return ""
+        return str(rows[0].get("id") or "") if rows else ""
+
+    def debit_credits_for_request(self, organization_id: str, customer_id: str,
+                                  request_id: str, amount_micro: int) -> bool:
+        """Atomic idempotent per-request debit via the security-definer RPC. Exceptions
+        propagate to the guarded call site (the receipt is already persisted)."""
+        if not organization_id or not request_id or amount_micro <= 0:
+            return False
+        return bool(self._request("POST", "rpc/debit_credits_for_request", data={
+            "p_organization_id": organization_id, "p_customer_id": customer_id or "",
+            "p_request_id": request_id, "p_amount_micro": int(amount_micro),
+        }))
+
+    def grant_credits(self, organization_id: str, amount_micro: int, *,
+                      entry_type: str = "grant", reason: str = "",
+                      stripe_event_id: str = "", customer_id: str = "") -> bool:
+        """Add credits (trial/purchase/adjustment) via RPC, idempotent on stripe_event_id
+        and one-per-org for a trial grant."""
+        if not organization_id or amount_micro <= 0:
+            return False
+        return bool(self._request("POST", "rpc/grant_credits", data={
+            "p_organization_id": organization_id, "p_amount_micro": int(amount_micro),
+            "p_entry_type": entry_type, "p_reason": reason or "",
+            "p_stripe_event_id": stripe_event_id or "", "p_customer_id": customer_id or "",
+        }))
+
+    def credit_summary(self, organization_id: str) -> dict:
+        """Balance + rolling 7-day usage spend via RPC. Degrades to balance-only (spend 0)
+        if the summary RPC is not deployed, so the dashboard read never 500s."""
+        if not organization_id:
+            return {"balance_micro": 0, "spent_7d_micro": 0}
+        try:
+            result = self._request("POST", "rpc/credit_summary",
+                                    data={"p_organization_id": organization_id})
+        except Exception:
+            return {"balance_micro": self.credit_balance(organization_id),
+                    "spent_7d_micro": 0}
+        if isinstance(result, dict):
+            return {"balance_micro": int(result.get("balance_micro") or 0),
+                    "spent_7d_micro": int(result.get("spent_7d_micro") or 0)}
+        return {"balance_micro": self.credit_balance(organization_id), "spent_7d_micro": 0}
+
     def member_organization(self, user_id: str) -> dict[str, Any] | None:
         try:
             actor_id = _required_uuid(user_id, "user_id")
@@ -4420,6 +4655,67 @@ class SupabaseUsageStore:
             "key_hash": key_hash, "owner_id": self.key_owner(key_hash), "repo": repo,
             "source": source, "installed_at": now, "last_seen": now,
         }, prefer="resolution=merge-duplicates,return=representation")
+
+    # ── repository display-name aliases (see UsageStore.repo_meta_* for semantics) ──
+    # Scoped by organization_id from the key. Reads degrade to [] when the repo_meta
+    # table has not been migrated yet (PGRST205), so the Projects tab keeps working.
+    def _repo_meta_org(self, key_hash: str) -> str:
+        return str((self.key_context(key_hash) or {}).get("organization_id") or "")
+
+    def repo_meta_list(self, key_hash: str) -> list[dict[str, Any]]:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            return []
+        try:
+            rows = self._request("GET", "repo_meta", params={
+                "select": "repo,display_name,added",
+                "organization_id": f"eq.{organization_id}",
+                "order": "updated_at.desc", "limit": str(ADMIN_RESULT_MAX),
+            }) or []
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+            return []
+        return [{"repo": row.get("repo") or "", "display_name": row.get("display_name") or "",
+                 "added": bool(row.get("added"))} for row in rows]
+
+    def repo_meta_upsert(self, key_hash: str, repo: str, display_name: str = "",
+                         added: bool = False) -> dict[str, Any]:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            raise ValueError("no organization is bound to this key")
+        now = _now()
+        data: dict[str, Any] = {
+            "organization_id": organization_id, "repo": repo,
+            "display_name": display_name, "updated_at": now,
+        }
+        # Only set `added`/`created_at` when pre-adding, so a rename never clears the
+        # flag on an already-added repo (PostgREST merge only overwrites sent columns).
+        if added:
+            data["added"] = True
+            data["created_at"] = now
+        try:
+            rows = self._request("POST", "repo_meta", params={"on_conflict": "organization_id,repo"},
+                                 data=data, prefer="resolution=merge-duplicates,return=representation") or []
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
+            raise RuntimeError("repository metadata storage is not available yet") from exc
+        row = rows[0] if rows else {"repo": repo, "display_name": display_name, "added": added}
+        return {"repo": row.get("repo") or repo, "display_name": row.get("display_name") or "",
+                "added": bool(row.get("added"))}
+
+    def repo_meta_delete(self, key_hash: str, repo: str) -> None:
+        organization_id = self._repo_meta_org(key_hash)
+        if not organization_id:
+            return
+        try:
+            self._request("DELETE", "repo_meta", params={
+                "organization_id": f"eq.{organization_id}", "repo": f"eq.{repo}",
+            }, prefer="return=minimal")
+        except requests.HTTPError as exc:
+            if not _postgrest_object_missing(exc):
+                raise
 
     def get_admin_key_inventory(self) -> dict[str, Any]:
         keys = self._request("GET", "api_keys", params={
