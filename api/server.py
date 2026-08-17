@@ -1558,30 +1558,44 @@ def _auth_context_for_key(kh: str, customer_external_id: str = "") -> AuthContex
         row = {**row, **authoritative}
     scopes = frozenset(row.get("scopes") or [])
     organization_id = str(row.get("organization_id") or "")
+    key_type = str(row.get("key_type") or "legacy")
+    # Single-tenant pin fallback. When no X-Brevitas-Customer-ID header is sent, an
+    # organization_service key that carries a default_customer_external_id resolves to
+    # that customer rather than 400ing at the proxy gate. SECURITY INVARIANTS:
+    #   * the pin is read ONLY from the key-bound service-account row (row came from the
+    #     key-hash lookup + _authoritative_service_key_context), never from client input;
+    #   * an explicitly sent header ALWAYS wins over the pin (header-first below);
+    #   * multi-tenant keys carry no pin, so effective id stays empty → customer_id stays
+    #     "" → the organization_service gate still 400s. Behaviour is byte-identical to
+    #     today for every key without a pin.
+    # Resolving the pin through the same find/auto-provision/scope path as the header means
+    # it honours customer:route / customer:auto_provision and active-status exactly alike.
+    pin = str(row.get("default_customer_external_id") or "").strip()
+    effective_external_id = external_id or (pin if key_type == "organization_service" else "")
     customer_id = ""
-    if external_id:
-        if not _CUSTOMER_EXTERNAL_ID.fullmatch(external_id):
+    if effective_external_id:
+        if not _CUSTOMER_EXTERNAL_ID.fullmatch(effective_external_id):
             raise HTTPException(status_code=400, detail="Invalid X-Brevitas-Customer-ID")
         if not organization_id or "customer:route" not in scopes:
             raise HTTPException(status_code=403, detail="Key cannot route customer traffic")
-        customer = _store.find_customer(organization_id, external_id)
+        customer = _store.find_customer(organization_id, effective_external_id)
         if customer is None:
             if "customer:auto_provision" not in scopes:
                 raise HTTPException(status_code=404, detail="Customer is not registered")
             _enforce_customer_provision_quota(organization_id)
-            customer = _store.upsert_customer(organization_id, external_id)
+            customer = _store.upsert_customer(organization_id, effective_external_id)
         if customer.get("status") != "active":
             raise HTTPException(status_code=403, detail="Customer is not active")
         customer_id = str(customer["id"])
     context = AuthContext(
         key_hash=kh, organization_id=organization_id,
         billing_owner_id=str(row.get("owner_id") or ""), customer_id=customer_id,
-        customer_external_id=external_id,
+        customer_external_id=effective_external_id,
         service_account_id=str(row.get("service_account_id") or ""),
         actor_user_id=(str(row.get("owner_id") or "")
-                       if str(row.get("key_type") or "") == "dashboard_session"
+                       if key_type == "dashboard_session"
                        else ""),
-        key_type=str(row.get("key_type") or "legacy"), scopes=scopes,
+        key_type=key_type, scopes=scopes,
         environment=str(row.get("environment") or ""),
     )
     if _device_credential_expired(row):
@@ -2913,6 +2927,15 @@ def bootstrap_organization(request: Request, body: OrganizationBootstrapRequest)
             detail="Workspace setup unavailable",
             headers={"Retry-After": "1"},
         )
+    if created:
+        # Free trial credits for a brand-new workspace (B8). Non-fatal: a grant failure
+        # must never break signup, and the per-org trial fence makes it safe regardless.
+        trial_micro = _trial_credit_micro()
+        if trial_micro:
+            try:
+                _store.grant_credits(organization_id, trial_micro, reason="trial")
+            except Exception as exc:
+                logger.warning("trial credit grant failed error_type=%s", type(exc).__name__)
     return JSONResponse({
         "company_id": organization_id,
         "company_name": organization_name,
@@ -2985,6 +3008,30 @@ def complete_organization_onboarding(request: Request):
         )
         raise HTTPException(status_code=409, detail=detail)
     return JSONResponse(status, headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/v1/organization/credits")
+@limiter.limit("60/minute")
+def organization_credits(request: Request):
+    """Credit balance and burn-down for the signed-in member's organization (B10).
+
+    Balances are micro-credits (1 credit = $0.000001). days_to_exhaustion is derived from
+    the trailing 7-day usage spend and is null when there is no recent spend or no balance.
+    """
+    _, organization = _member_organization(request)
+    summary = _store.credit_summary(organization["id"])
+    balance = int(summary.get("balance_micro") or 0)
+    spent_7d = int(summary.get("spent_7d_micro") or 0)
+    daily_burn = spent_7d / 7 if spent_7d > 0 else 0
+    days_to_exhaustion = (int(balance / daily_burn)
+                          if daily_burn > 0 and balance > 0 else None)
+    return JSONResponse({
+        "balance_micro": balance,
+        "spent_7d_micro": spent_7d,
+        "daily_burn_micro": int(daily_burn),
+        "days_to_exhaustion": days_to_exhaustion,
+        "low_balance": balance <= 0,
+    }, headers={"Cache-Control": "private, no-store"})
 
 
 class CreateKeyRequest(BaseModel):
@@ -3492,6 +3539,64 @@ def register_repository(request: Request, body: RegisterRepositoryRequest,
     _require_scope(request, kh, "repositories:register")
     _store.register_repository(kh, body.repo, body.source)
     return {"registered": True, "repo": body.repo}
+
+
+class RepoMetaBody(BaseModel):
+    # `repo` is the canonical usage key (usage_log.repo) this alias decorates. Kept as
+    # sent — unlike RegisterRepositoryRequest it is NOT reduced to a bare name, because
+    # it must match exactly what the usage breakdown groups by for the alias to apply.
+    repo: str = Field(min_length=1, max_length=512)
+    display_name: str = Field(default="", max_length=200)
+    added: bool = False
+
+    @field_validator("repo")
+    @classmethod
+    def clean_repo(cls, value: str) -> str:
+        name = value.strip()
+        if not name or any(ord(char) < 32 for char in name):
+            raise ValueError("repo must be a non-empty, control-character-free string")
+        return name
+
+    @field_validator("display_name")
+    @classmethod
+    def clean_display_name(cls, value: str) -> str:
+        name = (value or "").strip()
+        if any(ord(char) < 32 for char in name):
+            raise ValueError("display_name must not contain control characters")
+        return name
+
+
+@app.get("/v1/repositories/meta")
+@limiter.limit("120/minute")
+def list_repository_meta(request: Request, kh: str = Depends(_authenticated)):
+    _require_scope(request, kh, "usage:read_own")
+    return {"repos": _store.repo_meta_list(kh)}
+
+
+@app.post("/v1/repositories/meta")
+@limiter.limit("30/minute")
+def upsert_repository_meta(request: Request, body: RepoMetaBody,
+                          kh: str = Depends(_authenticated)):
+    # Repo aliases are org-scoped display metadata edited from the dashboard, whose
+    # session keys carry usage:read_own (not the CLI-only repositories:register). Gating
+    # on the same scope as the read keeps the low-risk edit working without re-minting.
+    _require_scope(request, kh, "usage:read_own")
+    try:
+        return _store.repo_meta_upsert(kh, body.repo, body.display_name, body.added)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # repo_meta table not migrated yet — degrade to a clean, retriable signal.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.delete("/v1/repositories/meta")
+@limiter.limit("30/minute")
+def delete_repository_meta(request: Request, repo: str,
+                           kh: str = Depends(_authenticated)):
+    _require_scope(request, kh, "usage:read_own")
+    _store.repo_meta_delete(kh, repo)
+    return {"deleted": True, "repo": repo}
 
 
 class InstallationDevice(BaseModel):
@@ -4590,6 +4695,55 @@ _BYTE_PRESERVING_STRATEGIES = (
 )
 BREVITAS_FEE_RATE = 0.25
 
+
+def _savings_fee_enabled() -> bool:
+    """Legacy percentage-of-savings billing switch.
+
+    Pricing is moving to credit-based billing (see CREDIT_PRICING_PLAN.md), so the
+    per-row savings fee is PARKED by default: ``verified_savings_usd`` keeps flowing to
+    the dashboard as a measured-savings feature, but no 25% fee is charged unless this
+    is explicitly re-enabled. Read at call time and matched byte-for-byte against
+    ``"true"`` — the same convention as the other billing switches
+    (api/billing_recovery.py:1164, api/billing_settlement_sweep.py:497) — so it can be
+    toggled by environment without a code change and is monkeypatchable in tests.
+    """
+    return os.getenv("BREVITAS_SAVINGS_FEE_ENABLED", "") == "true"
+
+
+def _credit_price_micro() -> int:
+    """Flat per-request credit price in micro-credits (1 credit = $0.000001).
+
+    Credit-based pricing (see CREDIT_PRICING_PLAN.md) ships DARK: with
+    BREVITAS_CREDIT_PRICE_MICRO unset, empty, non-integer, or <= 0 this returns 0 and no
+    request is ever debited, so the ledger stays inert until a price is set. Read at call
+    time so it can be enabled by environment and monkeypatched in tests.
+    """
+    raw = os.getenv("BREVITAS_CREDIT_PRICE_MICRO", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
+def _trial_credit_micro() -> int:
+    """Free trial credits (micro-credits) granted once to each new workspace.
+
+    0 (unset/empty/non-integer/<=0) means no trial grant. The grant itself is idempotent
+    per organization (credit_ledger_trial_idx), so this only controls the amount.
+    """
+    raw = os.getenv("BREVITAS_TRIAL_CREDIT_MICRO", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
 # Strategies whose savings are zero-spend BY CONSTRUCTION because the replay
 # never touches an upstream (brevitas/proxy.py:_report_cache_hit ->
 # brevitas/receipts.py:calculate_costs with an all-zero receipt). These are the
@@ -4968,7 +5122,13 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
     # queue_brevitas_fee_after_usage, the only writer into billing_ledger.
     # Netting is a period-level operation over `verified`; it is deliberately
     # NOT expressed as a per-row fee credit.
-    fee = round(max(0.0, verified) * BREVITAS_FEE_RATE, 10)
+    #
+    # PARKED: percentage-of-savings billing is off by default while pricing moves to
+    # credits (CREDIT_PRICING_PLAN.md). `verified` above still populates
+    # verified_savings_usd so the dashboard keeps its measured-savings feature; only the
+    # charge is withheld. Set BREVITAS_SAVINGS_FEE_ENABLED=true to restore the 25% fee.
+    fee = (round(max(0.0, verified) * BREVITAS_FEE_RATE, 10)
+           if _savings_fee_enabled() else 0.0)
     # Decided, never accepted. See _decide_savings_anchor: this is what makes a
     # zero-spend cache replay provably organic rather than merely zero-cost.
     savings_anchor_request_id = _decide_savings_anchor(body, authoritative=authoritative)
@@ -5029,6 +5189,24 @@ def _record_usage_report(kh: str, body: UsageReportRequest, *,
         return {"duplicate": True, "request_id": body.request_id,
                 "tokens_saved": 0, "measured_savings_usd": 0.0,
                 "verified_savings_usd": 0.0, "quality_status": "duplicate"}
+    # ── Credit-based pricing: flat per-request debit (dark unless a price is set) ──
+    # Charges every freshly persisted request, hosted-gateway OR local proxy — the
+    # dedupe return above means a re-reported request never double-debits, and the
+    # ledger's own request_id fence is a second guard. Deliberately AFTER the usage_log
+    # write: the receipt is already durable, so the ledger must never be able to fail it.
+    # The org is taken from the key when present, else resolved from the reporting
+    # owner (local-proxy keys frequently carry no org), so personal-workspace usage
+    # still finds a credit balance to draw down.
+    price_micro = _credit_price_micro()
+    if price_micro and body.request_id and auth_context:
+        try:
+            debit_org = (auth_context.organization_id
+                         or _store.organization_id_for_owner(auth_context.billing_owner_id))
+            if debit_org:
+                _store.debit_credits_for_request(
+                    debit_org, auth_context.customer_id, body.request_id, price_micro)
+        except Exception as exc:
+            logger.warning("credit debit failed error_type=%s", type(exc).__name__)
     # Emitted after the dedupe return so the series counts rows that were really
     # persisted; a duplicate produces no row and must not read as billable work.
     record_savings_row(
