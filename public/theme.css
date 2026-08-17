@@ -693,9 +693,10 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   z-index: 0;
   pointer-events: none;
   white-space: nowrap;
-  font-family: 'Newsreader', serif;
-  font-style: italic;
-  font-weight: 400;
+  /* Match the logo wordmark: upright bold Inter Tight, not the serif italic. */
+  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-style: normal;
+  font-weight: 700;
   font-size: clamp(150px, 26vw, 440px);
   line-height: 1;
   letter-spacing: -0.04em;
