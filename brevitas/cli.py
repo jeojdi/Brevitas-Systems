@@ -10,6 +10,9 @@ import sys
 import click
 
 from .config import DEFAULT_BASE_URL, DEFAULT_DASHBOARD_URL, check_base_url
+# Client-facing header names live in identity.py so this CLI and brevitas.hosted() share
+# one definition. Aliased to the historical names used throughout this module.
+from .identity import KEY_HEADER as BREVITAS_KEY_HEADER, CUSTOMER_HEADER as CUSTOMER_ID_HEADER
 
 try:
     from rich.console import Console
@@ -486,15 +489,12 @@ HOSTED_SERVICE_SCOPES = (
     "proxy:invoke", "usage:write", "usage:read_own",
     "customer:route", "customer:auto_provision",
 )
-#: The Brevitas credential header. NOT `Authorization` — on the hosted proxy
-#: `Authorization` carries YOUR provider key and is forwarded upstream
-#: (brevitas/proxy.py:1366,1219), while the Brevitas key is read only from
-#: `x-brevitas-key` (api/server.py:1731). Sending it the other way round 401s.
-BREVITAS_KEY_HEADER = "X-Brevitas-Key"
-#: An organization_service key hard-400s on every proxy call without this
-#: (api/server.py:1755-1757). It is the single most likely first-request failure,
-#: so every snippet this command prints carries it explicitly.
-CUSTOMER_ID_HEADER = "X-Brevitas-Customer-ID"
+# BREVITAS_KEY_HEADER / CUSTOMER_ID_HEADER are imported from .identity above.
+# BREVITAS_KEY_HEADER is NOT `Authorization` — on the hosted proxy `Authorization` carries
+# YOUR provider key and is forwarded upstream, while the Brevitas key is read only from
+# `x-brevitas-key`; sending it the other way round 401s. An organization_service key
+# hard-400s on every proxy call without CUSTOMER_ID_HEADER — the single most likely
+# first-request failure — so every snippet this command prints carries it explicitly.
 
 _CUSTOMER_EXTERNAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _ENV_KEY_LINE = re.compile(r"^\s*(?:export\s+)?BREVITAS_API_KEY\s*=", re.MULTILINE)
@@ -858,6 +858,9 @@ def connect(base_url: str, token: str, label: str, customer_id: str, multi_tenan
         "environment": "production",
         "scopes": list(HOSTED_SERVICE_SCOPES),
         "expires_in_days": expires_in_days,
+        # Pin the key to this tenant so header-less calls don't 400. Multi-tenant keys
+        # stay unpinned and must send X-Brevitas-Customer-ID on every request.
+        "default_customer_external_id": "" if multi_tenant else tenant,
     })
     if created.status_code == 409:
         _abort("The API refused to create a service account (409).",

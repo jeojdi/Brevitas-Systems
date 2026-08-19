@@ -208,6 +208,22 @@ export async function getBillingAccount(organizationId: string): Promise<Billing
   return data as BillingAccount | null;
 }
 
+// The pricing model an account is on is decided by its organizations.account_type:
+// 'individual' pays with prepaid credits, 'company' pays the 25%-of-verified-savings
+// fee. The credit-checkout and subscription-checkout routes read this to reject a
+// cross-model purchase server-side, matching how the dashboard hides the other card.
+// Returns null when the org row is missing so callers fail closed rather than guess.
+export async function getOrganizationAccountType(organizationId: string): Promise<string | null> {
+  const { data, error } = await billingDatabase()
+    .from('organizations')
+    .select('account_type')
+    .eq('id', organizationId)
+    .maybeSingle();
+  if (error) throw error;
+  const value = (data as { account_type?: unknown } | null)?.account_type;
+  return typeof value === 'string' ? value : null;
+}
+
 export async function consumeBillingRecoveryAttempt(
   actorUserId: string,
   organizationId: string,
@@ -264,6 +280,26 @@ export async function saveBillingCustomerIdentity(
     throw new Error('Invalid billing customer identity result');
   }
   return data as BillingAccount;
+}
+
+// Grant credits (B9). Idempotent on stripeEventId in the RPC (credit_ledger_event_idx),
+// so a redelivered Stripe webhook never double-credits. Returns true when applied.
+export async function grantCredits(
+  organizationId: string,
+  amountMicro: number,
+  stripeEventId: string,
+  entryType: 'purchase' | 'refund' | 'adjustment' = 'purchase',
+): Promise<boolean> {
+  const { data, error } = await billingDatabase().rpc('grant_credits', {
+    p_organization_id: organizationId,
+    p_amount_micro: amountMicro,
+    p_entry_type: entryType,
+    p_reason: '',
+    p_stripe_event_id: stripeEventId,
+    p_customer_id: '',
+  });
+  if (error) throw error;
+  return Boolean(data);
 }
 
 function checkoutRpcRecord(data: unknown): Record<string, unknown> {

@@ -1,4 +1,5 @@
 import MatrixCanvas from './MatrixCanvas.jsx'
+import Select from './Select.jsx'
 
 // Left-rail navigation (Nous-Portal-style): a brand-blue vertical sidebar that
 // replaces the top tab bar. Grouped sections, an icon + bracketed index per item,
@@ -39,12 +40,10 @@ function NavIcon({ tab }) {
   )
 }
 
-const SunIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4" /></svg>
-const MoonIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" /></svg>
 const CloseIcon = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
 
 export default function Sidebar({
-  tabs, activeTab, onSelect, darkMode, onToggleDark, email,
+  tabs, activeTab, onSelect, email,
   companyContext, onSwitchCompany, onSignOut, companySwitching, workspaceKnown,
   open, onClose,
 }) {
@@ -84,7 +83,7 @@ export default function Sidebar({
                         type="button"
                         onClick={() => onSelect(tab)}
                         aria-current={active ? 'page' : undefined}
-                        className={`flex w-full items-center gap-3 rounded-md px-2 py-2 font-mono text-xs uppercase tracking-wide transition-colors ${active ? 'bg-white/15 text-white' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
+                        className={`flex w-full items-center gap-3 rounded-md px-2 py-2 font-sans text-sm font-medium tracking-wide transition-colors ${active ? 'bg-white/15 text-white' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
                       >
                         <span className="shrink-0"><NavIcon tab={tab} /></span>
                         <span className="flex-1 truncate text-left">{tab}</span>
@@ -100,24 +99,19 @@ export default function Sidebar({
 
         <div className="relative z-10 space-y-3 border-t border-white/15 bg-brand-sidebar px-3 py-3">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onToggleDark} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white" title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}>
-              {darkMode ? <SunIcon /> : <MoonIcon />}
-            </button>
             {companySwitching && <span className="sr-only" aria-live="polite">Switching workspace…</span>}
             {!workspaceKnown ? (
               <span className="skeleton h-7 flex-1 rounded-md" aria-hidden="true" />
             ) : companyContext.companies.length > 1 ? (
-              <select
+              <Select
                 value={companyContext.activeCompanyId}
-                onChange={event => onSwitchCompany(event.target.value)}
+                onChange={onSwitchCompany}
                 disabled={companySwitching}
-                aria-label="Active workspace"
-                className="min-w-0 flex-1 rounded-md border border-white/25 bg-white/10 px-2 py-1.5 text-[11px] text-white"
-              >
-                {companyContext.companies.map(company => (
-                  <option key={company.company_id} value={company.company_id} className="text-brand-navy">{company.company_name}</option>
-                ))}
-              </select>
+                ariaLabel="Active workspace"
+                wrapperClassName="relative min-w-0 flex-1"
+                className="w-full rounded-md border border-white/25 bg-white/10 px-2 py-1.5 text-[11px] text-white"
+                options={companyContext.companies.map(company => ({ value: company.company_id, label: company.company_name }))}
+              />
             ) : (
               <span className="min-w-0 flex-1 truncate text-[11px] text-white/70">{companyContext.companies?.[0]?.company_name || ''}</span>
             )}

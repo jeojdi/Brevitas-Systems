@@ -15,7 +15,7 @@
     --stone-2: rgba(255, 255, 255, 0.65);
     --bone: #f5f7ff;
     --bone-dim: rgba(255, 255, 255, 0.78);
-    --bronze: #8ea6ff;
+    --bronze: #2e2eee;
     --signal: #8dd8c6;
   }
 
@@ -444,7 +444,7 @@
         const a = (1 - k / col.trail) * 0.5;
         ctx.fillStyle = (k === 0 && Math.random() > 0.92)
           ? 'rgba(141, 216, 198, ' + a + ')'
-          : 'rgba(142, 166, 255, ' + a + ')';
+          : 'rgba(46, 46, 238, ' + a + ')';
         ctx.fillText(CHARS[Math.random() * CHARS.length | 0], col.x, col.y - k * fs);
       }
       col.y += col.v * fs * 0.35;

@@ -60,6 +60,11 @@ export function billingConfig() {
     publicUrl: resolveBillingPublicUrl(process.env),
     weeklyCapUsd,
     automaticTax: process.env.STRIPE_AUTOMATIC_TAX === 'true',
+    // Allowlist of one-time Stripe price ids for credit packs (B9). Each price carries
+    // metadata.brevitas_credit_micro (the credits it grants). Comma-separated; empty
+    // means credit-pack purchase is not offered.
+    creditPackPriceIds: (process.env.STRIPE_CREDIT_PACK_PRICE_IDS || '')
+      .split(',').map((id) => id.trim()).filter(Boolean),
   };
 }
 

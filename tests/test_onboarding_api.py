@@ -42,6 +42,27 @@ def test_individual_bootstrap_creates_one_personal_workspace(tmp_path, monkeypat
     assert repeated.json()["company_name"] == "Personal workspace"
 
 
+def test_bootstrap_grants_trial_credits_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("BREVITAS_TRIAL_CREDIT_MICRO", "50000")
+    client, store = _client(tmp_path, monkeypatch)
+
+    created = client.post("/v1/organization/bootstrap", json={"account_type": "individual"})
+    org_id = created.json()["company_id"]
+    assert store.credit_balance(org_id) == 50000
+
+    # A repeat bootstrap for the same user creates nothing and grants no second trial.
+    client.post("/v1/organization/bootstrap", json={"account_type": "individual"})
+    assert store.credit_balance(org_id) == 50000
+
+
+def test_bootstrap_grants_no_trial_when_unset(tmp_path, monkeypatch):
+    monkeypatch.delenv("BREVITAS_TRIAL_CREDIT_MICRO", raising=False)
+    client, store = _client(tmp_path, monkeypatch)
+
+    created = client.post("/v1/organization/bootstrap", json={"account_type": "individual"})
+    assert store.credit_balance(created.json()["company_id"]) == 0
+
+
 def test_workspace_experience_migration_is_bounded_and_service_only():
     migration = (Path(__file__).parent.parent / "supabase/migrations/"
                  "202607200018_workspace_experiences.sql").read_text().lower()

@@ -12,8 +12,8 @@
   --stone-2: #b6bfd3;
   --bone: #f5f7ff;
   --bone-dim: #d7ddec;
-  --bronze: #8ea6ff;
-  --bronze-deep: #6f84d6;
+  --bronze: #2e2eee;
+  --bronze-deep: #2320c0;
   --oxblood: #c98078;
   --signal: #8dd8c6;
   --signal-glow: rgba(141, 216, 198, 0.12);
@@ -29,12 +29,12 @@
 
   /* Form / input backgrounds */
   --glass-bg: rgba(13, 17, 28, 0.92);
-  --glass-border: rgba(142, 166, 255, 0.2);
+  --glass-border: rgba(46, 46, 238, 0.2);
   --glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
   --input-bg: rgba(11, 16, 25, 0.9);
   --input-border: rgba(111, 132, 214, 0.35);
-  --input-focus-bg: rgba(142, 166, 255, 0.08);
-  --input-focus-border: #8ea6ff;
+  --input-focus-bg: rgba(46, 46, 238, 0.08);
+  --input-focus-border: #2e2eee;
 
   /* Navigation backgrounds */
   --nav-bg: rgba(6, 8, 14, 0.32);
@@ -58,8 +58,8 @@
   --stone-2: #3c4760;
   --bone: #131a2b;
   --bone-dim: #2a3551;
-  --bronze: #4d66ce;
-  --bronze-deep: #3a4ea7;
+  --bronze: #2e2eee;
+  --bronze-deep: #2320c0;
   --oxblood: #9a4c43;
   --signal: #3f8271;
   --signal-glow: rgba(63, 130, 113, 0.12);
@@ -73,12 +73,12 @@
   --toggle-icon: var(--stone-2);
 
   --glass-bg: rgba(247, 249, 255, 0.92);
-  --glass-border: rgba(77, 102, 206, 0.18);
+  --glass-border: rgba(46, 46, 238, 0.18);
   --glass-shadow: 0 16px 32px rgba(34, 48, 79, 0.1);
   --input-bg: rgba(247, 249, 255, 0.93);
-  --input-border: rgba(77, 102, 206, 0.26);
-  --input-focus-bg: rgba(77, 102, 206, 0.06);
-  --input-focus-border: #4d66ce;
+  --input-border: rgba(46, 46, 238, 0.26);
+  --input-focus-bg: rgba(46, 46, 238, 0.06);
+  --input-focus-border: #2e2eee;
 
   --nav-bg: rgba(247, 249, 255, 0.50);
   --nav-bg-scrolled: rgba(247, 249, 255, 0.92);
@@ -91,16 +91,16 @@
 }
 
 [data-theme="light"] .btn-primary {
-  background: #4d66ce;
+  background: #2e2eee;
   color: #fff;
-  border-color: rgba(77, 102, 206, 0.5);
-  box-shadow: 0 4px 14px rgba(77, 102, 206, 0.2);
+  border-color: rgba(46, 46, 238, 0.5);
+  box-shadow: 0 4px 14px rgba(46, 46, 238, 0.2);
 }
 [data-theme="light"] .btn-primary:hover {
-  background: #3a4ea7;
-  border-color: rgba(77, 102, 206, 0.7);
+  background: #2320c0;
+  border-color: rgba(46, 46, 238, 0.7);
   color: #fff;
-  box-shadow: 0 8px 20px rgba(77, 102, 206, 0.28);
+  box-shadow: 0 8px 20px rgba(46, 46, 238, 0.28);
 }
 
 :root {
@@ -146,7 +146,7 @@ html, body {
    `clip` still prevents horizontal scroll without creating a scroll container. */
 body { overflow-x: clip; }
 
-::selection { background: rgba(142, 166, 255, 0.32); color: var(--bone); }
+::selection { background: rgba(46, 46, 238, 0.32); color: var(--bone); }
 
 a { color: inherit; text-decoration: none; }
 
@@ -286,9 +286,9 @@ a { color: inherit; text-decoration: none; }
   border-radius: 4px;
 }
 button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
-  box-shadow: 0 0 0 4px rgba(142,166,255,0.12);
+  box-shadow: 0 0 0 4px rgba(46, 46, 238,0.12);
 }
-.btn-primary:focus-visible { outline-color: var(--bronze); box-shadow: 0 0 0 4px rgba(142,166,255,0.18); }
+.btn-primary:focus-visible { outline-color: var(--bronze); box-shadow: 0 0 0 4px rgba(46, 46, 238,0.18); }
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce), :root[data-reduce-motion='true'] {
@@ -346,15 +346,15 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .btn:hover .arrow { transform: translateX(4px); }
 
 .btn-primary {
-  background: #8ea6ff;
-  color: #07101f;
-  border-color: rgba(142, 166, 255, 0.46);
+  background: #2e2eee;
+  color: #ffffff;
+  border-color: rgba(46, 46, 238, 0.46);
   box-shadow: none;
 }
 .btn-primary:hover {
-  background: #9eb4ff;
-  border-color: rgba(142, 166, 255, 0.7);
-  color: #06101f;
+  background: #4a44ff;
+  border-color: rgba(46, 46, 238, 0.7);
+  color: #ffffff;
   transform: translateY(-1px);
   box-shadow: none;
 }
@@ -368,12 +368,12 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 }
 /* Primary hero CTA — fully-opaque fill so it reads as the main action over the busy hero */
 .hero-cta {
-  background: #96acff;
-  border-color: rgba(142, 166, 255, 0.84);
+  background: #2e2eee;
+  border-color: rgba(46, 46, 238, 0.84);
   box-shadow: none;
 }
 .hero-cta:hover {
-  background: #a6b9ff;
+  background: #4a44ff;
   box-shadow: none;
 }
 
@@ -383,9 +383,9 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   border-color: rgba(196, 206, 229, 0.35);
 }
 .btn-secondary:hover {
-  background: rgba(142, 166, 255, 0.16);
+  background: rgba(46, 46, 238, 0.16);
   color: var(--bone);
-  border-color: rgba(142, 166, 255, 0.54);
+  border-color: rgba(46, 46, 238, 0.54);
   transform: translateY(-1px);
 }
 [data-theme="light"] .btn-secondary {
@@ -394,8 +394,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   border-color: rgba(55, 72, 110, 0.22);
 }
 [data-theme="light"] .btn-secondary:hover {
-  background: rgba(77, 102, 206, 0.08);
-  border-color: rgba(77, 102, 206, 0.40);
+  background: rgba(46, 46, 238, 0.08);
+  border-color: rgba(46, 46, 238, 0.40);
   transform: translateY(-1px);
 }
 
@@ -453,7 +453,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   transition: border-color var(--dur-sm) var(--ease-out-standard), transform var(--dur-sm) var(--ease-out-standard), box-shadow var(--dur-sm) var(--ease-out-standard);
 }
 .card:hover {
-  border-color: rgba(142, 166, 255, 0.48);
+  border-color: rgba(46, 46, 238, 0.48);
   transform: translateY(-2px);
   box-shadow: 0 20px 44px rgba(0, 0, 0, 0.36);
 }
@@ -464,7 +464,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   box-shadow: 0 2px 12px rgba(55, 72, 110, 0.08);
 }
 [data-theme="light"] .card:hover {
-  border-color: rgba(77, 102, 206, 0.35);
+  border-color: rgba(46, 46, 238, 0.35);
   box-shadow: 0 6px 20px rgba(55, 72, 110, 0.12);
 }
 
@@ -617,8 +617,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 }
 .nav-link:hover, .nav-link.active {
   color: var(--bone);
-  border-color: rgba(142, 166, 255, 0.35);
-  background: rgba(142, 166, 255, 0.1);
+  border-color: rgba(46, 46, 238, 0.35);
+  background: rgba(46, 46, 238, 0.1);
 }
 .nav-link.active::after {
   display: none;

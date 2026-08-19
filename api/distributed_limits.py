@@ -80,17 +80,23 @@ class LimitPolicy:
     customer_rpm: int = 300
     key_rpm: int = 300
     provider_rpm: int = 10000
-    # TPM is charged the request's estimated input tokens. A coding agent
-    # (Claude Code, Cursor) is stateless and resends the whole conversation +
-    # tool defs every call, so a single key legitimately spends 15-30k tokens
-    # per request and that grows through a session. A 200k/min key ceiling
-    # throttled such a session in ~12 calls, below any provider's own tier — so
-    # the gateway, not the provider, became the bottleneck. Size the defaults
-    # ABOVE a typical provider tier so Brevitas never throttles first; per-plan
-    # tiers still tighten these via the BREVITAS_*_TPM overrides in from_env().
-    organization_tpm: int = 20_000_000
-    customer_tpm: int = 2_000_000
-    key_tpm: int = 2_000_000
+    # TPM is charged the request's estimated input tokens, and the window is a
+    # fixed 60s bucket. A coding agent (Claude Code, Cursor) is stateless and
+    # resends the whole conversation + tool defs every call, so on a large repo a
+    # single request is 100-200k tokens — and the agent BURSTS (parallel tool
+    # calls, rapid turns), stacking a dozen such calls into one window even when
+    # the session's minute-average is ~2 calls/min. A 2M/min key ceiling sits
+    # right at a typical Anthropic tier-3/4 input-TPM, so a burst of ~13 large
+    # calls tripped the gateway at roughly the same point the provider would —
+    # surfacing our "(not your usage limit)" 429 instead of the provider's. Size
+    # key/customer WELL ABOVE any provider tier so Brevitas never throttles first
+    # (the provider's own limit becomes the real ceiling, and it's legitimately
+    # "your usage limit"); keep org a further multiple above so one heavy user
+    # can't drain a team's window. Per-plan tiers still tighten these via the
+    # BREVITAS_*_TPM overrides in from_env().
+    organization_tpm: int = 100_000_000
+    customer_tpm: int = 20_000_000
+    key_tpm: int = 20_000_000
     organization_concurrency: int = 200
     customer_concurrency: int = 20
     key_concurrency: int = 20
@@ -129,9 +135,9 @@ class LimitPolicy:
             customer_rpm=value("BREVITAS_CUSTOMER_RPM", 300),
             key_rpm=value("BREVITAS_KEY_RPM", 300),
             provider_rpm=value("BREVITAS_PROVIDER_RPM", 10000),
-            organization_tpm=value("BREVITAS_ORG_TPM", 20_000_000),
-            customer_tpm=value("BREVITAS_CUSTOMER_TPM", 2_000_000),
-            key_tpm=value("BREVITAS_KEY_TPM", 2_000_000),
+            organization_tpm=value("BREVITAS_ORG_TPM", 100_000_000),
+            customer_tpm=value("BREVITAS_CUSTOMER_TPM", 20_000_000),
+            key_tpm=value("BREVITAS_KEY_TPM", 20_000_000),
             organization_concurrency=value("BREVITAS_ORG_CONCURRENCY", 200),
             customer_concurrency=value("BREVITAS_CUSTOMER_CONCURRENCY", 20),
             key_concurrency=value("BREVITAS_KEY_CONCURRENCY", 20),

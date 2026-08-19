@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { usdOrUnavailable } from '../lib/spend.js'
+import Select from './Select.jsx'
 
 const num = value => Number(value || 0).toLocaleString()
 // /v1/admin/* and the dashboard deploy separately, so a field a response does
@@ -271,16 +272,24 @@ export default function Admin({ accessToken, refreshTick }) {
       </div>
       <div className="flex flex-wrap gap-3">
         <label className="annotation">Sort
-          <select value={sort} onChange={event => { setSort(event.target.value); resetCursor() }}
-            className="ml-2 rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy">
-            {sortFields.map(field => <option key={field} value={field}>{field.replaceAll('_', ' ')}</option>)}
-          </select>
+          <Select
+            value={sort}
+            onChange={value => { setSort(value); resetCursor() }}
+            ariaLabel="Sort field"
+            wrapperClassName="relative ml-2 inline-block align-middle"
+            className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy"
+            options={sortFields.map(field => ({ value: field, label: field.replaceAll('_', ' ') }))}
+          />
         </label>
         <label className="annotation">Direction
-          <select value={direction} onChange={event => { setDirection(event.target.value); resetCursor() }}
-            className="ml-2 rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy">
-            <option value="desc">Descending</option><option value="asc">Ascending</option>
-          </select>
+          <Select
+            value={direction}
+            onChange={value => { setDirection(value); resetCursor() }}
+            ariaLabel="Sort direction"
+            wrapperClassName="relative ml-2 inline-block align-middle"
+            className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm text-brand-navy dark:text-brand-dark-navy"
+            options={[{ value: 'desc', label: 'Descending' }, { value: 'asc', label: 'Ascending' }]}
+          />
         </label>
       </div>
       {error && <p className="font-mono text-xs text-red-500">{error}</p>}

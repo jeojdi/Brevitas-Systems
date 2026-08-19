@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { capture } from '../lib/analytics.js'
 import { redactBrowserError } from '../lib/api.js'
+import Select from './Select.jsx'
 
 export default function DeviceConnect({
   accessToken,
@@ -73,19 +74,16 @@ export default function DeviceConnect({
         <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-4">No provider key, prompt, response, code, or file path is shared.</p>
         <div className="mt-5">
           <p className="annotation block mb-2">Company for this device</p>
-          {companies.length > 1 ? <select
+          {companies.length > 1 ? <Select
             id="device-company"
-            aria-label="Company for this device"
+            ariaLabel="Company for this device"
             value={selectedCompanyId}
-            onChange={event => onSelectCompany(event.target.value)}
+            onChange={onSelectCompany}
             disabled={companyLoading || status === 'loading'}
+            placeholder="Select a company"
             className="w-full rounded-xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface px-3 py-2.5 text-sm"
-          >
-            <option value="" disabled>Select a company</option>
-            {companies.map(company => <option key={company.company_id} value={company.company_id}>
-              {company.company_name} · {company.role.replaceAll('_', ' ')}
-            </option>)}
-          </select> : <div id="device-company" className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2.5 text-sm">
+            options={companies.map(company => ({ value: company.company_id, label: `${company.company_name} · ${company.role.replaceAll('_', ' ')}` }))}
+          /> : <div id="device-company" className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2.5 text-sm">
             {companyLoading ? 'Loading company access…' : companies[0]?.company_name || 'Company access unavailable'}
           </div>}
           {companyError && <div className="mt-2 flex items-center justify-between gap-3">

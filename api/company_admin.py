@@ -260,7 +260,8 @@ class CompanyAdminService(Protocol):
                               request_id: str) -> dict[str, Any]: ...
     def create_service_account(self, principal: CompanyPrincipal, name: str,
                                environment: str, scopes: list[str], expires_in_days: int,
-                               request_id: str) -> dict[str, Any]: ...
+                               request_id: str,
+                               default_customer_external_id: str = "") -> dict[str, Any]: ...
     def rotate_service_key(self, principal: CompanyPrincipal, service_account_id: str,
                            expires_in_days: int, request_id: str) -> dict[str, Any]: ...
     def revoke_service_account(self, principal: CompanyPrincipal, service_account_id: str,
@@ -336,6 +337,10 @@ class SQLiteCompanyAdminService:
                 "expires_at": "TEXT NOT NULL DEFAULT ''",
                 "revoked_at": "TEXT NOT NULL DEFAULT ''",
                 "updated_at": "TEXT NOT NULL DEFAULT ''",
+                # Single-tenant pin: when set, a header-less proxy call on this key's
+                # organization_service credential resolves to this customer instead of
+                # 400ing. Empty for multi-tenant keys, which keep requiring the header.
+                "default_customer_external_id": "TEXT NOT NULL DEFAULT ''",
             })
             db.execute("""CREATE TABLE IF NOT EXISTS organization_invitations(
                 id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
@@ -714,7 +719,8 @@ class SQLiteCompanyAdminService:
 
     def create_service_account(self, principal: CompanyPrincipal, name: str,
                                environment: str, scopes: list[str], expires_in_days: int,
-                               request_id: str) -> dict[str, Any]:
+                               request_id: str,
+                               default_customer_external_id: str = "") -> dict[str, Any]:
         account_id = str(uuid.uuid4())
         key_id = str(uuid.uuid4())
         raw_key = generate_api_key()
@@ -760,10 +766,10 @@ class SQLiteCompanyAdminService:
                 db.commit()
                 raise CompanyAdminConflict
             try:
-                db.execute("INSERT INTO service_accounts(id,organization_id,name,environment,created_by,created_at,scopes,status,expires_at,updated_at) VALUES(?,?,?,?,?, ?,?,'active',?,?)",
+                db.execute("INSERT INTO service_accounts(id,organization_id,name,environment,created_by,created_at,scopes,status,expires_at,updated_at,default_customer_external_id) VALUES(?,?,?,?,?, ?,?,'active',?,?,?)",
                            (account_id, principal.company_id, name, environment,
                             principal.actor_id, now, ",".join(sorted(set(scopes))),
-                            expires_at, now))
+                            expires_at, now, default_customer_external_id))
                 db.execute(
                     "INSERT INTO api_keys(id,key_hash,name,created,owner_id,"
                     "organization_id,service_account_id,key_type,scopes,environment,"
@@ -1201,17 +1207,24 @@ class SupabaseCompanyAdminService:
 
     def create_service_account(self, principal: CompanyPrincipal, name: str,
                                environment: str, scopes: list[str], expires_in_days: int,
-                               request_id: str) -> dict[str, Any]:
+                               request_id: str,
+                               default_customer_external_id: str = "") -> dict[str, Any]:
         service_account_id = str(uuid.uuid4())
         raw_key = generate_api_key()
-        result = self._result(self._rpc("company_admin_create_service_account", {
+        rpc_args = {
             "p_organization_id": principal.company_id, "p_actor_user_id": principal.actor_id,
             "p_service_account_id": service_account_id,
             "p_name": name, "p_environment": environment, "p_scopes": scopes,
             "p_key_hash": hash_key(raw_key), "p_key_prefix": raw_key[:12],
             "p_expires_at": (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat(),
             "p_request_id": request_id,
-        }))
+        }
+        # Only send the pin when set, so multi-tenant creation still works against a DB
+        # that predates the default_customer_external_id parameter (PostgREST rejects
+        # unknown named args). A single-tenant pin requires migration 202608130001.
+        if default_customer_external_id:
+            rpc_args["p_default_customer_external_id"] = default_customer_external_id
+        result = self._result(self._rpc("company_admin_create_service_account", rpc_args))
         return {**result, "api_key": raw_key, "secret_available_once": True}
 
     def rotate_service_key(self, principal: CompanyPrincipal, service_account_id: str,
@@ -1299,7 +1312,8 @@ def service_account_key_context(store: Any, key_hash: str) -> dict[str, Any] | N
         row = db.execute(
             "SELECT key.key_hash,organization.billing_owner_id AS owner_id,"
             "key.organization_id,key.service_account_id,key.key_type,"
-            "key.scopes,key.environment,key.expires_at,account.expires_at AS account_expires_at "
+            "key.scopes,key.environment,key.expires_at,account.expires_at AS account_expires_at,"
+            "account.default_customer_external_id AS default_customer_external_id "
             "FROM api_keys key JOIN service_accounts account "
             "ON account.id=key.service_account_id "
             "AND account.organization_id=key.organization_id "
@@ -1431,12 +1445,20 @@ class ChangeMemberBody(BaseModel):
         return value
 
 
+# Mirrors _CUSTOMER_EXTERNAL_ID in api/server.py and brevitas/cli.py: a single-tenant
+# pin is a legal customer external id (or empty for multi-tenant keys).
+_DEFAULT_CUSTOMER_EXTERNAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+
+
 class CreateServiceAccountBody(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     environment: str = Field(default="production", min_length=1, max_length=32,
                              pattern=r"^[A-Za-z0-9._-]+$")
     scopes: list[str] = Field(min_length=1, max_length=12)
     expires_in_days: int = Field(default=90, ge=1, le=365)
+    # Optional single-tenant pin. When set, header-less proxy calls on the minted key
+    # resolve to this customer instead of 400ing; empty leaves the key multi-tenant.
+    default_customer_external_id: str = Field(default="", max_length=200)
 
     @field_validator("name")
     @classmethod
@@ -1444,6 +1466,14 @@ class CreateServiceAccountBody(BaseModel):
         cleaned = value.strip()
         if any(ord(character) < 32 for character in cleaned):
             raise ValueError("invalid service account name")
+        return cleaned
+
+    @field_validator("default_customer_external_id")
+    @classmethod
+    def clean_default_customer(cls, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned and not _DEFAULT_CUSTOMER_EXTERNAL_ID.fullmatch(cleaned):
+            raise ValueError("invalid default customer id")
         return cleaned
 
     @field_validator("scopes")
@@ -1561,7 +1591,8 @@ def create_service_account(body: CreateServiceAccountBody,
                            context: _Context = Depends(_context)):
     return _result(lambda: context.service.create_service_account(
         context.principal, body.name, body.environment, body.scopes,
-        body.expires_in_days, context.request_id),
+        body.expires_in_days, context.request_id,
+        default_customer_external_id=body.default_customer_external_id),
         secret=True, audit_request_id=context.request_id, audit_denials=True)
 
 

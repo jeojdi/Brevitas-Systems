@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { redactBrowserError, fetchStats } from '../lib/api.js'
+import Select from './Select.jsx'
 import {
   memberRoleChangeConfirmation,
   memberStatusConfirmation,
@@ -147,7 +148,7 @@ function OneTimeSecret({ title, value, onClear, description = '' }) {
       await navigator.clipboard.writeText(value)
       setCopyStatus('Copied')
     } catch {
-      setCopyStatus('Copy failed — select the key and copy it manually')
+      setCopyStatus('Copy failed. Select the key and copy it manually')
     }
   }
 
@@ -183,7 +184,7 @@ function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
       await navigator.clipboard.writeText(active.code)
       setCopyStatus('Copied')
     } catch {
-      setCopyStatus('Copy failed — select the block and copy it manually')
+      setCopyStatus('Copy failed. Select the block and copy it manually')
     }
   }
 
@@ -192,7 +193,7 @@ function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
       <p className="annotation text-brand-blue">Ready to paste · hosted gateway</p>
       <p className="mt-1 text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
         The key above is already in every block below. Paste one into your application and the next request is
-        metered — there is nothing else to install and no other configuration step.
+        metered. There is nothing else to install and no other configuration step.
       </p>
     </div>
 
@@ -207,7 +208,7 @@ function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
         className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 font-mono text-sm"
       />
       <p className="text-xs text-brand-muted dark:text-brand-dark-muted">
-        Any stable id you choose — your own company slug if you are the only tenant, or your end customer's id if you
+        Any stable id you choose: your own company slug if you are the only tenant, or your end customer's id if you
         resell. Usage, savings, and invoices are attributed to exactly this value, never inferred.
       </p>
     </div>
@@ -244,7 +245,7 @@ function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
 
     <p className="rounded-lg border border-brand-blue/30 bg-brand-blue-dim px-3 py-2 text-xs leading-relaxed text-brand-navy dark:text-brand-dark-navy">
       <code className="font-mono text-brand-blue">{CUSTOMER_HEADER}</code> and{' '}
-      <code className="font-mono text-brand-blue">{KEY_HEADER}</code> are required on every single request — there is
+      <code className="font-mono text-brand-blue">{KEY_HEADER}</code> are required on every single request. There is
       no fallback and no pinned default. Without the customer header the gateway answers{' '}
       <code className="font-mono">400 Organization service proxy calls require {CUSTOMER_HEADER}</code>; without the
       key header it answers <code className="font-mono">401 Missing {KEY_HEADER}</code>. The OpenAI SDK's{' '}
@@ -253,8 +254,8 @@ function HostedIntegration({ apiKey, customerId, onCustomerIdChange }) {
     </p>
 
     <p className="text-xs leading-relaxed text-brand-muted dark:text-brand-dark-muted">
-      Honest about billing: this hosted path — traffic through{' '}
-      <code className="font-mono">{HOSTED_BASE_URL}</code> — is the only one that produces billable usage.{' '}
+      Honest about billing: this hosted path (traffic through{' '}
+      <code className="font-mono">{HOSTED_BASE_URL}</code>) is the only one that produces billable usage.{' '}
       <code className="font-mono">bvx install</code> runs a local proxy that reports analytics only; its savings are
       real but are never billed and never appear on an invoice. If your calls are not going through the base URL
       above, expect a $0 invoice.
@@ -314,7 +315,7 @@ function ConfirmationDialog({ confirmation, busy, error, onCancel, onConfirm }) 
       onKeyDown={handleKeyDown}
       className="w-full max-w-lg rounded-2xl border border-brand-border bg-white p-6 shadow-2xl dark:border-brand-dark-border dark:bg-brand-dark-surface"
     >
-      <h3 id="privileged-confirmation-title" className="font-serif text-2xl text-brand-navy dark:text-brand-dark-navy">{confirmation.title}</h3>
+      <h3 id="privileged-confirmation-title" className="font-sans text-2xl font-semibold text-brand-navy dark:text-brand-dark-navy">{confirmation.title}</h3>
       <p id="privileged-confirmation-description" className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-muted">{confirmation.description}</p>
       {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs text-red-600 dark:bg-red-900/20 dark:text-red-400">{error}</p>}
       <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
@@ -701,8 +702,8 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
       onConfirm={confirmPrivilegedAction}
     />
     <header>
-      <h2 className="font-serif text-4xl text-brand-navy dark:text-brand-dark-navy">
-        {personal ? 'Keep it personal—or bring in your team.' : 'Invite your team and connect production systems.'}
+      <h2 className="font-sans text-4xl font-semibold text-brand-navy dark:text-brand-dark-navy">
+        {personal ? 'Keep it personal, or bring in your team.' : 'Invite your team and connect production systems.'}
       </h2>
       <p className="text-sm text-brand-muted mt-3">
         You are signed in as {label(capabilities.role)}. {personal
@@ -714,14 +715,18 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
     {mutationError && <p role="alert" className="font-mono text-xs text-red-500">{mutationError}</p>}
 
     {permissions.has('members:read') && <section className="space-y-4">
-      <div><p className="annotation tracking-widest uppercase">Members</p><h3 className="font-serif text-2xl mt-1">Company access.</h3></div>
+      <div><h3 className="font-sans text-2xl font-semibold">Company access.</h3></div>
       {permissions.has('members:invite') && <div className="rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface p-5 space-y-3">
         <p className="annotation">Create one-time invitation</p>
         <div className="grid md:grid-cols-[1fr_220px_auto] gap-3">
           <input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} maxLength="254" placeholder="person@company.com" className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm" />
-          <select value={inviteRole} onChange={event => setInviteRole(event.target.value)} className="rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm">
-            {ROLES.filter(role => role !== 'company_owner').map(role => <option key={role} value={role}>{label(role)}</option>)}
-          </select>
+          <Select
+            value={inviteRole}
+            onChange={setInviteRole}
+            ariaLabel="Invite role"
+            className="w-full rounded-xl border border-brand-border dark:border-brand-dark-border px-3 py-2 text-sm"
+            options={ROLES.filter(role => role !== 'company_owner').map(role => ({ value: role, label: label(role) }))}
+          />
           <button type="button" disabled={mutating || !inviteEmail} onClick={() => mutate(async () => {
             const result = await companyJson('invitations', accessToken, { method: 'POST', body: { email: inviteEmail, role: inviteRole, expires_in_hours: 72 } })
             setInvitationSecret(`${window.location.origin}/invite#invite=${result.invitation_token}`); setInviteEmail(''); invitations.reset(); await invitations.reload('')
@@ -745,15 +750,19 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
           <tbody>{members.page.items.map(member => <tr key={member.id} className="border-b last:border-0 border-brand-border dark:border-brand-dark-border">
             <td className="font-mono text-xs px-4 py-3">{member.id}</td><td className="text-xs px-4 py-3">{label(member.role)}</td><td className="text-xs px-4 py-3">{member.status}</td>
             <td className="px-4 py-3"><div className="flex gap-2">
-              {permissions.has('members:manage') && <select aria-label={`Role for ${member.id}`} value={member.role} disabled={mutating} onChange={event => {
-                const nextRole = event.target.value
-                if (nextRole === member.role) return
-                requestConfirmation(memberRoleChangeConfirmation(member, nextRole), async () => {
-                  await companyJson(`members/${encodeURIComponent(member.id)}`, accessToken, { method: 'PATCH', body: { role: nextRole, status: member.status } }); members.reset(); await members.reload('')
-                })
-              }} className="rounded-lg border border-brand-border px-2 py-1 text-xs disabled:opacity-50">
-                {ROLES.filter(role => permissions.has('owners:manage') || !['company_owner', 'company_admin'].includes(role)).map(role => <option key={role} value={role}>{label(role)}</option>)}
-              </select>}
+              {permissions.has('members:manage') && <Select
+                ariaLabel={`Role for ${member.id}`}
+                value={member.role}
+                disabled={mutating}
+                onChange={nextRole => {
+                  if (nextRole === member.role) return
+                  requestConfirmation(memberRoleChangeConfirmation(member, nextRole), async () => {
+                    await companyJson(`members/${encodeURIComponent(member.id)}`, accessToken, { method: 'PATCH', body: { role: nextRole, status: member.status } }); members.reset(); await members.reload('')
+                  })
+                }}
+                className="rounded-lg border border-brand-border px-2 py-1 text-xs disabled:opacity-50"
+                options={ROLES.filter(role => permissions.has('owners:manage') || !['company_owner', 'company_admin'].includes(role)).map(role => ({ value: role, label: label(role) }))}
+              />}
               {permissions.has('members:manage') && member.status === 'active' && <button type="button" disabled={mutating} onClick={() => requestConfirmation(memberStatusConfirmation(member, 'disabled'), async () => {
                 await companyJson(`members/${encodeURIComponent(member.id)}`, accessToken, { method: 'PATCH', body: { role: member.role, status: 'disabled' } }); members.reset(); await members.reload('')
               })} className="text-xs text-amber-600 disabled:opacity-50">Disable</button>}
@@ -774,7 +783,7 @@ export default function CompanyAdministration({ accessToken, onCompanyContextCha
     </section>}
 
     {permissions.has('service_accounts:read') && <section className="space-y-4">
-      <div><p className="annotation tracking-widest uppercase">Service accounts</p><h3 className="font-serif text-2xl mt-1">Scoped machine identity.</h3></div>
+      <div><h3 className="font-sans text-2xl font-semibold">Scoped machine identity.</h3></div>
       {permissions.has('service_accounts:manage') && <div className="rounded-2xl border border-brand-border dark:border-brand-dark-border bg-white dark:bg-brand-dark-surface p-5 grid md:grid-cols-[1fr_180px_auto] gap-3">
         <input value={serviceName} onChange={event => setServiceName(event.target.value)} maxLength="100" placeholder="Production worker" className="rounded-xl border border-brand-border px-3 py-2 text-sm" />
         <input value={serviceEnvironment} onChange={event => setServiceEnvironment(event.target.value)} maxLength="32" className="rounded-xl border border-brand-border px-3 py-2 text-sm" />
