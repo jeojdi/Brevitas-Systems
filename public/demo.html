@@ -21,7 +21,7 @@
   /* --- Demo-only styles, built on the site's design tokens so it reads native. --- */
   .demo-console {
     position: relative;
-    background: radial-gradient(120% 90% at 50% -10%, rgba(142,166,255,0.045), transparent 60%), var(--ink-2);
+    background: radial-gradient(120% 90% at 50% -10%, rgba(46, 46, 238,0.045), transparent 60%), var(--ink-2);
     border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
     box-shadow: 0 30px 90px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.03);
   }
@@ -47,8 +47,8 @@
     transition: opacity 520ms var(--ease-out-soft), border-color 520ms var(--ease-out-soft),
                 box-shadow 520ms var(--ease-out-soft), transform 520ms var(--ease-out-soft), filter 520ms var(--ease-out-soft);
   }
-  .node.done { opacity: 1; border-color: rgba(142,166,255,0.28); }
-  .node.active { opacity: 1; border-color: var(--bronze); transform: translateY(-3px); box-shadow: 0 10px 30px rgba(142,166,255,0.14); }
+  .node.done { opacity: 1; border-color: rgba(46, 46, 238,0.28); }
+  .node.active { opacity: 1; border-color: var(--bronze); transform: translateY(-3px); box-shadow: 0 10px 30px rgba(46, 46, 238,0.14); }
   .node.hit { opacity: 1; border-color: var(--signal); box-shadow: 0 10px 30px var(--signal-glow); }
   .node.paid.active, .node.paid.done { border-color: var(--oxblood); }
   .node.skipped { opacity: 0.28; filter: grayscale(0.6); border-style: dashed; }
@@ -61,14 +61,14 @@
   /* overlay: stems + rail + pins + beam + packet + trail (all below the cards) */
   .stage-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
   .stem { position: absolute; width: 1px; background: var(--line); transform: translateX(-0.5px); transition: background 460ms var(--ease-out-soft); }
-  .stem.on { background: rgba(142,166,255,0.5); }
+  .stem.on { background: rgba(46, 46, 238,0.5); }
   .stem.hiton { background: rgba(141,216,198,0.6); }
   .stem.skipped { opacity: 0.3; }
   .rail { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--line) 10%, var(--line) 90%, transparent); }
-  .beam { position: absolute; left: 0; height: 2px; background: linear-gradient(90deg, rgba(142,166,255,0) 0%, rgba(142,166,255,0.4) 45%, var(--bronze) 100%); box-shadow: 0 0 10px rgba(142,166,255,0.4); }
+  .beam { position: absolute; left: 0; height: 2px; background: linear-gradient(90deg, rgba(46, 46, 238,0) 0%, rgba(46, 46, 238,0.4) 45%, var(--bronze) 100%); box-shadow: 0 0 10px rgba(46, 46, 238,0.4); }
   .beam.hit { background: linear-gradient(90deg, rgba(141,216,198,0) 0%, rgba(141,216,198,0.4) 45%, var(--signal) 100%); box-shadow: 0 0 10px var(--signal-glow); }
   .pin { position: absolute; width: 8px; height: 8px; border-radius: 999px; background: var(--ink-3); border: 1px solid var(--line); transform: translate(-50%, -50%); transition: all 460ms var(--ease-out-soft); }
-  .pin.on { background: var(--bronze); border-color: var(--bronze); box-shadow: 0 0 8px rgba(142,166,255,0.6); }
+  .pin.on { background: var(--bronze); border-color: var(--bronze); box-shadow: 0 0 8px rgba(46, 46, 238,0.6); }
   .pin.hiton { background: var(--signal); border-color: var(--signal); box-shadow: 0 0 8px var(--signal-glow); }
   .pin.paid.on { background: var(--oxblood); border-color: var(--oxblood); box-shadow: 0 0 8px rgba(201,128,120,0.6); }
   .ghost { position: absolute; width: 7px; height: 7px; border-radius: 999px; background: var(--bronze); filter: blur(1px); will-change: transform, opacity; }
@@ -78,7 +78,7 @@
     display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
     font-family:'JetBrains Mono',monospace; font-size: 11.5px; font-weight: 500;
     border: 1px solid var(--bronze); color: #eaefff; background: rgba(20,26,44,0.94);
-    border-radius: 999px; padding: 6px 13px; box-shadow: 0 0 16px rgba(142,166,255,0.35), 0 6px 16px rgba(0,0,0,0.45);
+    border-radius: 999px; padding: 6px 13px; box-shadow: 0 0 16px rgba(46, 46, 238,0.35), 0 6px 16px rgba(0,0,0,0.45);
   }
   .pk.hit { border-color: var(--signal); box-shadow: 0 0 16px rgba(141,216,198,0.4), 0 6px 16px rgba(0,0,0,0.45); }
   .pk-core { width: 6px; height: 6px; border-radius: 999px; background: var(--bronze); box-shadow: 0 0 8px var(--bronze); }
@@ -123,7 +123,7 @@
   .chip { font-family:'JetBrains Mono',monospace; font-size: 12px; color: var(--stone-2); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; background: rgba(6,7,11,0.35); cursor: pointer; transition: all var(--dur-sm) var(--ease-out-standard); }
   .chip:hover { color: var(--fg); border-color: var(--bronze); }
   .demo-input { width: 100%; background: rgba(6,7,11,0.55); border: 1px solid rgba(111,132,214,0.35); border-radius: 11px; padding: 15px 16px; color: var(--fg); font-family:'Inter Tight',sans-serif; font-size: 15px; resize: vertical; min-height: 58px; transition: border-color var(--dur-sm), box-shadow var(--dur-sm), background var(--dur-sm); }
-  .demo-input:focus { outline: none; border-color: #8ea6ff; background: rgba(142,166,255,0.06); box-shadow: 0 0 0 3px rgba(142,166,255,0.15); }
+  .demo-input:focus { outline: none; border-color: #2e2eee; background: rgba(46, 46, 238,0.06); box-shadow: 0 0 0 3px rgba(46, 46, 238,0.15); }
 
   /* Plain "how it works" strip */
   .how-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }

@@ -6,6 +6,7 @@ import {
   billingDatabase,
   openBillingArrangementRequest,
   getBillingAccount,
+  grantCredits,
   type BillingAccount,
 } from '@/lib/billing/supabase';
 import {
@@ -470,6 +471,29 @@ export async function POST(request: Request) {
         lease.assertOwned();
         switch (event.type) {
           case 'checkout.session.completed': {
+            const creditSession = event.data.object as Stripe.Checkout.Session;
+            if (creditSession.mode === 'payment') {
+              // One-time credit-pack purchase (B9). Grant credits and stop — this is not a
+              // subscription checkout, so the subscription path below must NOT run. The
+              // grant is idempotent on event.id (credit_ledger_event_idx), so a redelivery
+              // never double-credits.
+              const organizationId =
+                creditSession.metadata?.brevitas_organization_id
+                || creditSession.client_reference_id
+                || '';
+              const creditMicro = Number(creditSession.metadata?.brevitas_credit_micro || 0);
+              if (organizationId && Number.isFinite(creditMicro) && creditMicro > 0
+                  && creditSession.payment_status === 'paid') {
+                await grantCredits(organizationId, creditMicro, event.id, 'purchase');
+                lease.assertOwned();
+                await captureServerEvent({
+                  distinctId: `organization:${organizationId}`,
+                  event: 'billing_credits_purchased',
+                  properties: { organization_id: organizationId, credit_micro: creditMicro },
+                });
+              }
+              break;
+            }
             const diagnostic = stripeEventDiagnostic(event.id, event.type, event.created);
             const applied = await applyCheckout(event.data.object, diagnostic, lease);
             if (applied) {

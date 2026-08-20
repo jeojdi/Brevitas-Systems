@@ -13,6 +13,20 @@ import hashlib
 CUSTOMER_ID_HEADER = "x-brevitas-customer-id"
 MAX_CUSTOMER_ID_LENGTH = 128
 
+# Header names as written on the CLIENT — what an SDK's ``default_headers`` uses and what
+# the docs and ``brevitas connect`` snippets print. HTTP header names are case-insensitive,
+# so the server reads the lowercase ``CUSTOMER_ID_HEADER`` above while clients emit the
+# title-case forms below. Defined here (a dependency-light module) so ``brevitas.hosted()``
+# and the connect CLI share one definition and never drift.
+#
+# NOTE: ``KEY_HEADER`` is NOT ``Authorization`` — on the hosted gateway ``Authorization``
+# carries the caller's PROVIDER key and is forwarded upstream, while the Brevitas key is
+# read only from ``x-brevitas-key``. An organization-service key also hard-400s on every
+# proxy call without ``CUSTOMER_HEADER`` (until a default-customer pin ships), which is the
+# single most likely first-request failure — so every client snippet carries it explicitly.
+KEY_HEADER = "X-Brevitas-Key"
+CUSTOMER_HEADER = "X-Brevitas-Customer-ID"
+
 
 def normalize_customer_id(value: str | None) -> str:
     """Validate an opaque end-customer id used only for tenant partitioning."""

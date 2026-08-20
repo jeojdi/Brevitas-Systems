@@ -42,8 +42,8 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   color: var(--stone-2); padding: 6px 14px; border-radius: 8px;
   transition: color 80ms, background 80ms; text-decoration: none;
 }
-.orch-nav-links a:hover { color: var(--bone); background: rgba(142,166,255,0.07); }
-.orch-nav-links a.active { color: var(--bronze); background: rgba(142,166,255,0.1); }
+.orch-nav-links a:hover { color: var(--bone); background: rgba(46, 46, 238,0.07); }
+.orch-nav-links a.active { color: var(--bronze); background: rgba(46, 46, 238,0.1); }
 .orch-nav-right {
   display: flex; align-items: center; gap: 16px;
 }
@@ -135,7 +135,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   display: flex; flex-direction: column; gap: 8px;
   transition: border-color 100ms, transform 100ms;
 }
-.stat-card:hover { border-color: rgba(142,166,255,0.3); transform: translateY(-1px); }
+.stat-card:hover { border-color: rgba(46, 46, 238,0.3); transform: translateY(-1px); }
 .stat-card-label {
   font-family:'JetBrains Mono',monospace; font-size:10px;
   letter-spacing:0.04em; color:var(--stone);
@@ -194,7 +194,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   background: linear-gradient(90deg, transparent, var(--bronze), transparent);
   opacity:0; transition: opacity 100ms;
 }
-.agent-card:hover { border-color: rgba(142,166,255,0.25); transform: translateY(-1px); }
+.agent-card:hover { border-color: rgba(46, 46, 238,0.25); transform: translateY(-1px); }
 .agent-card:hover::before { opacity:1; }
 
 .agent-header { display:flex; align-items:flex-start; justify-content:space-between; }
@@ -210,7 +210,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   padding: 4px 10px; border-radius:100px;
 }
 .agent-status-badge.active    { background:rgba(141,216,198,0.12); color:var(--signal); border:1px solid rgba(141,216,198,0.25); }
-.agent-status-badge.processing{ background:rgba(142,166,255,0.12); color:var(--bronze); border:1px solid rgba(142,166,255,0.25); }
+.agent-status-badge.processing{ background:rgba(46, 46, 238,0.12); color:var(--bronze); border:1px solid rgba(46, 46, 238,0.25); }
 .agent-status-badge.idle      { background:rgba(136,145,164,0.12); color:var(--stone-2); border:1px solid rgba(136,145,164,0.2); }
 
 .agent-name {
@@ -417,11 +417,11 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
 }
 .pipe-run-btn {
   font-family:'Inter Tight',sans-serif; font-size:13px; font-weight:500;
-  color:var(--bone); background:rgba(142,166,255,0.1);
-  border:1px solid rgba(142,166,255,0.3); border-radius:8px;
+  color:var(--bone); background:rgba(46, 46, 238,0.1);
+  border:1px solid rgba(46, 46, 238,0.3); border-radius:8px;
   padding:8px 22px; cursor:pointer; transition:all 80ms; flex-shrink:0;
 }
-.pipe-run-btn:hover { background:rgba(142,166,255,0.2); border-color:rgba(142,166,255,0.5); }
+.pipe-run-btn:hover { background:rgba(46, 46, 238,0.2); border-color:rgba(46, 46, 238,0.5); }
 .pipe-run-btn:disabled { opacity:0.38; cursor:default; pointer-events:none; }
 .pipe-status-text { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--stone-2); flex:1; }
 .pipe-speed { display:flex; align-items:center; gap:4px; }
@@ -432,7 +432,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
   padding:3px 10px; cursor:pointer; transition:all 60ms;
 }
 .pipe-speed-btn:hover { color:var(--stone-2); }
-.pipe-speed-btn.active { color:var(--bronze); border-color:rgba(142,166,255,0.4); background:rgba(142,166,255,0.08); }
+.pipe-speed-btn.active { color:var(--bronze); border-color:rgba(46, 46, 238,0.4); background:rgba(46, 46, 238,0.08); }
 
 .pnode { opacity:0; transition:opacity 160ms ease; will-change:opacity; }
 .pnode.visible, .pnode.active, .pnode.complete { opacity:1; }
@@ -642,7 +642,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
         <span class="legend-label">Standard data flow</span>
       </div>
       <div class="legend-item">
-        <div class="legend-swatch" style="background:#8ea6ff"></div>
+        <div class="legend-swatch" style="background:#2e2eee"></div>
         <span class="legend-label">Bronze — core agent</span>
       </div>
       <div class="legend-item">
@@ -910,7 +910,7 @@ body { background: var(--ink); color: var(--bone); overflow-x: hidden; }
 const AGENTS = [
   {
     id:'orchestrator', name:'Orchestrator', role:'Planning & task routing',
-    status:'active', bg:'rgba(142,166,255,0.08)',
+    status:'active', bg:'rgba(46, 46, 238,0.08)',
     task:'Decomposing user request "Build REST API for inventory management" into 4 subtasks and routing to specialists.',
     inputTokens: 128420, outputTokens: 18340,
     afterBrevitas: 72890, contextPct: 56, responsePct: 98.2, latencyMs: 1240,
@@ -934,7 +934,7 @@ const AGENTS = [
   },
   {
     id:'code-writer', name:'Code Writer', role:'Code generation',
-    status:'processing', bg:'rgba(142,166,255,0.07)',
+    status:'processing', bg:'rgba(46, 46, 238,0.07)',
     task:'Generating FastAPI application with SQLAlchemy models, Pydantic schemas, and pytest suite (≈ 1,800 lines).',
     inputTokens: 512300, outputTokens: 94200,
     afterBrevitas: 221450, contextPct: 43, responsePct: 98.8, latencyMs: 5600,
@@ -1125,7 +1125,7 @@ AGENTS.forEach(a => {
 
 /* ── Cost table ── */
 const tbodyEl = document.getElementById('cost-table-body');
-const dotColors = ['#8ea6ff','#8dd8c6','#b6bfd3','#8ea6ff','#8dd8c6','#8dd8c6','#b6bfd3'];
+const dotColors = ['#2e2eee','#8dd8c6','#b6bfd3','#2e2eee','#8dd8c6','#8dd8c6','#b6bfd3'];
 AGENTS.forEach((a, i) => {
   const saved = (a.costRaw - a.costCompressed).toFixed(2);
   const tr = document.createElement('tr');
@@ -1222,8 +1222,8 @@ function initChartsForTab(tab) {
         labels:['Code Generation','Research & Analysis','Data Processing','Documentation','Testing & Review'],
         datasets:[{
           data:[38,27,18,11,6],
-          backgroundColor:['rgba(142,166,255,0.7)','rgba(141,216,198,0.7)','rgba(142,166,255,0.5)','rgba(141,216,198,0.4)','rgba(136,145,164,0.4)'],
-          borderColor:['#8ea6ff','#8dd8c6','#6f84d6','#8dd8c6','#8891a4'],
+          backgroundColor:['rgba(46, 46, 238,0.7)','rgba(141,216,198,0.7)','rgba(46, 46, 238,0.5)','rgba(141,216,198,0.4)','rgba(136,145,164,0.4)'],
+          borderColor:['#2e2eee','#8dd8c6','#2320c0','#8dd8c6','#8891a4'],
           borderWidth:1, borderRadius:6, borderSkipped:false,
         }]
       },
@@ -1245,9 +1245,9 @@ function initChartsForTab(tab) {
       data:{
         labels:days,
         datasets:[
-          { label:'Code Gen', data:codeSeries, backgroundColor:'rgba(142,166,255,0.6)', borderRadius:3, stack:'a' },
+          { label:'Code Gen', data:codeSeries, backgroundColor:'rgba(46, 46, 238,0.6)', borderRadius:3, stack:'a' },
           { label:'Research', data:resSeries,  backgroundColor:'rgba(141,216,198,0.5)', borderRadius:3, stack:'a' },
-          { label:'Data',     data:dataSeries, backgroundColor:'rgba(142,166,255,0.3)', borderRadius:3, stack:'a' },
+          { label:'Data',     data:dataSeries, backgroundColor:'rgba(46, 46, 238,0.3)', borderRadius:3, stack:'a' },
         ]
       },
       options:{
@@ -1270,7 +1270,7 @@ function initChartsForTab(tab) {
       type:'bar',
       data:{
         labels:['1','2','3','4','5','6','7','8+'],
-        datasets:[{ data:[12,18,28,22,10,6,3,1], backgroundColor:'rgba(142,166,255,0.65)', borderRadius:5, borderSkipped:false }]
+        datasets:[{ data:[12,18,28,22,10,6,3,1], backgroundColor:'rgba(46, 46, 238,0.65)', borderRadius:5, borderSkipped:false }]
       },
       options:{ ...baseOptions(), plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(13,16,23,0.92)',borderColor:'rgba(196,206,229,0.15)',borderWidth:1,titleColor:'#8891a4',bodyColor:'#f5f7ff',titleFont:{family:"'JetBrains Mono',monospace",size:10},bodyFont:{family:"'JetBrains Mono',monospace",size:11},padding:10}},
         scales:{x:{grid:{color:'transparent'},ticks:TICK},y:{grid:{color:GRID},ticks:TICK}} }
@@ -1294,7 +1294,7 @@ function initChartsForTab(tab) {
         labels:['Orchestrator','Researcher','Code Writer','Reviewer','Summarizer','Planner','Validator'],
         datasets:[{
           data:[18,24,28,14,9,5,2],
-          backgroundColor:['#8ea6ff','#8dd8c6','#6f84d6','#8dd8c6','#8dd8c6','#b6bfd3','#8891a4'],
+          backgroundColor:['#2e2eee','#8dd8c6','#2320c0','#8dd8c6','#8dd8c6','#b6bfd3','#8891a4'],
           borderWidth:0, hoverOffset:6,
         }]
       },
@@ -1384,12 +1384,12 @@ const VW = 950, VH = 852;
 /* Node definitions — id, label, sublabel, x,y,w,h, accent colour, shape */
 const P_NODES = [
   { id:'user-query',    label:'"Build me a REST API"', sub:'User query',    x:365, y:14,  w:220, h:46,  rx:23,  accent:'rgba(196,206,229,0.45)', fill:'rgba(196,206,229,0.05)', text:'#b6bfd3' },
-  { id:'orchestrator', label:'Route & Decompose',      sub:'Orchestrator', x:160, y:88,  w:430, h:72,  rx:13,  accent:'#8ea6ff',               fill:'#151b28',                text:'#f5f7ff' },
+  { id:'orchestrator', label:'Route & Decompose',      sub:'Orchestrator', x:160, y:88,  w:430, h:72,  rx:13,  accent:'#2e2eee',               fill:'#151b28',                text:'#f5f7ff' },
   { id:'memory',       label:'Memory Retrieval',       sub:'Memory agent', x:14,  y:202, w:148, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
   { id:'researcher',   label:'Retrieval',              sub:'Researcher',   x:172, y:202, w:148, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
   { id:'planner',      label:'Strategy',               sub:'Planner',      x:330, y:202, w:142, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
   { id:'validator',    label:'Schema check',           sub:'Validator',    x:538, y:202, w:154, h:66,  rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
-  { id:'code-writer',  label:'Generation',             sub:'Code writer',  x:122, y:314, w:254, h:78,  rx:13,  accent:'#8ea6ff',               fill:'#151b28',                text:'#f5f7ff' },
+  { id:'code-writer',  label:'Generation',             sub:'Code writer',  x:122, y:314, w:254, h:78,  rx:13,  accent:'#2e2eee',               fill:'#151b28',                text:'#f5f7ff' },
   { id:'test-runner',  label:'Test suite',             sub:'Test runner',  x:454, y:314, w:178, h:78,  rx:10,  accent:'#c98078',               fill:'#1a100e',                text:'#f5f7ff' },
   { id:'bvt-1',        label:'Context compression',    sub:'Brevitas · pass 1', x:140, y:440, w:220, h:66, rx:10, accent:'#8dd8c6',            fill:'#0d2820',                text:'#f5f7ff' },
   { id:'code-reviewer',label:'QA & Review',            sub:'Code reviewer', x:122, y:552, w:254, h:70, rx:10,  accent:'rgba(196,206,229,0.3)', fill:'#0d1017',                text:'#f5f7ff' },
@@ -1561,7 +1561,7 @@ function buildPipelineSVG() {
     sub.setAttribute('text-anchor', (n.rx||10) >= 20 ? 'middle' : 'start');
     sub.setAttribute('font-family',"'JetBrains Mono',monospace");
     sub.setAttribute('font-size','9');
-    sub.setAttribute('fill', n.accent.startsWith('#8dd') ? '#8dd8c6' : n.accent.startsWith('#8ea') ? '#8ea6ff' : '#8891a4');
+    sub.setAttribute('fill', n.accent.startsWith('#8dd') ? '#8dd8c6' : n.accent.startsWith('#8ea') ? '#2e2eee' : '#8891a4');
     sub.setAttribute('letter-spacing','0.05em');
     sub.textContent = n.sub;
     g.appendChild(sub);
@@ -1586,7 +1586,7 @@ function buildPipelineSVG() {
     albl.setAttribute('text-anchor','end');
     albl.setAttribute('font-family',"'JetBrains Mono',monospace");
     albl.setAttribute('font-size','8');
-    albl.setAttribute('fill', n.accent.startsWith('#8ea') ? '#8ea6ff' : n.accent.startsWith('#8dd') ? '#8dd8c6' : '#b6bfd3');
+    albl.setAttribute('fill', n.accent.startsWith('#8ea') ? '#2e2eee' : n.accent.startsWith('#8dd') ? '#8dd8c6' : '#b6bfd3');
     albl.textContent = 'running…';
     g.appendChild(albl);
 

@@ -193,14 +193,6 @@ function HubCenter({ isHovered }) {
       pointerEvents: 'none',
     }}>
       <div style={{
-        fontFamily: 'JetBrains Mono, monospace',
-        fontSize: 10,
-        letterSpacing: '0.18em',
-        color: 'var(--bronze)',
-        textTransform: 'uppercase',
-        marginBottom: 8,
-      }}>The Router</div>
-      <div style={{
         fontFamily: 'Newsreader, serif',
         fontSize: 22,
         letterSpacing: '-0.015em',
@@ -457,7 +449,7 @@ function SixTechniquesHub() {
         padding: '26px 28px',
         borderRadius: 4,
         display: 'grid',
-        gridTemplateColumns: '120px 1fr auto',
+        gridTemplateColumns: '120px 1fr',
         gap: 28,
         alignItems: 'start',
       }}>
@@ -496,41 +488,9 @@ function SixTechniquesHub() {
             maxWidth: 680,
           }}>{active.body}</p>
         </div>
-        <div className="sth-detail-nav" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{
-            fontFamily: 'JetBrains Mono, monospace', fontSize: 9.5, letterSpacing: '0.1em',
-            color: isVisible ? 'var(--bronze)' : 'var(--stone)',
-            textTransform: 'uppercase', display: 'flex', gap: 6, alignItems: 'center',
-          }} title={isVisible ? 'Arrow keys active' : 'Scroll into view to use arrow keys'}>
-            <kbd style={sthKbd}>←</kbd>
-            <kbd style={sthKbd}>→</kbd>
-            <span style={{ opacity: 0.75 }}>navigate</span>
-          </div>
-          {active.demo && (
-            <a href={active.demo} style={{
-              fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 10.5,
-              letterSpacing: '0.08em',
-              color: 'var(--bronze)',
-              textDecoration: 'none',
-              borderBottom: '1px solid var(--bronze)',
-              paddingBottom: 2,
-            }}>see it in action →</a>
-          )}
-        </div>
       </div>
     </div>
   );
 }
-
-const sthKbd = {
-  display: 'inline-block',
-  padding: '2px 6px',
-  border: '1px solid currentColor',
-  borderRadius: 2,
-  fontFamily: 'JetBrains Mono, monospace',
-  fontSize: 10,
-  lineHeight: 1,
-};
 
 Object.assign(window, { SixTechniquesHub });

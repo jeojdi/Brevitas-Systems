@@ -50,10 +50,22 @@ function fmtCredits(micro) {
   return `$${(Number(micro || 0) / 1_000_000).toFixed(2)}`
 }
 
+// Receipt-verified savings rate: the share of the pre-cache bill that native
+// caching removed — discount / (paid + discount). Both terms come from provider
+// receipts, so this is populated whenever there is real spend, unlike
+// verified_savings_usd (the byte-identical/quality-gated number, which is ~0 in
+// pure pass-through). Mirrors Overview's hero percentage.
+function savingsRate(row) {
+  const discount = Number(row?.native_cache_discount_usd || 0)
+  const paid = Number(row?.actual_cost_usd || 0)
+  const gross = paid + discount
+  return gross > 0 ? (100 * discount) / gross : 0
+}
+
 function StatCard({ label, value, sub, accent = false }) {
   return (
     <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6">
-      <p className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted mb-3">{label}</p>
+      <p className="font-sans text-sm font-medium tracking-wide text-brand-muted dark:text-brand-dark-muted mb-3">{label}</p>
       <p className={`font-sans font-semibold text-3xl ${accent ? 'text-brand-teal' : 'text-brand-navy dark:text-brand-dark-navy'} leading-none mb-1`}>{value}</p>
       {sub && <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted mt-2">{sub}</p>}
     </div>
@@ -81,6 +93,23 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
   const [billingStale, setBillingStale] = useState(false)
   const [billingAction, setBillingAction] = useState('')
   const controllerRef = useRef(null)
+
+  // Coffee-wall pagination + a measured column count so each page is exactly 4
+  // rows regardless of viewport width (per-page = columns × 4). Ported from the
+  // Overview hero so the Savings page leads with the same "coffees on us" visual.
+  const [coffeePage, setCoffeePage] = useState(0)
+  const [coffeeCols, setCoffeeCols] = useState(40)
+  const coffeeRoRef = useRef(null)
+  const coffeeRowRef = useCallback(node => {
+    if (coffeeRoRef.current) { coffeeRoRef.current.disconnect(); coffeeRoRef.current = null }
+    if (node) {
+      const CUP_CELL_PX = 23 // ~cup width at h-8 plus the gap-0.5
+      const measure = () => setCoffeeCols(Math.max(1, Math.floor(node.clientWidth / CUP_CELL_PX)))
+      measure()
+      coffeeRoRef.current = new ResizeObserver(measure)
+      coffeeRoRef.current.observe(node)
+    }
+  }, [])
 
   const load = useCallback(async () => {
     if (previewStats) { setStats(previewStats); setLoading(false); return }
@@ -209,9 +238,17 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
   // for roles without billing access. Withheld money renders as "Withheld";
   // coercing the stripped keys with `|| 0` would show a confident wrong $0.00.
   const spendWithheld  = spendRedacted(stats)
-  const cacheSpendWithheld = spendRedacted(cacheStats)
-  const verifiedSaved  = Number(stats?.total_verified_savings_usd || 0)
   const providerSpend  = Number(stats?.total_actual_cost_usd || 0)
+  // Hero: dollars saved via native caching, translated into a coffee wall (one
+  // cup per COFFEE_PRICE) and paired with the cache hit-rate ring gauge.
+  const heroSaved      = spendWithheld ? WITHHELD : `$${Number(stats?.total_native_cache_discount_usd || 0).toFixed(2)}`
+  const COFFEE_PRICE   = 5
+  const coffeeTotal    = Number(stats?.total_native_cache_discount_usd || 0) / COFFEE_PRICE
+  const coffeeFull     = Math.floor(coffeeTotal)
+  const coffeeHalf     = coffeeTotal - coffeeFull >= 0.5
+  const hitPct         = cacheStats ? Math.max(0, Math.min(100, Number(cacheStats.cache_hit_rate_pct || 0))) : 0
+  const ringR          = 62
+  const ringC          = 2 * Math.PI * ringR
   const weeks          = stats?.billing_by_week || []
   const thisWeek       = weeks[0] || null
   const allUnpriced    = Number(stats?.total_calls || 0) > 0 && Number(stats?.unpriced_calls || 0) === Number(stats?.total_calls || 0)
@@ -238,27 +275,27 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
 
       {/* Credit balance (credit-based pricing) — personal accounts only. */}
       {!enterprise && credits && (
-        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 sm:p-8">
+        <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6">
             <div>
-              <p className="annotation tracking-widest uppercase mb-2">Credits</p>
-              <p className={`font-sans font-semibold text-4xl leading-none ${credits.low_balance ? 'text-amber-600' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
+              <p className="font-sans text-sm font-medium tracking-wide text-brand-muted dark:text-brand-dark-muted mb-3">Credits</p>
+              <p className={`font-sans font-semibold text-3xl leading-none ${credits.low_balance ? 'text-amber-600' : 'text-brand-navy dark:text-brand-dark-navy'}`}>
                 {fmtCredits(credits.balance_micro)}
               </p>
-              <p className="font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted mt-3">
+              <p className="font-sans text-[13px] text-brand-muted dark:text-brand-dark-muted mt-2">
                 {credits.days_to_exhaustion != null
                   ? `${fmtCredits(credits.spent_7d_micro)} used in the last 7 days · ~${credits.days_to_exhaustion} days left at that pace`
                   : 'No recent usage to project a runway from'}
               </p>
               {credits.low_balance && (
-                <p className="font-mono text-[11px] text-amber-600 mt-1">
+                <p className="font-sans text-[13px] text-amber-600 mt-1">
                   Balance is empty — top up to keep serving requests.
                 </p>
               )}
             </div>
             {creditPacks.length > 0 && (
               <div className="flex flex-col items-stretch gap-2 sm:items-end">
-                <p className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">Buy credits</p>
+                <p className="font-sans text-sm font-medium tracking-wide text-brand-muted dark:text-brand-dark-muted">Buy credits</p>
                 <div className="flex flex-wrap gap-2">
                   {creditPacks.map(pack => (
                     <button
@@ -393,53 +430,87 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
         <StatCard
           label="Total calls"
           value={fmtK(stats?.total_calls)}
-          sub="recorded usage"
         />
         <StatCard
-          label="Input tokens avoided"
-          value={fmtK(stats?.total_provider_input_tokens_avoided)}
-          sub="actually not sent to providers"
+          label="Cached tokens"
+          value={fmtK(cacheStats?.cached_input_tokens)}
         />
         <StatCard
-          label="Provider spend"
+          label="Cost after Brevitas"
           value={spendWithheld ? WITHHELD : allUnpriced ? 'Unpriced' : `$${fmt(providerSpend, 4)}`}
-          sub="from provider receipts"
         />
         <StatCard
-          label="Calls avoided"
-          value={fmtK(stats?.total_calls_avoided)}
-          sub="exact or opted-in response reuse"
-          accent
+          label="Avg cost / call"
+          value={spendWithheld ? WITHHELD : allUnpriced ? 'Unpriced' : `$${fmt(providerSpend / Math.max(1, Number(stats?.total_calls || 0)), 4)}`}
         />
       </div>
 
-      {/* Cache savings */}
+      {/* Saved through Brevitas — native-cache dollars, a hit-rate ring, and a coffee wall */}
       {cacheStats && (
-        <div>
-          <p className="annotation tracking-widest uppercase mb-4">// cache savings</p>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard
-              label="Cache hit rate"
-              value={`${fmt(cacheStats.cache_hit_rate_pct)}%`}
-              sub={`${fmtK(cacheStats.cached_input_tokens)} cached / ${fmtK(cacheStats.fresh_input_tokens)} fresh input tokens`}
-            />
-            <StatCard
-              label="Native cache discount"
-              value={cacheSpendWithheld ? WITHHELD : `$${fmt(cacheStats.native_cache_discount_usd, 4)}`}
-              sub="measured across all cache reads"
-            />
-            <StatCard
-              label="Billable cache savings"
-              value={cacheSpendWithheld ? WITHHELD : `$${fmt(cacheStats.attributable_discount_usd, 4)}`}
-              sub="Brevitas-attributable, byte-identical"
-              accent
-            />
-            <StatCard
-              label="Warming spend"
-              value={cacheSpendWithheld ? WITHHELD : cacheStats.warm_spend_usd == null ? 'Not measured' : `$${fmt(cacheStats.warm_spend_usd, 4)}`}
-              sub={cacheStats.warm_hits == null ? 'no warming data yet' : `${fmtK(cacheStats.warm_hits)} warm hits · ${fmtK(cacheStats.warm_pings)} pings`}
-            />
+        <div className="rounded-2xl border border-brand-border bg-white p-6 sm:p-8 dark:border-brand-dark-border dark:bg-brand-dark-surface">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="font-sans text-3xl sm:text-4xl font-semibold text-brand-navy dark:text-brand-dark-navy mb-3">Saved through Brevitas</p>
+              <p className="font-sans text-5xl sm:text-6xl font-semibold tabular-nums truncate text-brand-blue" title={heroSaved}>{heroSaved}</p>
+              <div className="mt-4 flex flex-wrap gap-x-7 gap-y-1.5 font-sans text-sm text-brand-muted dark:text-brand-dark-muted">
+                <span><strong className="text-brand-navy dark:text-brand-dark-navy tabular-nums">{fmtK(cacheStats.cached_input_tokens || 0)}</strong> tokens cached</span>
+                <span><strong className="text-brand-navy dark:text-brand-dark-navy tabular-nums">{fmtK(stats?.total_calls ?? 0)}</strong> calls served</span>
+              </div>
+            </div>
+            {/* Cache hit-rate ring — a single at-a-glance gauge. */}
+            <div className="flex w-full shrink-0 flex-col items-center gap-2 lg:w-64">
+              <div className="relative h-[150px] w-[150px]" role="img" aria-label={`Cache hit rate ${hitPct.toFixed(2)} percent`}>
+                <svg viewBox="0 0 150 150" className="h-full w-full -rotate-90">
+                  <circle cx="75" cy="75" r={ringR} fill="none" strokeWidth="13" stroke="currentColor" className="text-brand-border dark:text-brand-dark-border" />
+                  <circle
+                    cx="75" cy="75" r={ringR} fill="none" strokeWidth="13" strokeLinecap="round"
+                    stroke="currentColor" className="text-brand-blue"
+                    strokeDasharray={ringC}
+                    strokeDashoffset={ringC * (1 - hitPct / 100)}
+                    style={{ transition: 'stroke-dashoffset 700ms cubic-bezier(0.22,1,0.36,1)' }}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="font-sans text-2xl font-semibold tabular-nums text-brand-navy dark:text-brand-dark-navy">{hitPct.toFixed(2)}%</span>
+                </div>
+              </div>
+              <p className="text-center font-sans text-[11px] text-brand-muted dark:text-brand-dark-muted">cache hit rate</p>
+            </div>
           </div>
+          {/* Coffee equivalent — savings translated into cups, paginated at 4 rows/page. */}
+          {!spendWithheld && coffeeTotal >= 0.5 && (() => {
+            const COFFEE_PER_PAGE = coffeeCols * 4
+            const coffeePages = Math.max(1, Math.ceil(coffeeFull / COFFEE_PER_PAGE))
+            const page = Math.min(coffeePage, coffeePages - 1)
+            const cupsOnPage = Math.min(COFFEE_PER_PAGE, coffeeFull - page * COFFEE_PER_PAGE)
+            const halfOnPage = coffeeHalf && page === coffeePages - 1
+            return (
+              <div className="mt-6 border-t border-brand-border pt-5 dark:border-brand-dark-border">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <p className="font-sans text-sm text-brand-muted dark:text-brand-dark-muted">
+                    That&apos;s about <strong className="text-brand-navy dark:text-brand-dark-navy tabular-nums">{coffeeHalf ? `${coffeeFull}½` : coffeeFull}</strong> coffees on us
+                  </p>
+                  {coffeePages > 1 && (
+                    <div className="flex items-center gap-3">
+                      <span className="annotation">Page {page + 1} of {coffeePages}</span>
+                      <button type="button" disabled={page === 0} onClick={() => setCoffeePage(p => Math.max(0, p - 1))} className="annotation disabled:opacity-40 hover:text-brand-blue">Previous</button>
+                      <button type="button" disabled={page >= coffeePages - 1} onClick={() => setCoffeePage(p => p + 1)} className="annotation disabled:opacity-40 hover:text-brand-blue">Next</button>
+                    </div>
+                  )}
+                </div>
+                <div ref={coffeeRowRef} className="flex flex-wrap gap-0.5">
+                  {Array.from({ length: cupsOnPage }).map((_, i) => (
+                    <img key={i} src="/assets/coffee-brevitas.png" alt="" aria-hidden="true" className="h-8 w-auto opacity-60" />
+                  ))}
+                  {halfOnPage && (
+                    <span className="inline-flex h-8 w-[10px] overflow-hidden opacity-60" title="half a coffee">
+                      <img src="/assets/coffee-brevitas.png" alt="" aria-hidden="true" className="h-8 max-w-none" />
+                    </span>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
@@ -449,9 +520,9 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
           <p className="annotation tracking-widest uppercase mb-4">// week of {thisWeek.week_start}</p>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Calls"         value={fmtK(thisWeek.calls)} />
-            <StatCard label="Input tokens avoided" value={fmtK(thisWeek.provider_input_tokens_avoided)} />
-            <StatCard label="Provider spend" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.actual_cost_usd, 4)}`} />
-            <StatCard label="Verified savings" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.verified_savings_usd ?? thisWeek.cost_saved_usd, 4)}`} accent />
+            <StatCard label="Cache savings" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.native_cache_discount_usd, 4)}`} />
+            <StatCard label="Cost after Brevitas" value={spendWithheld ? WITHHELD : `$${fmt(thisWeek.actual_cost_usd, 4)}`} />
+            <StatCard label="Savings rate" value={spendWithheld ? WITHHELD : `${fmt(savingsRate(thisWeek), 1)}%`} accent />
           </div>
         </div>
       )}
@@ -462,7 +533,7 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
           <p className="annotation tracking-widest uppercase mb-4">// weekly usage history</p>
           <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl overflow-x-auto">
             <div className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3 border-b border-brand-border dark:border-brand-dark-border">
-              {['Week of', 'Calls', 'Input avoided', 'Provider spend', 'Verified benefit'].map(h => (
+              {['Week of', 'Calls', 'Cache savings', 'Provider spend', 'Savings rate'].map(h => (
                 <span key={h} className="font-mono text-[10px] tracking-widest uppercase text-brand-muted dark:text-brand-dark-muted">{h}</span>
               ))}
             </div>
@@ -470,9 +541,9 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
               <div key={m.week_start} className="grid grid-cols-5 min-w-[620px] gap-0 px-5 py-3.5 border-b border-brand-border dark:border-brand-dark-border last:border-b-0 hover:bg-brand-bg dark:hover:bg-brand-dark-bg transition-colors">
                 <span className="font-mono text-xs text-brand-navy dark:text-brand-dark-navy">{m.week_start}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.calls)}</span>
-                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{fmtK(m.provider_input_tokens_avoided)}</span>
+                <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{spendWithheld ? WITHHELD : `$${fmt(m.native_cache_discount_usd, 4)}`}</span>
                 <span className="font-mono text-xs text-brand-navy-mid dark:text-brand-dark-navy-mid">{spendWithheld ? WITHHELD : `$${fmt(m.actual_cost_usd, 4)}`}</span>
-                <span className="font-mono text-xs text-brand-teal">{spendWithheld ? WITHHELD : `$${fmt(m.verified_savings_usd ?? m.cost_saved_usd, 4)}`}</span>
+                <span className="font-mono text-xs text-brand-teal">{spendWithheld ? WITHHELD : `${fmt(savingsRate(m), 1)}%`}</span>
               </div>
             ))}
           </div>
@@ -486,30 +557,6 @@ export default function Billing({ apiKey, accessToken, refreshTick, enterprise =
           <p className="annotation">// start compressing to see usage and savings here</p>
         </div>
       )}
-
-      {/* How savings are measured */}
-      <div className="bg-white dark:bg-brand-dark-surface border border-brand-border dark:border-brand-dark-border rounded-2xl p-6 space-y-3">
-        <p className="annotation tracking-widest uppercase mb-2">// how it works</p>
-        <div className="space-y-2">
-          {[
-            ['Input avoided', 'Provider input tokens not sent after an input-reducing transform'],
-            ['Native discount', 'Provider cache-read discount minus cache-write premiums; not automatically Brevitas-attributable'],
-            ['Calls avoided', 'Model calls skipped by exact or explicitly enabled fuzzy response reuse'],
-            ['Billable cache savings', 'Only reductions Brevitas provably caused with byte-identical responses — Brevitas-owned cache markers and exact replays; everything else is measured but not billed'],
-            ['Transport avoided', 'Network bytes removed by CID/delta transport; provider tokens are unchanged'],
-            ['Provider spend', 'What provider receipts say the optimized calls actually cost'],
-            ['Brevitas vs control', 'Shown only when an isolated paired control arm was measured'],
-          ].map(([term, def]) => (
-            <div key={term} className="flex flex-col sm:flex-row gap-1 sm:gap-4">
-              <span className="font-mono text-[11px] text-brand-blue shrink-0 sm:w-36">{term}</span>
-              <span className="font-mono text-[11px] text-brand-muted dark:text-brand-dark-muted">{def}</span>
-            </div>
-          ))}
-        </div>
-        <p className="font-mono text-[10px] text-brand-muted dark:text-brand-dark-muted pt-2">
-          Questions? <a href="mailto:info@brevitassystems.com" className="text-brand-blue hover:underline">info@brevitassystems.com</a>
-        </p>
-      </div>
     </div>
   )
 }

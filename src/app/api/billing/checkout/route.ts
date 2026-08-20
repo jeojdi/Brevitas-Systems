@@ -15,6 +15,7 @@ import {
   BillingControlAdmissionError,
   consumeBillingControlAttempt,
   getBillingAccount,
+  getOrganizationAccountType,
   persistBillingCheckoutSession,
   releaseBillingCheckoutGeneration,
   reserveBillingCheckoutGeneration,
@@ -72,6 +73,19 @@ export async function POST(request: Request) {
       return Response.json({ error: 'Billing permission is required for the active company' }, { status: 403 });
     }
     const organizationId = authorization.organizationId;
+
+    // The 25%-of-verified-savings subscription is the enterprise ('company') pricing
+    // model. Personal ('individual') accounts pay with prepaid credits instead, so they
+    // cannot start this Checkout — the dashboard hides the billing card and this rejects
+    // a direct call. Fail closed if the account type can't be read.
+    const accountType = await getOrganizationAccountType(organizationId);
+    if (accountType !== 'company') {
+      return Response.json(
+        { error: 'The verified-savings plan is available to enterprise accounts only' },
+        { status: 403 },
+      );
+    }
+
     const admission = await consumeBillingControlAttempt(
       user.id,
       organizationId,

@@ -561,6 +561,10 @@ def test_warm_observe_to_worker_ping_round_trip(tmp_path, monkeypatch):
 def test_stats_cache_endpoint_contract(tmp_path, monkeypatch):
     import api.server as server
 
+    # This contract asserts a positive per-row fee on the exact-replay row below. That
+    # 25% fee is parked by default under credit-based pricing, so opt into the legacy
+    # switch to keep covering the reconciliation.
+    monkeypatch.setenv("BREVITAS_SAVINGS_FEE_ENABLED", "true")
     store = UsageStore(str(tmp_path / "stats-cache.db"))
     store.create_key(hash_key("bvt_cache_stats"), "cache-stats")
     monkeypatch.setattr(server, "_store", store)

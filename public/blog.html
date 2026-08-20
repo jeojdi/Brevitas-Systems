@@ -96,11 +96,11 @@ const POSTS = [
 ];
 
 const TAG_STYLES = {
-  Engineering: { bg: 'rgba(142,166,255,0.14)', stroke: 'rgba(142,166,255,0.5)' },
+  Engineering: { bg: 'rgba(46, 46, 238,0.14)', stroke: 'rgba(46, 46, 238,0.5)' },
   Research:    { bg: 'rgba(141,216,198,0.14)', stroke: 'rgba(141,216,198,0.5)' },
   Method:      { bg: 'rgba(196,206,229,0.10)', stroke: 'rgba(196,206,229,0.35)' },
   Essay:       { bg: 'rgba(201,128,120,0.14)', stroke: 'rgba(201,128,120,0.5)' },
-  Benchmarks:  { bg: 'rgba(142,166,255,0.10)', stroke: 'rgba(142,166,255,0.4)' },
+  Benchmarks:  { bg: 'rgba(46, 46, 238,0.10)', stroke: 'rgba(46, 46, 238,0.4)' },
   Program:     { bg: 'rgba(141,216,198,0.10)', stroke: 'rgba(141,216,198,0.4)' },
 };
 
@@ -286,7 +286,7 @@ function BlogPage() {
                     value={search}
                     onChange={e => { setSearch(e.target.value); setVisibleCount(6); }}
                     style={{ width: '100%', padding: '12px 16px 12px 40px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, outline: 'none' }}
-                    onFocus={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                    onFocus={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
                     onBlur={e => e.target.style.borderColor = ''}
                   />
                 </div>
@@ -316,7 +316,7 @@ function BlogPage() {
               {visibleCount < sorted.length && (
                 <div style={{ textAlign: 'center', marginTop: 48 }}>
                   <button onClick={() => setVisibleCount(v => v + 6)} style={{ padding: '13px 32px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, fontWeight: 500, cursor: 'pointer', transition: 'border-color 120ms' }}
-                    onMouseEnter={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                    onMouseEnter={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
                     onMouseLeave={e => e.target.style.borderColor = ''}>
                     View more
                   </button>
@@ -343,7 +343,7 @@ function BlogPage() {
                   See pricing
                 </a>
                 <a href="/signup" style={{ display: 'inline-block', padding: '12px 24px', background: 'var(--ink-2)', color: 'var(--bone)', border: '1px solid var(--line)', borderRadius: 8, fontFamily: "'Inter Tight', sans-serif", fontWeight: 500, fontSize: 14, textDecoration: 'none', transition: 'border-color 120ms' }}
-                  onMouseEnter={e => e.target.style.borderColor = 'rgba(142,166,255,0.4)'}
+                  onMouseEnter={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
                   onMouseLeave={e => e.target.style.borderColor = ''}>
                   Get started
                 </a>

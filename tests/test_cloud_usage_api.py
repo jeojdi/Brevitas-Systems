@@ -558,6 +558,9 @@ def test_authoritative_billing_bills_exact_replays_not_fuzzy_reuse_or_unknown_mo
         tmp_path, monkeypatch):
     import api.server as server
 
+    # The per-row 25% fee is parked by default under credit-based pricing; opt in so
+    # this boundary test still exercises the legacy fee computation behind the flag.
+    monkeypatch.setenv("BREVITAS_SAVINGS_FEE_ENABLED", "true")
     store = UsageStore(str(tmp_path / "billing-quality-boundary.db"))
     store.create_key(hash_key("bvt_billing_boundary"), "billing-boundary")
     monkeypatch.setattr(server, "_store", store)
@@ -1763,6 +1766,10 @@ def test_a_quality_stream_fault_cannot_suppress_the_billable_receipt(
     """
     import api.server as server
 
+    # This test proves a quality-stream fault still BANKS the fee, asserting a positive
+    # per-row fee. That 25% fee is parked by default under credit-based pricing, so opt
+    # into the legacy switch to keep exercising the "money is banked" guarantee.
+    monkeypatch.setenv("BREVITAS_SAVINGS_FEE_ENABLED", "true")
     store = UsageStore(str(tmp_path / f"stream-{fault}.db"))
     raw_key = "bvt_stream_fault"
     store.create_key(hash_key(raw_key), "stream", owner_id="customer-stream")

@@ -104,7 +104,7 @@ section[id], [data-doc-section] { scroll-margin-top: 100px; }
   }
   .docs-toc-link.active {
     border-color: var(--bronze) !important;
-    background: rgba(142, 166, 255, 0.08);
+    background: rgba(46, 46, 238, 0.08);
   }
   .docs-main { width: 100%; max-width: none !important; }
 

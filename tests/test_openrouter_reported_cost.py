@@ -133,6 +133,9 @@ def test_live_openrouter_call_is_priced_with_real_spend_no_fee(tmp_path, monkeyp
 
 
 def test_openrouter_exact_cache_replay_bills_the_reported_cost(tmp_path, monkeypatch):
+    # Exercises the legacy percentage-of-savings fee, which is parked by default now
+    # that pricing is credit-based; opt in so this covers the fee math behind the flag.
+    monkeypatch.setenv("BREVITAS_SAVINGS_FEE_ENABLED", "true")
     server = _store(tmp_path, monkeypatch, "bvt_or_replay")
     result = server._record_usage_report(
         hash_key("bvt_or_replay"),

@@ -175,30 +175,6 @@ function BootScreen({ step, label }) {
   )
 }
 
-function MoonIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-    </svg>
-  )
-}
-
-function SunIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="5"/>
-      <line x1="12" y1="1" x2="12" y2="3"/>
-      <line x1="12" y1="21" x2="12" y2="23"/>
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-      <line x1="1" y1="12" x2="3" y2="12"/>
-      <line x1="21" y1="12" x2="23" y2="12"/>
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-    </svg>
-  )
-}
-
 // Until company context resolves we cannot know whether the personal or enterprise
 // tab set applies, and rendering a guess would flash wrong labels and reflow when it
 // swapped. Unlabeled pills sized roughly to the personal set keep the nav's footprint
@@ -216,7 +192,7 @@ function WorkspaceStart({ enterprise, onNavigate }) {
     ? [
         ['1', 'Connect an admin tool', 'Authorize one revocable device key and prove a request reaches BVX.'],
         ['2', 'Invite the right people', 'Give members, company admins, and billing admins only the access they need.'],
-        ['3', 'Create machine identities', 'Use separate scoped, expiring service keys for production—not a human session key.'],
+        ['3', 'Create machine identities', 'Use separate scoped, expiring service keys for production, not a human session key.'],
       ]
     : [
         ['1', 'Connect once', 'The guided installer detects your local AI tools and configures the request path.'],
@@ -272,8 +248,7 @@ function ConnectionPage({ enterprise }) {
   return (
     <div className="space-y-6">
       <header className="max-w-3xl">
-        <p className="annotation uppercase tracking-widest">{enterprise ? 'Enterprise device connection' : 'Personal quick start'}</p>
-        <h1 className="mt-2 font-serif text-4xl text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
+        <h1 className="font-sans text-4xl font-semibold text-brand-navy dark:text-brand-dark-navy sm:text-5xl">
           {enterprise ? 'Connect an admin tool safely.' : 'Connect your first tool in one command.'}
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-brand-muted dark:text-brand-dark-navy-mid sm:text-base">
@@ -287,7 +262,7 @@ function ConnectionPage({ enterprise }) {
   )
 }
 
-function DashboardPreview({ darkMode, onToggleDark }) {
+function DashboardPreview({ darkMode }) {
   const billingPreview = PREVIEW_SECTION === 'billing'
   const onboardingType = PREVIEW_SECTION === 'onboarding-personal'
     ? WORKSPACE_TYPE.PERSONAL
@@ -338,14 +313,6 @@ function DashboardPreview({ darkMode, onToggleDark }) {
               <span className="annotation flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-brand-teal" /> local preview
               </span>
-              <button
-                onClick={onToggleDark}
-                className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
-                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-                aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              >
-                {darkMode ? <SunIcon /> : <MoonIcon />}
-              </button>
             </div>
           </div>
           <nav className="flex items-center gap-2 overflow-x-auto border-t border-brand-border px-2 py-2.5 dark:border-brand-dark-border sm:px-5 sm:py-3" aria-label="Dashboard preview section" aria-busy={loadingPreview || undefined}>
@@ -391,7 +358,7 @@ export default function App() {
   const [recoveringPassword, setRecoveringPassword] = useState(false)
   const [activeTab, setActiveTab] = useState('Overview')
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [darkMode, setDarkMode]   = useState(() => localStorage.getItem('bvt_dark') === 'true')
+  const darkMode = false
   const [isAdmin, setIsAdmin]     = useState(false)
   const [refreshTick, setRefreshTick] = useState(0)
   const [deviceCode, setDeviceCode] = useState(pendingDeviceCode)
@@ -406,15 +373,12 @@ export default function App() {
   // the query marker, so the answer has to be captured before either happens.
   const verificationReturn = useRef(isEmailVerificationReturn(window.location.search))
 
-  const toggleDark = () => {
-    const next = !darkMode
-    setDarkMode(next)
-    localStorage.setItem('bvt_dark', String(next))
-  }
-
+  // Dark mode was removed. Force the light theme and clear any stored preference so
+  // sessions that previously enabled it revert cleanly on next load.
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', darkMode)
-  }, [darkMode])
+    document.documentElement.classList.remove('dark')
+    localStorage.removeItem('bvt_dark')
+  }, [])
 
   useEffect(() => {
     if (session && loginAudience) history.replaceState(null, '', '/dashboard')
@@ -727,7 +691,7 @@ export default function App() {
   }, [activeTab, visibleTabs])
 
   if (PREVIEW_MODE) {
-    return <DashboardPreview darkMode={darkMode} onToggleDark={toggleDark} />
+    return <DashboardPreview darkMode={darkMode} />
   }
 
   if (supabaseMisconfigured) {
@@ -748,12 +712,12 @@ export default function App() {
   }
 
   if (recoveringPassword) {
-    return <Auth darkMode={darkMode} onToggleDark={toggleDark} initialMode="recovery"
+    return <Auth initialMode="recovery"
                  onPasswordUpdated={() => setRecoveringPassword(false)} />
   }
 
   if (!session) {
-    return <Auth darkMode={darkMode} onToggleDark={toggleDark} initialMode={authModeForPath(window.location.pathname)} loginAudience={loginAudience} />
+    return <Auth initialMode={authModeForPath(window.location.pathname)} loginAudience={loginAudience} />
   }
 
   if (pendingCompanyInvitation) {
@@ -803,9 +767,6 @@ export default function App() {
             <img src="/assets/b-logo-dark-tight.png" alt="Brevitas" className="h-8 w-auto hidden dark:block" />
           </a>
           <div className="flex items-center gap-2">
-            <button onClick={toggleDark} className="w-10 h-10 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted" aria-label="Toggle dark mode">
-              {darkMode ? <SunIcon /> : <MoonIcon />}
-            </button>
             <button onClick={signOut} className="min-h-10 px-2 text-[11px] text-brand-muted hover:text-brand-navy dark:text-brand-dark-muted dark:hover:text-brand-dark-navy">
               Sign out
             </button>
@@ -874,8 +835,6 @@ export default function App() {
         tabs={visibleTabs}
         activeTab={renderTab}
         onSelect={tab => { setActiveTab(tab); setSidebarOpen(false) }}
-        darkMode={darkMode}
-        onToggleDark={toggleDark}
         email={session.user.email}
         companyContext={companyContext}
         onSwitchCompany={switchCompany}

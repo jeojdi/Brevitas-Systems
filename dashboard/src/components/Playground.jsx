@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { streamPlaygroundChat, fetchProviders } from '../lib/api.js'
 import { capture } from '../lib/analytics.js'
 import { UNAVAILABLE } from '../lib/spend.js'
+import Select from './Select.jsx'
 
 // Free zero-config default served by the Brevitas server (no key needed).
 const FREE_LABEL = 'hosted gemma2-9b-it · no key needed'
@@ -277,25 +278,26 @@ export default function Playground({ apiKey }) {
             <div className="grid sm:grid-cols-2 gap-3">
               <div>
                 <p className="annotation mb-1.5">// provider</p>
-                <select
+                <Select
                   value={byokProvider}
-                  onChange={e => selectByokProvider(e.target.value)}
-                  className="w-full bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-3 py-2.5 text-sm text-brand-navy dark:text-brand-dark-navy focus:outline-none focus:border-brand-blue font-mono"
-                >
-                  <option value="">select…</option>
-                  {byokProviders.map(id => <option key={id} value={id}>{providerLabel(id)}</option>)}
-                </select>
+                  onChange={selectByokProvider}
+                  ariaLabel="Provider"
+                  placeholder="select…"
+                  className="w-full bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-3 py-2.5 text-sm text-brand-navy dark:text-brand-dark-navy font-mono"
+                  options={byokProviders.map(id => ({ value: id, label: providerLabel(id) }))}
+                />
               </div>
               <div>
                 <p className="annotation mb-1.5">// model</p>
-                <select
+                <Select
                   value={byokModel}
-                  onChange={e => setByokModel(e.target.value)}
+                  onChange={setByokModel}
                   disabled={!byokProvider}
-                  className="w-full bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-3 py-2.5 text-sm text-brand-navy dark:text-brand-dark-navy focus:outline-none focus:border-brand-blue font-mono disabled:opacity-40"
-                >
-                  {byokModels.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
+                  ariaLabel="Model"
+                  placeholder="select…"
+                  className="w-full bg-brand-bg dark:bg-brand-dark-bg border border-brand-border dark:border-brand-dark-border rounded-xl px-3 py-2.5 text-sm text-brand-navy dark:text-brand-dark-navy font-mono disabled:opacity-40"
+                  options={byokModels.map(m => ({ value: m, label: m }))}
+                />
               </div>
             </div>
             <div>

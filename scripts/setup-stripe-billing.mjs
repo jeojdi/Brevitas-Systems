@@ -1,5 +1,17 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { config } from 'dotenv'
 import Stripe from 'stripe'
+
+// Node does not auto-load .env (only Next.js does), so read it here like the other
+// scripts (scripts/build-dashboard.mjs) — .env.local wins over .env.
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+for (const name of ['.env.local', '.env']) {
+  const path = resolve(root, name)
+  if (existsSync(path)) config({ path, quiet: true })
+}
 
 const secretKey = process.env.STRIPE_SECRET_KEY || ''
 const allowLive = process.argv.includes('--live')
@@ -87,6 +99,42 @@ await stripe.prices.update(price.id, {
   nickname: '25% verified savings (micro-USD units)',
 })
 
+// ── Credit packs (B9): one-time top-ups for credit-based pricing ──
+// Each price's metadata.brevitas_credit_micro is the credits it grants (micro-USD, 1
+// unit = $0.000001). These packs grant credits 1:1 with their dollar price; adjust the
+// list or the ratio to offer bonus credits.
+const creditPackDollars = [10, 50, 100]
+const existingProducts = await stripe.products.list({ limit: 100 })
+let creditProduct = existingProducts.data.find(
+  item => item.metadata?.brevitas_billing_model === 'credits',
+)
+if (!creditProduct) {
+  creditProduct = await stripe.products.create({
+    name: 'Brevitas credits',
+    description: 'Prepaid credits drawn down per gateway request.',
+    metadata: { brevitas_billing_model: 'credits' },
+  }, { idempotencyKey: 'brevitas-credits-product' })
+}
+const creditPackPriceIds = []
+for (const dollars of creditPackDollars) {
+  const lookup = `brevitas_credit_pack_${dollars}`
+  const existing = await stripe.prices.list({ lookup_keys: [lookup], active: true, limit: 1 })
+  let packPrice = existing.data[0]
+  if (!packPrice) {
+    packPrice = await stripe.prices.create({
+      product: creditProduct.id,
+      currency: 'usd',
+      unit_amount: dollars * 100,
+      lookup_key: lookup,
+      nickname: `$${dollars} credit pack`,
+      tax_behavior: 'exclusive',
+      metadata: { brevitas_credit_micro: String(dollars * 1_000_000) },
+    }, { idempotencyKey: `brevitas-credit-pack-${dollars}` })
+  }
+  creditPackPriceIds.push(packPrice.id)
+}
+
 console.log(`STRIPE_METER_EVENT_NAME=${eventName}`)
 console.log(`STRIPE_PRICE_ID=${price.id}`)
+console.log(`STRIPE_CREDIT_PACK_PRICE_IDS=${creditPackPriceIds.join(',')}`)
 console.log('Next: create a webhook for /api/billing/webhook, configure the customer portal, and set the remaining server secrets.')

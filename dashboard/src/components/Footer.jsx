@@ -22,7 +22,7 @@ export default function Footer() {
       {/* Oversized brand watermark, bottom-anchored and clipped by the footer. */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 bottom-[-0.18em] select-none whitespace-nowrap text-center font-serif text-[26vw] italic leading-none text-brand-navy/[0.035] dark:text-brand-dark-navy/[0.05]"
+        className="pointer-events-none absolute inset-x-0 bottom-[-0.18em] select-none whitespace-nowrap text-center font-sans text-[26vw] font-bold not-italic leading-none tracking-tighter text-brand-navy/[0.035] dark:text-brand-dark-navy/[0.05]"
       >
         brevitas
       </div>

@@ -42,8 +42,6 @@ const AUDIENCE_CONTENT = {
 }
 
 export default function Auth({
-  darkMode,
-  onToggleDark,
   initialMode = 'login',
   loginAudience = '',
   onPasswordUpdated,
@@ -194,23 +192,12 @@ export default function Auth({
 
   if (mode === 'login' && !audienceContent && !notice && !confirmationEmail) {
     return (
-      <LoginAudienceChoice darkMode={darkMode} onToggleDark={onToggleDark} />
+      <LoginAudienceChoice />
     )
   }
 
   return (
     <div className="min-h-screen bg-brand-bg dark:bg-brand-dark-bg flex flex-col items-center justify-center px-4 py-8 sm:py-12">
-      {/* Dark mode toggle */}
-      <button
-        onClick={onToggleDark}
-        className="fixed top-3 right-3 sm:top-5 sm:right-5 w-11 h-11 inline-flex items-center justify-center text-brand-muted dark:text-brand-dark-muted hover:text-brand-navy dark:hover:text-brand-dark-navy transition-colors"
-        aria-label="Toggle dark mode"
-      >
-        {darkMode
-          ? <SunIcon />
-          : <MoonIcon />}
-      </button>
-
       {/* Card */}
       <div className="w-full max-w-sm">
         {/* Logo */}
@@ -394,7 +381,7 @@ export default function Auth({
   )
 }
 
-function LoginAudienceChoice({ darkMode, onToggleDark }) {
+function LoginAudienceChoice() {
   const choices = [
     {
       audience: LOGIN_AUDIENCE.PERSONAL,
@@ -416,13 +403,6 @@ function LoginAudienceChoice({ darkMode, onToggleDark }) {
 
   return (
     <div className="min-h-screen bg-brand-bg px-4 py-8 dark:bg-brand-dark-bg sm:py-12">
-      <button
-        onClick={onToggleDark}
-        className="fixed right-3 top-3 inline-flex h-11 w-11 items-center justify-center text-brand-muted transition-colors hover:text-brand-navy dark:text-brand-dark-muted dark:hover:text-brand-dark-navy sm:right-5 sm:top-5"
-        aria-label="Toggle dark mode"
-      >
-        {darkMode ? <SunIcon /> : <MoonIcon />}
-      </button>
 
       <main className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-4xl flex-col justify-center sm:min-h-[calc(100vh-6rem)]">
         <div className="mb-8 flex justify-center sm:mb-10">
@@ -470,26 +450,3 @@ function LoginAudienceChoice({ darkMode, onToggleDark }) {
   )
 }
 
-function MoonIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-    </svg>
-  )
-}
-
-function SunIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="5"/>
-      <line x1="12" y1="1" x2="12" y2="3"/>
-      <line x1="12" y1="21" x2="12" y2="23"/>
-      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-      <line x1="1" y1="12" x2="3" y2="12"/>
-      <line x1="21" y1="12" x2="23" y2="12"/>
-      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-    </svg>
-  )
-}
