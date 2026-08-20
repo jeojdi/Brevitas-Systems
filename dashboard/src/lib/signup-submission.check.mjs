@@ -7,6 +7,7 @@ import {
   SIGNUP_CONFIRMATION_NOTICE,
   SIGNUP_TRACKER_MAX_ENTRIES,
   createSignupTracker,
+  resendConfirmationNotice,
   signupFailureReason,
 } from './signup-submission.js'
 import { EMAIL_DELIVERY_FAILED_MESSAGE } from './supabase.js'
@@ -39,6 +40,26 @@ test('duplicate-signup copy steers to reset or resend and never claims a saved p
   // Claiming the second password was stored is the exact lie that locked the user out.
   assert.doesNotMatch(DUPLICATE_SIGNUP_NOTICE, /password (was|has been) (saved|updated|changed)/i)
   assert.doesNotMatch(DUPLICATE_SIGNUP_NOTICE, /new password (was|has been) (saved|stored)/i)
+})
+
+test('post-resend copy never promises mail that GoTrue may have silently withheld', () => {
+  const copy = resendConfirmationNotice('ada@example.com')
+  assert.match(copy, /ada@example\.com/)
+  assert.match(copy, /minute or two/i)
+  assert.match(copy, /spam/i)
+  assert.match(copy, /"Forgot password"/)
+  assert.equal(sentenceCount(copy), 3)
+  assert.doesNotMatch(copy, /—/)
+
+  // GoTrue answers 200 for a confirmed address without sending anything, so an
+  // unconditional "sent" is the exact lie that left a user refreshing an inbox
+  // that was never going to receive mail.
+  assert.doesNotMatch(copy, /sent again|has been sent|we sent|we've sent/i)
+
+  // Both account states get a verdict: mail on the way, or no mail coming.
+  assert.match(copy, /^If /)
+  assert.match(copy, /no email will arrive/i)
+  assert.match(copy, /already active/i)
 })
 
 test('a fresh tracker reports nothing attempted', () => {

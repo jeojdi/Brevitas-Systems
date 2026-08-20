@@ -16,6 +16,7 @@ import {
 import {
   createSignupTracker,
   DUPLICATE_SIGNUP_NOTICE,
+  resendConfirmationNotice,
   signupFailureReason,
   SIGNUP_CONFIRMATION_NOTICE,
 } from '../lib/signup-submission.js'
@@ -168,13 +169,17 @@ export default function Auth({
     }
   }
 
-  /** Send the confirmation mail again for an account that was never activated. */
+  /**
+   * Ask GoTrue to send the confirmation mail again. The 200 that comes back is
+   * a no-op for an already-confirmed address (enumeration protection), so the
+   * notice must not promise mail that may never exist.
+   */
   async function handleResend() {
     setResending(true)
     reset()
     try {
       await resendSignupConfirmation(confirmationEmail, confirmationRedirect)
-      setNotice(`Confirmation email sent again to ${confirmationEmail}. Check your spam folder if it does not arrive.`)
+      setNotice(resendConfirmationNotice(confirmationEmail))
     } catch (err) {
       setError(authErrorMessage(err))
     } finally {

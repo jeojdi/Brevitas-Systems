@@ -25,6 +25,25 @@ export const DUPLICATE_SIGNUP_NOTICE =
   + 'Click the confirmation link in your inbox, resend that email if you cannot find it, or use '
   + '"Forgot password" to set a password you can sign in with.'
 
+/**
+ * What actually happens after a resend request, for either account state.
+ *
+ * GoTrue's resend endpoint answers 200 with an empty body whether it sent mail
+ * or silently did nothing because the address is already confirmed; the
+ * ambiguity is deliberate enumeration protection, so the client cannot know
+ * which happened. Copy that flatly claims "sent again" therefore strands the
+ * already-confirmed user watching an inbox that will stay empty. This states
+ * both outcomes and gives the exit for each.
+ *
+ * @param {string} email  the normalized address the resend was requested for
+ * @returns {string}
+ */
+export const resendConfirmationNotice = email =>
+  `If ${email} still needs to be activated, a fresh confirmation link is on its way. `
+  + 'Delivery can take a minute or two, so check your spam folder. '
+  + 'If you already confirmed this address, no email will arrive because the account is '
+  + 'already active, so sign in with your password or use "Forgot password" to set a new one.'
+
 export const SIGNUP_TRACKER_MAX_ENTRIES = 64
 
 /**
