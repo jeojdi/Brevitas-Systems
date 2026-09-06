@@ -14,11 +14,20 @@ import os
 import re
 from typing import Dict
 
-from .prompt_structure import _ENTITY, _FENCE, _HIGH_VALUE, _IDENT, _NUM, _TASK_VERB
+from .prompt_structure import _CODE, _ENTITY, _FENCE, _HIGH_VALUE, _IDENT, _NUM, _TASK_VERB
 
-# Classes that must survive for a compression to be acceptable. Style/entities can drift a little
-# (paraphrase), but a dropped number, constraint, format directive, or the task itself is a fail.
-_CRITICAL = ("numbers", "constraints", "formatting", "task")
+# Classes that must survive for a compression to be acceptable. Proper nouns ("entities") can
+# drift a little under paraphrase, but a dropped number, constraint, format directive, task, or
+# STRUCTURED IDENTIFIER is a fail.
+#
+# `identifiers` is split out from `entities` deliberately. It was previously folded in, and
+# because `entities` is non-critical, a compressor could destroy an order id or a SKU and still
+# be certified. Worse, no class caught the destruction at all: re-spacing `ORD-99312-B` into
+# `ORD - 99312 - B` still satisfies _ENTITY (matches "ORD") and _NUM (matches "99312"), so the
+# gate scored numbers=1.0 / overall_ok=True on output that had materially lost the identifier.
+# A gate that certifies data loss is worse than no gate, so identifiers are now critical and
+# matched whole.
+_CRITICAL = ("numbers", "constraints", "formatting", "task", "identifiers")
 
 
 def _ratio(originals, compressed_text: str) -> float:
@@ -33,7 +42,8 @@ def _ratio(originals, compressed_text: str) -> float:
 def information_density(original: str, compressed: str, min_retain: float | None = None) -> Dict:
     """Retention ratios per information class + an overall accept flag.
 
-    Returns {numbers, entities, constraints, formatting, examples, task, overall_ok, min_retain}.
+    Returns {numbers, entities, identifiers, constraints, formatting, examples, task,
+    overall_ok, min_retain}.
     `overall_ok` is True only when every CRITICAL class is retained at >= min_retain
     (default 0.99, override via BREVITAS_INFO_DENSITY_MIN).
     """
@@ -44,7 +54,9 @@ def information_density(original: str, compressed: str, min_retain: float | None
             min_retain = 0.99
 
     numbers = _ratio(_NUM.findall(original), compressed)
-    entities = _ratio(_ENTITY.findall(original) + _IDENT.findall(original), compressed)
+    entities = _ratio(_ENTITY.findall(original), compressed)
+    # Structured symbols must survive verbatim: snake_case identifiers and hyphenated codes.
+    identifiers = _ratio(_IDENT.findall(original) + _CODE.findall(original), compressed)
     constraints = _ratio(_HIGH_VALUE.findall(original), compressed)
     # formatting = the exact directive phrases (json/markdown/snake_case/…) — same source as
     # constraints here, kept as its own axis so callers can weight it independently.
@@ -53,6 +65,7 @@ def information_density(original: str, compressed: str, min_retain: float | None
     task = 1.0 if not _TASK_VERB.search(original) else (1.0 if _TASK_VERB.search(compressed) else 0.0)
 
     scores = {"numbers": round(numbers, 4), "entities": round(entities, 4),
+              "identifiers": round(identifiers, 4),
               "constraints": round(constraints, 4), "formatting": round(formatting, 4),
               "examples": round(examples, 4), "task": round(task, 4)}
     overall_ok = all(scores[c] >= min_retain for c in _CRITICAL)

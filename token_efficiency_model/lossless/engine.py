@@ -283,7 +283,7 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
                           if _msg_text(block))
             query = _msg_text(final_content[-1])
 
-    decision = router.decide(session_id, stable, query)
+    decision = router.decide(session_id, stable, query, tenant_key=tenant_key)
 
     strategy = decision.strategy
     if strategy == "retrieve" and not structure_rewrite_safe:
@@ -425,10 +425,15 @@ def optimize_request(body: dict, provider: str, router: BrevitasRouter,
             meta["cache_breakpoints"] = 0
             meta["cached_prefix_tokens"] = 0
         else:
-            if gap > 3600.0:
-                allowed, roi_reason = False, "reuse_outside_cache_ttl"
-            else:
-                allowed, roi_reason = router.cache_write_allowed(session_id, ttl)
+            # No gap-based refusal here. `gap` is an EWMA over a session bucket that mixes
+            # every prefix in it, so a bursty caller (20s intra-burst, 6h between bursts)
+            # averages past 3600 and was denied a write on the dense burst that followed.
+            # Measured on scripts/warm_replay_sim.py --synthetic company100-6mo: the refusal
+            # fired on 65,157 of 65,298 denials and cost $266.49 over six months (+8.8%).
+            # cache_write_allowed() is the real guard — it already withholds the write
+            # premium until repetition evidence exists and cools down after paid writes
+            # that produced no reads, so the extra gate was redundant as well as wrong.
+            allowed, roi_reason = router.cache_write_allowed(session_id, ttl)
             meta["cache_roi"] = roi_reason
             if allowed:
                 plan = apply_anthropic_cache(body, ttl=ttl)
@@ -473,9 +478,15 @@ def record_usage(usage: dict, provider: str, router: BrevitasRouter, session_id:
     creation = usage.get("cache_creation") or {}
     if not isinstance(creation, dict):
         creation = {}
+    # Provider-agnostic write count. `cache_creation_input_tokens` is Anthropic-only, so
+    # reading it directly told the router that OpenAI writes were free — true before
+    # GPT-5.6, false since (5.6 bills cache writes at 1.25x), which biased every ROI
+    # decision on that model toward writing. savings_from_usage already parses each
+    # provider's field into detail["cache_write"]; for Anthropic it is the identical value.
+    _detail = s.detail or {}
     router.observe_usage(
         session_id, prompt, s.cached_tokens,
-        cache_write_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        cache_write_tokens=int(_detail.get("cache_write", 0) or 0),
         cache_write_5m_tokens=int(creation.get("ephemeral_5m_input_tokens", 0) or 0),
         cache_write_1h_tokens=int(creation.get("ephemeral_1h_input_tokens", 0) or 0),
     )

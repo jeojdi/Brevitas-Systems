@@ -133,7 +133,9 @@ def test_entities_survive_compression_verbatim(local_llmlingua_remote, label, pr
 def test_hyphenated_entities_are_split_by_the_model(local_llmlingua_remote):
     """Root cause, pinned separately so it is diagnosable without the parametrized suite.
 
-    The gate reports full retention while the entity is materially destroyed.
+    The model re-spaces hyphenated identifiers. That is a model behaviour we do not control,
+    so it is asserted as an observation. What we DO control is whether the gate notices:
+    `identifiers` is now a CRITICAL class matched whole, so this compression is rejected.
     """
     out = optimize_message_text(IDENTIFIER_PROMPT)
     if out["reason"] != "compressed":
@@ -142,14 +144,20 @@ def test_hyphenated_entities_are_split_by_the_model(local_llmlingua_remote):
     text = out["text"]
     split_forms = ["ORD - 99312 - B", "SKU - 77410"]
     observed = [s for s in split_forms if s in text]
-    assert observed, f"expected re-spaced identifiers, got: {text[:400]!r}"
+    if not observed:
+        # The compressor left the identifiers intact this run. Re-spacing is model behaviour
+        # we neither control nor require; with nothing destroyed there is nothing for the
+        # gate to catch, so this case proves nothing either way.
+        pytest.skip(f"identifiers survived intact; nothing to detect: {text[:200]!r}")
 
-    # ...and the gate still calls this a perfect compression.
     density = information_density(IDENTIFIER_PROMPT, text)
-    assert density["overall_ok"] is True
-    assert density["numbers"] == 1.0, (
-        "numbers scored < 1.0 -- the substring loophole may have been closed; "
-        "re-check whether this xfail suite can be tightened")
+    # `numbers` still scores 1.0 -- "99312" survives the re-spacing. That is precisely why
+    # numbers alone could never catch this, and why `identifiers` had to exist.
+    assert density["numbers"] == 1.0
+    assert density["identifiers"] < 1.0, (
+        "the destroyed identifier was not detected -- _CODE no longer matches these forms")
+    assert density["overall_ok"] is False, (
+        "the gate certified a compression that destroyed an order id")
 
 
 def test_task_and_constraints_stay_byte_identical(local_llmlingua_remote):
@@ -160,20 +168,38 @@ def test_task_and_constraints_stay_byte_identical(local_llmlingua_remote):
         assert "Constraints: three bullets." in out["text"]
 
 
-def test_entities_are_not_a_critical_class():
-    """Pins the actual contract: entity retention is reported but never enforced.
+def test_proper_nouns_are_not_a_critical_class():
+    """Pins the contract: PROPER NOUNS may drift under paraphrase and are reported only.
 
-    If this fails, `_CRITICAL` was widened to include entities — good news, but the
-    survival tests above must then be tightened from measurement to assertion.
+    Structured identifiers are a separate, critical class -- see
+    `test_structured_identifiers_are_a_critical_class` below. Keeping proper nouns advisory
+    is deliberate: a paraphrase that drops a person's name is a quality question, whereas a
+    dropped order id is a correctness failure the customer can be billed for.
     """
     original = "Priya Raghavan approved the Northwind renewal within 30 days as required."
-    # entities gone, numbers + constraint kept
+    # proper nouns gone, numbers + constraint kept
     compressed = "approved the renewal within 30 days as required."
     density = information_density(original, compressed)
     assert density["entities"] < 1.0
     assert density["numbers"] == 1.0
-    assert density["overall_ok"] is True, (
-        "entities now affect overall_ok — tighten the survival tests above")
+    assert density["identifiers"] == 1.0, "no structured identifiers in this fixture"
+    assert density["overall_ok"] is True
+
+
+def test_structured_identifiers_are_a_critical_class():
+    """A dropped or re-spaced order id / SKU / model name must fail the gate."""
+    original = "Refund ORD-99312-B for SKU-77410 using gpt-5.6 within 30 days."
+    respaced = "Refund ORD - 99312 - B for SKU - 77410 using gpt - 5.6 within 30 days."
+    density = information_density(original, respaced)
+    assert density["identifiers"] < 1.0
+    assert density["overall_ok"] is False
+
+    # Hyphenated PROSE is not an identifier and must not trip the gate.
+    prose = information_density(
+        "Use a well-known state-of-the-art approach within 30 days.",
+        "Use a modern approach within 30 days.")
+    assert prose["identifiers"] == 1.0
+    assert prose["overall_ok"] is True
 
 
 def test_force_token_budget_is_capped_below_entity_count():

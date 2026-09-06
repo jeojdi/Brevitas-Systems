@@ -99,6 +99,10 @@ class _SessionState:
     cache_net_units: float = 0.0
     cache_negative_writes: int = 0
     cache_blocked_until: float = 0.0
+    # Set by _observe when THIS call's leading prefix was already seen on a DIFFERENT
+    # session inside the cache TTL — i.e. the provider very likely holds it warm right
+    # now. Timestamp of that sighting; 0.0 = no such evidence.
+    warm_prefix_elsewhere_ts: float = 0.0
 
 
 class _BoundedSessionDict:
@@ -143,6 +147,8 @@ class BrevitasRouter:
     epsilon: float = 0.1
     explore_until_obs: int = 3
     explore_tie_ratio: float = 1.25
+    # cross-session prefix sightings retained for the warm-prefix ROI evidence below
+    max_prefix_sightings: int = 8192
     seed: Optional[int] = None
 
     _sessions: _BoundedSessionDict = field(default_factory=dict)
@@ -151,6 +157,11 @@ class BrevitasRouter:
         if isinstance(self._sessions, dict):
             self._sessions = _BoundedSessionDict(self.max_sessions)
         self._rng = random.Random(self.seed)
+        # tenant-scoped prefix sightings: key -> (last_seen_ts, session_id that saw it).
+        # Content never enters this map — only sha256 digests, the same privacy shape
+        # _SessionState.msg_hashes already uses. Keys are tenant-scoped so one tenant
+        # can never learn that another tenant sent identical content. Bounded LRU.
+        self._prefix_seen: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
 
     # ------------------------------------------------------------------ rates
     def _rates(self) -> Dict[str, float]:
@@ -219,6 +230,13 @@ class BrevitasRouter:
         A 5-minute write premium needs one later read to recover; a 1-hour write
         needs two. We require that many observed prefix repetitions before the
         first paid write and cool down a prefix after two writes without a read.
+
+        One correction to that rule: on Anthropic a `cache_control` marker is what
+        authorises a cache READ as well as a write, so withholding it on a prefix the
+        provider already holds warm does not save the 1.25x premium — it forfeits the
+        0.10x read and we pay full freight. Repetition evidence gathered on ANOTHER
+        session for the identical prefix is therefore sufficient on its own, and is
+        the case this gate used to get wrong on every session's first call.
         """
         st = self._sessions._sessions.get(session_id) if session_id in self._sessions else None
         if st is None:
@@ -230,8 +248,19 @@ class BrevitasRouter:
         write_premium = 1.0 if ttl == "1h" else max(0.0, self._rates()["cache_write"] - 1.0)
         hits_to_break_even = max(1, math.ceil(write_premium / read_gain))
         if st.repeat_observations < hits_to_break_even:
+            # The cooldown above still wins: a prefix that repeatedly paid writes
+            # without producing reads stays blocked no matter who else has seen it.
+            warm_age = now - st.warm_prefix_elsewhere_ts
+            if st.warm_prefix_elsewhere_ts > 0.0 and warm_age <= self._warm_prefix_window(ttl):
+                return True, "warm_prefix_observed"
             return False, f"reuse_unproven:{st.repeat_observations}/{hits_to_break_even}"
         return True, "break_even_supported"
+
+    def _warm_prefix_window(self, ttl: str) -> float:
+        """How recently another session must have sent this prefix for it to still be
+        plausibly warm. Anthropic refreshes a 5-minute entry on every use, so the
+        provider's own tier length is the right bound and the 1h tier extends it."""
+        return 3600.0 if ttl == "1h" else self._ttl()
 
     def observe_retrieval(self, session_id: str, baseline_tokens: int,
                           optimized_tokens: int) -> None:
@@ -243,8 +272,55 @@ class BrevitasRouter:
         st = self._sessions.setdefault(session_id, _SessionState())
         st.keep_frac = frac if st.keep_frac < 0 else 0.5 * st.keep_frac + 0.5 * frac
 
+    # -------------------------------------------------------- prefix sightings
+    def _note_prefix_sighting(self, session_id: str, tenant_key: str,
+                              hashes: Sequence[str], now: float) -> float:
+        """Record this call's leading prefix under a tenant-scoped digest and report
+        when a DIFFERENT session already sent the same prefix inside the cache TTL.
+
+        Why this exists: the provider's cache is keyed by prefix CONTENT and is shared
+        across every session in the workspace, but our reuse evidence was keyed by
+        session. A session's first call therefore looked like "never repeated" even
+        when the identical prefix was written minutes ago by another agent — and the
+        ROI gate then withheld cache_control, which on Anthropic forfeits the 0.10x
+        READ as well as the write. Measured cost of that mistake: -30.84% (E1,
+        docs/DOES_AI_NATIVE_REDIS_WORK.md). Returns the sighting timestamp, else 0.0.
+
+        KNOWN LIMIT: the negative-ROI cooldown that backstops this gate lives on
+        _SessionState, so it accumulates per session and NOT per prefix. A fleet of
+        one-shot sessions all sending the same prefix therefore cannot teach each other
+        that the prefix keeps paying writes without earning reads. That needs the
+        provider to evict inside its own TTL despite recent use, which the 5-minute
+        refresh-on-use rule makes unlikely — but it is unmeasured, and a per-prefix
+        cooldown is the fix if `cache_roi=warm_prefix_observed` ever correlates with
+        cache_creation_input_tokens in production receipts.
+        """
+        if not hashes:
+            return 0.0
+        window = max(self._ttl(), 3600.0)   # widest tier we might pick this call
+        seen_ts = 0.0
+        # Walk cumulative prefixes head-first: the provider matches the longest common
+        # prefix, so a shared head is evidence even when later blocks diverge. Bounded
+        # to the first 4 blocks — Anthropic caps at 4 breakpoints, so deeper chaining
+        # buys no additional decision power.
+        chain = hashlib.sha256()
+        for h in list(hashes)[:4]:
+            chain.update(h.encode("ascii"))
+            key = f"{tenant_key}\x00{chain.hexdigest()}"
+            prior = self._prefix_seen.get(key)
+            if prior is not None:
+                prior_ts, prior_session = prior
+                if prior_session != session_id and (now - prior_ts) <= window:
+                    seen_ts = max(seen_ts, prior_ts)
+                self._prefix_seen.move_to_end(key)
+            elif len(self._prefix_seen) >= self.max_prefix_sightings:
+                self._prefix_seen.popitem(last=False)
+            self._prefix_seen[key] = (now, session_id)
+        return seen_ts
+
     # ------------------------------------------------------------------ LCP
-    def _observe(self, session_id: str, stable_context: Sequence[str]) -> float:
+    def _observe(self, session_id: str, stable_context: Sequence[str],
+                 tenant_key: str = "") -> float:
         """Per-message longest-common-prefix fraction vs the PREVIOUS call — the same
         matching rule provider prefix caches apply. Returns tokens-in-matched-prefix /
         total-stable-tokens (0..1). Also refreshes the stored fingerprint and applies
@@ -266,6 +342,8 @@ class BrevitasRouter:
         if st.last_ts > 0:
             gap = now - st.last_ts
             st.gap_ewma = gap if st.gap_ewma < 0 else 0.5 * st.gap_ewma + 0.5 * gap
+        st.warm_prefix_elsewhere_ts = self._note_prefix_sighting(
+            session_id, tenant_key, hashes, now)
         st.msg_hashes, st.msg_tokens, st.last_ts = hashes, tokens, now
         effective_lcp = 0.0 if expired else lcp_frac
         # Cross-run repetition is still evidence for the 1-hour cache tier even
@@ -279,11 +357,16 @@ class BrevitasRouter:
 
     # ------------------------------------------------------------------ decide
     def decide(self, session_id: str, stable_context: Sequence[str],
-               volatile_query: str = "") -> RouteDecision:
-        """Choose the cheapest strategy for this request in cache-adjusted cost units."""
+               volatile_query: str = "", tenant_key: str = "") -> RouteDecision:
+        """Choose the cheapest strategy for this request in cache-adjusted cost units.
+
+        `tenant_key` scopes the cross-session prefix sightings that back the warm-prefix
+        ROI evidence; it never affects the routing arithmetic. Omitting it is safe — the
+        sightings then share one anonymous scope, which is correct for single-tenant use.
+        """
         ctx_tokens = sum(count_tokens(c) for c in stable_context)
         q_tokens = count_tokens(volatile_query)
-        lcp_frac = self._observe(session_id, stable_context)
+        lcp_frac = self._observe(session_id, stable_context, tenant_key)
         rates = self._rates()
         read, write = rates["cache_read"], rates["cache_write"]
 

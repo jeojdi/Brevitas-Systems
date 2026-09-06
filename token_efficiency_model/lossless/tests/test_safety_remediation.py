@@ -55,7 +55,10 @@ def test_retrieval_prune_marks_unfaithful(monkeypatch):
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
 
     # Force the router to pick retrieval, and stub the selector to prune to one chunk.
-    def _decide(self, sid, stable, query):
+    # **_kw so this double keeps matching decide() as optional arguments are
+    # added to it (tenant_key was the last one); the stub is about the RETURNED
+    # strategy, not the call signature.
+    def _decide(self, sid, stable, query, **_kw):
         return types.SimpleNamespace(strategy="retrieve", reason="test")
     monkeypatch.setattr(BrevitasRouter, "decide", _decide)
 
@@ -78,7 +81,10 @@ def test_tripped_retrieval_lever_forces_full_context(monkeypatch):
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
     gate.trip_lever("retrieval")
 
-    def _decide(self, sid, stable, query):
+    # **_kw so this double keeps matching decide() as optional arguments are
+    # added to it (tenant_key was the last one); the stub is about the RETURNED
+    # strategy, not the call signature.
+    def _decide(self, sid, stable, query, **_kw):
         return types.SimpleNamespace(strategy="retrieve", reason="test")
     monkeypatch.setattr(BrevitasRouter, "decide", _decide)
 
@@ -134,7 +140,7 @@ def test_lever_trips_are_per_tenant(monkeypatch):
 
 def test_engine_threads_tenant_key_to_retrieval_gate(monkeypatch):
     monkeypatch.setenv("BREVITAS_RETRIEVAL_ENABLED", "1")
-    monkeypatch.setattr(BrevitasRouter, "decide", lambda self, sid, stable, query:
+    monkeypatch.setattr(BrevitasRouter, "decide", lambda self, sid, stable, query, **_kw:
                         types.SimpleNamespace(strategy="retrieve", reason="test"))
     calls = []
     monkeypatch.setattr(engine, "retrieval_select", lambda *args, **kwargs:

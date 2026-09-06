@@ -174,3 +174,77 @@ def test_cross_run_reuse_can_qualify_for_one_hour_tier():
     r._sessions["hourly"].last_ts -= 600
     r.decide("hourly", [A, B], "q3")
     assert r.cache_write_allowed("hourly", "1h") == (True, "break_even_supported")
+
+
+# --------------------------------------------------------------------- warm prefix
+# The provider's cache is keyed by prefix CONTENT and shared across every session in
+# the workspace, but reuse evidence used to be keyed by SESSION. So a session's first
+# call always scored "never repeated" — even for a prefix another agent had written
+# seconds earlier — and the gate withheld cache_control. On Anthropic that marker
+# authorises the 0.10x READ as well as the write, so withholding it forfeited the
+# discount instead of avoiding the premium: measured -30.84% (E1).
+
+def test_warm_prefix_from_another_session_licenses_the_first_call():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    # agent-1 pays the write for this prefix
+    r.decide("agent-1", [A, B], "q1", tenant_key="acme")
+    # agent-2 arrives cold on its OWN session but the identical prefix is warm
+    r.decide("agent-2", [A, B], "q1", tenant_key="acme")
+    assert r.cache_write_allowed("agent-2") == (True, "warm_prefix_observed")
+
+
+def test_a_genuinely_novel_prefix_is_still_refused_on_the_first_call():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("agent-1", [A, B], "q1", tenant_key="acme")
+    r.decide("agent-2", [C, D], "q1", tenant_key="acme")   # shares nothing
+    allowed, reason = r.cache_write_allowed("agent-2")
+    assert not allowed and reason.startswith("reuse_unproven")
+
+
+def test_warm_prefix_evidence_does_not_cross_tenants():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("agent-1", [A, B], "q1", tenant_key="acme")
+    r.decide("agent-2", [A, B], "q1", tenant_key="globex")  # same bytes, other tenant
+    allowed, reason = r.cache_write_allowed("agent-2")
+    assert not allowed and reason.startswith("reuse_unproven")
+
+
+def test_negative_roi_cooldown_still_outranks_warm_prefix_evidence():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("payer", [A, B], "q1", tenant_key="acme")
+    r.decide("loser", [A, B], "q1", tenant_key="acme")
+    r.observe_usage("loser", 2400, 0, cache_write_tokens=2000)
+    r.observe_usage("loser", 2400, 0, cache_write_tokens=2000)
+    assert r.cache_write_allowed("loser") == (False, "negative_roi_cooldown")
+
+
+def test_a_stale_sighting_no_longer_counts_as_warm():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("agent-1", [A, B], "q1", tenant_key="acme")
+    r.decide("agent-2", [A, B], "q1", tenant_key="acme")
+    # push the sighting outside the 5-minute tier window
+    r._sessions["agent-2"].warm_prefix_elsewhere_ts -= 601
+    allowed, reason = r.cache_write_allowed("agent-2")
+    assert not allowed and reason.startswith("reuse_unproven")
+    # the 1h tier tolerates an older sighting, but not an arbitrarily old one
+    r._sessions["agent-2"].warm_prefix_elsewhere_ts = time.time() - 1800
+    assert r.cache_write_allowed("agent-2", "1h") == (True, "warm_prefix_observed")
+    r._sessions["agent-2"].warm_prefix_elsewhere_ts = time.time() - 4000
+    assert r.cache_write_allowed("agent-2", "1h")[0] is False
+
+
+def test_a_sessions_own_earlier_sighting_is_not_warm_prefix_evidence():
+    """Same-session repetition is what repeat_observations already measures; counting
+    it twice here would let a single un-repeated call license its own write."""
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0)
+    r.decide("solo", [A, B], "q1", tenant_key="acme")
+    assert r._sessions["solo"].warm_prefix_elsewhere_ts == 0.0
+    allowed, reason = r.cache_write_allowed("solo")
+    assert not allowed and reason.startswith("reuse_unproven")
+
+
+def test_prefix_sightings_are_bounded():
+    r = BrevitasRouter(provider="anthropic", epsilon=0.0, max_prefix_sightings=16)
+    for i in range(50):
+        r.decide(f"s{i}", [_seg(f"uniq{i}"), B], "q", tenant_key="acme")
+    assert len(r._prefix_seen) <= 16

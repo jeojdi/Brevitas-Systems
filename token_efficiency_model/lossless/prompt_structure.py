@@ -65,6 +65,13 @@ _TASK_VERB = re.compile(
 _NUM = re.compile(r"\b\d[\d.,]*\b")
 _ENTITY = re.compile(r"\b[A-Z][A-Za-z0-9]+\b")
 _IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]+\b")  # snake_case-ish identifiers
+# Hyphenated structured codes: order ids, SKUs, part numbers, model names (ORD-99312-B,
+# SKU-77410, gpt-5.6). The digit lookahead is what separates them from hyphenated prose
+# ("state-of-the-art", "cache-control"), which may legitimately be paraphrased away.
+# Nothing else matches these as a WHOLE: _ENTITY stops at the hyphen (it sees only "ORD")
+# and _NUM sees only "99312", so a compressor that re-spaces the code to "ORD - 99312 - B"
+# destroys it while every retention class still scores 1.0.
+_CODE = re.compile(r"\b(?=[A-Za-z0-9-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b")
 _PARA = re.compile(r"\n\s*\n")
 
 # Prose shorter than this (in words) is treated as a directive/instruction, not bulk context —
