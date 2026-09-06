@@ -36,10 +36,17 @@ PYTEST_ARGS  ?=
 
 # Offline replay-simulator scenarios. Chosen because the four together run in
 # about a second and cover the distinct arrival shapes (periodic, bursty,
-# churning, multi-customer org). Deliberately NOT passing --policy: the
-# simulator's own default (never-warm,v1heuristic) is the before/after contrast,
-# and letting it own that list means a newly added policy shows up here for free.
+# churning, multi-customer org).
 SIM_SCENARIOS ?= cron,bursty,churned,company
+
+# The policy list is pinned here, NOT left to the simulator's default. The default
+# is never-warm,v1heuristic — a contrast that flatters warming, because never-warm
+# is not the incumbent. The engine already writes at the 1h tier, so ttl-1h-only is
+# what any warming policy has to beat, and measured 2026-08-11 it beats all of them
+# on every scenario with zero pings. A bench table that omits it reports a win where
+# there is a loss; see docs/INDEX_FIX_ROUND.md on gates that cannot detect a losing
+# policy. Keep ttl-1h-only in this list.
+SIM_POLICIES ?= never-warm,ttl-1h-only,v1heuristic,v1heuristic+ttl-1h,learned-index-fixed,learned-index-fixed+ttl-1h
 
 .DEFAULT_GOAL := help
 
@@ -56,6 +63,7 @@ help: ## Show this help
 	@echo 'Offline by default. Only the "Money" targets ever contact a provider.'
 	@echo 'Vars: PY=$(PY)'
 	@echo '      PYTEST_ARGS=... SIM_SCENARIOS=$(SIM_SCENARIOS)'
+	@echo '      SIM_POLICIES=$(SIM_POLICIES)'
 	@echo ''
 
 test: ## Run the pytest suite exactly as CI runs it
@@ -83,7 +91,7 @@ bench-sim: ## Warming replay simulator over the synthetic scenarios
 	@echo '==> warm replay simulator ($(SIM_SCENARIOS))'
 	@mkdir -p $(BENCH_OUT)
 	@$(PY) $(REPO_ROOT)/scripts/warm_replay_sim.py \
-	    --synthetic $(SIM_SCENARIOS) --json > $(BENCH_OUT)/sim.json
+	    --synthetic $(SIM_SCENARIOS) --policy $(SIM_POLICIES) --json > $(BENCH_OUT)/sim.json
 	@echo '    wrote $(BENCH_OUT)/sim.json'
 
 bench-selftest: ## Simulator invariants (asserts ~60 properties across 8 scenarios)
@@ -243,7 +251,7 @@ rule()
 if sim is None:
     print('  no simulator output at %s -- run make bench-sim' % os.path.join(OUT, 'sim.json'))
 else:
-    print('{:<12} {:<18} {:>11} {:>11} {:>10} {:>7} {:>9}'.format(
+    print('{:<12} {:<28} {:>11} {:>11} {:>10} {:>7} {:>9}'.format(
         'scenario', 'policy', 'net_usd', 'savings', 'ping_cost', 'pings', 'pct_orcl'))
     rule()
     for scen in sim.get('scenarios', []):
@@ -252,12 +260,12 @@ else:
         for pol in scen.get('policies', []):
             net = float(pol.get('net_usd', 0.0) or 0.0)
             frac = ('%.1f%%' % (net / oracle * 100.0)) if oracle > 0 else '-'
-            print('{:<12} {:<18} {:>11.4f} {:>11.4f} {:>10.4f} {:>7} {:>9}'.format(
-                name[:12], str(pol.get('policy', '?'))[:18], net,
+            print('{:<12} {:<28} {:>11.4f} {:>11.4f} {:>10.4f} {:>7} {:>9}'.format(
+                name[:12], str(pol.get('policy', '?'))[:28], net,
                 float(pol.get('savings_usd', 0.0) or 0.0),
                 float(pol.get('ping_cost_usd', 0.0) or 0.0),
                 pol.get('pings', 0), frac))
-        print('{:<12} {:<18} {:>11.4f} {:>11} {:>10} {:>7} {:>9}'.format(
+        print('{:<12} {:<28} {:>11.4f} {:>11} {:>10} {:>7} {:>9}'.format(
             name[:12], 'oracle (ceiling)', oracle, '-', '-',
             scen.get('oracle', {}).get('pings', 0), '100.0%'))
         rule()

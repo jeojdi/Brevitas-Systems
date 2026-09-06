@@ -29,6 +29,11 @@ from brevitas.receipts import MODEL_PRICES, canonical_provider, model_price
 USAGE_PAGE_DEFAULT = 100
 USAGE_PAGE_MAX = 200
 USAGE_BATCH_MAX = 100
+# Connection-pool size for the PostgREST session. Every store call is synchronous and
+# runs on a worker thread, so this bounds concurrent sockets, not concurrent requests.
+# Raise it only alongside the ASGI worker/thread count -- an oversized pool just holds
+# idle sockets open against PgBouncer.
+_STORE_POOL_SIZE = int(os.getenv("BREVITAS_STORE_POOL_SIZE", "32"))
 LOCAL_USAGE_SCAN_MAX = 10_000
 ADMIN_RESULT_MAX = 500
 ADMIN_SORT_FIELDS = frozenset({
@@ -7628,13 +7633,36 @@ class SupabaseUsageStore:
         )
         if not self.url or not self.key:
             raise ValueError("Supabase URL and service-role key are required")
+        # Pooled, keep-alive session. The module-level `requests.request()` this replaces
+        # built and discarded a connection per call, so every PostgREST round trip paid a
+        # fresh DNS + TCP + TLS handshake -- ~3 RTT of pure setup, and the receipt write
+        # sits on the response path (brevitas/proxy.py:740), so on a cache hit that
+        # handshake WAS the customer's latency. Sized for the worker's concurrency; the
+        # adapter is mounted on both schemes because SUPABASE_URL is https in prod and
+        # http in local harnesses.
+        self._session = requests.Session()
+        _pool = requests.adapters.HTTPAdapter(
+            pool_connections=_STORE_POOL_SIZE, pool_maxsize=_STORE_POOL_SIZE,
+            max_retries=0,  # retry policy stays with the callers; see _definite_noncommit
+        )
+        self._session.mount("https://", _pool)
+        self._session.mount("http://", _pool)
+
+    def close(self) -> None:
+        """Release pooled sockets. Safe to call repeatedly."""
+        session = getattr(self, "_session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     def _request(self, method: str, path: str, *, params: dict | None = None,
                  data: Any = None, prefer: str = "return=representation") -> Any:
         started = time.perf_counter()
         outcome = "error"
         try:
-            response = requests.request(
+            response = self._session.request(
                 method, f"{self.url}/rest/v1/{path}", params=params, json=data,
                 headers={"apikey": self.key, "Authorization": f"Bearer {self.key}",
                          "Content-Type": "application/json", "Prefer": prefer}, timeout=10,

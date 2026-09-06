@@ -63,7 +63,11 @@ def test_supabase_query_rpc_and_batch_emit_fixed_postgres_dependency_metrics(mon
     metrics = _DependencyMetrics()
     runtime = type("Runtime", (), {"metrics": metrics})()
     monkeypatch.setattr(observability, "get_runtime", lambda **_kwargs: runtime)
-    monkeypatch.setattr(requests, "request", lambda *_args, **_kwargs: _http_response())
+    # Patch Session.request, not requests.request: the store owns a pooled
+    # requests.Session so that PostgREST calls reuse a keep-alive connection
+    # instead of paying a TLS handshake per receipt write.
+    monkeypatch.setattr(
+        requests.Session, "request", lambda _self, *_args, **_kwargs: _http_response())
     store = SupabaseUsageStore("https://example.supabase.co", "service-role")
 
     assert store._request("GET", "organizations") == {"ok": True}
@@ -97,12 +101,12 @@ def test_supabase_dependency_metrics_classify_failures_without_changing_behavior
     runtime = type("Runtime", (), {"metrics": metrics})()
     monkeypatch.setattr(observability, "get_runtime", lambda **_kwargs: runtime)
 
-    def request(*_args, **_kwargs):
+    def request(_self, *_args, **_kwargs):
         if isinstance(failure, BaseException):
             raise failure
         return failure
 
-    monkeypatch.setattr(requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
     store = SupabaseUsageStore("https://example.supabase.co", "service-role")
     with pytest.raises(exception_type) as caught:
         store._request("POST", "rpc/device_boundary", data={})
@@ -113,10 +117,46 @@ def test_supabase_dependency_metrics_classify_failures_without_changing_behavior
     assert metrics.calls[0]["outcome"] == outcome
 
 
+def test_supabase_store_reuses_one_pooled_connection(monkeypatch):
+    """Regression guard: PostgREST calls must not open a connection each time.
+
+    The receipt write sits on the customer's response path (brevitas/proxy.py:740,
+    :1106), and `_record_usage_report` makes two sequential PostgREST calls. When each
+    used the module-level `requests.request()`, every one paid a fresh DNS + TCP + TLS
+    handshake -- so on a cache hit, where there is no upstream provider call to hide
+    behind, the handshakes WERE the measured 903ms p50. Reverting to `requests.request`
+    would silently restore that, with no test failing, so pin it here.
+    """
+    seen_sessions = []
+
+    def request(self, *_args, **_kwargs):
+        seen_sessions.append(id(self))
+        return _http_response()
+
+    # If anything calls the module-level helper it builds a throwaway connection.
+    monkeypatch.setattr(
+        requests, "request",
+        lambda *_a, **_k: pytest.fail("store used requests.request(); pooling lost"))
+    monkeypatch.setattr(requests.Session, "request", request)
+
+    store = SupabaseUsageStore("https://example.supabase.co", "service-role")
+    store._request("GET", "organizations")
+    store._request("POST", "usage_log", data=[_receipt("pool-1")])
+    store._request("POST", "usage_log", data=[_receipt("pool-2")])
+
+    assert len(seen_sessions) == 3
+    assert len(set(seen_sessions)) == 1, "each call used a different Session"
+
+    adapter = store._session.get_adapter("https://example.supabase.co")
+    assert adapter._pool_maxsize > 1, "adapter is not pooling connections"
+    store.close()
+
+
 def test_supabase_dependency_telemetry_is_fail_open(monkeypatch):
     import brevitas.observability as observability
 
-    monkeypatch.setattr(requests, "request", lambda *_args, **_kwargs: _http_response())
+    monkeypatch.setattr(
+        requests.Session, "request", lambda _self, *_args, **_kwargs: _http_response())
     monkeypatch.setattr(
         observability, "get_runtime",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("metrics unavailable")),
