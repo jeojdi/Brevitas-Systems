@@ -1,0 +1,165 @@
+{
+  "args": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "dtype": "float32",
+    "ctx": 420,
+    "chunk": 512,
+    "kchunk": 1024,
+    "seed": 7,
+    "no_model": false,
+    "out": "results/test_witness.json"
+  },
+  "checks": [
+    {
+      "test": "covers_predicate",
+      "cases": 7
+    },
+    {
+      "test": "bytes_accounting",
+      "fixedR_per_token": 1584.0,
+      "fixedR_spread_x": 1.0,
+      "fixed_ell_growth_x": 15.12,
+      "region_equals_block_at_B_eq_ell": true,
+      "block_growth_x": 15.53
+    },
+    {
+      "test": "serialisation_roundtrip",
+      "dtype": "fp16",
+      "refused_wrong_token_stream": true
+    },
+    {
+      "test": "dispatch_and_generation",
+      "legacy_tensor_ok": true,
+      "gen_after_edit": 1
+    },
+    {
+      "test": "generation_gate_both_classes",
+      "classes": 2,
+      "default_max_gen": 0
+    },
+    {
+      "test": "cumulative_equals_sum",
+      "max_abs_diff": "<1e-5"
+    },
+    {
+      "test": "block1_is_exact",
+      "max_abs_diff": "5.364e-07",
+      "spans": 3,
+      "seq_len": 422
+    },
+    {
+      "test": "aligned_span_zero_edge",
+      "blocks": [
+        8,
+        32,
+        64
+      ],
+      "max_edge_spread": "0.0e+00",
+      "max_err": "1.2e-07"
+    },
+    {
+      "test": "mass_bounds",
+      "block_row_sum": "[1.0000,1.0000]",
+      "region_row_sum_max": "0.9812"
+    },
+    {
+      "test": "region_is_identity",
+      "fp32_diff": "5.96e-08",
+      "fp16_diff": "1.20e-04",
+      "overlap_5_15": "1.000/1.000"
+    },
+    {
+      "test": "edit_then_score_vs_fresh",
+      "k5": 13,
+      "overlap_5": 0.5385,
+      "k15": 39,
+      "overlap_15": 0.7692,
+      "max_abs_diff": "2.05e-01",
+      "note": "NOT equal by construction; RoPE re-rotation breaks logit preservation"
+    }
+  ],
+  "detail": {
+    "block1_is_exact": {
+      "max_abs_diff": 5.364418029785156e-07,
+      "spans": 3
+    },
+    "aligned_span_zero_edge": [
+      {
+        "block": 8,
+        "span": [
+          16,
+          48
+        ],
+        "edge_policy_spread": 0.0,
+        "vs_full_pass": 1.1920928955078125e-07
+      },
+      {
+        "block": 32,
+        "span": [
+          64,
+          192
+        ],
+        "edge_policy_spread": 0.0,
+        "vs_full_pass": 8.940696716308594e-08
+      },
+      {
+        "block": 64,
+        "span": [
+          128,
+          384
+        ],
+        "edge_policy_spread": 0.0,
+        "vs_full_pass": 8.940696716308594e-08
+      }
+    ],
+    "mass_bounds": {
+      "block_row_sum_min": 0.9999998211860657,
+      "block_row_sum_max": 1.000000238418579,
+      "region_row_sum_max": 0.9812497496604919
+    },
+    "region_is_identity": [
+      {
+        "dtype": "torch.float32",
+        "max_abs_diff": 5.960464477539063e-08,
+        "overlap_5": 1.0,
+        "overlap_15": 1.0,
+        "scattered_additivity_diff": 0.0,
+        "bytes_ragged": 173856,
+        "bytes_dense": 324096
+      },
+      {
+        "dtype": "torch.float16",
+        "max_abs_diff": 0.00012046098709106445,
+        "overlap_5": 1.0,
+        "overlap_15": 1.0,
+        "scattered_additivity_diff": 0.0,
+        "bytes_ragged": 86928,
+        "bytes_dense": 162048
+      }
+    ],
+    "edit_then_score_vs_fresh": {
+      "span1": [
+        65,
+        112
+      ],
+      "span2": [
+        72,
+        115
+      ],
+      "seq_len_2": 375,
+      "max_abs_diff": 0.20529749989509583,
+      "k_5": 13,
+      "overlap_5": 0.5384615384615384,
+      "jaccard_5": 0.3684210526315789,
+      "k_15": 39,
+      "overlap_15": 0.7692307692307693,
+      "jaccard_15": 0.625,
+      "p6_bar": 0.85,
+      "p6_holds_downstream_second_cut": false,
+      "default_max_gen": 0,
+      "refused_at_default": true
+    }
+  },
+  "wall_seconds": 6.387700080871582,
+  "_verdict": "PASS"
+}

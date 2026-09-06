@@ -1,0 +1,87 @@
+{
+  "family": "chain",
+  "size": 10,
+  "repeats": 3,
+  "model": "claude-haiku-4-5-20251001",
+  "exact_output_disagreement_rate": 1.0,
+  "grader_outcome_disagreement_rate": 1.0,
+  "score_mean": 0.39999999999999997,
+  "score_stdev": 0.5291502622129182,
+  "cost_mean": 0.0283857,
+  "cost_stdev": 0.005960946660556525,
+  "cost_cv": 0.20999822659143602,
+  "cost_min": 0.0239317,
+  "cost_max": 0.0351574,
+  "cost_spread_pct": 0.39547025438865335,
+  "runs": [
+    {
+      "repeat": 0,
+      "cost": 0.026068,
+      "input_usd": 0.0001,
+      "output_usd": 0.011590000000000001,
+      "write_usd": 0.00577,
+      "read_usd": 0.008608000000000001,
+      "read_fraction": 0.9664851512939988,
+      "score": 0.2,
+      "passed": false,
+      "per_item": {
+        "step000": true,
+        "step001": true,
+        "step002": false,
+        "step003": false,
+        "step004": false,
+        "step005": false,
+        "step006": false,
+        "step007": false,
+        "step008": false,
+        "step009": false
+      }
+    },
+    {
+      "repeat": 1,
+      "cost": 0.0239317,
+      "input_usd": 0.0001,
+      "output_usd": 0.010365,
+      "write_usd": 0.0049900000000000005,
+      "read_usd": 0.0084767,
+      "read_fraction": 0.9702960097067375,
+      "score": 0.0,
+      "passed": false,
+      "per_item": {
+        "step000": false,
+        "step001": false,
+        "step002": false,
+        "step003": false,
+        "step004": false,
+        "step005": false,
+        "step006": false,
+        "step007": false,
+        "step008": false,
+        "step009": false
+      }
+    },
+    {
+      "repeat": 2,
+      "cost": 0.0351574,
+      "input_usd": 0.0001,
+      "output_usd": 0.01867,
+      "write_usd": 0.007486,
+      "read_usd": 0.008901400000000002,
+      "read_fraction": 0.9586137824827423,
+      "score": 1.0,
+      "passed": true,
+      "per_item": {
+        "step000": true,
+        "step001": true,
+        "step002": true,
+        "step003": true,
+        "step004": true,
+        "step005": true,
+        "step006": true,
+        "step007": true,
+        "step008": true,
+        "step009": true
+      }
+    }
+  ]
+}

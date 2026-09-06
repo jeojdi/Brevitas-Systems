@@ -1,0 +1,4 @@
+phase=warm model=claude-haiku-4-5-20251001 size=24 2 points pending (4 ledger cells)
+  [1/2] wide p=2% seed=0 (440s) B=$0.09591 C=$0.00410 served=23/25 cold=False grade B/C=1.00/1.00
+  [2/2] wide p=2% seed=1 (454s) B=$0.09709 C=$0.00427 served=23/25 cold=False grade B/C=1.00/1.00
+phase warm complete: 2 points

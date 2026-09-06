@@ -1,0 +1,125 @@
+{
+  "results": [
+    {
+      "config": "fresh_shared_prefix",
+      "turns": [
+        {
+          "i": 0,
+          "input": 9,
+          "creation": 5333,
+          "read": 0,
+          "output": 3178,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 1,
+          "input": 9,
+          "creation": 5334,
+          "read": 0,
+          "output": 2023,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 2,
+          "input": 9,
+          "creation": 5333,
+          "read": 0,
+          "output": 2761,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 3,
+          "input": 9,
+          "creation": 5336,
+          "read": 0,
+          "output": 4679,
+          "read_fraction": 0.0
+        }
+      ],
+      "read_fraction_after_first": 0.0,
+      "total_billable_input": 21372,
+      "total_output": 12641
+    },
+    {
+      "config": "one_session_append",
+      "turns": [
+        {
+          "i": 0,
+          "input": 9,
+          "creation": 5334,
+          "read": 0,
+          "output": 2028,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 1,
+          "input": 9,
+          "creation": 5962,
+          "read": 5334,
+          "output": 2260,
+          "read_fraction": 0.4718
+        },
+        {
+          "i": 2,
+          "input": 9,
+          "creation": 6194,
+          "read": 11296,
+          "output": 1704,
+          "read_fraction": 0.6455
+        },
+        {
+          "i": 3,
+          "input": 9,
+          "creation": 5638,
+          "read": 17490,
+          "output": 1658,
+          "read_fraction": 0.7559
+        }
+      ],
+      "read_fraction_after_first": 0.656899174062879,
+      "total_billable_input": 57284,
+      "total_output": 7650
+    },
+    {
+      "config": "fresh_no_prefix",
+      "turns": [
+        {
+          "i": 0,
+          "input": 1491,
+          "creation": 0,
+          "read": 0,
+          "output": 1127,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 1,
+          "input": 1491,
+          "creation": 0,
+          "read": 0,
+          "output": 909,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 2,
+          "input": 1490,
+          "creation": 0,
+          "read": 0,
+          "output": 1216,
+          "read_fraction": 0.0
+        },
+        {
+          "i": 3,
+          "input": 1490,
+          "creation": 0,
+          "read": 0,
+          "output": 1127,
+          "read_fraction": 0.0
+        }
+      ],
+      "read_fraction_after_first": 0.0,
+      "total_billable_input": 5962,
+      "total_output": 4379
+    }
+  ],
+  "chosen": "fresh_no_prefix"
+}

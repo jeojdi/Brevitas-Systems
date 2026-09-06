@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/Y9qLWTHrLoHPGcuG0FF24Te+7gc</id>
+  <title>arXiv Query: search_query=all:"KV cache" AND (all:unlearning OR all:"forgotten")&amp;id_list=&amp;start=0&amp;max_results=12</title>
+  <updated>2026-08-20T23:37:58Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:%22KV+cache%22+AND+(all:unlearning+OR+all:%22forgotten%22)&amp;start=0&amp;max_results=12&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>12</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2608.15939v1</id>
+    <title>Aborted but Not Forgotten: KV-Cache Retention Breaks Rollback Consistency in Language Agents</title>
+    <updated>2026-08-16T21:49:38Z</updated>
+    <link href="https://arxiv.org/abs/2608.15939v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2608.15939v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Stateful language agents assume a rejected branch can be taken back by clearing it from the application transcript. We show this breaks when the serving session retains key/value (KV) state across the logical abort: the model can continue attending to content the application believes it discarded. We formalize the missing guarantee as rollback consistency: a complete abort must restore the state the model attends, not just the transcript. The key failure is cross-layer: a correct logical rollback need not compose with retained inference state, and the gap can remain invisible to the application. To isolate cache effects from text effects, we introduce a same-token/different-cache audit that holds decision-step tokens identical while varying only whether the cached prefix is stale or rebuilt from committed state. Across seven open-weight families (3.8B-36B), retained KV alone flips a typed protected effect in 25 of 63 audited cells, while attacker tokens are absent from the served request in all 63; rebuilding the cache closes every cell. The channel reproduces in an end-to-end session application, on the default Hugging Face Transformers cache-reuse path, and under LangGraph time-travel, where verified logical rollback can still leave attended KV stale. Susceptibility varies across models, but the underlying attended-state integrity violation is structural. We rule out position and length confounds, generalize across protected effects, policy structures, and a cache-isolated Mixture-of-Experts model, and show that transaction-local cache restoration closes the channel without requiring a global cache flush. All headline results are deterministic and reproducible from released artifacts.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-08-16T21:49:38Z</published>
+    <arxiv:comment>21 pages, 5 figures, 7 tables</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Guijia Zhang</name>
+    </author>
+    <author>
+      <name>Harry Yang</name>
+    </author>
+  </entry>
+</feed>

@@ -1,0 +1,126 @@
+{
+ "rows": [
+  {
+   "family": "chain",
+   "perturbation": 0.0,
+   "temperature": "warm",
+   "ops": 12.0,
+   "c_saves": 1.0,
+   "bprime_saves": 1.0,
+   "tracker_adds": 0.0,
+   "stale": 0.0,
+   "n": 3
+  },
+  {
+   "family": "chain",
+   "perturbation": 0.02,
+   "temperature": "warm",
+   "ops": 12.0,
+   "c_saves": 0.8283428475480642,
+   "bprime_saves": 0.9253542352108104,
+   "tracker_adds": -1.3436419006309823,
+   "stale": 0.1111111111111111,
+   "n": 3
+  },
+  {
+   "family": "chain",
+   "perturbation": 0.1,
+   "temperature": "warm",
+   "ops": 12.0,
+   "c_saves": 0.9270005225426262,
+   "bprime_saves": 0.9506935127171386,
+   "tracker_adds": -0.6928723119110947,
+   "stale": 0.05555555555555555,
+   "n": 3
+  },
+  {
+   "family": "dag",
+   "perturbation": 0.0,
+   "temperature": "warm",
+   "ops": 31.0,
+   "c_saves": 1.0,
+   "bprime_saves": 1.0,
+   "tracker_adds": 0.0,
+   "stale": 0.0,
+   "n": 3
+  },
+  {
+   "family": "dag",
+   "perturbation": 0.02,
+   "temperature": "warm",
+   "ops": 31.0,
+   "c_saves": 0.710742015066442,
+   "bprime_saves": 0.9503527845556685,
+   "tracker_adds": -4.812629024253387,
+   "stale": 0.12903225806451613,
+   "n": 3
+  },
+  {
+   "family": "dag",
+   "perturbation": 0.1,
+   "temperature": "warm",
+   "ops": 31.0,
+   "c_saves": 0.6900761770277352,
+   "bprime_saves": 0.9271631047886539,
+   "tracker_adds": -3.396896812403501,
+   "stale": 0.12903225806451613,
+   "n": 3
+  },
+  {
+   "family": "dag",
+   "perturbation": 0.3,
+   "temperature": "warm",
+   "ops": 31.0,
+   "c_saves": 0.48841045782860854,
+   "bprime_saves": 0.7228051396705105,
+   "tracker_adds": -0.8556482512521296,
+   "stale": 0.22580645161290322,
+   "n": 3
+  },
+  {
+   "family": "wide",
+   "perturbation": 0.0,
+   "temperature": "warm",
+   "ops": 13.0,
+   "c_saves": 1.0,
+   "bprime_saves": 1.0,
+   "tracker_adds": 0.0,
+   "stale": 0.0,
+   "n": 3
+  },
+  {
+   "family": "wide",
+   "perturbation": 0.02,
+   "temperature": "warm",
+   "ops": 13.0,
+   "c_saves": 0.9090563899183248,
+   "bprime_saves": 0.9090563899183248,
+   "tracker_adds": 0.0,
+   "stale": 0.07692307692307693,
+   "n": 3
+  },
+  {
+   "family": "wide",
+   "perturbation": 0.1,
+   "temperature": "warm",
+   "ops": 13.0,
+   "c_saves": 0.9154213850728529,
+   "bprime_saves": 0.9154213850728529,
+   "tracker_adds": 0.0,
+   "stale": 0.07692307692307693,
+   "n": 3
+  },
+  {
+   "family": "wide",
+   "perturbation": 0.3,
+   "temperature": "warm",
+   "ops": 13.0,
+   "c_saves": 0.6747206452667278,
+   "bprime_saves": 0.6747206452667278,
+   "tracker_adds": 0.0,
+   "stale": 0.07692307692307693,
+   "n": 3
+  }
+ ],
+ "note": "Post-hoc arm B-prime: what a changed-file list alone would have achieved.\n\nNOT part of the pre-registered analysis. Added after the warm matrix, recorded in `search_log.md`,\nand reported alongside the frozen result rather than replacing it. `analysis.py` is unmodified and\nits recorded sha256 still holds.\n\nWhy it is necessary. The brief's arm B re-runs the whole workload every time. That is the right\nbaseline for the question \"does reuse beat provider caching\", but it is not the cheapest thing a\ncompetent customer would actually do. Every domain in the 24-scenario sweep already ships a coarse\nincumbent that costs nothing: `git diff --name-only HEAD@{1}`, SARIF partialFingerprints, a\ntranslation memory, a flake registry. So the commercially decisive question is not\n\n    does arm C beat arm B?                    (re-run everything)\n\nbut\n\n    does arm C beat arm B-prime?              (re-run only what directly changed)\n\nbecause arm B-prime requires no dependency graph, no content addressing and no store - it is a\none-line changed-file query. Whatever arm C wins over arm B-prime is what the dependency tracker\nitself is worth; everything else is worth a shell command.\n\nArm B-prime is deliberately UNSOUND: it recomputes only operations whose own artifacts changed and\nserves everything else, with no transitive invalidation. So this script also reports how many\noperations it would serve that arm C correctly invalidated - the stale-serve exposure that is the\nprice of the shell command.\n\nComputed entirely from the recorded dependency graphs (deliverable 2), which is what they exist\nfor: reuse can be recomputed under a different policy without re-running anything.\n\nRun: python3 -m experiments.reuse.analysis_naive\n"
+}

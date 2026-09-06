@@ -1,0 +1,113 @@
+{
+  "family": "chain",
+  "size": 10,
+  "perturbation": 0.3,
+  "model": "claude-haiku-4-5-20251001",
+  "ceiling": {
+    "ops_total": 10,
+    "ops_reusable": 2,
+    "count_weighted": 0.2,
+    "cost_total": 0.053359199999999996,
+    "cost_reusable": 0.019242199999999998,
+    "cost_weighted": 0.36061635106973117,
+    "model_ops_total": 10,
+    "model_ops_reusable": 2,
+    "model_count_weighted": 0.2,
+    "tool_ops_total": 0,
+    "tool_ops_reusable": 0,
+    "tool_count_weighted": 0.0
+  },
+  "achieved_over_ceiling": 1.0,
+  "perturbation_semantic": {
+    "n_perturbed_artifacts": 3,
+    "n_answers_changed": 9,
+    "answers_changed": [
+      "final",
+      "step002",
+      "step003",
+      "step004",
+      "step005",
+      "step006",
+      "step007",
+      "step008",
+      "step009"
+    ],
+    "all_perturbations_semantic": true
+  },
+  "position_report": {
+    "n_perturbed": 3,
+    "by_stratum": {
+      "0": {
+        "selected": 0,
+        "selected_share": 0.0,
+        "population_share": 0.18181818181818182
+      },
+      "1": {
+        "selected": 1,
+        "selected_share": 0.3333333333333333,
+        "population_share": 0.18181818181818182
+      },
+      "2": {
+        "selected": 1,
+        "selected_share": 0.3333333333333333,
+        "population_share": 0.18181818181818182
+      },
+      "3": {
+        "selected": 1,
+        "selected_share": 0.3333333333333333,
+        "population_share": 0.45454545454545453
+      }
+    },
+    "max_share_deviation": 0.18181818181818182,
+    "mean_depth": 4.333333333333333,
+    "mean_blast_fraction": 0.5666666666666667,
+    "population_mean_blast_fraction": 0.5909090909090909
+  },
+  "arm_b": {
+    "cost": {
+      "input_usd": 0.0001,
+      "output_usd": 0.011489999999999998,
+      "cache_write_usd": 0.005456000000000001,
+      "cache_read_usd": 0.0085608,
+      "total_usd": 0.0256068
+    },
+    "ops": 10,
+    "read_fraction": 0.9680220724591795,
+    "grade": 0.0,
+    "passed": false
+  },
+  "arm_c": {
+    "cost": {
+      "input_usd": 8e-05,
+      "output_usd": 0.019069999999999997,
+      "cache_write_usd": 0.00856,
+      "cache_read_usd": 0.0071530000000000005,
+      "total_usd": 0.034863
+    },
+    "ops": 8,
+    "served": 2,
+    "grade": 0.2,
+    "passed": false,
+    "totals": {
+      "executed_usd": 0.034863,
+      "shadow_usd": 0.0049624000000000005,
+      "storage_usd": 6.102025508880616e-10,
+      "shadow_free_usd": 0.034863,
+      "headline_usd": 0.039825400610202545,
+      "shadow_rate": 1.0
+    }
+  },
+  "marginal_headline": -0.5552665936470995,
+  "marginal_shadow_free": -0.3614742958901542,
+  "cross_run": {
+    "hits_total": 2,
+    "hits_cross_run": 2,
+    "cross_run_fraction": 1.0,
+    "distinct_writing_runs_hit": 1,
+    "max_write_to_read_seconds": 79.60782289505005
+  },
+  "shadow_records": [],
+  "model_versions": [
+    "claude-haiku-4-5-20251001"
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "family": "dag",
+  "size": 8,
+  "perturbation": 0.3,
+  "model": "claude-haiku-4-5-20251001",
+  "ceiling": {
+    "ops_total": 20,
+    "ops_reusable": 12,
+    "count_weighted": 0.6,
+    "cost_total": 0.0637388,
+    "cost_reusable": 0.036891,
+    "cost_weighted": 0.5787840373524447,
+    "model_ops_total": 9,
+    "model_ops_reusable": 6,
+    "model_count_weighted": 0.6666666666666666,
+    "tool_ops_total": 11,
+    "tool_ops_reusable": 6,
+    "tool_count_weighted": 0.5454545454545454
+  },
+  "achieved_over_ceiling": 1.3333333333333335,
+  "perturbation_semantic": {
+    "n_perturbed_artifacts": 2,
+    "n_answers_changed": 0,
+    "answers_changed": [],
+    "per_artifact_semantic": {},
+    "n_inert_perturbations": 0,
+    "all_perturbations_semantic": false
+  },
+  "position_report": {
+    "n_perturbed": 2,
+    "by_stratum": {
+      "0": {
+        "selected": 0,
+        "selected_share": 0.0,
+        "population_share": 0.25
+      },
+      "1": {
+        "selected": 1,
+        "selected_share": 0.5,
+        "population_share": 0.25
+      },
+      "2": {
+        "selected": 0,
+        "selected_share": 0.0,
+        "population_share": 0.25
+      },
+      "3": {
+        "selected": 1,
+        "selected_share": 0.5,
+        "population_share": 0.25
+      }
+    },
+    "max_share_deviation": 0.25,
+    "mean_depth": 0.0,
+    "mean_blast_fraction": 0.25,
+    "population_mean_blast_fraction": 0.25
+  },
+  "arm_b": {
+    "cost": {
+      "input_usd": 9e-05,
+      "output_usd": 0.03117,
+      "cache_write_usd": 0.002176,
+      "cache_read_usd": 0.0048246,
+      "total_usd": 0.0382606
+    },
+    "ops": 20,
+    "read_fraction": 0.9761654257041114,
+    "grade": 1.0,
+    "passed": true
+  },
+  "arm_c": {
+    "cost": {
+      "input_usd": 2e-05,
+      "output_usd": 0.003985000000000001,
+      "cache_write_usd": 0.0,
+      "cache_read_usd": 0.0010855,
+      "total_usd": 0.005090500000000001
+    },
+    "ops": 4,
+    "served": 16,
+    "grade": 1.0,
+    "passed": true,
+    "totals": {
+      "executed_usd": 0.005090500000000001,
+      "shadow_usd": 0.0315818,
+      "storage_usd": 2.9374472796916963e-08,
+      "shadow_free_usd": 0.005090500000000001,
+      "headline_usd": 0.036672329374472803,
+      "shadow_rate": 1.0
+    }
+  },
+  "marginal_headline": 0.041511911092016206,
+  "marginal_shadow_free": 0.8669519035247747,
+  "cross_run": {
+    "hits_total": 16,
+    "hits_cross_run": 16,
+    "cross_run_fraction": 1.0,
+    "distinct_writing_runs_hit": 1,
+    "max_write_to_read_seconds": 141.5116410255432
+  },
+  "shadow_records": [
+    {
+      "op_id": "facts006",
+      "exact_match": false,
+      "served_hash": "55b1ca6cb2f907a87e0adfdccae19f03a4c15fd8a9b04aa99154a8205da34a49",
+      "fresh_hash": "d777fdb0602a4df1806f8a6e69375ed58f5d221b7efd34a31f00e4f29fc2a8cd",
+      "served": "{\"sources\":[4],\"sinks\":[5],\"sanitizers\":[],\"secrets\":[2]}",
+      "fresh": "```json\n{\"sources\":[4],\"sinks\":[5],\"sanitizers\":[],\"secrets\":[2]}\n```"
+    }
+  ],
+  "model_versions": [
+    "claude-haiku-4-5-20251001"
+  ]
+}

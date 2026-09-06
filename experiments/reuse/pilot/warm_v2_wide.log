@@ -1,0 +1,14 @@
+phase=warm model=claude-haiku-4-5-20251001 size=12 12 points pending (24 ledger cells)
+  [1/12] wide p=0% seed=0 (115s) B=$0.05028 C=$0.00015 served=13/13 cold=False grade B/C=1.00/1.00
+  [2/12] wide p=0% seed=1 (107s) B=$0.04526 C=$0.00014 served=13/13 cold=False grade B/C=1.00/1.00
+  [3/12] wide p=0% seed=2 (100s) B=$0.03999 C=$0.00012 served=13/13 cold=False grade B/C=1.00/1.00
+  [4/12] wide p=2% seed=0 (149s) B=$0.04900 C=$0.00506 served=11/13 cold=False grade B/C=1.00/1.00
+  [5/12] wide p=2% seed=1 (109s) B=$0.04863 C=$0.00364 served=11/13 cold=False grade B/C=1.00/1.00
+  [6/12] wide p=2% seed=2 (103s) B=$0.04287 C=$0.00383 served=11/13 cold=False grade B/C=1.00/1.00
+  [7/12] wide p=10% seed=0 (119s) B=$0.04582 C=$0.00455 served=11/13 cold=False grade B/C=1.00/1.00
+  [8/12] wide p=10% seed=1 (125s) B=$0.05466 C=$0.00402 served=11/13 cold=False grade B/C=1.00/1.00
+  [9/12] wide p=10% seed=2 (115s) B=$0.04626 C=$0.00346 served=11/13 cold=False grade B/C=1.00/1.00
+  [10/12] wide p=30% seed=0 (129s) B=$0.05216 C=$0.01508 served=8/13 cold=False grade B/C=1.00/1.00
+  [11/12] wide p=30% seed=1 (144s) B=$0.04432 C=$0.01954 served=8/13 cold=False grade B/C=1.00/1.00
+  [12/12] wide p=30% seed=2 (137s) B=$0.05101 C=$0.01560 served=8/13 cold=False grade B/C=1.00/1.00
+phase warm complete: 12 points

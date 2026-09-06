@@ -1,0 +1,115 @@
+{
+  "family": "wide",
+  "size": 8,
+  "perturbation": 0.3,
+  "model": "claude-haiku-4-5-20251001",
+  "ceiling": {
+    "ops_total": 9,
+    "ops_reusable": 6,
+    "count_weighted": 0.6666666666666666,
+    "cost_total": 0.0502601,
+    "cost_reusable": 0.0406495,
+    "cost_weighted": 0.8087827123304568,
+    "model_ops_total": 8,
+    "model_ops_reusable": 6,
+    "model_count_weighted": 0.75,
+    "tool_ops_total": 1,
+    "tool_ops_reusable": 0,
+    "tool_count_weighted": 0.0
+  },
+  "achieved_over_ceiling": 1.0,
+  "perturbation_semantic": {
+    "n_perturbed_artifacts": 2,
+    "n_answers_changed": 2,
+    "answers_changed": [
+      "doc/0003.txt",
+      "doc/0007.txt"
+    ],
+    "all_perturbations_semantic": true
+  },
+  "position_report": {
+    "n_perturbed": 2,
+    "by_stratum": {
+      "0": {
+        "selected": 0,
+        "selected_share": 0.0,
+        "population_share": 0.25
+      },
+      "1": {
+        "selected": 1,
+        "selected_share": 0.5,
+        "population_share": 0.25
+      },
+      "2": {
+        "selected": 0,
+        "selected_share": 0.0,
+        "population_share": 0.25
+      },
+      "3": {
+        "selected": 1,
+        "selected_share": 0.5,
+        "population_share": 0.25
+      }
+    },
+    "max_share_deviation": 0.25,
+    "mean_depth": 0.0,
+    "mean_blast_fraction": 0.2222222222222222,
+    "population_mean_blast_fraction": 0.2222222222222222
+  },
+  "arm_b": {
+    "cost": {
+      "input_usd": 7.2e-05,
+      "output_usd": 0.03031,
+      "cache_write_usd": 0.0008500000000000001,
+      "cache_read_usd": 0.005665800000000001,
+      "total_usd": 0.0368978
+    },
+    "ops": 9,
+    "read_fraction": 0.991304347826087,
+    "grade": 1.0,
+    "passed": true
+  },
+  "arm_c": {
+    "cost": {
+      "input_usd": 1.8e-05,
+      "output_usd": 0.008725,
+      "cache_write_usd": 0.0,
+      "cache_read_usd": 0.0014271000000000002,
+      "total_usd": 0.010170100000000001
+    },
+    "ops": 3,
+    "served": 6,
+    "grade": 1.0,
+    "passed": true,
+    "totals": {
+      "executed_usd": 0.010170100000000001,
+      "shadow_usd": 0.0291552,
+      "storage_usd": 2.8484594076871876e-08,
+      "shadow_free_usd": 0.010170100000000001,
+      "headline_usd": 0.03932532848459408,
+      "shadow_rate": 1.0
+    }
+  },
+  "marginal_headline": -0.06579060227422985,
+  "marginal_shadow_free": 0.7243711007160318,
+  "cross_run": {
+    "hits_total": 6,
+    "hits_cross_run": 6,
+    "cross_run_fraction": 1.0,
+    "distinct_writing_runs_hit": 1,
+    "max_write_to_read_seconds": 126.7952299118042
+  },
+  "shadow_records": [
+    {
+      "op_id": "extract0006",
+      "exact_match": true,
+      "served_hash": "a41348e4d494c75dd9d6030e9524fa968dd5c601b4356fd08dec37a8b685978d",
+      "fresh_hash": "a41348e4d494c75dd9d6030e9524fa968dd5c601b4356fd08dec37a8b685978d",
+      "served": "{\"vendor\":\"Thornbury Optics\",\"total\":812505,\"currency\":\"GBP\",\"items\":3,\"terms\":60,\"status\":\"settled\"}",
+      "fresh": "{\"vendor\":\"Thornbury Optics\",\"total\":812505,\"currency\":\"GBP\",\"items\":3,\"terms\":60,\"status\":\"settled\"}"
+    }
+  ],
+  "model_versions": [
+    "claude-haiku-4-5-20251001"
+  ]
+}

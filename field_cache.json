@@ -1,0 +1,231 @@
+{
+ "rate_card_note": "Sonnet-class list price; dollars are rate-card arithmetic over vendor-reported counters and are NOT reconciled against a settled invoice.",
+ "n_sessions": 1798,
+ "n_billed_requests": 14102,
+ "pooled": {
+  "prompt_tokens_total": 3859568954,
+  "cache_read": 3764433888,
+  "cache_create": 94921489,
+  "fresh_input": 213577,
+  "realized_hit_rate": 0.9753508572760687,
+  "billed_usd": 1881.5484518999997,
+  "nocache_usd": 11775.452201999999,
+  "saving_usd": 9893.903750099998,
+  "saving_pct": 84.0214335753456,
+  "write_usd": 554.8322145,
+  "read_usd": 1129.3301663999998,
+  "write_5m_tokens": 6578198,
+  "write_1h_tokens": 88360662,
+  "share_1h": 0.9307112177247546
+ },
+ "mechanism_split": {
+  "sessions": 1798,
+  "sessions_with_cold_open_read": 1752,
+  "cold_open_read_tokens": 14376078,
+  "cold_open_prompt_tokens": 18191862,
+  "cold_open_hit_rate": 0.7902477492408418,
+  "continuation_read_tokens": 3750057810,
+  "continuation_prompt_tokens": 3841377092,
+  "continuation_hit_rate": 0.9762274622321823,
+  "share_of_reads_from_cold_open": 0.003818921630109393
+ },
+ "gap_distribution": {
+  "n_gaps": 12304,
+  "median_s": 15.496999859809875,
+  "p75_s": 33.493250012397766,
+  "p90_s": 133.87279989719417,
+  "p99_s": 4666.556539928871,
+  "P_gap_le_300s": 0.9340864759427828,
+  "P_gap_300_3600s": 0.05412873862158648,
+  "P_gap_gt_3600s": 0.011784785435630689
+ },
+ "ttl_cliff": {
+  "0-30": {
+   "pairs": 8892,
+   "lost": 13,
+   "reprice_tokens": 2787152,
+   "loss_rate": 0.0014619883040935672,
+   "median_recovery": 0.9999915773869685,
+   "mean_recovery": 0.9969736044380849
+  },
+  "30-60": {
+   "pairs": 1416,
+   "lost": 3,
+   "reprice_tokens": 1471673,
+   "loss_rate": 0.00211864406779661,
+   "median_recovery": 0.9999942844568662,
+   "mean_recovery": 0.9965343334997151
+  },
+  "60-120": {
+   "pairs": 694,
+   "lost": 3,
+   "reprice_tokens": 1950200,
+   "loss_rate": 0.004322766570605188,
+   "median_recovery": 0.9999948646249155,
+   "mean_recovery": 0.9955621334027936
+  },
+  "120-240": {
+   "pairs": 407,
+   "lost": 4,
+   "reprice_tokens": 2889417,
+   "loss_rate": 0.009828009828009828,
+   "median_recovery": 0.9999948857737568,
+   "mean_recovery": 0.9880419592931333
+  },
+  "240-300": {
+   "pairs": 84,
+   "lost": 3,
+   "reprice_tokens": 1329597,
+   "loss_rate": 0.03571428571428571,
+   "median_recovery": 0.9999950261924657,
+   "mean_recovery": 0.9646568776917978
+  },
+  "300-330": {
+   "pairs": 33,
+   "lost": 1,
+   "reprice_tokens": 144440,
+   "loss_rate": 0.030303030303030304,
+   "median_recovery": 0.9999958747831683,
+   "mean_recovery": 0.9417590260616538
+  },
+  "330-420": {
+   "pairs": 72,
+   "lost": 3,
+   "reprice_tokens": 1037690,
+   "loss_rate": 0.041666666666666664,
+   "median_recovery": 0.9999972056530575,
+   "mean_recovery": 0.945268336613892
+  },
+  "420-600": {
+   "pairs": 227,
+   "lost": 6,
+   "reprice_tokens": 986842,
+   "loss_rate": 0.02643171806167401,
+   "median_recovery": 0.9999969572863863,
+   "mean_recovery": 0.9714910334493643
+  },
+  "600-1200": {
+   "pairs": 170,
+   "lost": 7,
+   "reprice_tokens": 1592923,
+   "loss_rate": 0.041176470588235294,
+   "median_recovery": 0.9999960966045127,
+   "mean_recovery": 0.9449250436340524
+  },
+  "1200-1800": {
+   "pairs": 73,
+   "lost": 4,
+   "reprice_tokens": 626895,
+   "loss_rate": 0.0547945205479452,
+   "median_recovery": 0.9999964171061683,
+   "mean_recovery": 0.9248404845758245
+  },
+  "1800-3600": {
+   "pairs": 91,
+   "lost": 6,
+   "reprice_tokens": 1528969,
+   "loss_rate": 0.06593406593406594,
+   "median_recovery": 0.9999958996900166,
+   "mean_recovery": 0.9258698508728365
+  },
+  "3600-7200": {
+   "pairs": 42,
+   "lost": 26,
+   "reprice_tokens": 11813890,
+   "loss_rate": 0.6190476190476191,
+   "median_recovery": 0.0,
+   "mean_recovery": 0.13791130615000785
+  },
+  "7200-86400": {
+   "pairs": 101,
+   "lost": 66,
+   "reprice_tokens": 29556259,
+   "loss_rate": 0.6534653465346535,
+   "median_recovery": 0.027222861645980444,
+   "mean_recovery": 0.06959826744648623
+  },
+  "86400-inf": {
+   "pairs": 2,
+   "lost": 0,
+   "reprice_tokens": 0,
+   "loss_rate": 0.0,
+   "median_recovery": 0.5965940218825421,
+   "mean_recovery": 0.5965940218825421
+  }
+ },
+ "by_model": {
+  "claude-opus-5": {
+   "prompt_tokens_total": 2469037689,
+   "cache_read": 2417170273,
+   "cache_create": 51854091,
+   "fresh_input": 13325,
+   "realized_hit_rate": 0.9789928617813011,
+   "billed_usd": 1135.2900639,
+   "nocache_usd": 7512.028737,
+   "saving_usd": 6376.7386731,
+   "saving_pct": 84.88703779435501,
+   "write_usd": 305.18333699999994,
+   "read_usd": 725.1510818999999,
+   "write_5m_tokens": 2686860,
+   "write_1h_tokens": 49184602,
+   "share_1h": 0.9482015756563792,
+   "n_requests": 6753
+  },
+  "claude-fable-5": {
+   "prompt_tokens_total": 970530791,
+   "cache_read": 940035934,
+   "cache_create": 30442169,
+   "fresh_input": 52688,
+   "realized_hit_rate": 0.9685791967830519,
+   "billed_usd": 514.7714787,
+   "nocache_usd": 2964.968523,
+   "saving_usd": 2450.1970443,
+   "saving_pct": 82.63821437877706,
+   "write_usd": 179.2264845,
+   "read_usd": 282.0107802,
+   "write_5m_tokens": 1522902,
+   "write_1h_tokens": 28919267,
+   "share_1h": 0.9499739325407464,
+   "n_requests": 4042
+  },
+  "claude-haiku-4-5-20251001": {
+   "prompt_tokens_total": 17519202,
+   "cache_read": 16700337,
+   "cache_create": 673704,
+   "fresh_input": 145161,
+   "realized_hit_rate": 0.9532590011805332,
+   "billed_usd": 30.931493099999997,
+   "nocache_usd": 74.001291,
+   "saving_usd": 43.0697979,
+   "saving_pct": 58.201414215868205,
+   "write_usd": 4.042224,
+   "read_usd": 5.010101099999999,
+   "write_5m_tokens": 0,
+   "write_1h_tokens": 673704,
+   "share_1h": 1.0,
+   "n_requests": 2264
+  },
+  "claude-opus-4-8": {
+   "prompt_tokens_total": 402481272,
+   "cache_read": 390527344,
+   "cache_create": 11951525,
+   "fresh_input": 2403,
+   "realized_hit_rate": 0.970299418055904,
+   "billed_usd": 200.5554162,
+   "nocache_usd": 1224.453651,
+   "saving_usd": 1023.8982348000001,
+   "saving_pct": 83.62082419075576,
+   "write_usd": 66.380169,
+   "read_usd": 117.1582032,
+   "write_5m_tokens": 2368436,
+   "write_1h_tokens": 9583089,
+   "share_1h": 0.8018298083298994,
+   "n_requests": 1043
+  }
+ },
+ "per_session_hit_rate": {
+  "median": 0.9981607504138311,
+  "p10": 0.9583991215529714,
+  "p90": 0.9987405541561712
+ }
+}

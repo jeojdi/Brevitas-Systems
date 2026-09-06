@@ -1,0 +1,94 @@
+{
+  "results": [
+    {
+      "config": "system_prefix",
+      "turns": [
+        {
+          "i": 0,
+          "input": 9,
+          "creation": 17455,
+          "read": 0,
+          "eph_1h": 17455,
+          "output": 1644
+        },
+        {
+          "i": 1,
+          "input": 9,
+          "creation": 1427,
+          "read": 16026,
+          "eph_1h": 1427,
+          "output": 1104
+        },
+        {
+          "i": 2,
+          "input": 9,
+          "creation": 1428,
+          "read": 16026,
+          "eph_1h": 1428,
+          "output": 1778
+        },
+        {
+          "i": 3,
+          "input": 9,
+          "creation": 1429,
+          "read": 16026,
+          "eph_1h": 1429,
+          "output": 1188
+        },
+        {
+          "i": 4,
+          "input": 9,
+          "creation": 1427,
+          "read": 16026,
+          "eph_1h": 1427,
+          "output": 1404
+        }
+      ],
+      "read_fraction_after_first": 0.9177248715122188,
+      "total_billable_input": 87315
+    },
+    {
+      "config": "user_prefix",
+      "turns": [
+        {
+          "i": 0,
+          "input": 9,
+          "creation": 17491,
+          "read": 0,
+          "output": 1140
+        },
+        {
+          "i": 1,
+          "input": 9,
+          "creation": 17491,
+          "read": 0,
+          "output": 1148
+        },
+        {
+          "i": 2,
+          "input": 9,
+          "creation": 17493,
+          "read": 0,
+          "output": 2197
+        },
+        {
+          "i": 3,
+          "input": 9,
+          "creation": 17492,
+          "read": 0,
+          "output": 1890
+        },
+        {
+          "i": 4,
+          "input": 9,
+          "creation": 17490,
+          "read": 0,
+          "output": 2608
+        }
+      ],
+      "read_fraction_after_first": 0.0,
+      "total_billable_input": 87502
+    }
+  ],
+  "cross_request_caching_works": true
+}

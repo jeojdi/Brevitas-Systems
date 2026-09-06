@@ -1,0 +1,280 @@
+{
+ "ops": [
+  {
+   "args": {
+    "index": 0,
+    "module": "module/000.mod"
+   },
+   "artifacts": {
+    "module/000.mod": "93fc8e083526130bf68e9cf2cedbab6348332d25f6403675310fba9303203f6f",
+    "module/seed.mod": "6c63864c83195d954655aa6d2b0596b01dc6f6b4114286e21b3a8482cbdab37a"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step000",
+   "op_type": "apply_module",
+   "output_hash": "400b6feaba94359995cb987b5dbf76665c18e226aa77cb08695fad93d2d8a37f",
+   "retries": 0,
+   "reuse_key": "3acff7c9e5b45df4454feae9477de5113a8e443e79754a88f702d4c2844eb410",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 1,
+    "module": "module/001.mod"
+   },
+   "artifacts": {
+    "module/001.mod": "47423c06690bdabcab43045f0b01541123ca8caa5111d00a2f470dbfcc09ea03"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step001",
+   "op_type": "apply_module",
+   "output_hash": "87269b28eaea324d2c35e97b0ecc837ebc9a244faf94e260c08b518580b9e164",
+   "retries": 0,
+   "reuse_key": "dc6ad16ef4158accc059a0ed4427839a1e0d6faa1f84d998487f8f9c39efba3c",
+   "tokens": {},
+   "upstream": [
+    "step000"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 2,
+    "module": "module/002.mod"
+   },
+   "artifacts": {
+    "module/002.mod": "a159b3955a2658662655b1464ab8ed38733163705643064305b529ddca0ae25f"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step002",
+   "op_type": "apply_module",
+   "output_hash": "64eda62b35a3b6862221eeb5107c48f2dc469e8a53f37450ffefeb387cfdc383",
+   "retries": 0,
+   "reuse_key": "525ddd270da58fba7c68ceb2bacef4225e526a86d7667153349740cfee5e9cbd",
+   "tokens": {},
+   "upstream": [
+    "step001"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 3,
+    "module": "module/003.mod"
+   },
+   "artifacts": {
+    "module/003.mod": "b9473ea2dfee980ce2d46309349b21fa02ac304db9f34b3ac386e2eb0b3abf3e"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step003",
+   "op_type": "apply_module",
+   "output_hash": "aced70051e58a8841d88279bded07894af517957690986ff6ceff4f11870ae3d",
+   "retries": 0,
+   "reuse_key": "4cc34061b1a8343ebf5e6db9aa06e6a12b9814dd1f83db338c985d50ab630e7e",
+   "tokens": {},
+   "upstream": [
+    "step002"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 4,
+    "module": "module/004.mod"
+   },
+   "artifacts": {
+    "module/004.mod": "12e73a0f19287b169acfa66b446bd6ed3d7b12804108de8d231f63fe538fc0bf"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step004",
+   "op_type": "apply_module",
+   "output_hash": "e38fa75ec230eecbb53b3e2809eb8e99108a596c65bdff543bc904cf11a5184d",
+   "retries": 0,
+   "reuse_key": "2767f3db4b746b60d1e49e551e60579cff9cfd91bd59f748e0024c9252355727",
+   "tokens": {},
+   "upstream": [
+    "step003"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 5,
+    "module": "module/005.mod"
+   },
+   "artifacts": {
+    "module/005.mod": "65144431e9c3d5f640174405bed4a744b5b427e6aefadebad848a2c6111eeef2"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step005",
+   "op_type": "apply_module",
+   "output_hash": "ec7f9e1c854ffb831416b9ba82904f4ee061841eb7fa6ba607cbd0849ce07baa",
+   "retries": 0,
+   "reuse_key": "a6c204a3fb37032005701af131f0d28106c49a07e881823e4e82147ca21baa11",
+   "tokens": {},
+   "upstream": [
+    "step004"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 6,
+    "module": "module/006.mod"
+   },
+   "artifacts": {
+    "module/006.mod": "d5e29ef0d799c7540c244e2e233bcc6f49d158c2d6a8f2a661fe083bceff49a6"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step006",
+   "op_type": "apply_module",
+   "output_hash": "f89328f7804b950087f0fabde05183a45be91aaca59f8d029bb1932bfbc87bc7",
+   "retries": 0,
+   "reuse_key": "70d1de35f9de13ef87d9fef75abc1abcdacf3c2222c1bba2ea951ccbb45dbbe9",
+   "tokens": {},
+   "upstream": [
+    "step005"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 7,
+    "module": "module/007.mod"
+   },
+   "artifacts": {
+    "module/007.mod": "981e101e72c2f0617487f1bd1a43454e002d4f91a840939f6138ce10dca6b852"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step007",
+   "op_type": "apply_module",
+   "output_hash": "8ff40b10c09bc56a186d3f20b3c97fc0427157e5133b33f0a185939485c0d80e",
+   "retries": 0,
+   "reuse_key": "fbfc54506a8277ea9fb6a0d686bc322cb204cfbe5a518774959034dca619f380",
+   "tokens": {},
+   "upstream": [
+    "step006"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 8,
+    "module": "module/008.mod"
+   },
+   "artifacts": {
+    "module/008.mod": "5894f3d57ab6635b98f5d3894c284b124144476eab3731471526b0ecc146bd00"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step008",
+   "op_type": "apply_module",
+   "output_hash": "73c173325e4f67eb4e86eb8c888d2c7d0af50a9856afe9fda670902898949bd6",
+   "retries": 0,
+   "reuse_key": "910a0272a3f026f79080725622b91f040dfdd80708f603646e23d83d09f0086b",
+   "tokens": {},
+   "upstream": [
+    "step007"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 9,
+    "module": "module/009.mod"
+   },
+   "artifacts": {
+    "module/009.mod": "fa2f6c0e434b49ab5bb053e8160e0c6410c48ed09bb3abbda9bc3d1ef7e5fd90"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step009",
+   "op_type": "apply_module",
+   "output_hash": "041669688dba6edca905acae363296e29902c37b43adcceb7113eb81e1ddb1a1",
+   "retries": 0,
+   "reuse_key": "f933c1bfca730e4c02ade74d623785a6f73928e165d55debf91444b6046c0a73",
+   "tokens": {},
+   "upstream": [
+    "step008"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 10,
+    "module": "module/010.mod"
+   },
+   "artifacts": {
+    "module/010.mod": "63dc05e298be87a4f16fcaeacaf30f2c4c012f2dc7cadad0c7e3c5572e476608"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step010",
+   "op_type": "apply_module",
+   "output_hash": "971787b181dd876b7154510d935cf06620bdb2584ac0c31848cb6b7f289f752f",
+   "retries": 0,
+   "reuse_key": "974c7112f105e047321f07262831fe5bf7328a11f42e2dcf291eeb3b80e03f00",
+   "tokens": {},
+   "upstream": [
+    "step009"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "index": 11,
+    "module": "module/011.mod"
+   },
+   "artifacts": {
+    "module/011.mod": "0c137a12a5570b879e094abe88e8f073df5edec009fbd7a9f8bea161f5944587"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "step011",
+   "op_type": "apply_module",
+   "output_hash": "48f599a9094eb9a4fcd2ff73dd158208d3a2e0d8769a32e3c3795fc8791a0a71",
+   "retries": 0,
+   "reuse_key": "0b7e66ebfc02c032624d4b8e2afc5b2b7850561724ab65059dc9ab28de1f2bb5",
+   "tokens": {},
+   "upstream": [
+    "step010"
+   ],
+   "wall_ms": 0
+  }
+ ],
+ "run_id": "chain-s0-n12-day1"
+}

@@ -1,0 +1,636 @@
+{
+ "ops": [
+  {
+   "args": {
+    "path": "src/mod00/file000.txt"
+   },
+   "artifacts": {
+    "src/mod00/file000.txt": "811903188c8cca4a2d0f9756af5056affe3b107ce04f8c248542178f46b40f90"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read000",
+   "op_type": "read_file",
+   "output_hash": "989c920c4d6f4e038448a7559bf1ee4db24c960128b5b044c553a04ddf430411",
+   "retries": 0,
+   "reuse_key": "64fe484250bc6d40ce94bd9ec3106f179f5b1d18d30ce80b6e930e4a2f496726",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod00/file003.txt"
+   },
+   "artifacts": {
+    "src/mod00/file003.txt": "a5dc1f8ed80b448502a5075db6705428b221663f942076fba511d07d526e3cc7"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read001",
+   "op_type": "read_file",
+   "output_hash": "fdb7253b8741898c7eefa53d2d38061c9754fe0428d867af1370f518db71a9cc",
+   "retries": 0,
+   "reuse_key": "d8347489c23d828c6ea2a57809ae187459af34a860aa23c6b6e45c1be53b55d6",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod00/file006.txt"
+   },
+   "artifacts": {
+    "src/mod00/file006.txt": "b9fb1c58e2baba52a6aba4ec87e0ddd462a3e26e643f3a0dee41d6a4d47dab5c"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read002",
+   "op_type": "read_file",
+   "output_hash": "42c7adadb7d80875289548d2352f9ccbe3fa83db963b08090a09aff9fc74bed6",
+   "retries": 0,
+   "reuse_key": "e384581548329581a5d851eb18697c9002b9b00f2584ba87d4619eaa87db74b3",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod00/file009.txt"
+   },
+   "artifacts": {
+    "src/mod00/file009.txt": "eabc4a163cbcb1a9791cd21b6ced29181fc4edc846dcb31ec9218d8090f6b748"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read003",
+   "op_type": "read_file",
+   "output_hash": "80a93624e0a20ec22fddb75c8512aacf8fa85b4e865191da02a908c4a403bb20",
+   "retries": 0,
+   "reuse_key": "5df99de9578d950dc2d9e57a3fafaac31f4411c924ea0c0044a71a2473318670",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod01/file001.txt"
+   },
+   "artifacts": {
+    "src/mod01/file001.txt": "57c5f137859234b1a7bcaa4928a99f8ff442df3501f0e4c69b151864a547bb46"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read004",
+   "op_type": "read_file",
+   "output_hash": "326299cdb146b04402e2ee43896b3d72b854025f53b5af2386cade398e9c8370",
+   "retries": 0,
+   "reuse_key": "776c62f2d413968492b252c995e072a82086ac2775f818f06890134963e57920",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod01/file004.txt"
+   },
+   "artifacts": {
+    "src/mod01/file004.txt": "a0f342ee1232db5b1f4d01cb9f2c212ffbd012bd93f1e8be6e5d1ed703f222f7"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read005",
+   "op_type": "read_file",
+   "output_hash": "77526df93c0a9a6a90ddf2b2c56eeae9aac2ae2b19753357971138bf96b91665",
+   "retries": 0,
+   "reuse_key": "960c7e95ea3d33914b8e7b64770abc3dc229b24da1d1d068a8abd5aacd45c8fa",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod01/file007.txt"
+   },
+   "artifacts": {
+    "src/mod01/file007.txt": "600d5ccf64e2254564c5d92f53bff14d909262170c5a3a37bd3ea16fbf7d70d7"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read006",
+   "op_type": "read_file",
+   "output_hash": "a2a963ec9b61ca6d0494575e4c46360a113273e207e455e82692638578ecf283",
+   "retries": 0,
+   "reuse_key": "987d30586733da8b699d4db9476658fe60b0cffa384abcb8d681e70f7428efe5",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod01/file010.txt"
+   },
+   "artifacts": {
+    "src/mod01/file010.txt": "aa8c2e77996f8fea4911d279d44a2e4514af23b251da2f5671558089d57c0eb2"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read007",
+   "op_type": "read_file",
+   "output_hash": "b1adfb552b98e640fb1ed341cca90d84934e13b863b26bbc1bf429dfa248b449",
+   "retries": 0,
+   "reuse_key": "a0c7287684661147014afffcb9ba8a6d974956a1f70f6c182d7899d78a18a684",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod02/file002.txt"
+   },
+   "artifacts": {
+    "src/mod02/file002.txt": "920acf31c9b4b0423e3c074d1b7761acb4d7aa53fc89e8d6531ab348261467a6"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read008",
+   "op_type": "read_file",
+   "output_hash": "e6a401a163d937833b41ebac0911d415ecb9821087bf03a4d7ed8e7dc2c92464",
+   "retries": 0,
+   "reuse_key": "fea0bc9e92812262a46bd43822e7105fe98722cef4d3a63dec938c99b3471260",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod02/file005.txt"
+   },
+   "artifacts": {
+    "src/mod02/file005.txt": "0c94f8ce6bcdd9f77332b06bb637f2cd58b23a841b067d929bf72e1de4f696f6"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read009",
+   "op_type": "read_file",
+   "output_hash": "8d2aa10b0c2d503c3921a8de25881886cd927ae67c52c22274b989fc4a799847",
+   "retries": 0,
+   "reuse_key": "00d87593fbbc7a8b3d141b7beb32e0d5a7488531980f5b060935eac017b79a36",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod02/file008.txt"
+   },
+   "artifacts": {
+    "src/mod02/file008.txt": "bc04bdd1ced0744350f7e13fb7d25ef73015ea6e849a8d9d8de31f7655168a53"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read010",
+   "op_type": "read_file",
+   "output_hash": "d8079cf99d7c817d608f50faa0eb70d235c844970ebb78f902d604f16b7daa1f",
+   "retries": 0,
+   "reuse_key": "7f22aa7b0a32a4bab589c21a97669b623da546faa73922d96c4ea23bdfbf8257",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "path": "src/mod02/file011.txt"
+   },
+   "artifacts": {
+    "src/mod02/file011.txt": "cd67e767e074046acfe93dbdc093aa12213706d1d52825941f11264f5264a27f"
+   },
+   "kind": "tool",
+   "model": null,
+   "op_id": "read011",
+   "op_type": "read_file",
+   "output_hash": "aa2034f748f9b09416dd00303155fc61aad6343e66c007f5f929c74d7c76ea0b",
+   "retries": 0,
+   "reuse_key": "f1a5f82d5ed910554e769f25f9ed53eedc88a9b3d910dc830f19772cf7913bb6",
+   "tokens": {},
+   "upstream": [],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod00/file000.txt"
+   },
+   "artifacts": {
+    "src/mod00/file000.txt": "811903188c8cca4a2d0f9756af5056affe3b107ce04f8c248542178f46b40f90"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts000",
+   "op_type": "extract_facts",
+   "output_hash": "f09293879fcb4562f0ad849a721d908431f75f58ad1fa8cec9f571aac9eadc90",
+   "retries": 0,
+   "reuse_key": "5c496572c757701ffb994450a7caf1c28405c7ad62d3506f947321d65e2d0fb3",
+   "tokens": {},
+   "upstream": [
+    "read000"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod00/file003.txt"
+   },
+   "artifacts": {
+    "src/mod00/file003.txt": "a5dc1f8ed80b448502a5075db6705428b221663f942076fba511d07d526e3cc7"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts001",
+   "op_type": "extract_facts",
+   "output_hash": "8f3fa6649a3250e162a704addc8a0ce0580b815e8607c83168e98dfb843c7af0",
+   "retries": 0,
+   "reuse_key": "d9800568ba3725cd0407b26deb9f2d9510cb861fe6ef2a28d3015fd01c149846",
+   "tokens": {},
+   "upstream": [
+    "read001"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod00/file006.txt"
+   },
+   "artifacts": {
+    "src/mod00/file006.txt": "b9fb1c58e2baba52a6aba4ec87e0ddd462a3e26e643f3a0dee41d6a4d47dab5c"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts002",
+   "op_type": "extract_facts",
+   "output_hash": "d777fdb0602a4df1806f8a6e69375ed58f5d221b7efd34a31f00e4f29fc2a8cd",
+   "retries": 0,
+   "reuse_key": "3628e257d56a714e1333e293a66b7143d02a5dff94858681f47e8695488a084e",
+   "tokens": {},
+   "upstream": [
+    "read002"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod00/file009.txt"
+   },
+   "artifacts": {
+    "src/mod00/file009.txt": "eabc4a163cbcb1a9791cd21b6ced29181fc4edc846dcb31ec9218d8090f6b748"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts003",
+   "op_type": "extract_facts",
+   "output_hash": "2f3875bbac56c2d65f4a142c7c236badfd2ca91c16f21bc38ab07997d6db3719",
+   "retries": 0,
+   "reuse_key": "e05ad52d52a7c67bca536e40079d9455095dfb8ad160ea32fdfeab8a9ad629fe",
+   "tokens": {},
+   "upstream": [
+    "read003"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod01/file001.txt"
+   },
+   "artifacts": {
+    "src/mod01/file001.txt": "57c5f137859234b1a7bcaa4928a99f8ff442df3501f0e4c69b151864a547bb46"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts004",
+   "op_type": "extract_facts",
+   "output_hash": "ca5f415413c6aa509acd7639d4459114e292a3c70ba402e6ae8344de9460e911",
+   "retries": 0,
+   "reuse_key": "41f22458e8813f7c100b991b997b1ee06d7eeed55e8e101ed37b1c79632bbd70",
+   "tokens": {},
+   "upstream": [
+    "read004"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod01/file004.txt"
+   },
+   "artifacts": {
+    "src/mod01/file004.txt": "a0f342ee1232db5b1f4d01cb9f2c212ffbd012bd93f1e8be6e5d1ed703f222f7"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts005",
+   "op_type": "extract_facts",
+   "output_hash": "ca5f415413c6aa509acd7639d4459114e292a3c70ba402e6ae8344de9460e911",
+   "retries": 0,
+   "reuse_key": "10f80bc7fff5d301f237fa9ee54ca786ebbf9edad33b5bed913179fb7830ea4e",
+   "tokens": {},
+   "upstream": [
+    "read005"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod01/file007.txt"
+   },
+   "artifacts": {
+    "src/mod01/file007.txt": "600d5ccf64e2254564c5d92f53bff14d909262170c5a3a37bd3ea16fbf7d70d7"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts006",
+   "op_type": "extract_facts",
+   "output_hash": "ca5f415413c6aa509acd7639d4459114e292a3c70ba402e6ae8344de9460e911",
+   "retries": 0,
+   "reuse_key": "85b7908b008990d74d083d8eb370bd247413c63a50374c32a95455193551e717",
+   "tokens": {},
+   "upstream": [
+    "read006"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod01/file010.txt"
+   },
+   "artifacts": {
+    "src/mod01/file010.txt": "aa8c2e77996f8fea4911d279d44a2e4514af23b251da2f5671558089d57c0eb2"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts007",
+   "op_type": "extract_facts",
+   "output_hash": "ce26c64f82d05635aa35cd692870ba376a4e7609550ef49f40701eef9f5917c4",
+   "retries": 0,
+   "reuse_key": "da03f5d20ba3ba6f2ffe90489410db50c7561a1d841228c3fa37ccbec66c6dad",
+   "tokens": {},
+   "upstream": [
+    "read007"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod02/file002.txt"
+   },
+   "artifacts": {
+    "src/mod02/file002.txt": "920acf31c9b4b0423e3c074d1b7761acb4d7aa53fc89e8d6531ab348261467a6"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts008",
+   "op_type": "extract_facts",
+   "output_hash": "ca5f415413c6aa509acd7639d4459114e292a3c70ba402e6ae8344de9460e911",
+   "retries": 0,
+   "reuse_key": "d46c4b2ae26dee46af097163c85077b5710eb446907fdf8d53f604dea45506c6",
+   "tokens": {},
+   "upstream": [
+    "read008"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod02/file005.txt"
+   },
+   "artifacts": {
+    "src/mod02/file005.txt": "0c94f8ce6bcdd9f77332b06bb637f2cd58b23a841b067d929bf72e1de4f696f6"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts009",
+   "op_type": "extract_facts",
+   "output_hash": "dce561ae82e17693aea86f2b879160076572707642a7eb5b633bacb40ba0b1ca",
+   "retries": 0,
+   "reuse_key": "c75c1bc63f2f2b5fa6f935a57120a8c887256ea92691cbd98bca7f44ef38a363",
+   "tokens": {},
+   "upstream": [
+    "read009"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod02/file008.txt"
+   },
+   "artifacts": {
+    "src/mod02/file008.txt": "bc04bdd1ced0744350f7e13fb7d25ef73015ea6e849a8d9d8de31f7655168a53"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts010",
+   "op_type": "extract_facts",
+   "output_hash": "dce561ae82e17693aea86f2b879160076572707642a7eb5b633bacb40ba0b1ca",
+   "retries": 0,
+   "reuse_key": "c0c63b65788504c6d4fd67bd34bca1f30a25777588e5d82903f4da952d791205",
+   "tokens": {},
+   "upstream": [
+    "read010"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "op_version": 1,
+    "path": "src/mod02/file011.txt"
+   },
+   "artifacts": {
+    "src/mod02/file011.txt": "cd67e767e074046acfe93dbdc093aa12213706d1d52825941f11264f5264a27f"
+   },
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "facts011",
+   "op_type": "extract_facts",
+   "output_hash": "d777fdb0602a4df1806f8a6e69375ed58f5d221b7efd34a31f00e4f29fc2a8cd",
+   "retries": 0,
+   "reuse_key": "2ec03998c9814ed280b42b5a72c9ff8762f3f4a23c3254d099eec765ed05609a",
+   "tokens": {},
+   "upstream": [
+    "read011"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "module": "mod00"
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "module00",
+   "op_type": "module_rollup",
+   "output_hash": "d3c9e97d571df466c26c98e80df10f2ca03f73361cfc39e13687c9f48a0946e9",
+   "retries": 0,
+   "reuse_key": "b7bb3c20c172c760107e5bab6eb2dc6a5bd883a89fc35ede9587b8f754b26168",
+   "tokens": {},
+   "upstream": [
+    "facts000",
+    "facts001",
+    "facts002",
+    "facts003"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "module": "mod01"
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "module01",
+   "op_type": "module_rollup",
+   "output_hash": "ee56fd2fa6428964b1cfcd1462c7c1b05682cc64e58c13123c0c7482277ffafa",
+   "retries": 0,
+   "reuse_key": "491adaaa2453ecefc56da0ddb04a4b021a5fe6673a63e550e86ab640e4a34153",
+   "tokens": {},
+   "upstream": [
+    "facts004",
+    "facts005",
+    "facts006",
+    "facts007"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "module": "mod02"
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "module02",
+   "op_type": "module_rollup",
+   "output_hash": "d95d6efa1295c3baf3c0561f7254c3bf7f0ba70ed86912f175d3eaa65ea59590",
+   "retries": 0,
+   "reuse_key": "698cedfcf31e0da8d28b5903ba0e3502072bb6a0ed34b6fb46bb06db2573d328",
+   "tokens": {},
+   "upstream": [
+    "facts008",
+    "facts009",
+    "facts010",
+    "facts011"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "arity": 2
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "reduce000",
+   "op_type": "reduce",
+   "output_hash": "299377daa48344f7fa612d924d2e286ede392d8a556f5d87988a9e58e3fec826",
+   "retries": 0,
+   "reuse_key": "bf8ed90163f7520147ef547e1e983d434fd6d3d9471a2d45d2f8f534c5cc8bc1",
+   "tokens": {},
+   "upstream": [
+    "module00",
+    "module01"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "arity": 1
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "reduce001",
+   "op_type": "reduce",
+   "output_hash": "1762ee8b92ca92b82c9f8de92a471664b74c268c9f98c45f51016a2361e58d30",
+   "retries": 0,
+   "reuse_key": "f421d63833e401c70eed48f49183c03431769d49cc8a0f67da7dd88c6377c035",
+   "tokens": {},
+   "upstream": [
+    "module02"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "arity": 2
+   },
+   "artifacts": {},
+   "kind": "tool",
+   "model": null,
+   "op_id": "reduce002",
+   "op_type": "reduce",
+   "output_hash": "9fe34fba7a9b7b008da09f6ed7e44515f0a11558c070d4d4004c7c590f35ad49",
+   "retries": 0,
+   "reuse_key": "5a71afc0715d40ee0dd3f0e80e355fa249c6828296d5f6386a42598a3c49d771",
+   "tokens": {},
+   "upstream": [
+    "reduce000",
+    "reduce001"
+   ],
+   "wall_ms": 0
+  },
+  {
+   "args": {
+    "n_files": 12
+   },
+   "artifacts": {},
+   "kind": "model",
+   "model": {
+    "id": "claude-haiku-4-5-20251001"
+   },
+   "op_id": "ledger",
+   "op_type": "emit_ledger",
+   "output_hash": "73401b106e75b65b27bd20ba17a484766ce014e23274f784568e235d670c7e1e",
+   "retries": 0,
+   "reuse_key": "047f3e1761c6f3064b592aed26d41225a296d2939ec285cdc08f6e074fd3778b",
+   "tokens": {},
+   "upstream": [
+    "reduce002"
+   ],
+   "wall_ms": 0
+  }
+ ],
+ "run_id": "dag-s1-n12-day1"
+}

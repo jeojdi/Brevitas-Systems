@@ -853,6 +853,16 @@ class _AnthropicTierMixin(Policy):
     keep each other warm across differing tier decisions; that asymmetry is
     real, not a modelling shortcut.
 
+    KNOWN DIVERGENCE (deliberate, and conservative): the shipped gate also has a
+    `warm_prefix_observed` path that licenses a write when a DIFFERENT session sent
+    the identical prefix inside the TTL. This simulator calls cache_write_allowed()
+    without the preceding decide(), so that path never arms here. It does not need
+    to: a "session" in this trace is ALREADY keyed by prefix_hash, so the shipped
+    path's extra allowance is mostly already folded into this model's own repeat
+    accounting. The residue makes the simulator understate the engine slightly --
+    the safe direction, since every conclusion drawn from it so far is that warming
+    is worth LESS than the incumbent, and this bias can only strengthen that.
+
     Two knobs, both defaulting to shipped behaviour, keep the finding
     decomposable instead of confounded:
 

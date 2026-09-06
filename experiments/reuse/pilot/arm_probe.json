@@ -1,0 +1,91 @@
+{
+  "arm_a": {
+    "arm": "A",
+    "turns": [
+      {
+        "turn": 0,
+        "input": 18277,
+        "cache_creation": 0,
+        "cache_read": 0,
+        "eph_5m": 0,
+        "eph_1h": 0,
+        "output": 5035,
+        "cache_read_fraction": 0.0,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      },
+      {
+        "turn": 1,
+        "input": 40179,
+        "cache_creation": 0,
+        "cache_read": 0,
+        "eph_5m": 0,
+        "eph_1h": 0,
+        "output": 1914,
+        "cache_read_fraction": 0.0,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      },
+      {
+        "turn": 2,
+        "input": 58960,
+        "cache_creation": 0,
+        "cache_read": 0,
+        "eph_5m": 0,
+        "eph_1h": 0,
+        "output": 1527,
+        "cache_read_fraction": 0.0,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      }
+    ]
+  },
+  "arm_b": {
+    "arm": "B",
+    "turns": [
+      {
+        "turn": 0,
+        "input": 10,
+        "cache_creation": 18268,
+        "cache_read": 0,
+        "eph_5m": 0,
+        "eph_1h": 18268,
+        "output": 6537,
+        "cache_read_fraction": 0.0,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      },
+      {
+        "turn": 1,
+        "input": 10,
+        "cache_creation": 23404,
+        "cache_read": 18268,
+        "eph_5m": 0,
+        "eph_1h": 23404,
+        "output": 1872,
+        "cache_read_fraction": 0.4383,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      },
+      {
+        "turn": 2,
+        "input": 10,
+        "cache_creation": 18739,
+        "cache_read": 41672,
+        "eph_5m": 0,
+        "eph_1h": 18739,
+        "output": 1847,
+        "cache_read_fraction": 0.6897,
+        "model_version": "claude-haiku-4-5-20251001",
+        "text": "40"
+      }
+    ]
+  },
+  "checks": {
+    "arm A has zero cache activity": true,
+    "arm B reads from cache on later turns": true,
+    "arm B writes to the 1h tier, not the 5m tier": true,
+    "arm B cache-read fraction on later turns exceeds 50%": true
+  },
+  "b_read_fraction_later": 0.5870542491405737
+}

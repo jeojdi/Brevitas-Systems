@@ -1,0 +1,933 @@
+{
+ "assets": [
+  {
+   "summary": "Two manual, money-spending live probes against Anthropic's Messages API plus the write-up that consolidates their results. `scripts/anthropic_cache_probe.py` characterizes Anthropic's prompt cache itself (min cacheable prefix, breakpoint cap, TTL cliff, refresh-on-read, 1h tier, cost of a volatile token) via a system-block prefix and the provider's own usage receipt; `scripts/cross_agent_cache_probe.py` measures cross-agent prefix sharing across 3 arms x 6 reps x 5 agents using the shipped `shared_prefix.SharedPrefixLayer` to hoist a shared doc to position 0. Both share the same skeleton: urllib POST, a $-capped Ledger with pre-send projection, one retry, a hard-coded claude-haiku-4-5 $/Mtok price table copied from `brevitas/receipts.py:302`, and a JSON receipt dump. `docs/DOES_AI_NATIVE_REDIS_WORK.md` reports E1-E4: the sharing mechanism works (24/24, 66.17% saving at N=5) but shaping over a competent native-caching customer measured -30.84% on Anthropic, and the field-yield number f is unmeasured. Total live spend across the write-up was $1.0487.",
+   "reusable": [
+    {
+     "name": "Call dataclass + cache_read / cache_write / fresh_input / prefix_tokens properties",
+     "location": "scripts/anthropic_cache_probe.py:124-151 (twin at scripts/cross_agent_cache_probe.py:187-222, which adds `output`)",
+     "what": "Usage extraction: reads usage['cache_read_input_tokens'], usage['cache_creation_input_tokens'], usage['input_tokens'], usage['output_tokens'] with `or 0` coercion; prefix_tokens = fresh + write + read. Drop-in for any new receipt harness."
+    },
+    {
+     "name": "price(usage, write_mult)",
+     "location": "scripts/anthropic_cache_probe.py:235-243 (no-mult variant at scripts/cross_agent_cache_probe.py:310-318)",
+     "what": "Cost in USD from a usage dict: (fresh*input + written*write_mult + read*cached + out*output)/1e6. write_mult parameter is how the 1h tier (2.0x) is priced without a second table."
+    },
+    {
+     "name": "Ledger.guard / Ledger.record",
+     "location": "scripts/anthropic_cache_probe.py:250-282 (cross-agent copy at scripts/cross_agent_cache_probe.py:321-350)",
+     "what": "Spend cap: guard(projected) raises BEFORE the request leaves the process, record() accumulates actual spend and raises if cumulative crosses the cap. The anthropic version takes a per-run cap in __init__ (E3 uses $0.50); the cross-agent version hard-codes the module constant."
+    },
+    {
+     "name": "send(...) with single retry",
+     "location": "scripts/anthropic_cache_probe.py:285-311 (cross-agent variant at scripts/cross_agent_cache_probe.py:353-381)",
+     "what": "Reserves worst-case cold-write cost, posts, and retries exactly once after a 3.0s sleep if status != 200 or usage is empty; treats transport exceptions as status 0. Failed calls record spend_usd = 0."
+    },
+    {
+     "name": "_post(url, headers, body, timeout) / _headers(key, beta)",
+     "location": "scripts/anthropic_cache_probe.py:195-216 (identical _post at scripts/cross_agent_cache_probe.py:273-291)",
+     "what": "Dependency-free urllib POST returning (status, parsed_json); HTTPError bodies are parsed so a 400 still yields the error object. _headers sets x-api-key, anthropic-version, and optionally anthropic-beta."
+    },
+    {
+     "name": "count_tokens(key, blocks)",
+     "location": "scripts/anthropic_cache_probe.py:219-228 (user-message-shaped variant at scripts/cross_agent_cache_probe.py:294-303)",
+     "what": "Free /v1/messages/count_tokens call used to size prefixes in TOKENS, returns -1 on failure. anthropic_cache_probe puts blocks in `system`; cross_agent_cache_probe puts them in a user message \u2014 different shapes, same helper name."
+    },
+    {
+     "name": "_words_for(key, target_tokens) and the P3 tok/word calibration",
+     "location": "scripts/anthropic_cache_probe.py:496-502; inline calibration at 356-361",
+     "what": "Calibrates words->tokens against the live counter (1,000-word sample, fallback 1.35 tok/word) so a prefix lands on a real token target instead of a guessed one."
+    },
+    {
+     "name": "build_prefix(tag, words) / build_doc(tag, words)",
+     "location": "scripts/anthropic_cache_probe.py:178-188; scripts/cross_agent_cache_probe.py:253-262",
+     "what": "Seeded synthetic corpus generator; distinct tag => different bytes from position 0, which is what makes cross-arm cache inheritance structurally impossible (the cold-cache guarantee used instead of waiting out a TTL)."
+    },
+    {
+     "name": "load_probe_key()",
+     "location": "scripts/anthropic_cache_probe.py:154-171; scripts/cross_agent_cache_probe.py:225-246",
+     "what": "Parses .env.local but only accepts names starting with BREVITAS_PROBE_, returning BREVITAS_PROBE_ANTHROPIC_KEY; process env wins. Prevents the probe from ever touching prod/Stripe/service-role creds."
+    },
+    {
+     "name": "sleep_until(t0, at_s) + sorted event schedule",
+     "location": "scripts/anthropic_cache_probe.py:335-340; schedule assembly at 439-471",
+     "what": "Monotonic-clock timeline: writes at t=0, then a sorted (at_s, kind) event list of staggered single reads. The pattern for any TTL/refresh experiment."
+    },
+    {
+     "name": "sys_call(...) single-breakpoint system-prefix request",
+     "location": "scripts/anthropic_cache_probe.py:314-328",
+     "what": "Builds {model, max_tokens:8, system:[{text, cache_control:{type:ephemeral[,ttl]}}], messages:[user]} and auto-selects write_mult 2.0 + the extended-cache-ttl beta header when ttl='1h'."
+    },
+    {
+     "name": "_e3a_system(base1, base2, inject, where)",
+     "location": "scripts/anthropic_cache_probe.py:505-523",
+     "what": "Two breakpointed system blocks with a volatile token injected at top / mid / (tail via the user turn). This is the harness that produced the 12.153x / 6.602x / 1.014x numbers."
+    },
+    {
+     "name": "promoted_blocks(layer, pipeline_id, agent, role, doc, question)",
+     "location": "scripts/cross_agent_cache_probe.py:406-434",
+     "what": "Calls the SHIPPED SharedPrefixLayer.layout_ex, hard-fails if the doc is not at position 0, then applies exactly one cache_control at the end of the promoted block. The only place the shipped mechanism is exercised end-to-end against live API."
+    },
+    {
+     "name": "body_for(blocks) breakpoint-count check",
+     "location": "scripts/cross_agent_cache_probe.py:437-446",
+     "what": "Refuses >4 cache_control blocks locally (a 5th is a hard HTTP 400 on the wire)."
+    },
+    {
+     "name": "dump(ledger) receipt writer",
+     "location": "scripts/anthropic_cache_probe.py:675-694 (cross-agent report assembly at 499-512 and finally-block at 568-575)",
+     "what": "Serializes model, prices, cap, and per-call {probe,label,at_s,status,usage,spend_usd,prefix_tokens,cache_read,cache_write,fresh_input,error,note}; written on success AND on spend-guard abort/KeyboardInterrupt so partial data survives."
+    },
+    {
+     "name": "asdict_calls(calls)",
+     "location": "scripts/cross_agent_cache_probe.py:579-589",
+     "what": "dataclasses.asdict plus the derived read/write/fresh/output/prefix columns flattened into each receipt row."
+    }
+   ],
+   "facts": [
+    {
+     "fact": "anthropic_cache_probe.py sends POST https://api.anthropic.com/v1/messages with model=claude-haiku-4-5, max_tokens=8, a single `system` text block carrying cache_control {type:ephemeral} (plus ttl:'1h' for the tier probes), and a one-line user turn ('Reply with the single word OK.'). P4 instead sends N=1/4/5 breakpointed system blocks.",
+     "evidence": "scripts/anthropic_cache_probe.py:95, 314-328, 375-397"
+    },
+    {
+     "fact": "anthropic_cache_probe.py records, per call: HTTP status, the entire response `usage` object, a locally computed spend_usd, the error message from data['error']['message'] (truncated to 300 chars), at_s on the timeline, and a free-text note. It never records response text/content.",
+     "evidence": "scripts/anthropic_cache_probe.py:124-136, 296-311, 681-687"
+    },
+    {
+     "fact": "Usage fields captured by name in anthropic_cache_probe.py are exactly: cache_read_input_tokens, cache_creation_input_tokens, input_tokens, output_tokens. count_tokens additionally reads top-level input_tokens from the /count_tokens response.",
+     "evidence": "scripts/anthropic_cache_probe.py:139, 143, 147, 236-239, 227"
+    },
+    {
+     "fact": "cross_agent_cache_probe.py sends POST to the same /v1/messages URL with model=claude-haiku-4-5, max_tokens=8, and NO system block at all \u2014 every arm packs role/doc/question as content blocks inside one user message.",
+     "evidence": "scripts/cross_agent_cache_probe.py:114, 437-446, 391-403"
+    },
+    {
+     "fact": "The three cross-agent arms are: NAIVE_NOCACHE (no cache_control anywhere), NAIVE_CACHED (one cache_control at the end of the doc block, doc in position 1 after the per-agent role), and PROMOTED (order chosen by shipped SharedPrefixLayer.layout_ex, doc hoisted to position 0, one cache_control at the end of that block).",
+     "evidence": "scripts/cross_agent_cache_probe.py:180, 391-434, 453-480"
+    },
+    {
+     "fact": "cross_agent_cache_probe.py records per call: replication, arm, agent, agent_index, wall_s (time.time() stamped BEFORE the request), status, full usage dict, spend_usd, error, sha256 of the doc, the layer's `reordered` flag, and a note.",
+     "evidence": "scripts/cross_agent_cache_probe.py:187-202, 363, 475-476"
+    },
+    {
+     "fact": "Usage fields captured by name in cross_agent_cache_probe.py: cache_read_input_tokens, cache_creation_input_tokens, input_tokens, output_tokens (the last exposed as the `output` property and re-emitted as output_tokens in the receipt rows).",
+     "evidence": "scripts/cross_agent_cache_probe.py:206, 210, 214, 218, 311-314, 586"
+    },
+    {
+     "fact": "Both probes use the identical price table for claude-haiku-4-5, in $/Mtok: input 1.0, cached 0.1, write 1.25, output 5.0. anthropic_cache_probe.py adds WRITE_MULT_1H = 2.0 for 1h-tier writes; cross_agent_cache_probe.py has no 1h multiplier.",
+     "evidence": "scripts/anthropic_cache_probe.py:90-93; scripts/cross_agent_cache_probe.py:111-112"
+    },
+    {
+     "fact": "Those rates are copied verbatim from brevitas/receipts.py MODEL_PRICES, which really does carry ('anthropic','claude-haiku-4-5'): {input 1.0, cached .1, write 1.25, output 5.0} under PRICING_VERSION '2026-07-27'. The probes keep them as literals so a mid-run repricing cannot perturb the cap arithmetic, and the comment notes they sit marginally ABOVE public haiku list ($0.80/$4.00) so the cap over-books.",
+     "evidence": "brevitas/receipts.py:290-303; scripts/anthropic_cache_probe.py:87-91; scripts/cross_agent_cache_probe.py:107-112"
+    },
+    {
+     "fact": "Spend caps: $5.00 for the P1-P5 run, $0.50 for the E3 sub-run, $2.00 for the cross-agent probe; each guards a PROJECTED worst-case cold write before sending and aborts on cumulative overrun.",
+     "evidence": "scripts/anthropic_cache_probe.py:76, 478, 258-263, 291-293; scripts/cross_agent_cache_probe.py:94, 326-331, 360-362"
+    },
+    {
+     "fact": "Cold-cache verification is achieved structurally, not by waiting: every probe/arm/replication builds its own seeded document with a distinct tag, so bytes differ from position 0 and cross-arm inheritance is impossible. The cross-agent run additionally counterbalances arm order per replication.",
+     "evidence": "scripts/anthropic_cache_probe.py:178-188, 422-427; scripts/cross_agent_cache_probe.py:253-262, 544-552"
+    },
+    {
+     "fact": "The 1h tier is requested via cache_control ttl:'1h' plus the anthropic-beta header 'extended-cache-ttl-2025-04-11'; API version pinned to 2023-06-01 in both probes.",
+     "evidence": "scripts/anthropic_cache_probe.py:97-99, 212-216, 326-328"
+    },
+    {
+     "fact": "Doc E1: predicted +15% (interval +5% to +35%) incremental for Brevitas shaping over a competent native-caching Anthropic customer (n=36/arm + 3 secondary configs); measured -30.84% (config A), steady state (turns>=2, input-only) -0.05% to -1.6% ~= 0.0%. 104% of the loss is one shipped bug: router.cache_write_allowed strips cache_control from every session's first call, skipping the write AND forfeiting a read of already-warm state \u2014 $0.015082 of a $0.014556 arm gap. Spend $0.3083. DeepSeek measured -1.27%.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:15, 9, 41"
+    },
+    {
+     "fact": "Doc E2: 5 agents, one 8,025-token shared doc, 3 arms x 6 reps, shipped shared_prefix.py doing the hoisting. Measured 24/24 downstream cross-agent reads at ratio 1.0000, saving -66.17% (sd 0.31pp) vs the cheaper naive arm; NAIVE_CACHED costs +24.12% vs no cache; sub-floor probe returned exactly 0. Closed form saving = f*(N-1.25-0.10(N-1))/N matches live to 0.21pp. Spend $0.6435.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:16, 29"
+    },
+    {
+     "fact": "Doc correction dated 2026-08-14: 67.0% is the value at N=5, NOT a ceiling. saving/f = 0.9 - 1.15/N is monotone increasing with asymptote 0.9f; table gives 0.325 (N=2), 0.670 (N=5), 0.708 (N=6), 0.785 (N=10), 0.854 (N=25), 0.889 (N=100). An earlier revision calling the 70-88% figures 'arithmetically impossible' was wrong.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:9, 31-37"
+    },
+    {
+     "fact": "Doc E3a: in a 10,101-token 2-breakpoint prefix, a top-injected timestamp costs 12.153x a clean read, mid 6.602x, tail 1.014x; relocating top->tail is -91.7% per call. Unanticipated finding: invalidation quantizes to the BREAKPOINT, not the token, so segmentation recovers at most ~75% and 0% for position-0 volatility. E3 combined spend $0.0968.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:17"
+    },
+    {
+     "fact": "Doc E3b: the preregistered >60-min refresh test could not run; a bounded 2x2 was substituted (flagged deviation). Proved the tier is a property of the WRITE \u2014 a ttl=1h read does not promote a 5m entry, and a plain read does not demote a 1h entry. Headline question (does a read refresh the 1h tier?) remains INCONCLUSIVE.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:18, 47"
+    },
+    {
+     "fact": "Doc E4 (offline, $0): the ~5% field prior is 82.9% arm-order cache contamination \u2014 the real cross-agent effect in that benchmark was 0 tokens read; the shipped reorder is dead in four independent places (_reorder_safe rejects any message list containing a system role, dropin.py never passes pipeline=, _reorder_enabled() defaults off, the cold-start estimator poisons the threshold); synthetic corpora show 93-95% duplicate content but only 0.8-1.3% cacheable prefix; the promoted shared block (538/619 tok) is below both the Anthropic and OpenAI floors.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:19, 39"
+    },
+    {
+     "fact": "Doc mechanism section: Anthropic's cache is breakpoint-granular with a 4,096-token Haiku floor and a 4-breakpoint cap; DeepSeek uses automatic 128-token blocks. A per-agent system prompt in front of shared content caps the common prefix at 7-17 tokens on the repo's own corpora; hoisting to position 0 yields 66% live (or 90.2% of prompt tokens cached in the single-agent contrast). DeepSeek reached 78.2% cross-agent hits with no help at all. The ~5% field number corresponds to f ~= 7.5%.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:25-29, 39"
+    },
+    {
+     "fact": "Doc product finding: on Anthropic the wire order is tools->system->messages, so message-level reordering can never hoist content ahead of a per-agent system block \u2014 hoisting must move the doc INTO the system block. Also flagged: shared_prefix.py:9 claims 'strictly lossless' while engine.py:262-266 stamps the same transform response_faithful=False / experimental_unverified, with no output-equivalence eval.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:45"
+    },
+    {
+     "fact": "Doc unmeasured list with costs: field f (needs warm_prefix_touch + prefix_hash stamping and live traffic \u2014 none since 2026-07-17); 1h read-refresh probe (7 calls, $0.037-0.073, 110 min wall clock); cross-key/cross-workspace sharing (~$0.03 + a second probe key); concurrency A/B of the batch_group barrier (~$1-2; commit 79a5c3f already measured that N concurrent identical prefixes all pay writes); losslessness eval; OpenAI/Gemini cache maps at ~$0.25-0.50 each on the anthropic_cache_probe.py pattern.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:57-65"
+    },
+    {
+     "fact": "Total live spend for the whole write-up was $1.0487, probe key only, claude-haiku-4-5 throughout; raw JSON receipts (E1_*.json, E2_*.json, E3_determinism_1h.json, e4_*.json) live in a session scratchpad, not in the repo.",
+     "evidence": "docs/DOES_AI_NATIVE_REDIS_WORK.md:3"
+    }
+   ],
+   "gotchas": [
+    "cross_agent_cache_probe.py's docstring advertises three validity gates that DO NOT EXIST IN CODE: 'first call of every arm must report cache_read == 0', 'PROMOTED agent-1 must report cache_creation > 0', and 'the doc block's sha256 is asserted identical across all 5 PROMOTED requests'. Nothing asserts any of these \u2014 doc_sha256 is merely recorded per row (scripts/cross_agent_cache_probe.py:476) for offline checking. Reusing this file does not give you those gates.",
+    "MAX_GAP_S = 240.0 (scripts/cross_agent_cache_probe.py:128) is dead code. The documented 'any inter-call gap > 240s marks the replication contaminated and it is dropped BEFORE its result is read' rule is never implemented; only wall_s timestamps are recorded.",
+    "OUT_DIR in cross_agent_cache_probe.py:101-104 hard-codes a stale session scratchpad path (session b1404a28-...), which is NOT this session's scratchpad. Set BREVITAS_PROBE_OUT_DIR or the receipts land in a dead directory (os.makedirs will recreate it).",
+    "anthropic_cache_probe.py's docstring says receipts go to 'the scratchpad (or CWD)', but the default is REPO_ROOT/anthropic_cache_probe_receipts.json \u2014 it writes into the git working tree unless BREVITAS_PROBE_OUT is set (scripts/anthropic_cache_probe.py:676-677).",
+    "price() only reads the FLAT cache_creation_input_tokens field. When mixed TTLs are in play Anthropic also returns a `cache_creation` breakdown object (ephemeral_5m_input_tokens / ephemeral_1h_input_tokens); neither probe reads it, so 1h vs 5m write pricing is inferred from the requested ttl via write_mult, not from the receipt.",
+    "The single retry sleeps 3.0s (scripts/anthropic_cache_probe.py:309) inside timed probes. On the slow P1/P2/P5 timeline a retry silently shifts a scheduled read by ~3s+RTT; the recorded at_s comes from the schedule, not from the actual send time. cross_agent_cache_probe.py stamps wall_s BEFORE the attempt loop (line 363), so a retried call's wall_s also understates the real send time.",
+    "A call that fails both attempts records spend_usd = 0.0 and an empty usage dict, so a run that 429s repeatedly looks cheap and the spend cap never trips \u2014 failure is invisible to the ledger except via status/error columns.",
+    "The two count_tokens helpers are NOT interchangeable: anthropic_cache_probe.py:219-228 sends blocks as `system` with a dummy '.' user turn; cross_agent_cache_probe.py:294-303 sends them as user-message content. Token counts from the two differ by the request scaffolding, and the second matches the shape that probe actually bills.",
+    "The price literals are marginally ABOVE current public haiku list ($0.80/$4.00 per the comment at scripts/anthropic_cache_probe.py:87-89), so every spend figure in these probes and in the doc is a conservative over-estimate, not the real invoice.",
+    "The doc contains a self-correction: any reading of it that treats 67.0% as a ceiling, or repeats 'the 70-88% figures require f > 104% \u2014 impossible', is the retracted 2026-08-11 version. The live correction is at docs/DOES_AI_NATIVE_REDIS_WORK.md:9 and :31-37.",
+    "E2 ran at f = 0.99 and is explicitly a SERIAL best case \u2014 calls are sequential because an Anthropic entry only becomes readable after the first response begins. Concurrent fan-out makes all N callers pay the write (doc line 62, and the field-measurement memo agrees). Do not reuse E2's 66% as a fan-out number.",
+    "cross_agent_cache_probe.py imports the shipped SharedPrefixLayer inside run_arm (line 455) and requires REPO_ROOT on sys.path (line 495); it also raises if the layer fails to promote the doc to position 0 (lines 426-429) \u2014 with the shipped defaults the reorder is dead in four places per E4, so the explicit register_shared path at line 463-465 is what keeps it alive.",
+    "MIN_CACHEABLE_TOKENS = 4096 (scripts/cross_agent_cache_probe.py:118-121) is model-specific to claude-haiku-4-5 and was proven live in docs/ANTHROPIC_CACHE_MAP.md; the comment explicitly flags the '2048' in benchmarks/native_cache_baseline.py as WRONG for this model.",
+    "Both probes are guarded by different ack env vars \u2014 BREVITAS_ANTHROPIC_PROBE=1 vs BREVITAS_CROSS_AGENT_PROBE=1 \u2014 and both read only BREVITAS_PROBE_ANTHROPIC_KEY. `anthropic_cache_probe.py e3` runs a different entry point (main_e3) under a $0.50 cap, not the P1-P5 run."
+   ]
+  },
+  {
+   "summary": "`scripts/field_cache_measure.py` is an offline, read-only harness that parses Claude Code session transcripts (`~/.claude/projects/*/*.jsonl`) and extracts Anthropic's OWN per-request usage counters (`cache_read_input_tokens`, `cache_creation_input_tokens`, `ephemeral_5m/1h_input_tokens`) from assistant records \u2014 no tokenizer, no estimation, no prose log parsing. Over 112 sessions / 9,224 billed requests / 2.49B prompt tokens it measures a 97.47% token-weighted realized hit rate, an 88.8% 1h-tier write share, and a mechanism split showing 99.86% of all cache value is within-session growing-prefix continuation vs 0.14% cross-session. It also measures the TTL cliff in situ via a prefix-recovery metric (`cache_read(cur)/prompt_tokens(prev)`), finding the field cliff at 3600s (the 1h tier boundary), not 300s. `docs/FIELD_CACHE_MEASUREMENT.md` pairs this with a separate live $1.08 probe (`scripts/xagent_billing_probe.py`) covering concurrent fan-out (every caller pays the write at 0ms skew), the k=2 sign flip of the +24.83% inversion, and the minimum-cacheable-length floor truncating the breakpoint invalidation staircase. Dollars everywhere are rate-card arithmetic over vendor counters, explicitly not reconciled against any invoice.",
+   "reusable": [
+    {
+     "name": "load_turns()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:98-159",
+     "what": "The transcript-to-receipt ingest layer: globs ~/.claude/projects/*/*.jsonl, skips any path containing a 'subagents' component (:104), filters type=='assistant' (:120), pulls message.usage and message.usage.cache_creation, builds Turn records, then dedupes per session by requestId (:150-156). Reusable verbatim as the front end of any new field harness."
+    },
+    {
+     "name": "Turn.prefix_tokens",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:73-75",
+     "what": "Correct reconstruction of total prompt tokens the provider saw = input_tokens + cache_read_input_tokens + cache_creation_input_tokens. Valid because Anthropic's input_tokens excludes cached tokens. Copy this rather than re-deriving."
+    },
+    {
+     "name": "hit_rate()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:162-175",
+     "what": "Token-weighted realized hit rate = read / (read + create + fresh_input), plus the three component totals."
+    },
+    {
+     "name": "cost()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:178-199",
+     "what": "Billed-vs-no-cache dollar counterfactual with tier-aware write pricing (5m at 1.25x, 1h at 2.00x, untiered writes falling back to the 5m rate at :183-185). Returns billed_usd, nocache_usd, saving_usd, saving_pct, write_usd, read_usd."
+    },
+    {
+     "name": "ttl_cliff() + GAP_BUCKETS",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:203-265",
+     "what": "The novel instrument: bins consecutive turn pairs by inter-request gap and computes recovery = min(1.0, cache_read(cur)/prefix_tokens(prev)) at :253, flagging outright loss at recovery<0.05 (:255) and accumulating the tokens re-paid. Detects the TTL cliff from observational traffic without a controlled probe."
+    },
+    {
+     "name": "mechanism_split()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:268-303",
+     "what": "Splits cache reads into first-turn-of-session (cross-session/shared-credential, cannot be self-written) vs later turns (within-session continuation). Produces the headline share_of_reads_from_cold_open number."
+    },
+    {
+     "name": "gap_distribution() and pct()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:317-346",
+     "what": "Measured inter-request arrival distribution (median/p75/p90/p99 plus P(gap<=300s), P(300s<gap<=1h), P(gap>1h)) \u2014 the direct replacement for the random.Random arrivals in scripts/warm_replay_sim.py. pct() is a standalone linear-interpolation percentile helper."
+    },
+    {
+     "name": "tier_usage()",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:306-314",
+     "what": "5m vs 1h ephemeral write token totals and share_1h."
+    },
+    {
+     "name": "Call dataclass + accessors (live probe)",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/xagent_billing_probe.py:147-175",
+     "what": "Reads the same four usage counters straight off the live HTTP response body (captured at :220 and :383) and prices a single call. The live-API analogue of the Turn dataclass."
+    },
+    {
+     "name": "PRICE / RATE_CARD_NOTE",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scripts/field_cache_measure.py:45-55",
+     "what": "The assumed Anthropic list rate card ($/Mtok: input 3.00, cache_read 0.30, write_5m 3.75, write_1h 6.00, output 15.00) plus the explicit disclaimer string that dollars are unreconciled arithmetic."
+    }
+   ],
+   "facts": [
+    {
+     "fact": "Token counts come from REAL API response usage objects, not a tokenizer and not prose log parsing. The harness reads message.usage.{input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens} and message.usage.cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens} verbatim from assistant records persisted by Claude Code. There is no count_tokens call, no tiktoken/transformers import, and no character-length heuristic anywhere in the file.",
+     "evidence": "scripts/field_cache_measure.py:124-139 (extraction), :2-15 (docstring stating the provider's own receipt), :27 ('Read-only. Touches no network and no API key.')"
+    },
+    {
+     "fact": "Field population as documented: 112 sessions, 9,224 billed requests, 2,493,264,308 prompt tokens, from one user's Claude Code transcripts.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:29; population limitation at :210"
+    },
+    {
+     "fact": "Realized token-weighted cache hit rate is 97.47% (2,430,091,774 of 2,493,264,308 prompt tokens billed at the 0.10x read rate). Cache writes 63,134,138; fresh uncached input only 38,396 tokens.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:33-38; computation at scripts/field_cache_measure.py:162-175"
+    },
+    {
+     "fact": "The 1h ephemeral tier accounts for 88.8% of all cache writes \u2014 the shipped agent buys the 1h tier by default.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:39; computation at scripts/field_cache_measure.py:306-314"
+    },
+    {
+     "fact": "Caching saved 84.1% against a no-cache counterfactual ($1,212 billed vs $7,601), under an assumed flat Sonnet-class rate card, not a reconciled invoice.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:40 and :211-214; PRICE dict at scripts/field_cache_measure.py:45-51; RATE_CARD_NOTE at :52-55"
+    },
+    {
+     "fact": "99.86% of all realized cache value is within-session growing-prefix continuation (hit rate 97.63%); only 0.14% comes from cold-open / cross-session shared-credential reads (hit rate 44.02%). 75 of 112 sessions did read cache on their very first request, so cross-session sharing is common but economically negligible because a first request is one of ~82 turns.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:50-57; computation at scripts/field_cache_measure.py:268-303"
+    },
+    {
+     "fact": "Measured inter-request gap distribution: median 15.4s, p90 117.3s, p99 3,925s; P(gap<=300s)=93.7%, P(300s<gap<=1h)=5.2%, P(gap>1h)=1.1%.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:67-71; computation at scripts/field_cache_measure.py:328-346"
+    },
+    {
+     "fact": "The field TTL cliff sits at 3600s, not 300s, because the workload buys the 1h tier. Median prefix recovery is 100% through the 1800-3600s bucket (loss rate 9.0%, 67 pairs) and drops to 0.0% at 3600-7200s (loss rate 72.7%, 33 pairs) and 7200-86400s (0.0%, 75.8%, 62 pairs). There is no discontinuity at the 300s bucket boundary: 240-300s shows 100% median recovery / 4.1% loss and 300-330s shows 100% / 4.3%.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:85-96; recovery metric at scripts/field_cache_measure.py:219, :253-258; bucket edges at :203-207"
+    },
+    {
+     "fact": "38.3M tokens were re-paid after a lost prefix, ~$144 at the 5m write rate, roughly 12% of the bill.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:96; accumulation at scripts/field_cache_measure.py:257-258, printed at :424-426"
+    },
+    {
+     "fact": "Cache-write multipliers (read 0.10x, 5m write 1.25x, 1h write 2.00x) are ASSUMED constants in the rate card, not measured by this harness.",
+     "evidence": "scripts/field_cache_measure.py:45-51"
+    },
+    {
+     "fact": "Concurrent fan-out: five callers at one fresh above-floor prefix, mean number billed cache_creation \u2014 0ms skew 5.0 of 5, 50ms 3.0, 200ms 3.5, 1000ms 1.0, 5000ms 1.0. At zero skew there are five writers and zero readers, inverting the f*(N-1.25-0.10(N-1))/N saving identity; it is recovered above ~1s skew. n=2 per cell, so the transition window is bounded but not characterized.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:110-122 and :128-132; live probe scripts/xagent_billing_probe.py:220, :383"
+    },
+    {
+     "fact": "The +24% cached-arm cost inversion is a depth-1 artifact and flips sign at k=2: cached vs plain by reuse depth k = +24.83% (k=1), -32.08% (2), -51.69% (3), -66.52% (5), -77.84% (10). It is the cost of marking a prefix that is never reused.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:136-146"
+    },
+    {
+     "fact": "Cache invalidation is breakpoint-granular, not position-granular. With a single breakpoint all ten perturbation axes (leading space, trailing space, CRLF, NFC/NFD, case flip, single-token insertion at head, middle AND tail) gave 0% recovery; only the byte-identical control recovered 100%.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:150-157"
+    },
+    {
+     "fact": "The ~4,096-token minimum cacheable length truncates the breakpoint recovery staircase from below. With a 4-segment prefix, measured recovery was 0%/0% (seg 1), 0%/0% (seg 2, predicted 25%), 50.4%/49.9% (seg 3), 74.9%/74.8% (seg 4), 100%/100% (past last breakpoint). Segment 2's surviving prefix is ~2,194 tokens (below the floor); segment 3's is ~4,388 tokens (clears by 292). Rule: recovery = (j-1)/n if (j-1)/n*L >= floor(model), else 0. Measured on claude-haiku-4-5 only.",
+     "evidence": "docs/FIELD_CACHE_MEASUREMENT.md:161-186; per-model caveat at :216-217"
+    },
+    {
+     "fact": "The harness reproduces today (2026-08-17) on a grown corpus: 117 sessions, 9,702 billed requests, 2,702,769,326 prompt tokens, 97.43% hit rate, 90.5% 1h-tier write share, 83.9% saving, continuation 97.58% / cold-open 44.79% / 0.13% share from cold open, gaps median 15.9s p90 128.3s p99 4,239.4s with 93.6/5.3/1.1% split, cliff still at 3600-7200s (0.0% median recovery, 68.6% loss). Every headline held to ~0.1pp.",
+     "evidence": "Re-run of `.venv/bin/python scripts/field_cache_measure.py` on 2026-08-17; JSON at /private/tmp/claude-501/-Users-jamesyang-Documents-GitHub-Brevitas-Systems/30a08619-bfdd-4d15-a8c6-1c8b59d5d979/scratchpad/fc_rerun.json"
+    },
+    {
+     "fact": "The re-run model mix is claude-opus-5 (4,686 requests), claude-fable-5 (3,675), claude-opus-4-8 (1,150), claude-sonnet-5 (191) \u2014 all priced at the single Sonnet-class rate card. Per-session realized hit rate: median 0.959, p10 0.813, p90 0.987.",
+     "evidence": "by_model and per_session_hit_rate sections of the re-run JSON; PRICE at scripts/field_cache_measure.py:45-51"
+    }
+   ],
+   "gotchas": [
+    "The Part 2 receipt files the doc cites \u2014 field_cache.json, xagent_receipts.json, x4_receipts.json (docs/FIELD_CACHE_MEASUREMENT.md:6) \u2014 do not exist anywhere on disk and appear in no git commit (`git log --all --` returns nothing). Part 1 is re-runnable offline; the X1-X4 live-probe numbers are currently UNVERIFIABLE without spending money again.",
+    "Not byte-for-byte reproducible: the harness reads a live, growing directory (~/.claude/projects). The documented 112 sessions / 9,224 requests is already 117 / 9,702 as of 2026-08-17. Any new harness that needs a frozen baseline must snapshot the corpus.",
+    "Subagent transcripts are structurally EXCLUDED from the field population (scripts/field_cache_measure.py:102-105), while Part 2's headline new result is about concurrent fan-out. The field half therefore cannot observe the regime the live half claims is most costly \u2014 the two halves do not cover the same traffic.",
+    "Mixed models are priced at ONE flat Sonnet-class rate card (scripts/field_cache_measure.py:45-51). The re-run corpus is majority claude-opus-5 (4,686 requests) and claude-fable-5 (3,675). Absolute dollar figures ($1,212 billed / $144 re-paid / $7,601 counterfactual) are therefore wrong in magnitude. Ratio-derived percentages (hit rate, saving_pct) survive because the 0.10x/1.25x/2.00x multipliers are uniform across models.",
+    "No invoice has ever been reconciled \u2014 every dollar is rate-card arithmetic over vendor-reported counters. The doc says the 'receipts-grade' framing must not be used externally until a dedicated-account reconciliation is run (docs/FIELD_CACHE_MEASUREMENT.md:211-214, and RATE_CARD_NOTE at scripts/field_cache_measure.py:52-55).",
+    "The TTL loss rate is an UPPER BOUND on expiry, not a measurement of it: recovery also falls when earlier context is edited (cache invalidation, not expiry). Stated at scripts/field_cache_measure.py:225-229 and docs/FIELD_CACHE_MEASUREMENT.md:98-99.",
+    "Single subject: one user, one agent harness (Claude Code), one machine. The arrival distribution is explicitly not claimed to generalize (docs/FIELD_CACHE_MEASUREMENT.md:210).",
+    "X1 is n=2 per cell and the 50ms/200ms cells disagree between reps (5 vs 1, and 2 vs 5). Only the endpoints (0ms -> 5 writers, >=1s -> 1 writer) replicate; the race window has no measured shape (docs/FIELD_CACHE_MEASUREMENT.md:128-132).",
+    "The X4 minimum-cacheable-length floor result is claude-haiku-4-5 only. Floors and tiers are per-model, so it must be re-run per model before being generalized (docs/FIELD_CACHE_MEASUREMENT.md:216-217).",
+    "Dedupe falls back to the composite key f'{ts}:{prefix_tokens}' when requestId is absent (scripts/field_cache_measure.py:151), which can silently collapse two genuinely distinct turns that share a timestamp and prompt size.",
+    "The 86400-inf gap bucket has only 3 pairs in the re-run (median recovery 59.5%, loss 33.3%) \u2014 noise, not signal. Several mid buckets (240-300s: 49-56 pairs; 300-330s: 23 pairs; 3600-7200s: 33-35 pairs) are also small; only the 0-30s bucket (~6,600-6,900 pairs) is large.",
+    "Turn.is_hit (scripts/field_cache_measure.py:78-79) is dead code \u2014 defined and never referenced. Do not assume a request-count-weighted hit rate exists; every reported hit rate is TOKEN-weighted.",
+    "This document RETRACTS an earlier headline: 'f is effectively zero in the field' was an artifact of scanning string literals in 8 repos at HEAD, which cannot see runtime-assembled prompts. Also retracted: '67% is a hard ceiling' and the general form of 'relocate volatile tokens tailward' (docs/FIELD_CACHE_MEASUREMENT.md:192-197). Do not cite the older DOES_AI_NATIVE_REDIS_WORK.md claims without this correction.",
+    "Transcripts are the user's own private data; publishing any derived corpus requires a separate privacy pass (docs/FIELD_CACHE_MEASUREMENT.md:218-219)."
+   ]
+  },
+  {
+   "facts": [
+    {
+     "fact": "The directory holds 7 .jsonl files + 2 .summary.json, 44 total JSONL records, 34 call records, 29 with HTTP 200, spanning 2026-07-27T22:05:27Z to 2026-07-28T05:51:56Z",
+     "evidence": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/cache_probe_results/ (ls + per-file record count)"
+    },
+    {
+     "fact": "Only 3 providers produced files: deepseek (1 file, 13 recs, 11 x 200), xai (4 files, 25 recs, 18 x 200), openai (2 files, 6 recs, 0 x 200). Anthropic is configured in the generator but has ZERO result files.",
+     "evidence": "cache_probe_results/ listing; probe_cache_ttl.py:91-100 defines the anthropic provider spec"
+    },
+    {
+     "fact": "OpenAI produced no usable data at all: run 1 got ConnectError against base http://localhost:4242/openai/v1, run 2 got HTTP 429 'You exceeded your current quota' on both arms",
+     "evidence": "openai_20260727T220527Z.jsonl (3 recs), openai_20260727T220616Z.jsonl (3 recs)"
+    },
+    {
+     "fact": "Record schema for a successful call is exactly: arm, phase, status, prompt_tokens, cached_tokens, hit, t_min, at. No output/completion tokens, no cache-creation tokens, no dollar amounts, no latency, no raw response body.",
+     "evidence": "probe_cache_ttl.py:224-227 constructs the rec dict; confirmed by jq keys over all 7 files"
+    },
+    {
+     "fact": "prompt_tokens and cached_tokens are REAL values read verbatim from the provider's response.usage object; 'hit' is DERIVED locally as cached >= prefix_sentences*15*0.5 (=825), not reported by any API",
+     "evidence": "probe_cache_ttl.py:210-226"
+    },
+    {
+     "fact": "The cached-token field path differs per provider: usage.prompt_tokens_details.cached_tokens for openai/xai, top-level usage.prompt_cache_hit_tokens for deepseek, usage.cache_read_input_tokens for anthropic",
+     "evidence": "probe_cache_ttl.py:56, 75, 86, 97 ('cached_field' tuples) applied at probe_cache_ttl.py:211-213"
+    },
+    {
+     "fact": "Only two token classes exist in the data: total input (prompt_tokens) and cache-read (cached_tokens). Uncached/miss tokens are recoverable exactly since prompt_tokens = cached_tokens + miss in every record.",
+     "evidence": "computed over all 29 200-status records; e.g. deepseek 2449-2432=17, xai 2431-2304=127"
+    },
+    {
+     "fact": "Cache-WRITE tokens are absent from every record. cache_creation_input_tokens is referenced only in the Anthropic code path, which never executed. On a write call cached_tokens=0 and the whole prompt is logged as ordinary input, so a write premium is unobservable in this dataset.",
+     "evidence": "probe_cache_ttl.py:216-219 (anthropic-only branch); deepseek/xai 'write' phase records all show cached_tokens 0 or the 128 floor"
+    },
+    {
+     "fact": "DeepSeek deepseek-chat magnitudes: prompt_tokens 2449 (2443 on the 1-char ping), cached_tokens 0 on write then exactly 2432 on all 9 subsequent calls, uncached remainder 11-17",
+     "evidence": "deepseek_20260728T043704Z.jsonl, all 11 call records"
+    },
+    {
+     "fact": "xAI grok-4.5 reports a constant 128-token cached floor on a brand-new prefix (chat template, not a real hit); a genuine warm hit reports 2304 with prompt_tokens 2425-2433",
+     "evidence": "xai_20260728T045654Z.jsonl write records (cached 128) vs sanity onward (cached 2304); comment at probe_cache_ttl.py:220-223"
+    },
+    {
+     "fact": "Cache accounting is quantized to 128-token blocks on both measured providers: 2432 = 19x128 (deepseek), 2304 = 18x128 and 128 = 1x128 (xai)",
+     "evidence": "arithmetic over cached_tokens values in deepseek_20260728T043704Z.jsonl and xai_20260728T045654Z.jsonl"
+    },
+    {
+     "fact": "DeepSeek baseline prompt-cache TTL is >=55 minutes with NO refresh traffic: arm A was written at t0, left completely untouched, and still reported cached_tokens 2432 at t+35.02 and t+55.01",
+     "evidence": "deepseek_20260728T043704Z.jsonl phases control_1 (t_min 35.02) and control_2 (t_min 55.01), both hit:true"
+    },
+    {
+     "fact": "The deepseek run completed with verdict TTL_LONG_INCONCLUSIVE - both arms alive at 55-60m means the pings were never load-bearing, so refresh-on-read remains unmeasured for DeepSeek",
+     "evidence": "deepseek_20260728T043704Z.summary.json and the phase:'done' record"
+    },
+    {
+     "fact": "The one good xAI run (045654) is TRUNCATED: it logs through control_2 at t_min 55.03 but has no 'final' probe, no phase:'done' record, and no .summary.json - the process was killed before t+60",
+     "evidence": "xai_20260728T045654Z.jsonl has 11 records ending at 2026-07-28T05:51:56Z; no xai_20260728T045654Z.summary.json exists in the directory"
+    },
+    {
+     "fact": "xAI control arm A also survived untouched to t+35.03 and t+55.03 with cached_tokens 2304, matching DeepSeek's shape (baseline TTL >= 55 min)",
+     "evidence": "xai_20260728T045654Z.jsonl control_1 and control_2 records"
+    },
+    {
+     "fact": "Two xAI runs are formally void: 044826 got HTTP 400 'Model not found: grok-4.1-fast', and 045225 recorded verdict VOID_NO_BASELINE_HIT because the immediate re-read returned only the 128-token floor",
+     "evidence": "xai_20260728T044826Z.jsonl; xai_20260728T045225Z.summary.json"
+    },
+    {
+     "fact": "The generating script was edited mid-session: xai_20260728T044923Z.jsonl records cached_tokens 128 with hit:true, while xai_20260728T045225Z.jsonl three minutes later records the identical 128 with hit:false. The 04:49 file used an older hit rule (evidently cached>0) and its hit flags are inconsistent with every other file.",
+     "evidence": "xai_20260728T044923Z.jsonl vs xai_20260728T045225Z.jsonl; current threshold logic at probe_cache_ttl.py:223"
+    },
+    {
+     "fact": "prefix_tokens_estimate (1650) logged in every start record is a naive sentences*15 estimate, not a measurement; the actual measured prefix was ~2300-2430 tokens",
+     "evidence": "probe_cache_ttl.py:240 vs observed prompt_tokens in the jsonl files"
+    },
+    {
+     "fact": "The entire cache_probe_results directory and probe_cache_ttl.py are gitignored, so there is no version history or commit provenance for any of it",
+     "evidence": "git check-ignore -v returns '.gitignore:29:/scratchpad/' for both paths"
+    },
+    {
+     "fact": "The experiment design is a genuine controlled TTL experiment: arm A control written at t0 and never touched (probed t+35, t+55), arm B pinged at t+12/24/36/48 with a final probe at t+60; arms use distinct nonced prefixes so they cannot share cache",
+     "evidence": "probe_cache_ttl.py:7-18 docstring, :44 _SLOW schedule, :146-151 per-arm nonced prefixes, :253-263 event loop"
+    }
+   ],
+   "gotchas": [
+    "The 'hit' field is NOT provider-reported - it is a local heuristic (cached >= 825). Any analysis that treats it as ground truth is trusting a hardcoded threshold, and that threshold changed between files.",
+    "xai_20260728T044923Z.jsonl's hit flags are WRONG relative to the rest of the corpus: cached_tokens 128 is recorded as hit:true there but hit:false everywhere else. The script was edited between 04:49 and 04:52. Do not pool these records with the later ones.",
+    "xAI reports a constant 128-token cached floor on completely cold prefixes. Naive 'cached_tokens > 0 means cache hit' logic gives a false positive on every xAI call and will inflate any measured hit rate.",
+    "There is ZERO Anthropic data despite the provider being configured. The only code path that would capture cache_creation_input_tokens (probe_cache_ttl.py:218) never executed, so no cache-write token count exists anywhere in this corpus.",
+    "Output/completion tokens are never recorded despite max_tokens:16 on every call. No output-side cost calibration is possible.",
+    "No dollar figures, no price table, no model pricing anywhere. These files cannot produce a cost number without an external price sheet.",
+    "xai_20260728T045654Z is the only informative xAI run and it is truncated at t+55 with no final probe, no done record and no summary file. It has no verdict; do not cite it as a completed refresh-on-read result.",
+    "All OpenAI records are failures (ConnectError + 429 quota). There is no OpenAI cache data at all, only two 3-line stub files that can be mistaken for real runs by a file-count-only inventory.",
+    "prefix_tokens_estimate=1650 in the start records is ~35% below the real measured prefix (~2430). Do not use it as a token count.",
+    "The first OpenAI run pointed at http://localhost:4242/openai/v1 (a dev proxy), which would have measured Brevitas's own cache rather than the provider's. probe_cache_ttl.py:134-138 now guards against localhost overrides, but the stale file remains in the directory.",
+    "DeepSeek's verdict TTL_LONG_INCONCLUSIVE is often misread as a warming result. It means the opposite: the untouched control never died, so the experiment could not test refresh-on-read at all.",
+    "Everything here is gitignored and unversioned; a `git clean` or fresh clone loses the entire dataset and the generator.",
+    "module-level PREFIX_SENTENCES=110 at probe_cache_ttl.py:109 is dead code - the per-provider 'prefix_sentences' is what's used. The anthropic spec's 310 would silently move the hit threshold to 2325 if that provider is ever run."
+   ],
+   "reusable": [
+    {
+     "name": "Probe.call",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:160-228",
+     "what": "Issues one chat/messages request and returns {arm, phase, status, prompt_tokens, cached_tokens, hit}. Handles the OpenAI-shape vs Anthropic-shape body split, explicit-cache-options fallback on 400, and per-provider extraction of the cached-token field. Directly reusable as the measurement primitive for a new harness."
+    },
+    {
+     "name": "PROVIDERS",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:47-101",
+     "what": "Per-provider spec table: API kind, env key name, base URL, model, whether explicit cache options are injected, and crucially the 'cached_field' (outer,inner) tuple giving where each provider hides its cache-read token count. This is the hard-won mapping worth keeping."
+    },
+    {
+     "name": "xAI conv-id affinity requirement",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:69-74, 190-193",
+     "what": "Documents that prompt_cache_key ALONE produces zero xAI cache hits; the x-grok-conv-id header is what creates replica affinity and makes the cache hit (noted as verified live at 2368/2412 cached with it). Required for any future xAI cache measurement."
+    },
+    {
+     "name": "Probe.sleep_until",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:230-233",
+     "what": "Monotonic-clock wall-clock scheduler that sleeps in <=30s slices until an absolute minute mark relative to t0. Keeps long TTL experiments from drifting."
+    },
+    {
+     "name": "Probe.run two-arm TTL design",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:235-286",
+     "what": "The control/pinged two-arm experiment with nonced per-arm prefixes and the four-way verdict classifier (REFRESH_WORKS / REFRESH_LIKELY / TTL_LONG_INCONCLUSIVE / REFRESH_INEFFECTIVE). Reusable design; note the schedule must be widened past 55m for deepseek/xai since both baselines outlived the current window."
+    },
+    {
+     "name": "_SLOW / _FAST schedules",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:44-45",
+     "what": "Minute-mark schedules: _SLOW {sanity 2, pings 12/24/36/48, controls 35/55, final 60} used by openai/xai/deepseek; _FAST {sanity 1.5, pings 3/6/9/12, controls 7/12, final 15} intended for Anthropic's 5m TTL."
+    },
+    {
+     "name": "read_env_local",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:114-122",
+     "what": "Reads a named key out of repo-root .env.local without printing it. This is where OPENAI_API_KEY / XAI_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY are sourced."
+    },
+    {
+     "name": "MAX_CALLS spend guard",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/probe_cache_ttl.py:110, 161-162",
+     "what": "Hard cap of 40 calls per run, raising RuntimeError when exceeded. Worth keeping in any paid-probe harness."
+    },
+    {
+     "name": "deepseek_20260728T043704Z.jsonl",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/cache_probe_results/deepseek_20260728T043704Z.jsonl",
+     "what": "The only complete run in the corpus. 11 successful calls over 60 minutes establishing DeepSeek's untouched-cache TTL >= 55 min and the 2432/128-block cached-token quantization."
+    },
+    {
+     "name": "xai_20260728T045654Z.jsonl",
+     "location": "/Users/jamesyang/Documents/GitHub/Brevitas-Systems/scratchpad/cache_probe_results/xai_20260728T045654Z.jsonl",
+     "what": "The only informative xAI run: 10 successful calls to t+55.03 showing the 128-token cold floor, the 2304-token warm hit, and an untouched control surviving 55 minutes. Truncated before the final probe."
+    }
+   ],
+   "summary": "A small local-only corpus of prompt-cache TTL probes produced 2026-07-27/28 by scratchpad/probe_cache_ttl.py, a two-arm controlled experiment (untouched control arm vs. arm pinged every 12 min) designed to settle whether a cache read refreshes the cache TTL. Seven JSONL files cover three providers: DeepSeek has the single complete 60-minute run, xAI has one informative but truncated 55-minute run plus two void runs and one model-not-found, and OpenAI produced zero successful calls (dev-proxy ConnectError, then 429 quota). Each successful record carries only two real API-sourced token fields, prompt_tokens and cached_tokens, plus a locally derived 'hit' boolean; output tokens, cache-creation tokens, and dollar amounts are absent everywhere. The data supports calibrating a two-class miss/cache-read cost model for deepseek-chat and grok-4.5 (miss is recoverable exactly as prompt_tokens minus cached_tokens) but cannot separate cache-write from cache-read, and has no Anthropic data at all. Headline measured result: on both DeepSeek and xAI the untouched control cache was still alive at 55 minutes, so the pings were never load-bearing and refresh-on-read remains unmeasured."
+  },
+  {
+   "summary": "`scripts/warm_replay_sim.py` is a standalone, pure-stdlib trace-replay simulator that answers \"what would a cache-warming policy have earned in dollars?\" It takes a stream of arrivals (ts, org, customer, provider, prefix_hash, prefix_tokens), replays each candidate policy against a per-provider cache-physics model (TTL + read/write price multipliers), and reports net dollars = incremental savings \u2212 ping cost \u2212 tier premium, all differenced against a never-warm baseline pass and normalized against a hindsight-optimal ping schedule. It ships 10 policies (never-warm, the shipped v1 heuristic, a hazard/BG-NBD \"learned index\" family, and the shipped engine's Anthropic 5m/1h TTL-tier decision replayed) and 8 synthetic scenario generators; it can also be driven by a JSON/CSV trace file via `--trace`. Its headline finding, printed but deliberately not asserted, is that `ttl-1h-only` (the shipped engine tiering with no warming) beats every warming policy, and warming on top of the tier is net-negative. Critically, it has never been run on real usage data \u2014 all validation is against synthetic `random.Random` traces plus arithmetic self-checks \u2014 and its price sheet, not its behavior, is the part that was sourced from real receipts/docs.",
+   "reusable": [
+    {
+     "name": "Physics (dataclass) + DEFAULT_PHYSICS",
+     "location": "scripts/warm_replay_sim.py:167-248 (class), :108-131 (table)",
+     "what": "The entire cost model. Fields: ttl_seconds, read_cost_fraction, write_multiplier, input_price_per_mtok, long_ttl_seconds, long_write_multiplier, long_refresh_on_read. Methods base_usd(:228), read_usd(:232), write_usd(tokens,tier)(:235), hit_savings_usd(:238), break_even_p(:242), ttl_for(:217), write_multiplier_for(:223), refreshes_on_read(:204). Directly liftable as a price/TTL engine for a new harness."
+    },
+    {
+     "name": "Arrival + cache_key/prefix_key",
+     "location": "scripts/warm_replay_sim.py:251-271",
+     "what": "Frozen slots dataclass, the unit of the trace. cache_key = (org, provider, prefix_hash) \u2014 deliberately customer-free because provider caches are org-key-scoped; prefix_key = (org, customer, provider, prefix_hash) = the warm_prefixes PK. This two-granularity split is the SUTVA design decision worth copying."
+    },
+    {
+     "name": "load_trace / arrival_from_row / parse_ts + alias key tuples",
+     "location": "scripts/warm_replay_sim.py:346-373, :325-343, :306-322, aliases at :289-296",
+     "what": "External-trace ingestion: JSON list, JSON object with arrivals/rows/data/usage_log key, or CSV with header. Column names matched by alias (organization_id/customer_id/created_at/warm_prefix_hash/cached_tokens/...). Timestamps accept epoch float or ISO-8601. Auto-sorts by ts."
+    },
+    {
+     "name": "replay()",
+     "location": "scripts/warm_replay_sim.py:2237-2413",
+     "what": "The core event loop: merges the arrival stream with a policy tick grid (arrivals win ties, :2306), prices each arrival as write/read/plain-input (:2317-2338), prices each ping (:2385-2393), and books the per-arrival delta vs the baseline pass as savings (positive) or tier premium (negative) at :2345-2356. Emits timestamped (ts,label,usd) event lists so a window can be sliced without re-running."
+    },
+    {
+     "name": "hindsight_oracle()",
+     "location": "scripts/warm_replay_sim.py:2443-2512",
+     "what": "Closed-form upper bound on any ping schedule under hard-TTL physics: per inter-arrival gap, k=ceil(gap/ttl)-1 read-priced pings, bridge iff (w-f)*P_arrival > k*f*P_ping. Exact, not heuristic, because arrivals are exogenous. Tier-blind (uses phys.ttl_seconds only, :2482)."
+    },
+    {
+     "name": "_AnthropicTierMixin.write_tier()",
+     "location": "scripts/warm_replay_sim.py:832-931 (decision at :894-925)",
+     "what": "A faithful port of the shipped engine's per-request Anthropic TTL decision: gap EWMA (0.5/0.5, router.py:266-268), 1h iff 300 < gap_ewma <= 3600, no cache_control at all if gap > 3600, plus the repeat-count ROI gate. This is the 'what the customer already gets' counterfactual."
+    },
+    {
+     "name": "_hits_to_break_even()",
+     "location": "scripts/warm_replay_sim.py:817-829",
+     "what": "ceil((write_multiplier-1)/(1-read_fraction)) \u2014 derives router.py's shipped constants (1 for 5m, 2 for 1h at Anthropic defaults) from physics instead of hardcoding, so an overridden price sheet stays self-consistent."
+    },
+    {
+     "name": "V1HeuristicPolicy",
+     "location": "scripts/warm_replay_sim.py:991-1216",
+     "what": "Replay of shipped v1 warm_prefix_observe/warm_due_claim/warm_ping_settle: EWMA inter-arrival (0.3/0.7), hour-of-week histogram ROI gate, stop-loss, per-customer-day ping cap, reserve-then-settle daily budget ledger."
+    },
+    {
+     "name": "hazard_touch / hazard_rate / hazard_p_return / bg_nbd_p_alive / chain_length / dollar_index",
+     "location": "scripts/warm_replay_sim.py:1253-1367",
+     "what": "Ports of the Phase-1 SQL estimators: decayed (14-day half-life) hour-of-week hazard sufficient statistics, shrinkage to org then a constant global prior, BG/NBD P(alive) with r=0.5/alpha=7d/b=2.5, keep-alive chain length truncated at I_max, and index = p_eff/b - 1 - n_chain."
+    },
+    {
+     "name": "LearnedIndexFixedPolicy._gate() (F2/F3/F7)",
+     "location": "scripts/warm_replay_sim.py:1908-1927",
+     "what": "The three cheap skip rules: skip when EWMA inter-arrival < TTL (organically self-warming), skip past I_max = ttl*(w/f-1), and skip when the shared org cache key is already warm past the next decision point (N customers on one system prompt must not each buy the same entry)."
+    },
+    {
+     "name": "hour_of_week() / utc_day()",
+     "location": "scripts/warm_replay_sim.py:274-282",
+     "what": "168-bucket hour-of-week key byte-identical to api/store.py _utc_hour_bucket, and the UTC day key used for ping caps and budgets."
+    },
+    {
+     "name": "SCENARIOS registry + generators",
+     "location": "scripts/warm_replay_sim.py:717-726 (registry); scenario_cron:384, scenario_bursty:401, scenario_churned:423, scenario_company:451, scenario_company100:620",
+     "what": "Eight seeded synthetic arrival generators, from a 36-arrival cron trace up to a 100-customer/365-day organization with bots/humans/power users/churners/late onboarders and a shared org-wide prefix."
+    },
+    {
+     "name": "selftest() money-conservation block",
+     "location": "scripts/warm_replay_sim.py:3233-3250",
+     "what": "The one check that does not trust the bookkeeping it audits: asserts (sum(baseline.arrival_costs)+baseline.ping_cost) - (sum(res.arrival_costs)+res.ping_cost) == res.net_usd. Reuse this identity in any new harness."
+    },
+    {
+     "name": "evaluate() / render() / render_learning()",
+     "location": "scripts/warm_replay_sim.py:2537-2616, :2619-2665, :2675-2882",
+     "what": "Payload builder (schema 'brevitas.warm-replay-sim.v1') plus two text reports; render_learning splits a warmup window (default 7 days) off the front and reports evaluation-window money only, plus per-customer learned hazard summaries and a silence histogram (_silence_histogram:2906)."
+    },
+    {
+     "name": "build_physics() / build_parser() / main()",
+     "location": "scripts/warm_replay_sim.py:3320-3363, :3385-3457, :3460-3514",
+     "what": "CLI. Physics overrides are repeatable provider=value flags (--provider-ttl/--read-fraction/--write-multiplier/--input-price/--long-ttl/--long-write-multiplier/--long-refresh-on-read) with validation; policy knobs mirror the shipped worker defaults (V1_DEFAULTS:140-153)."
+    }
+   ],
+   "facts": [
+    {
+     "fact": "The price table is a MULTIPLIER model, not a per-class $/Mtok table: one `input_price_per_mtok` per provider, and read/write are fractions/multiples of it. Anthropic: $3.00/Mtok input, read 0.10x, 5m write 1.25x @300s TTL, 1h write 2.00x @3600s TTL. DeepSeek: $0.14/Mtok, read 0.02x, write 1.00x, 14400s TTL, no second tier.",
+     "evidence": "scripts/warm_replay_sim.py:108-131 (DEFAULT_PHYSICS); conversions at :228-240"
+    },
+    {
+     "fact": "Exactly four token classes are priced: plain uncached input (1.0x, only when a policy declines cache_control), cache read (read_cost_fraction), cache write 5m (write_multiplier), cache write 1h (long_write_multiplier). There is ONE read rate shared by both tiers \u2014 the tier changes clock and write price only.",
+     "evidence": "TIER_5M/TIER_1H/TIER_NONE at :135-137; pricing branch in replay() at :2317-2338; asserted in selftest at :3196-3204"
+    },
+    {
+     "fact": "OUTPUT tokens are not modelled at all, and neither is any non-prefix input. Every dollar in the file is prefix-token dollars. `grep -Ei 'output_token|\"output\"'` over the file returns only the argparse 'output' group.",
+     "evidence": "Physics fields at :188-198 (no output price); arrival_costs populated only from prefix_tokens at :2323-2340"
+    },
+    {
+     "fact": "Cache-hit decision is purely (org, provider, prefix_hash) exact-match against a single expiry dict: hit iff expiry[cache_key] > arrival.ts. There is NO prefix/longest-common-prefix matching, no partial-prefix credit, and no model-id in the cache key.",
+     "evidence": "expiry dict at :2255; hit test at :2326; Arrival.cache_key at :263-266"
+    },
+    {
+     "fact": "TTL is modelled as a hard deadline refreshed by every touch (arrival or ping), with a per-tier clock; an entry is never shortened by a shorter-tier touch (max() at :2336-2338). Whether a HIT restarts the 1h clock is a switchable float knob (long_refresh_on_read, default 1.0) because it is unmeasured in-house.",
+     "evidence": "Physics.refreshes_on_read at :204-215; :2335-2338 and :2390-2393; knob rationale at :98-107 and :3416-3419"
+    },
+    {
+     "fact": "Concurrency / fan-out is NOT modelled: simultaneous arrivals on one cache key are processed strictly serially, so the first pays the write and the rest read. I fed a 3-row trace with three identical timestamps on one cache key and got 2 of 3 arrivals organically warm \u2014 real concurrent fan-out would bill 3 writes.",
+     "evidence": "serial loop at :2291-2340 with strict `> arrival.ts` at :2326; measured: `python3 scripts/warm_replay_sim.py --trace t.json --policy never-warm --json` -> baseline_warm_arrivals 2 of 3"
+    },
+    {
+     "fact": "Cache-write duplication IS modelled in one narrow sense \u2014 the ROI/gate side (F7 shared-key dedup stops N customers on one shared org prefix each buying the same keep-alive) \u2014 but never on the billing side.",
+     "evidence": "LearnedIndexFixedPolicy._gate 'skipped_shared_warm' at :1917-1926; cache_warm_until bookkeeping at :1817-1852"
+    },
+    {
+     "fact": "It IS drivable by an external trace: `--trace FILE` accepts JSON (bare list, or object with an arrivals/rows/data/usage_log list) or CSV-with-header. Required per row: a timestamp (ts|timestamp|created_at|observed_at|time), a provider (provider|upstream|vendor), and a token count (prefix_tokens|cached_tokens|cache_read_tokens|baseline_tokens|input_tokens). Optional: org|organization_id|org_id, customer|customer_id|end_customer_id, prefix_hash|warm_prefix_hash|prefix, model. Missing org/customer default to 'unattributed-*'.",
+     "evidence": "load_trace :346-373, arrival_from_row :325-343, alias tuples :289-296, CLI epilog :3392-3394"
+    },
+    {
+     "fact": "An unknown provider in a trace is a hard error, not a silent default \u2014 replay() raises KeyError naming the override flags, and main() converts it to a clean stderr message with exit code 2.",
+     "evidence": ":2311-2316 and :3460-3468"
+    },
+    {
+     "fact": "Only the PRICE SHEET and the tier decision logic were calibrated against real artifacts: 2.00x 1h write from docs/ANTHROPIC_CACHE_MAP.md and brevitas/receipts.py:432's write_1h default; read 0.10x from MODEL_PRICES' single `cached` rate; 5m refresh-on-read PROVEN by in-house probe P1 (read@4min -> HIT@8min); 1h tier proven live by P5 but its exact TTL never swept (3600 is the provider's stated hour). The 1h refresh-on-read assumption is inherited from the shipped engine, not measured.",
+     "evidence": "module header :81-107; Physics docstring :167-215; selftest physics asserts :3184-3207"
+    },
+    {
+     "fact": "The v1 knob defaults and break-even arithmetic are mirrored from production code, and the mirror is asserted: deepseek break-even 0.020408 = f/(1-f) matches api/worker.py _warm_break_even_by_provider, anthropic stays the calibrated scalar 0.11.",
+     "evidence": "V1_DEFAULTS :140-153; SimConfig.break_even_for :2141-2151; asserts at :3086-3091"
+    },
+    {
+     "fact": "`--selftest` passes on this checkout: 83 invariants across 8 synthetic scenarios, including the money-conservation identity (incremental net == difference of the two absolute bills) on cron/bursty/churned for four policies.",
+     "evidence": "ran `python3 scripts/warm_replay_sim.py --selftest` -> 'selftest OK: 83 invariants asserted across 8 synthetic scenarios'; conservation block :3233-3250"
+    },
+    {
+     "fact": "On the 21-day `company` scenario evaluation window the simulator measures warming as a LOSS against the shipped tiering: ttl-1h-only net $15.778140, learned-index-fixed $7.021800, learned+ttl-1h $10.605630 (delta -$5.172510 for warming on top of the tier). Against never-warm on the same window, learned-index nets -$1.887330 vs v1heuristic +$0.006930 vs oracle $13.140990.",
+     "evidence": "selftest stdout HEADLINE FINDING and HEADLINE FINDING #2 blocks; source :3266-3299 and :3116-3123 (deliberately reported, never asserted)"
+    },
+    {
+     "fact": "Net dollars can legitimately exceed 100% of the hindsight oracle, because the oracle optimises PING SCHEDULES at the provider's default tier only and cannot represent a policy that buys the 1h tier.",
+     "evidence": "hindsight_oracle docstring :2446-2453; render() emits the explanatory NOTE at :2650-2654"
+    },
+    {
+     "fact": "Outputs are: a text summary table (default), a 'learning' report with a warmup/evaluation split (--report learning --warmup-days N), or a JSON payload (--json) under schema 'brevitas.warm-replay-sim.v1' carrying trace stats, oracle block, and per-policy net/savings/ping_cost/arrival_premium/declined_writes/pings/warm_arrivals/decisions/oracle_fraction plus a per-customer breakdown.",
+     "evidence": "SCHEMA :79; evaluate payload :2551-2616; render :2619; render_learning :2675; CLI output group :3443-3456"
+    }
+   ],
+   "gotchas": [
+    "NEVER RUN ON REAL DATA. Despite the trace loader, every number this file has ever produced comes from seeded `random.Random` synthetic generators. docs/FIELD_CACHE_MEASUREMENT.md:13 names this file explicitly as the thing the 'no field data' objection was about. Treat all policy verdicts as synthetic-trace verdicts.",
+    "The trace carries NO hit/miss field, and there is no way to supply one. Hits are re-simulated from timestamps + prefix_hash. Feeding a real Anthropic receipt export will NOT reproduce its billed cache behavior \u2014 worse, the token-column aliases `cached_tokens` / `cache_read_tokens` are consumed as PREFIX SIZE, not as evidence of a hit.",
+    "_pick() (:299-303) treats 0 as a present value (only None and '' are skipped), so a real usage row with `cached_tokens: 0` on a cold call yields prefix_tokens=0 and prices that arrival at $0.00 instead of falling through to `input_tokens`. Reorder _TOKEN_KEYS or pre-clean the export.",
+    "Concurrent fan-out is structurally invisible: N simultaneous callers on one prefix are billed 1 write + (N-1) reads. Per the field measurement, real fan-out makes all N pay the write. Any 'savings' figure from this simulator is therefore optimistic on fan-out-heavy workloads.",
+    "No output tokens, no non-prefix input tokens. A 'we saved X%' number from this file is a percentage of prefix-input dollars only, not of the request bill.",
+    "DeepSeek's hard 4h TTL is an admitted approximation (its cache is an eviction policy, not a clock) \u2014 stated at :169-181 as the conservative direction, and the oracle's per-gap decomposition depends on the hard-TTL assumption being true.",
+    "The 1h tier's refresh-on-read is provider-doc-asserted, never swept in-house. If it is false, every 1h number is OPTIMISTIC for the 1h tier. The `--long-refresh-on-read anthropic=0` knob exists to price the alternative, and setting it disarms the baseline-warm monotonicity assertion at :2359-2378.",
+    "The 1h TTL of 3600s is the provider's stated hour, not a measured stopwatch value (:98-102).",
+    "`evaluate()` stuffs a non-JSON-serializable `_objects` key into its return payload (:2612-2615). Any programmatic caller must pop it before json.dumps, exactly as _main does at :3493 and :3507.",
+    "selftest's scenario-economics assertions are pinned to DEFAULT physics; running `--selftest` together with physics overrides can fail legitimately (documented at :3451-3456).",
+    "The two headline comparisons are printed, not asserted, on purpose \u2014 a green selftest bar is NOT evidence that the learned index beats v1 or the tier. Currently both read DOES NOT HOLD.",
+    "_AnthropicTierMixin has two stated divergences from the shipped engine, both biased in the same direction: the `warm_prefix_observed` write licence never arms (understates the engine, :856-864) and router.py's `cache_blocked_until` cooldown is not modelled (overstates how often it writes, :876-879). It is an UPPER bound on the shipped engine.",
+    "Runtime/memory: company100 at 12 months is >1M Arrival objects; the `slots=True` on Arrival and the exact caches in V1HeuristicPolicy (:1018-1026) are load-bearing for that, and `max_ticks` defaults to 2,000,000 with a RuntimeError telling you to coarsen --tick-seconds (:2292-2293). The default tick grid is 60s.",
+    "Warmth-monotonicity (savings can never be negative) only holds while every policy writes on every arrival and every tier refreshes on read; TIER_NONE (declined writes) and long_refresh_on_read=0 both break it, and the code disarms the invariant check rather than weakening it (:2260-2263, :2359-2378).",
+    "The working tree has an uncommitted 10-line docstring-only addition to _AnthropicTierMixin (the KNOWN DIVERGENCE paragraph); no behavior differs from HEAD."
+   ]
+  }
+ ],
+ "prices": {
+  "fetched_note": "Fetched live on 2026-08-17. Anthropic: https://platform.claude.com/docs/en/about-claude/pricing.md and https://platform.claude.com/docs/en/build-with-claude/prompt-caching.md (no explicit last-updated date on either page; the pricing page carries a dated note saying Sonnet 5's $2/$10 introductory rate is now the standard price and the previously scheduled 2026-09-01 increase to $3/$15 \"will not occur\"). OpenAI: https://platform.openai.com/docs/pricing 301-redirects to https://developers.openai.com/api/docs/pricing \u2014 fetched https://developers.openai.com/api/docs/pricing.md, https://developers.openai.com/api/docs/guides/prompt-caching, https://developers.openai.com/api/docs/models/compare; none of the three carry a date stamp. Google: https://ai.google.dev/gemini-api/docs/pricing.md, https://ai.google.dev/gemini-api/docs/models, https://ai.google.dev/gemini-api/docs/caching, https://ai.google.dev/gemini-api/docs/interactions/caching; the pricing page dates its promotional rates explicitly (\"through December 31, 2026\", \"starting January 1, 2027\") but has no page-level date. Local reference: ran the bundled `claude-api` skill, which supplies a cached (2026-06-24) Anthropic model/pricing table \u2014 I trusted the fetched page over it where they disagree (see uncertainties). No pricing reference exists in node_modules; the repo's own docs/ANTHROPIC_CACHE_MAP.md contains an empirically measured Anthropic cache-behavior map whose findings (4096-token floor for claude-haiku-4-5, max 4 cache_control breakpoints, TTL cliff between 300s and 330s, reads refresh the TTL, 1h tier outlives the 5m clock) agree with the fetched docs.",
+  "models": [
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-fable-5",
+    "tier": "frontier",
+    "input_per_mtok": 10,
+    "output_per_mtok": 50,
+    "cache_write_per_mtok": 12.5,
+    "cache_read_per_mtok": 1,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-opus-5",
+    "tier": "frontier",
+    "input_per_mtok": 5,
+    "output_per_mtok": 25,
+    "cache_write_per_mtok": 6.25,
+    "cache_read_per_mtok": 0.5,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-opus-4-8",
+    "tier": "frontier",
+    "input_per_mtok": 5,
+    "output_per_mtok": 25,
+    "cache_write_per_mtok": 6.25,
+    "cache_read_per_mtok": 0.5,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-sonnet-5",
+    "tier": "mid",
+    "input_per_mtok": 2,
+    "output_per_mtok": 10,
+    "cache_write_per_mtok": 2.5,
+    "cache_read_per_mtok": 0.2,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-sonnet-4-6",
+    "tier": "mid",
+    "input_per_mtok": 3,
+    "output_per_mtok": 15,
+    "cache_write_per_mtok": 3.75,
+    "cache_read_per_mtok": 0.3,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "Anthropic",
+    "model_id": "claude-haiku-4-5",
+    "tier": "cheap",
+    "input_per_mtok": 1,
+    "output_per_mtok": 5,
+    "cache_write_per_mtok": 1.25,
+    "cache_read_per_mtok": 0.1,
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.6-sol",
+    "tier": "frontier",
+    "input_per_mtok": 5,
+    "output_per_mtok": 30,
+    "cache_write_per_mtok": 6.25,
+    "cache_read_per_mtok": 0.5,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.6-terra",
+    "tier": "mid",
+    "input_per_mtok": 2,
+    "output_per_mtok": 12,
+    "cache_write_per_mtok": 2.5,
+    "cache_read_per_mtok": 0.2,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.6-luna",
+    "tier": "cheap",
+    "input_per_mtok": 0.2,
+    "output_per_mtok": 1.2,
+    "cache_write_per_mtok": 0.25,
+    "cache_read_per_mtok": 0.02,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.5-pro",
+    "tier": "frontier",
+    "input_per_mtok": 30,
+    "output_per_mtok": 180,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": -1,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.5",
+    "tier": "frontier",
+    "input_per_mtok": 5,
+    "output_per_mtok": 30,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.5,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5.4-mini",
+    "tier": "mid",
+    "input_per_mtok": 0.75,
+    "output_per_mtok": 4.5,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.075,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "OpenAI",
+    "model_id": "gpt-5-nano",
+    "tier": "cheap",
+    "input_per_mtok": 0.05,
+    "output_per_mtok": 0.4,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.005,
+    "source_url": "https://developers.openai.com/api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.7-flash",
+    "tier": "frontier",
+    "input_per_mtok": 0.75,
+    "output_per_mtok": 3.75,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.075,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.1-pro-preview",
+    "tier": "frontier",
+    "input_per_mtok": 2,
+    "output_per_mtok": 12,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.2,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.6-flash",
+    "tier": "mid",
+    "input_per_mtok": 0.75,
+    "output_per_mtok": 3.75,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.075,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.5-flash",
+    "tier": "mid",
+    "input_per_mtok": 1.5,
+    "output_per_mtok": 9,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.15,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-2.5-pro",
+    "tier": "frontier",
+    "input_per_mtok": 1.25,
+    "output_per_mtok": 10,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.125,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.1-flash-lite",
+    "tier": "cheap",
+    "input_per_mtok": 0.25,
+    "output_per_mtok": 1.5,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.025,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-2.5-flash",
+    "tier": "mid",
+    "input_per_mtok": 0.3,
+    "output_per_mtok": 2.5,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.03,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-2.5-flash-lite",
+    "tier": "cheap",
+    "input_per_mtok": 0.1,
+    "output_per_mtok": 0.4,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": 0.01,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   },
+   {
+    "provider": "Google Gemini",
+    "model_id": "gemini-3.5-flash-lite",
+    "tier": "cheap",
+    "input_per_mtok": 0.3,
+    "output_per_mtok": 2.5,
+    "cache_write_per_mtok": -1,
+    "cache_read_per_mtok": -1,
+    "source_url": "https://ai.google.dev/gemini-api/docs/pricing.md"
+   }
+  ],
+  "cache_semantics": [
+   {
+    "provider": "Anthropic",
+    "default_ttl": "5 minutes. Lifetime is measured from the start of the request that writes OR reads the entry, and a read refreshes the clock \u2014 so a touched entry stays warm indefinitely. Response generation time counts against the lifetime.",
+    "extended_ttl": "1 hour, opt-in per breakpoint via cache_control: {\"type\": \"ephemeral\", \"ttl\": \"1h\"}",
+    "extended_write_multiplier": "2x base input price (vs 1.25x for the 5-minute write). Reads are 0.1x base input for both tiers. Break-even: one read at 5m, two reads at 1h.",
+    "scope": "Workspace-level isolation on the Claude API, Claude Platform on AWS and Microsoft Foundry; organization-level isolation on Bedrock and Google Cloud. Different organizations never share caches. Within a workspace a cache CAN be reused across users and sessions \u2014 it is keyed on the prompt prefix, not on a session or user id.",
+    "automatic": "Opt-in per request \u2014 nothing caches without a cache_control field. Two modes: (a) automatic, one cache_control at the top level of the request and the system places/advances the breakpoint on the last cacheable block as the conversation grows; (b) explicit, cache_control on individual content blocks, max 4 breakpoints per request, 20-block lookback per breakpoint.",
+    "min_prefix_tokens": "Per-model, and NOT monotonic across generations: 512 (claude-opus-5, claude-fable-5, claude-mythos-5); 1,024 (claude-opus-4-8, claude-sonnet-5, claude-sonnet-4-6, claude-sonnet-4-5, opus-4-1, opus-4, sonnet-4); 2,048 (claude-opus-4-7, Mythos Preview, haiku-3-5); 4,096 (claude-opus-4-6, claude-opus-4-5, claude-haiku-4-5). Below the floor the request silently does not cache \u2014 no error, cache_creation_input_tokens is 0.",
+    "notes": "Prefix, not result \u2014 caches the entire rendered prompt prefix up to and including the marked block. Render order is tools -> system -> messages; a change at one level invalidates that level and everything after it. Requires 100% byte-identical prefixes. An entry only becomes readable once the first response BEGINS streaming, so N concurrent identical requests all pay full write price. Multipliers stack with the 50% Batch discount and with the 1.1x inference_geo:\"us\" data-residency multiplier. The repo's own measured docs/ANTHROPIC_CACHE_MAP.md independently confirms the 4096-token haiku-4-5 floor, the 4-breakpoint cap (5 returns HTTP 400), a TTL cliff in (300s, 330s], refresh-on-read, and the 1h tier outliving the 5m clock.",
+    "source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching.md"
+   },
+   {
+    "provider": "OpenAI",
+    "default_ttl": "Model-dependent. GPT-5.6+ uses an exact 30-minute TTL, settable via prompt_cache_options.ttl. Earlier models have a model-dependent maximum retention (roughly 5-10 minutes in-memory) rather than a guaranteed TTL.",
+    "extended_ttl": "Yes, on earlier models: extended retention up to 24 hours via the prompt_cache_retention parameter. GPT-5.6+ instead exposes the exact TTL directly through prompt_cache_options.ttl.",
+    "extended_write_multiplier": "On earlier models, extended 24h retention is billed at the same rate as in-memory retention \u2014 i.e. no write multiplier at all (there is no cache-write line item; only a discounted cached-input read rate). GPT-5.6+ is the exception and does charge a write: 1.25x the uncached input rate, with reads at 0.1x.",
+    "scope": "Organization-level: \"Prompt caches are not shared between organizations.\" Within an organization a cache is reusable across users and sessions. The optional prompt_cache_key parameter is a routing hint to raise hit rate by steering similar traffic to the same cache, not an isolation boundary.",
+    "automatic": "Automatic \u2014 \"Prompt Caching works automatically for eligible requests, with no code changes required.\" GPT-5.6+ additionally lets you set explicit breakpoints and caching modes for tuning, and prompt_cache_key / prompt_cache_retention / prompt_cache_options are optional overrides on top of the automatic behavior.",
+    "min_prefix_tokens": "1,024 tokens for GPT-5.6+. For earlier models, 1,024 to 2,048 depending on the model.",
+    "notes": "Prefix, not result \u2014 caches the initial portion of the prompt and reuses it when a matching prefix is found; put stable content first. The cached-input discount varies by generation and is visible in the price table: 0.1x for the gpt-5 / gpt-5.4 / gpt-5.6 families, but only 0.25x for gpt-4.1 and 0.5x for gpt-4o. The pro variants (gpt-5.5-pro, gpt-5.4-pro, gpt-5-pro) list no cached-input price at all.",
+    "source_url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+   },
+   {
+    "provider": "Google Gemini",
+    "default_ttl": "Implicit caching: no documented TTL \u2014 the fetched pages do not state one. Explicit caching: 60 minutes by default, configurable per cache via the ttl or expire_time field.",
+    "extended_ttl": "There is no discrete second TTL tier. Explicit caching instead lets you set an arbitrary TTL and bills continuously for storage by the hour, so a longer TTL costs linearly more rather than stepping up a multiplier.",
+    "extended_write_multiplier": "No write multiplier exists \u2014 Gemini does not charge a cache-write token price. The cost of holding a cache is an hourly storage fee: $0.50/1M tokens/hour for gemini-3.7-flash and gemini-3.6-flash (promotional, rising to $1.00 on 2027-01-01), $1.00/1M tokens/hour for gemini-3.5-flash / 3.1-flash-lite / 2.5-flash / 2.5-flash-lite, and $4.50/1M tokens/hour for gemini-3.1-pro-preview and gemini-2.5-pro.",
+    "scope": "Implicit in-memory cache data is isolated at the project level. Explicit caches are resources created and referenced by the caller (cachedContent), so they are likewise project-scoped and reusable across that project's users and sessions. Neither fetched page documents any cross-project or cross-user sharing.",
+    "automatic": "Both, depending on mode. Implicit caching is fully automatic and on by default for Gemini 2.5 and newer \u2014 \"There is nothing you need to do in order to enable this\" \u2014 and the discount is applied without any request change. Explicit caching is opt-in: you create a cachedContent resource and reference it via the cached_content field. Explicit caching is available on the generateContent API but is NOT supported in the Interactions API, which is implicit-only.",
+    "min_prefix_tokens": "4,096 tokens for gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash and gemini-3.1-pro; 2,048 tokens for the Gemini 2.5 models (2.5-flash, 2.5-pro). gemini-3.5-flash-lite lists context caching as \"Not available\".",
+    "notes": "Prefix, not result \u2014 the docs advise putting large, common content at the beginning of the prompt to raise hit likelihood. Cache hits are reported in usage.total_cached_tokens. Cache read prices are ~10% of the corresponding input rate across the lineup. The Batch API's 50% input/output discount does not change the caching rates. Pro-tier models price both input and cache reads in two brackets, at and above a 200k-token prompt.",
+    "source_url": "https://ai.google.dev/gemini-api/docs/caching"
+   }
+  ],
+  "uncertainties": [
+   "CONTRADICTION, resolved in favor of the page: the bundled claude-api skill's cached table (dated 2026-06-24) lists claude-sonnet-5 at $3.00/$15.00 with a $2.00/$10.00 introductory rate expiring 2026-08-31. The live pricing page says the $2/$10 rate is now the standard price and the scheduled 2026-09-01 increase to $3/$15 will not occur. I reported $2/$10. The same skill file also omits several models the live pages list (gpt-5.6 family, gemini-3.7) \u2014 treat the skill's table as stale generally.",
+   "None of the three OpenAI pages (pricing.md, prompt-caching guide, models/compare) carries a date stamp, so I cannot confirm how recently OpenAI's numbers were revised.",
+   "OpenAI cache-write price: the pricing table shows an explicit cache-write column only for the gpt-5.6 family ($6.25 / $2.50 / $0.25, i.e. 1.25x input). For every earlier model the column is blank. I recorded -1 (none) for those, inferring from the caching guide's statement that extended retention is billed at the same rate as in-memory \u2014 but I did not find an explicit 'earlier models are not charged for cache writes' sentence, so this is inference, not a quoted figure.",
+   "OpenAI 'frontier' designation: models/compare names gpt-5.6-sol the flagship ($5/$30), but gpt-5.5-pro and gpt-5.4-pro are priced far higher ($30/$180) and gpt-5.2-pro at $21/$168. I did not verify whether the pro variants are more capable than sol for any workload, or how OpenAI positions them relative to the 5.6 line.",
+   "The pro variants (gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5-pro) list no cached-input price. I recorded -1, but whether that means caching is unsupported on those models or merely unpriced on the table is not stated.",
+   "Gemini frontier tier: the models page calls gemini-3.7-flash the 'latest and most capable' model, but it is a Flash-tier model and no gemini-3.7-pro appears in the list. Whether a Pro tier of the 3.7 generation exists (unreleased, preview, or Vertex-only) could not be verified from the fetched pages.",
+   "Gemini explicit-cache default TTL of 60 minutes comes from a WebSearch summary of ai.google.dev pages, NOT from a page I fetched directly. The two caching pages I did fetch (docs/caching and docs/interactions/caching) state no default TTL. Treat the 60-minute figure as unconfirmed.",
+   "Gemini cache scope: project-level isolation is documented for IMPLICIT caching only. Neither fetched caching page states the isolation boundary for EXPLICIT caches, nor whether any Gemini cache can be shared across projects.",
+   "The Gemini minimum-token thresholds (4,096 / 2,048) are documented in the context of implicit caching. I did not find a separately stated minimum for explicit cached-content creation.",
+   "Gemini pricing for gemini-3.7-flash and gemini-3.6-flash is promotional and dated: $0.75/$3.75 input/output and $0.075 cache read through 2026-12-31, doubling to $1.50/$7.50 and $0.15 on 2027-01-01. I reported the currently-effective promotional figures. The same applies to their $0.50/1M/hr storage rate rising to $1.00.",
+   "Gemini per-modality pricing: several models price audio input separately from text/image/video (e.g. gemini-2.5-flash $0.30 text vs $1.00 audio; gemini-3.1-flash-lite $0.25 vs $0.50). I reported the text rate only.",
+   "Gemini pro-tier models use a 200k-token pricing bracket (gemini-3.1-pro-preview $2.00 input at <=200k vs $4.00 above; gemini-2.5-pro $1.25 vs $2.50). I reported the <=200k figures only.",
+   "Anthropic cache scope wording: the docs say workspace-level isolation on the Claude API. I inferred that a cache is therefore reusable across different end users of the same workspace, since the key is the prompt prefix \u2014 the docs do not state a per-user boundary either way, and the repo's own AI-Native Redis memory note claims cross-agent sharing was measured to work, but I did not re-verify that here.",
+   "I did not fetch Bedrock or Vertex partner pricing pages, so the Anthropic-on-Bedrock and Anthropic-on-Google-Cloud rates (which Anthropic's page explicitly defers to the partners for, plus a 10% regional-endpoint premium) are not covered."
+  ]
+ },
+ "prose": [
+  "## Prior art on cross-run reuse of LLM/agent computation\n\n**Headline finding: almost nothing in the literature measures against a provider-native-prompt-caching baseline. Of everything I checked, exactly two lines of work do a like-for-like comparison against an already-caching system, and one of those two is an independent replication that came out negative.**\n\n### 1. Semantic / exact-match response caches (GPTCache and kin)\n\nGPTCache (https://github.com/zilliztech/GPTCache) reuses whole request\u2192response pairs keyed by embedding similarity. Its README leads with \"Slash Your LLM API Costs by 10x, Boost Speed by 100x\" and cites *no* benchmark \u2014 it defines hit ratio/latency/recall as metrics you should measure yourself and points at an examples directory. That is marketing, not evidence. The project also states it no longer adds support for new APIs or models.\n\nThe closest thing to a measurement is *GPT Semantic Cache* (https://arxiv.org/abs/2411.05276), a Redis-backed embedding cache reporting **61.6\u201368.8% hit rate and up to 68.8% API-call reduction** on customer-service chatbot query categories, with >97% positive-hit accuracy. Caveats: the workload is repetitive FAQ-style chat, which is the maximally favorable case and nothing like an agent loop; and the paper states no baseline system at all \u2014 the comparison is against not caching.\n\nGateway vendors publish softer numbers: Requesty claims 40\u201360% on repeated calls, Portkey ~20% for RAG, Helicone 20\u201330% typical (https://portkey.ai/blog/semantic-caching-thresholds/, https://preto.ai/blog/semantic-caching-llm/). These are self-reported vendor figures with no methodology; treat them as marketing. The one consistent signal across them is that real production semantic-cache hit rates land in the 20\u201345% band, not the 90%+ the category advertises, and that open-ended/agentic traffic caches worst (10\u201320%).\n\n**None of these compare against provider-native prompt caching.** They are also a fundamentally different mechanism: they replace the call, whereas prompt caching discounts it. So the two are not substitutes and the semantic-cache numbers say nothing about incremental value over prompt caching.\n\n### 2. KV-cache reuse (vLLM APC, SGLang RadixAttention, LMCache)\n\nThese reuse *attention KV tensors for shared prefixes*, inside a self-hosted engine. They are not applicable to a hosted-API customer at all, and their baselines are the giveaway.\n\n- **SGLang / RadixAttention** (https://arxiv.org/abs/2312.07104, https://lmsys.org/blog/2024-01-17-sglang/): up to **5\u20136.4\u00d7 throughput** on MMLU 5-shot, HellaSwag 20-shot, ReAct agent, tree-of-thought, JSON decoding, DSPy RAG, multi-turn chat. Baselines: **vLLM v0.2.5**, Guidance v0.1.8, HF TGI v1.3.0. vLLM v0.2.5 is Jan-2024 and predates vLLM's automatic prefix caching entirely \u2014 so the famous \"5\u00d7\" is measured against *no* prefix cache. The paper's own ablation is more honest and more useful: hit rates 50\u201399% depending on workload, reaching ~96% of the optimal achievable hit rate, and in a production deployment **52.4% (LLaVA-Next-34B) and 74.1% (Vicuna-33B) hit rate for a 1.7\u00d7 average first-token latency reduction**. Note the gap: 74% hit rate buys 1.7\u00d7, not 5\u00d7.\n- An independent replication (https://n4n.ai/blog/benchmarking-sglangs-radixattention-for-multi-turn-chat/) explicitly flags the 5\u00d7 as coming from synthetic workloads, and measures the honest version \u2014 turn-2 prefill in a 2k-token session dropping ~120ms \u2192 ~15ms with `--disable-radix-attention` as the control.\n- **LMCache** (https://arxiv.org/abs/2510.09665): offloads/shares KV across queries and nodes; claims **up to 15\u00d7 throughput** and 1.9\u20138.1\u00d7 lower TTFT at low QPS on long-context (LongBench-style) workloads. The abstract does not state whether vLLM APC was on in the baseline. An independent head-to-head that *does* hold vLLM prefix caching constant (https://levelup.gitconnected.com/vllm-prefix-caching-vs-lmcache-benchmarking-kv-reuse-tradeoffs-944fbaf98b56, Qwen2.5-1.5B on an A100) found **LMCache on top of vLLM APC bought ~7\u201310% mean/median TTFT and lost 24\u201325% request and output throughput on ShareGPT** \u2014 i.e. net-negative on a realistic workload once the baseline already caches. That is the single most relevant result in this whole survey for your question.\n- **Cache-Craft** (SIGMOD 2025, https://arxiv.org/abs/2502.15734) is the honorable exception. It reuses per-chunk KV at arbitrary positions (position-independent, with selective recompute of boundary tokens) and explicitly baselines **against SOTA prefix caching**: **51% less redundant computation vs prefix caching** (75% vs full recompute), **1.6\u00d7 throughput and 2\u00d7 lower end-to-end latency over prefix caching**, on LLaMA-3-8B/70B with real production plus synthetic RAG workloads. This is the shape of evidence you want, and it is rare.\n- **Leyline** (https://arxiv.org/abs/2606.01065) is the agent-specific version of the same argument and states the core insight cleanly: agent conversations are *edited*, not append-only (failed tool calls retried, stale outputs dropped), so identical content shifts position and invalidates an exact-prefix cache even though the KV is still valid. Baseline is SGLang's RadixCache with prefix caching **on**. Measured: **+11.2pp replay cache-hit over radix, \u2212241ms peak e2e (\u22124.4%)** on synthetic ~17K-token prompts, and **5.3% e2e improvement** on a real 50-step agent trajectory (~52.5 MB KV reused). Honest, correctly baselined \u2014 and the payoff over an already-caching system is single-digit percent.\n\n### 3. Dependency-tracked invalidation of LLM results specifically\n\nThis is the thinnest area, and the closest match to your Bazel/Nix framing.\n\n**CocoIndex** (https://cocoindex.io/blogs/incremental-processing/, https://github.com/cocoindex-io/cocoindex) is essentially \"Bazel for LLM data pipelines\": every transformation step is memoized under a deterministic fingerprint of its inputs, dependencies and context; source objects are fingerprinted by content hash; lineage tracking removes stale derived rows when a source or the transformation logic changes. It is exactly the architecture you described. **It publishes zero measurements.** The blog's only numbers (\"3/5 reused\", \"5 chunks \u2192 3 unchanged\") are pedagogical diagrams, and the \"10,000-row corpus, 0.1% changes, 99.9% cached\" figure that circulates is an illustrative example, not a benchmark. No cost or latency evaluation exists.\n\n**Hierarchical Caching for Agentic Workflows** (MDPI MLKE 2026, https://www.mdpi.com/2504-4990/8/2/30, code at https://github.com/k12outreach/Hierarchical-Caching-for-Agentic-Workflows) is the only paper I found that names **dependency-aware graph-based invalidation** for agent results as a first-class component, alongside workflow-level and tool-level caches, category-specific TTLs and session isolation. Reported: **50.2% tool-cache hit rate over 278,541 tool calls, 6.9\u00d7 speedup, 54% cost reduction**; workflow caching serving 59.4% of queries and eliminating ~75% of tool executions; ~4.8M total queries. **The repo confirms these are synthetic datasets with Zipfian access distributions \u2014 no real agent traffic and no evidence real LLM API calls were made.** The cost reduction is therefore a model output, not a receipt. Baseline is uncached.\n\n**Workload-Aware Caching for Multi-Agent Systems** (https://arxiv.org/html/2607.20495) memoizes DAG-node intermediate results across queries: up to **64.7% latency reduction vs uncached**, 2.84\u00d7 throughput, on SlideVQA / MP-DocVQA / VideoMME. Baselines are eviction policies (LRU/LFU/FIFO/ARC) plus an unbounded-cache upper bound \u2014 **prefix/prompt caching is not a baseline**, only cited in related work.\n\n### 4. Agent frameworks with cross-run memoization\n\nThis exists as plumbing but nobody has measured it. LangGraph ships node-level caching with per-node `CachePolicy` and TTL, keyed on node input, backed by `InMemoryCache`/`SqliteCache` (https://changelog.langchain.com/announcements/node-level-caching-in-langgraph). DSPy has built-in LM call caching. Neither publishes hit rates or savings, and both key on *input equality*, not on a content-addressed hash that includes upstream output digests \u2014 so they don't propagate invalidation the way a build system does. There's a known correctness footgun already filed: Pydantic state objects produce different cache keys for identical logical state, silently missing (https://github.com/langchain-ai/langgraph/issues/5733).\n\n**Agentic Plan Caching** (NeurIPS 2025, https://arxiv.org/abs/2506.14852) reuses *structured plan templates* extracted from the planning stage across semantically similar tasks \u2014 plan-level, not step-level. Measured **50.31% cost and 27.28% latency reduction** at 96.61% of optimal accuracy, on FinanceBench, QASPER, TabMWP, AIME 2024/25 and GAIA with Minion and Open Deep Research agents; GAIA/ODR went $69.02 \u2192 $16.27. Cache hit rate ~46% on FinanceBench, ramping from ~14% cold to 48% warm. Baselines: accuracy-optimal (big planner, no cache), cost-optimal (small planner, no cache), query-level semantic caching at 80/85/90% thresholds, and full-history caching. **Prompt/prefix caching is not mentioned as enabled in any baseline.** So the 50% is against an uncached agent, and the portion that survives provider caching is unknown.\n\n### 5. Provider-native prompt caching alone, on agent loops\n\nThe one paper that measures this directly: **\"Don't Break the Cache: An Evaluation of Prompt Caching for Long-Horizon Agentic Tasks\"** (https://arxiv.org/abs/2601.06007). Across OpenAI, Anthropic and Google, on DeepResearch Bench (500+ agent sessions with real web-search tool calls, 10K-token system prompts, ablations from 500\u201350K tokens and 3\u201350 tool calls): **prompt caching alone reduces API cost 41\u201380% and improves TTFT 13\u201331%** versus no caching. It also finds naive full-context caching can *increase* latency, and that the wins depend on placing dynamic content at the end of the system prompt, avoiding dynamic function calling, and excluding dynamic tool results.\n\nThat 41\u201380% is the number any cross-run-reuse system has to be measured *on top of*, and it is the number almost nobody in sections 1\u20134 subtracts.\n\n---\n\n### Summary\n\n- **The baseline problem is near-universal.** GPTCache, GPT Semantic Cache, SGLang/RadixAttention (vLLM v0.2.5, pre-APC), Agentic Plan Caching, Workload-Aware Caching and the MDPI hierarchical-caching paper all measure against *no cache*. Their headline percentages are not evidence of value over provider-native prompt caching.\n- **Only two works baseline correctly, and both come back small or negative.** Cache-Craft: 51% less redundant compute, 1.6\u00d7 throughput, explicitly *over* prefix caching (SIGMOD 2025, the strongest result in the field). Leyline: +11.2pp cache-hit, ~4\u20135% e2e over SGLang RadixCache-on. The independent LMCache-vs-vLLM-APC test: net-negative on ShareGPT once the baseline already caches.\n- **Provider-native prompt caching alone is worth 41\u201380% cost and 13\u201331% TTFT on real long-horizon agent loops** (arXiv 2601.06007, 500+ sessions, three providers). This is the floor to beat.\n- **Nobody has published a measured number for content-addressed, dependency-tracked cross-run reuse of agent operations.** CocoIndex implements the exact Bazel-style architecture \u2014 fingerprint-keyed memoization plus lineage-based stale removal \u2014 and publishes no benchmarks whatsoever. The MDPI paper implements dependency-aware invalidation and measures it only in simulation with Zipfian synthetic traffic.\n- **Agent-framework memoization is shallow.** LangGraph `CachePolicy` and DSPy caching key on input equality per node, do not hash upstream output digests, publish no savings data, and have open correctness bugs around key stability.\n- **Real hit rates degrade badly on agentic traffic.** SGLang's own production figures (52.4% / 74.1% hit for 1.7\u00d7 TTFT) and vendor reports (20\u201345%, 10\u201320% for open-ended chat) are far below the advertised 90%+.\n- **The genuinely under-served insight, stated by Leyline and Cache-Craft but not yet exploited above the serving layer:** agent context is *edited*, not append-only, so position-addressed prefix caches miss content that is byte-identical but shifted. Content-addressing recovers it. Both papers demonstrate this only inside a self-hosted engine, never at the API-client layer.\n\nSources: [GPTCache](https://github.com/zilliztech/GPTCache) \u00b7 [GPT Semantic Cache](https://arxiv.org/abs/2411.05276) \u00b7 [SGLang paper](https://arxiv.org/abs/2312.07104) \u00b7 [LMSYS RadixAttention blog](https://lmsys.org/blog/2024-01-17-sglang/) \u00b7 [independent RadixAttention benchmark](https://n4n.ai/blog/benchmarking-sglangs-radixattention-for-multi-turn-chat/) \u00b7 [LMCache paper](https://arxiv.org/abs/2510.09665) \u00b7 [vLLM APC vs LMCache](https://levelup.gitconnected.com/vllm-prefix-caching-vs-lmcache-benchmarking-kv-reuse-tradeoffs-944fbaf98b56) \u00b7 [Cache-Craft](https://arxiv.org/abs/2502.15734) \u00b7 [Leyline](https://arxiv.org/abs/2606.01065) \u00b7 [CocoIndex incremental processing](https://cocoindex.io/blogs/incremental-processing/) \u00b7 [Hierarchical Caching for Agentic Workflows](https://www.mdpi.com/2504-4990/8/2/30) ([code](https://github.com/k12outreach/Hierarchical-Caching-for-Agentic-Workflows)) \u00b7 [Workload-Aware Caching](https://arxiv.org/html/2607.20495) \u00b7 [Agentic Plan Caching](https://arxiv.org/abs/2506.14852) \u00b7 [LangGraph node caching](https://changelog.langchain.com/announcements/node-level-caching-in-langgraph) \u00b7 [Don't Break the Cache](https://arxiv.org/abs/2601.06007) \u00b7 [Portkey semantic caching thresholds](https://portkey.ai/blog/semantic-caching-thresholds/) \u00b7 [Preto semantic caching hit rates](https://preto.ai/blog/semantic-caching-llm/)",
+  "# Audit: Are the two bias checklists symmetric?\n\n**Verdict: No. They are asymmetric on four independent axes, and the asymmetries do not cancel \u2014 three of the four point the same direction (toward an inflated headline).** The document's symmetry claim is true only at the level of item count (10 vs 10). At the level of *enforcement power* the false-negative list carries the only named gate but almost none of the mechanizability, while the false-positive list is highly mechanizable but has zero named gates. That combination is the worst of both: List 1's items are cheap to check and nobody is required to check them; List 2's items are expensive to check and the experimenter is motivated to check them selectively.\n\n---\n\n## 1. Item-by-item scoring\n\nColumns: **Mech** = reducible to a computation as written; **Thr** = a pass/fail threshold is stated; **Gate** = a mandatory gate elsewhere in the protocol is cited; **Cost** = marginal experiment cost to satisfy (0 = re-analysis of already-collected data, $$ = new runs/new apparatus); **Trivial** = can be \"satisfied\" without changing anything real.\n\n### LIST 1 \u2014 falsely POSITIVE\n\n| # | Item | Mech | Thr | Gate | Cost | Trivial |\n|---|---|---|---|---|---|---|\n| 1 | Weak arm B | Yes (\"from usage fields\") | **No** | **No** | 0\u2013$ | Yes \u2014 enable caching, declare tuned |\n| 2 | Reporting against arm A | Yes | No (implicit in metric def) | No | 0 | No |\n| 3 | Perturbations that do not perturb | Partly | **No** | No | 0 | Yes \u2014 perturb 1 op |\n| 4 | 0% quoted as result | Yes | **No** (any p>0 passes) | No | 0 | Yes \u2014 quote p=1% |\n| 5 | Tokens instead of dollars | Yes | n/a | No | 0 | No |\n| 6 | Count-weighted reuse | Yes | **No** | No | 0 | No |\n| 7 | Pooling across families | Partly (no rule for what to do instead) | **No** | No | 0 | Yes \u2014 report pooled + a footnote |\n| 8 | Perturbations at leaves | Yes (\"verify the position distribution\") | **No** | No | 0 | Partly |\n| 9 | Shadow costs excluded | Accounting rule, underspecified | **No** | No | 0 | Yes \u2014 assert they're negligible |\n| 10 | Storage cost ignored | Yes | **No** | No | 0 | No |\n\n**Totals: 8/10 reduce to arithmetic over data you already have. 0/10 state a threshold. 0/10 cite a gate. 5/10 are trivially satisfiable as written.**\n\n### LIST 2 \u2014 falsely NEGATIVE\n\n| # | Item | Mech | Thr | Gate | Cost | Trivial |\n|---|---|---|---|---|---|---|\n| 1 | Broken arm C | Yes | **Yes (95% of ceiling)** | **Yes** | 0 | No |\n| 2 | Over-recording edges | Comparison named, no threshold | No | No | **$$** (second tracker) | No |\n| 3 | Canonicalisation failures | Failure modes named, no test named | No | No | **$** (harness) | No |\n| 4 | Families chosen unfavourably | **No \u2014 unfalsifiable** | No | No | n/a | **Yes** |\n| 5 | Perturbations at roots | Yes (mirror of L1#8) | No | No | 0 | Partly |\n| 6 | Too few operations | Yes | Hint only (\"40 may not\") | No | **$$** (size sweep) | Yes \u2014 run 41 |\n| 7 | Single-session scope | Yes if defined | No | No | **$$$** (redesign) | Yes \u2014 two runs, same content |\n| 8 | Only warm cells get attention | **No \u2014 exhortation** | No | No | $$ | **Yes** |\n| 9 | Exact match as bar | Yes | No | No | **$$** (grader) | Yes \u2014 loosen the grader |\n| 10 | One model tier | Yes | No | No | **$$$** (second full arm set) | Yes \u2014 2 tiers, both cheap |\n\n**Totals: 1/10 has a gate and a threshold. 2/10 are checkable on existing data (#3, #5). 5/10 require new experiment budget. 2/10 are unfalsifiable prose. 6/10 are trivially satisfiable.**\n\n---\n\n## 2. The four structural asymmetries\n\n**A. Gate count runs one way; mechanizability runs the other.**\nList 2 has the only mandatory gate in the document (the 95%-of-ceiling check on arm C). List 1 has none \u2014 not one item names an artifact, a threshold, or a blocking condition. But List 1's items are the ones that *could* be gated for free, because every one of them is a recomputation over receipts you already collected. The document has spent its enforcement budget on the side where enforcement is expensive and skipped it on the side where it is nearly free.\n\n**B. Cost of satisfaction differs by roughly an order of magnitude.**\nSatisfying List 1 fully: a few hours of re-analysis, $0 of new API spend. Satisfying List 2 fully: a run-size sweep (~4x), a multi-session/multi-user design (~10x runs), a second model tier (~2x arms), plus building a semantic grader and a second dependency tracker. Call it 20\u201340x the experiment cost. Under any real budget, List 2 gets waived item by item and List 1 gets waived by silence. Both waivers are invisible in the writeup.\n\n**C. Incentive direction is opposite to enforcement direction.**\nAn experimenter who wants arm C to win is *motivated* to run List 2's checks (each one, if it fires, raises the headline) and *demotivated* to run List 1's (each one, if it fires, lowers it). So List 1 is precisely the list that needs external, blocking gates \u2014 and it has none. List 2 is largely self-enforcing through self-interest, and it holds the only gate. The protocol has armed the check that would have fired anyway.\n\n**D. Partial satisfaction of List 2 is itself a false-positive mechanism, and nothing controls for it.**\nList 2 #2, #4, #6, #7, #9, #10 each authorize the experimenter to try a *different configuration* when the current one looks bad: finer dependency granularity, different families, bigger runs, more sessions, a looser correctness bar, a pricier model. That is six free knobs, each with a legitimate-sounding rationale, all pulling the headline up. There is no pre-registration, no search log, and no multiple-comparison control anywhere in either list. In practice List 2 functions as a licensed configuration search whose stopping rule is \"the number looks right.\"\n\nThis is not hypothetical here. `docs/INDEX_FIX_ROUND.md:102` records the same failure in this codebase already: two mandatory gates that both benchmarked against a weak reference (`v1heuristic`) were \"passable by a policy that loses money against what the engine already does.\" That is List 1 #1 \u2014 weak arm B \u2014 and it is the item in either list with the largest dollar consequence and the least enforcement.\n\n---\n\n## 3. Which side is weaker\n\n**As written, List 2 is the weaker document** (2 unfalsifiable items, 6 trivially satisfiable, only 1 threshold). **In enforcement-in-practice, List 1 is the weaker side** (0 gates on the only list the experimenter has no reason to run). If you fix only one, fix List 1 \u2014 but fixing List 1 alone converts List 2's vagueness into a live hazard, because a benchmark that is rigorously guarded against inflation and casually guarded against handicap will be *abandoned* rather than published, and the abandonment will be attributed to the product rather than the instrument. Both need work; List 1 needs it first.\n\n---\n\n## 4. Missing items\n\n### Missing from List 1 (false-positive vectors with no entry at all)\n\n1. **Under-recording dependency edges.** The exact inverse of L2#2, and far more dangerous. Under-recording produces reuse that *should* have been invalidated \u2014 free savings and wrong answers. L1#3 is close but tests the perturbation generator, not the tracker. This is the single largest hole.\n2. **A loose correctness bar.** L2#9 instructs you to move off exact match. Nothing bounds how far. A grader with a 20% false-accept rate turns unsound reuse into measured savings.\n3. **Arm parity and run order.** Nothing requires B and C to share model id, temperature/seed policy, retry policy, or tool set, and nothing forbids running all of C after all of B (warm provider-side state, price-table drift, model version drift).\n4. **No variance, no replication, no CI.** Neither list mentions n or confidence intervals. A 3-run difference can be reported as a win.\n5. **Survivorship.** Failed/dropped runs may be discarded asymmetrically.\n6. **Cherry-picked perturbation rate.** L1#4 forbids only p=0. p=5% is equally a choice, and p is the free parameter that most directly sets the answer.\n7. **The reuse layer's own model calls.** Partly inside L1#9, but \"shadow cost\" reads as recomputation only. Embedding, summarization, and index-maintenance calls are direct COGS in arm C.\n\n### Missing from List 2\n\n8. **Cold-store burn-in.** Arm C's first run in a fresh store has all writes and no reads. If burn-in is included unamortized, C is structurally penalized.\n9. **Rate-limit and throttling failures** attributable to the store, not to the method.\n\n---\n\n## 5. Concrete gates\n\nNaming convention: each gate produces a machine-readable line in `results.json` with a boolean `pass`. **Any failing gate blocks the headline from being rendered**, not just annotated.\n\n### 5.1 Mirror the one existing gate onto arm B (highest priority)\n\n**`G-B-CEILING`** \u2014 the exact counterweight to L2#1.\n*Computes:* run a deterministic oracle replayer over the recorded trace that marks the maximal cacheable prefix per call under provider rules, giving `ceiling_B` in cache-read tokens. From live arm-B responses, compute `achieved_B = \u03a3 cache_read_input_tokens`.\n*Passes:* `achieved_B / ceiling_B \u2265 0.95` \u2014 the same 0.95 that L2#1 already demands of arm C. Symmetry here is literal: same replayer, same threshold, both arms.\n*Also asserts:* `\u03a3 cache_creation_input_tokens > 0` (proves caching was engaged at all), and TTL-tier optimality \u2014 for each call, given the observed inter-call gap distribution, the tier chosen must be the lowest-amortized-cost eligible tier on \u226595% of calls. Given the measured 1h-vs-5m result in this codebase, an arm B pinned to 5m is a rigged baseline and this sub-check is what catches it.\n\n### 5.2 Anti-inflation gates (List 1)\n\n**`G-STALE`** (new item \u2014 under-recording edges).\n*Computes:* uniformly sample 10% of all operations arm C served from reuse; recompute each from scratch; compare against the served output under the same correctness function. `unsound_reuse_rate = mismatches / sampled`. Additionally inject 50 negative controls: mutate an input the tracker declared irrelevant but which provably is relevant; measure `invalidation_recall`.\n*Passes:* `unsound_reuse_rate \u2264 1%` **and** `invalidation_recall \u2265 0.95`. Fails \u2192 headline blocked outright, not discounted.\n\n**`G-GRADER`** (new item \u2014 bounds L2#9).\n*Computes:* on a labeled calibration set of \u2265200 pairs (100 known-correct paraphrases, 100 injected corruptions: swapped identifiers, stale values, off-by-one, truncated results), measure the semantic grader's true-accept and false-accept rates.\n*Passes:* true-accept \u2265 0.95 **and** false-accept \u2264 0.05. The same grader function must score arms B and C; report exact-match and semantic pass rates side by side.\n\n**`G-PARITY`** (new item).\n*Computes:* diff the serialized run configs of B and C. Only an allowlist of keys (`reuse_layer_enabled`, `store_uri`) may differ. Also assert run interleaving: B and C runs must be interleaved in time; `max(timestamp_B) > min(timestamp_C)` must hold.\n*Passes:* diff outside allowlist is empty; interleaving holds; all runs use one frozen price table keyed by (model, token_class, date).\n\n**`G-REPLICATION`** (new item).\n*Computes:* n \u2265 5 independent seeds per cell; bootstrap 95% CI on the headline `(cost_B \u2212 cost_C)/cost_B`.\n*Passes:* CI lower bound > 0 for any \"C wins\" claim. Report the interval, never the point estimate alone.\n\n**`G-SURVIVORSHIP`** (new item).\n*Computes:* per-arm drop rate with reasons.\n*Passes:* |drop_rate_B \u2212 drop_rate_C| \u2264 2pp; every dropped run enumerated with reason.\n\n**`G-DENOM`** (L1#2).\n*Computes:* schema assertion \u2014 a single `headline` field defined as `(cost_B \u2212 cost_C)/cost_B`; `cost_A` may appear only under `appendix.*`. The renderer refuses any percentage whose denominator field is not `cost_B`.\n\n**`G-PERTURB-BITE`** (L1#3).\n*Computes:* for every applied perturbation, recompute ground truth; `noop_rate` = fraction whose downstream correct output is unchanged.\n*Passes:* `noop_rate \u2264 5%`; no-ops are resampled, not counted.\n\n**`G-CURVE` + `G-P-CALIBRATED`** (L1#4, extended).\n*Computes:* headline at p \u2208 {0, 10, 20, 40, 80}%, all five reported together. Separately, estimate `p_field` from the real session corpus as the fraction of operations whose declared inputs changed between consecutive real runs, with a bootstrap CI.\n*Passes:* all five cells present; the p=0 cell is labeled `ceiling` in the schema and cannot be assigned to `headline`; `headline` is taken at `p_field`, and the values at both CI bounds of `p_field` are reported adjacent to it.\n\n**`G-DOLLARS`** (L1#5).\n*Computes:* every cost is `\u03a3 tokens_class \u00d7 price(model, class, date)`, with `cache_creation` priced at the write multiplier. Unit test: a synthetic 100%-cache-write run must report cost strictly greater than the same run uncached.\n*Passes:* unit test passes; no metric named `savings` carries token units.\n\n**`G-COSTWEIGHT`** (L1#6).\n*Computes:* `reuse_cost_weighted = \u03a3 dollars_avoided / \u03a3 dollars_if_no_reuse` alongside `reuse_count_weighted`.\n*Passes:* headline uses cost-weighted; both are printed; a gap > 5pp is flagged in the abstract, not the appendix.\n\n**`G-FAMILY`** (L1#7).\n*Computes:* per-family headline for \u22655 families; `max_family_share` = largest family's share of total operations.\n*Passes:* `max_family_share \u2264 0.35`; headline = unweighted median across families; the minimum family's headline is reported in the same sentence as the median. No operation-weighted pooled figure may be the headline.\n\n**`G-DEPTH`** (L1#8 **and** L2#5 \u2014 one two-sided check).\n*Computes:* normalized topological depth of every perturbed node (0 = root, 1 = leaf); two-sided KS test against uniform-over-nodes; also `|mean_depth_perturbed \u2212 mean_depth_all|`.\n*Passes:* KS p \u2265 0.05 **and** mean-depth delta \u2264 0.05. This is the one place the two lists are already genuinely symmetric \u2014 make it literally one gate so it cannot be enforced in one direction only.\n\n**`G-SHADOW`** (L1#9).\n*Computes:* `cost_C` ledger must carry non-optional line items for: revalidation recomputation, reuse-layer LLM calls (embedding/summarization/index maintenance), store read/write ops, and orchestration compute. Report `shadow_cost / gross_saving`.\n*Passes:* every line item present; a zero requires a `justification` string; if `shadow_cost > gross_saving` the headline is reported negative rather than suppressed.\n\n**`G-STORAGE`** (L1#10).\n*Computes:* `store_bytes \u00d7 $/GB-month \u00d7 retention_months`, amortized per run over the measured run population.\n*Passes:* strictly > 0 whenever the store persists across runs.\n\n### 5.3 Anti-handicap gates (List 2) \u2014 made mechanical\n\n**`G-GRANULARITY`** (L2#2).\n*Computes:* replay the identical recorded trace offline through the reuse layer at file-level and at the finest available granularity; report \u0394 cost-weighted reuse.\n*Passes:* if finer granularity raises cost-weighted reuse by > 5pp, the coarse config may not be used for the headline. Must be run jointly with `G-STALE` at the finer setting, so granularity cannot be traded for unsound reuse.\n\n**`G-CANON`** (L2#3) \u2014 three sub-tests, all mechanical, all cheap:\n- *Idempotence:* replay the identical trace twice; require hash equality on **100%** of operations.\n- *Stability fuzz:* apply semantics-preserving transforms (JSON key reorder, whitespace, absolute\u2192relative path, timestamp field injection, float re-serialization, header reorder) to 200 sampled inputs; require **\u226599%** hash stability.\n- *Sensitivity (the anti-false-positive half):* apply semantics-*changing* edits to 200 sampled inputs; require **100%** hash change. Without this third test, \"fix canonicalisation\" becomes a collision-manufacturing instruction.\n\n**`G-PREREG`** (L2#4 \u2014 converts the most unfalsifiable item into a diff).\n*Computes:* families, sampling rule, cell grid, p values, correctness function, and headline definition are committed to a pre-registration file with a git hash **before the first arm-C run**. At report time, diff the pre-registration against `results.json`.\n*Passes:* diff is empty, or every deviation carries an appendix entry with a reason and both the pre-registered and revised numbers.\n\n**`G-SEARCH-LOG`** (new \u2014 controls the multiple-comparison hazard in \u00a72D).\n*Computes:* every configuration variant executed at any point (granularity setting, family set, tier, grader version, store scope) is appended to a log with its resulting headline.\n*Passes:* the log is published in full; the headline comes from the pre-registered config; every other value is labeled exploratory. A published headline whose config does not appear in the pre-registration fails.\n\n**`G-SCALE`** (L2#6).\n*Computes:* headline at run sizes {40, 100, 250, 1000} operations; minimum 250 for the headline cell.\n*Passes:* headline reported at \u2265250 ops; if `headline(1000) \u2212 headline(250) > 3pp`, the regime is declared non-converged in the abstract and the asymptote is not extrapolated.\n\n**`G-SHARING`** (L2#7 \u2014 and the item most likely to be faked).\n*Computes:* per hit, record producing-run id, consuming-run id, user id, and wall-clock gap. Then `cross_run_share = dollars avoided by hits where producing_run \u2260 consuming_run / total dollars avoided`; likewise `cross_user_share` and `cross_TTL_share` (gap > provider TTL).\n*Passes:* design has \u22653 users, \u22653 days, \u226510 runs on one store; **and** `cross_run_share` is reported in the abstract. If `cross_run_share < 0.20`, the headline must be labeled *within-session* \u2014 which is the honest label given this codebase's own field measurement that 99.86% of cache value was within-session continuation. This gate is what stops a two-run rerun of identical content from counting as \"shared.\"\n\n**`G-CELLS`** (L2#8 \u2014 replaces \"real attention\").\n*Computes:* the cell grid is arm \u00d7 p \u2208 {0,10,20,40,80} \u00d7 family(\u22655) \u00d7 tier(\u22652); count runs per cell.\n*Passes:* zero missing cells and every cell has n \u2265 5. \"Attention\" is unfalsifiable; \"no empty cells\" is not.\n\n**`G-TIER`** (L2#10).\n*Computes:* \u22652 tiers spanning \u22655x input price; headline per tier.\n*Passes:* both tiers present; headlines reported per tier and never pooled (pooling across tiers re-opens L1#7 through the back door).\n\n**`G-BURNIN`** (new List-2 item).\n*Computes:* first-run-on-empty-store cost is reported both included and amortized over the measured run population.\n*Passes:* both figures published; the amortized figure may not be the headline unless the amortization window matches the pre-registered store retention.\n\n---\n\n## 6. If only five edits are possible\n\nRanked by dollars of headline error prevented per hour of work:\n\n1. **`G-B-CEILING`** \u2014 mirror L2#1's 95% gate onto arm B, same replayer, plus the TTL-tier sub-check. Without it the whole benchmark is `INDEX_FIX_ROUND` again: a gate passable by a policy that loses against what already ships.\n2. **`G-STALE`** \u2014 10% recompute sample + 50 negative controls, \u22641% unsound reuse. The missing false-positive twin of L2#2.\n3. **`G-PREREG` + `G-SEARCH-LOG`** \u2014 one file and one append-only log; neutralizes six of List 2's items as configuration knobs.\n4. **`G-SHARING`** \u2014 the cross-run/cross-user/cross-TTL share, reported in the abstract. Determines whether the thing being measured is the product or session continuation.\n5. **`G-REPLICATION`** \u2014 n\u22655, bootstrap CI, lower bound > 0. Neither list mentions variance; without it every other gate is measuring noise.\n\nWith those five plus the arithmetic gates in \u00a75.2 (all free), the two lists become symmetric in the only sense that matters: **each item on each side maps to a named computation, with a stated threshold, that blocks the headline when it fails.** Ten and ten was never the symmetry to check."
+ ],
+ "family4": {
+  "workload_name": "EVIDENCE-LEDGER: nightly cross-module security & license audit of a seeded monorepo",
+  "customer_story": "A compliance-automation vendor (think Semgrep/Endor/Vanta-shaped) runs an \"evidence-grade\" audit for each customer's monorepo: taint paths from untrusted input to SQL sinks, hardcoded secrets, copyleft licenses linked into redistributed binaries, and *reachable* vulnerable dependencies. The output is a signed findings ledger that gates CI and is filed as SOC2/PCI evidence, so every finding must be reproducible and attributable to specific file:line evidence \u2014 a summary is worthless, the ledger is the product. They run it on every PR (~200/day/customer) and nightly on main (365/yr), against a repo of ~2,000 first-party source files plus ~300 vendored third-party packages. Between consecutive runs 1-3% of files change, and roughly 40% of those diffs are cosmetic (formatting, comments, local renames) that change no analysis-relevant fact. The vendored dependency corpus is near-identical across all of the vendor's customers. Today a full-fidelity run costs real money in model calls per invocation and cannot be run per-PR at that price; the whole business case for this product is that the marginal run is cheap. That is exactly the condition content-addressed reuse creates, and it is why they pay for it repeatedly rather than once.",
+  "spec_markdown": "?# EVIDENCE-LEDGER Benchmark Specification v1.0\n\nA benchmark for cross-run, content-addressed operation reuse with transitive invalidation\n(Bazel/Nix model applied to agent operations).\n\nEverything below is implementable as written. Nothing requires a judgement call from the\nbenchmark author. All ground truth is generated by construction and is free to obtain.\n\n---\n\n## 0. One-paragraph summary\n\nA generator emits a synthetic-but-realistic polyglot monorepo with planted, exactly-known\nsecurity/license defects. An agent runs a fixed 10-stage analysis pipeline over it and emits\n`ledger.json`, a set of findings with exact `finding_id`s computed by a published formula.\nA deterministic grader compares that set against `truth.json` (never shown to the agent).\nThe corpus is then perturbed by a seeded mutator that changes 2% / 10% / 30% of source files\nand *recomputes ground truth exactly*. The agent runs again against a warm store. The grader\nchecks (a) correctness on both runs, (b) that reuse did not corrupt the answer, (c) that the\nset of operations actually executed is a superset of the provably-required set (soundness)\nand how close it is to that set (precision), and (d) cost saved.\n\nReference scale: **~6,810 operations per run**, of which **3,120 are model calls**.\n\n---\n\n## 1. Why this workload is the best case for the system under test\n\nFive structural properties, each deliberate. An implementer should preserve all five; they are\nthe point of the design.\n\n1. **Cost lives in per-artifact leaf operations.** The dominant expense (2,000 `extract_facts`\n   model calls) reads *exactly one file each*. No operation ever reads a directory, a glob, or\n   \"the repo\". Therefore leaf invalidation is proportional to the number of changed files, not\n   to repo size. A workload where one op reads all files would destroy the system; this one is\n   its inverse.\n2. **Aggregation is a balanced binary reduce tree with canonical ordering**, not an\n   N-ary \"summarize everything\" node. A single changed leaf invalidates `log2(N)` reduce nodes,\n   not the whole aggregation layer.\n3. **Early cutoff is exercised on purpose.** Facts are extracted into a canonical JSON schema\n   with no prose. A comment-only edit changes the file's content hash (so `extract_facts` re-runs)\n   but produces a byte-identical canonical output, so every descendant key is unchanged and the\n   rest of the subtree still hits. 40% of mutations are semantically null precisely to measure this.\n4. **Cross-tenant key collisions are real.** The 1,200 operations over `vendor/` depend only on\n   vendored package bytes and a pinned advisory snapshot. Two different customers running the\n   benchmark share those keys verbatim. The multi-tenant variant (\u00a710.3) measures this.\n5. **Bounded blast radius.** The cross-module dataflow is a *fixed 3-round layered propagation*\n   over an import DAG with out-degree 2, not an unbounded fixed-point. A changed module can\n   invalidate at most `1 + 2 + 4 = 7` flow operations. Unbounded fixed-point iteration would make\n   invalidation depth data-dependent and is explicitly forbidden.\n\n---\n\n## 2. Corpus generator\n\n`gen_corpus.py --seed S --scale K --out repo/`\n\nAll randomness comes from `random.Random(S)` plus per-entity sub-seeds\n`Random(sha256(f\"{S}|{entity_kind}|{entity_id}\").digest()[:8])`, so any entity can be\nregenerated independently. Generation is a pure function of `(S, K)`.\n\n### 2.1 Sizes (reference scale K=1)\n\n| Symbol | Meaning | K=1 |\n|---|---|---|\n| `P` | first-party packages | 20 |\n| `M` | modules (10 per package) | 200 |\n| `F` | first-party source files (10 per module) | 2,000 |\n| `E` | module\u2192module import edges (DAG, out-degree exactly 2, depth \u2264 6) | 400 |\n| `D` | vendored third-party packages | 300 |\n\nScale linearly in `K`: `P=20K, M=200K, F=2000K, D=300K`. Total ops \u2248 `3.4 \u00d7 F`.\n\n### 2.2 Layout\n\n```\nrepo/\n  packages/pkg_000..pkg_019/\n    package.json           {\"name\":\"pkg_000\",\"distribution\":\"binary\"|\"internal\",\"modules\":[...]}\n    modules/mod_0000..mod_0199/\n      __init__.py          # declares the module's import edges\n      f_000.py .. f_009.py\n  vendor/<dep_name>/\n    METADATA.json          {\"name\":..., \"version\":\"X.Y.Z\"}\n    LICENSE                # verbatim text of one SPDX license\n    api.py                 # exported symbol list\n  manifests/requirements.lock   # \"<name>==<version>\\n\", sorted by name\nadvisories/<dep_name>.json      # served by the local advisory HTTP server (\u00a72.6)\ntruth.json                      # ground truth, HELD OUT from the agent\n```\n\n`distribution` is `\"binary\"` for exactly 25% of packages (chosen by seed).\n\n### 2.3 Source-file template\n\nEach `f_XXX.py` is generated from a fixed template with these slots, in this order:\n\n1. A header comment block of `1..12` filler lines (lorem drawn from a fixed 200-word list).\n2. `0..2` import statements of the form\n   `from packages.pkg_A.modules.mod_B.f_C import fn_D` \u2014 only to modules in this module's\n   declared dependency set.\n3. `3..8` function definitions. Each function is one of:\n   - **PURE**: arithmetic/string ops on its parameters, returns a value.\n   - **PROPAGATOR**: returns a value derived from parameter `x` by concatenation or f-string\n     (taint-preserving), possibly calling an imported function.\n   - **SANITIZER**: returns `escape(x)` where `escape` is a module-local function whose body is\n     `return x.replace(\"'\", \"''\")` (taint-killing; the decoy for TAINT).\n   - **SOURCE**: `def h_N(): return request.args.get(\"q\")` (taint origin).\n   - **SINK**: `def s_N(v): cursor.execute(\"SELECT * FROM t WHERE a='\" + v + \"'\")`.\n4. `0..1` planted defects (\u00a72.4).\n\nEmitted code must be syntactically valid Python 3.11 and must import cleanly under the runtime\nharness (\u00a72.7). Line numbers are recorded by the generator as it emits.\n\n### 2.4 Planted defects and decoys\n\nExactly four finding classes. The generator records each plant with its exact evidence.\n\n| Class | Plant | Decoy that must NOT be reported |\n|---|---|---|\n| `TAINT` | A SOURCE in file `a`, `0..3` PROPAGATOR hops (each hop may cross a module import edge), terminating in a SINK in file `z`. | Identical chain with a SANITIZER inserted at any hop. |\n| `SECRET` | Assignment `NAME = \"<48 chars base64, entropy \u2265 4.2>\"` where `NAME \u2208 {API_KEY, SECRET_KEY, TOKEN, PASSWORD, PRIVATE_KEY}` in a non-test file. | Same literal in a file under a `tests/` path, or assigned to `SAMPLE_KEY`/`FIXTURE_TOKEN`. |\n| `LICENSE` | A file in a package with `distribution:\"binary\"` imports `vendor/<dep>` whose LICENSE text hashes to a copyleft SPDX id (`GPL-3.0-only`, `AGPL-3.0-only`, `GPL-2.0-only`). | Same import from an `internal` package, or a dep under `MIT`/`Apache-2.0`/`BSD-3-Clause`. |\n| `VULNDEP` | `manifests/requirements.lock` pins `<dep>==<v>` where `v` is inside an advisory's affected range **and** a first-party file imports a symbol listed in that advisory's `affected_symbols`. | Version in range but no first-party import of an affected symbol (unreachable), or version just outside the range (e.g. range `<2.4.0`, pinned `2.4.0`). |\n\nPlant counts at K=1: 60 TAINT (of which cross-module: 35), 40 SECRET, 25 LICENSE, 20 VULNDEP.\nDecoys: 1.5\u00d7 the plant count of each class. Total true findings = **145**.\n\n### 2.5 finding_id and ledger format\n\nThe agent computes these itself; the formula is given to the agent in its instructions.\n\n```\ncanon(x)      = RFC 8785 JCS JSON canonicalisation, UTF-8\nh(s)          = sha256(s.encode()).hexdigest()[:16]\n\nTAINT    id = h(\"TAINT|\"    + src_file + \":\" + src_line + \"|\" + sink_file + \":\" + sink_line)\nSECRET   id = h(\"SECRET|\"   + file + \":\" + line + \"|\" + name)\nLICENSE  id = h(\"LICENSE|\"  + dep_name + \"|\" + importing_package)\nVULNDEP  id = h(\"VULNDEP|\"  + dep_name + \"|\" + advisory_id + \"|\" + importing_module)\n```\n\n`ledger.json` (the run's final output artifact):\n\n```json\n{\n  \"schema\": \"evidence-ledger/1\",\n  \"findings\": [\n    {\"id\":\"...\", \"class\":\"TAINT\", \"severity\":\"high\",\n     \"evidence\":{\"source\":\"packages/pkg_003/modules/mod_0031/f_007.py:41\",\n                 \"sink\":\"packages/pkg_003/modules/mod_0034/f_002.py:88\",\n                 \"path\":[\"...:41\",\"...:52\",\"...:88\"]}},\n    {\"id\":\"...\", \"class\":\"SECRET\",  \"evidence\":{\"location\":\"...py:12\",\"name\":\"API_KEY\"}},\n    {\"id\":\"...\", \"class\":\"LICENSE\", \"evidence\":{\"dep\":\"libfoo\",\"spdx\":\"GPL-3.0-only\",\"package\":\"pkg_007\"}},\n    {\"id\":\"...\", \"class\":\"VULNDEP\", \"evidence\":{\"dep\":\"libbar\",\"advisory\":\"ADV-0042\",\"module\":\"mod_0112\",\"symbol\":\"parse\"}}\n  ]\n}\n```\n\n`findings` MUST be sorted by `id` ascending. `severity` comes from a fixed table\n(`TAINT`\u2192high, `SECRET`\u2192critical, `LICENSE`\u2192medium, `VULNDEP`\u2192high) so it is exactly checkable.\n\n### 2.6 Advisory server\n\n`advisory_server.py` serves `GET /advisories/<dep_name>` returning the static file\n`advisories/<dep_name>.json` verbatim, with `Cache-Control: immutable` and **no** `Date`-derived\ncontent. Response bodies are byte-stable. Schema:\n\n```json\n{\"dep\":\"libbar\",\"advisories\":[\n  {\"id\":\"ADV-0042\",\"affected\":\">=1.0.0,<2.4.0\",\"affected_symbols\":[\"parse\",\"loads\"],\"severity\":\"high\"}]}\n```\n\nThe server must not echo request time, request id, or any nonce. Fetch ops hash the response body.\n\n### 2.7 Runtime verification harness\n\nFor each candidate TAINT finding, the generator also emits `harness/exec_<module>.py`, a runner\nthat can execute a named function chain with the canary payload `\"'; DROP TABLE t; --\"` against\nan in-memory sqlite shim that records whether the canary reached `cursor.execute` unescaped.\n`verify_finding` (\u00a73, op 11) invokes this. It is a pure tool op: same code bytes + same finding\nrecord \u21d2 same verdict.\n\n### 2.8 truth.json\n\n```json\n{\"corpus_seed\": 1234, \"revision\": 0,\n \"findings\": [ <same records as ledger.json, sorted by id> ],\n \"op_dag\": { \"<op_id>\": [\"<upstream_op_id>\", ...] },\n \"op_inputs\": { \"<op_id>\": [\"<artifact path>\", ...] }}\n```\n\nThe generator knows the op DAG because it knows the module import graph and file\u2192module\nassignment. `op_dag`/`op_inputs` are used only by the grader (\u00a77.3), never by the agent.\n\n---\n\n## 3. Operation catalogue\n\nTen operation types. `args` are literal; `reads` are artifact paths; `deps` are upstream ops.\nModel ops run at `temperature=0, top_p=1, seed=0` with a versioned prompt template.\n\n| # | Op type | Count (K=1) | Kind | reads | deps | output (canonical JSON) |\n|---|---|---|---|---|---|---|\n| 1 | `read_file(path)` | 2,000 | tool | that one file | \u2013 | `{\"path\":..,\"bytes_sha256\":..,\"text\":..}` |\n| 2 | `extract_facts(path)` | 2,000 | model | \u2013 | `read_file(path)` | `FileFacts` (\u00a73.1) |\n| 3 | `read_meta(path)` | 620 | tool | one of: `package.json`, `vendor/*/METADATA.json`, `vendor/*/LICENSE` | \u2013 | bytes + text |\n| 4 | `classify_license(dep)` | 300 | model | \u2013 | `read_meta(vendor/dep/LICENSE)` | `{\"spdx\":..,\"copyleft\":bool}` |\n| 5 | `fetch_advisory(dep)` | 300 | http | `GET /advisories/<dep>` | \u2013 | response body |\n| 6 | `dep_match(dep)` | 300 | tool | \u2013 | `fetch_advisory(dep)`, `read_meta(vendor/dep/METADATA.json)`, `read_meta(manifests/requirements.lock)` | `{\"in_range\":bool,\"advisory_ids\":[..],\"symbols\":[..]}` |\n| 7 | `module_summary(m)` | 200 | model | \u2013 | `extract_facts` \u00d7 10 files of `m` | `ModuleFacts` (\u00a73.2) |\n| 8 | `flow_round(m,k)` k=1..3 | 600 | model | \u2013 | `module_summary(m)` + `flow_round(d,k-1)` \u2200 d \u2208 deps(m) (k>1) | `{\"exported_taint\":[..],\"reached_sinks\":[..]}` |\n| 9 | `package_rollup(p)` | 20 | model | \u2013 | `flow_round(m,3)` \u2200 m \u2208 p, `classify_license(dep)` + `dep_match(dep)` \u2200 dep imported by p | list of candidate findings |\n| 10 | `reduce(a,b)` | 319 | tool | \u2013 | two children | merged+deduped finding list |\n| 11 | `verify_finding(id)` | ~150 | tool | `harness/exec_*.py` + each file on the path | the `reduce` node carrying the finding | `{\"id\":..,\"exploitable\":bool}` |\n| 12 | `emit_ledger()` | 1 | tool | \u2013 | root `reduce`, all `verify_finding` | `ledger.json` |\n\n**Total 6,810 ops; 3,120 model calls.**\n\nReduce-tree leaves = 20 `package_rollup` + 300 `dep_match` = 320, ordered by a canonical key\n(`\"pkg:\"+p` / `\"dep:\"+name`, lexicographic) and combined as a **complete balanced binary tree**\nbuilt from that fixed ordering. The tree shape must be a pure function of the leaf key list so\nthat it is stable across runs.\n\n### 3.1 `FileFacts` schema (the early-cutoff contract)\n\nProse is forbidden. The op returns exactly:\n\n```json\n{\"path\":\"packages/.../f_007.py\",\n \"imports\":[{\"module\":\"mod_0034\",\"symbol\":\"fn_2\",\"line\":9}],\n \"functions\":[{\"name\":\"h_1\",\"line\":41,\"kind\":\"source|sink|propagator|sanitizer|pure\",\n               \"taints_out\":bool,\"params_tainting\":[0],\"calls\":[{\"name\":\"fn_2\",\"line\":44}]}],\n \"secrets\":[{\"name\":\"API_KEY\",\"line\":12,\"entropy\":4.71}],\n \"is_test_path\":false}\n```\n\nKeys sorted; arrays sorted by `(line, name)`; floats rounded to 2 decimals; **no** line-count,\ncomment text, byte offsets, or anything else that a cosmetic edit would perturb. This is what\nmakes a comment-only diff produce a byte-identical output and stop the invalidation cascade.\nFunction `line` numbers *do* change under an edit that inserts lines \u2014 so the generator's\ncosmetic mutations (\u00a76) only rewrite comment text and blank lines **in place**, preserving line\ncounts. This is a deliberate, documented property of the mutator, not an accident.\n\n### 3.2 `ModuleFacts`\n\nUnion of the module's file facts plus intra-module call resolution:\n`{\"module\":..,\"exports\":[{\"symbol\":..,\"taints_out\":bool,\"origin\":\"file:line\"}],\n  \"internal_paths\":[[{\"file\":..,\"line\":..}, ...]], \"sinks\":[..], \"secrets\":[..]}`.\n\n---\n\n## 4. Reuse key\n\n```python\nOP_VERSION   = {\"extract_facts\": 3, ...}      # bump \u21d2 global invalidation of that op type\nPROMPT_SHA   = {\"extract_facts\": sha256(template_bytes), ...}\n\ndef reuse_key(op) -> str:\n    parts = [\n      (\"t\",   op.type),\n      (\"v\",   str(OP_VERSION[op.type])),\n      (\"a\",   jcs(op.args)),                                  # ordered, literal args\n      (\"m\",   op.model_id or \"\"),\n      (\"s\",   jcs(op.sampling)),                              # {\"temperature\":0,\"top_p\":1,\"seed\":0,\"max_tokens\":N}\n      (\"p\",   PROMPT_SHA.get(op.type, \"\")),\n      (\"r\",   jcs([[p, sha256_file(p)] for p in sorted(op.reads)])),\n      (\"u\",   jcs(sorted(sha256(jcs(dep.output)) for dep in op.deps))),\n      (\"uo\",  jcs([sha256(jcs(d.output)) for d in op.ordered_deps])),   # only where order is semantic\n    ]\n    blob = b\"\".join(lp(k) + lp(v) for k, v in parts)          # lp(x) = len8be || utf8(x)\n    return sha256(blob).hexdigest()\n```\n\n`jcs` = RFC 8785 JSON Canonicalisation Scheme. Note `u` is a *sorted* multiset of upstream output\nhashes (order-insensitive for set-valued fan-in like `module_summary`), while `uo` preserves order\nfor the few ops where argument position matters (`reduce(left,right)`). Both are present; ops\npopulate whichever is semantically right and leave the other empty.\n\n**Store**: `key -> {\"output\": <jcs bytes>, \"meta\": {...}}`, e.g. SQLite or RocksDB, persisted on\ndisk across runs and across tenants. Protocol per op: compute key \u2192 `get` \u2192 on hit, record\n`reused`, adopt stored output; on miss, execute \u2192 validate output against the op's JSON Schema \u2192\n`put` \u2192 record `executed`.\n\n---\n\n## 5. Hermeticity rules (mandatory \u2014 the benchmark is invalid without them)\n\n1. Every op declares its reads and deps up front. The executor runs each op in a sandbox that\n   can see **only** the declared artifacts. Undeclared access is a hard error, not a warning.\n2. No op may read wall-clock time, a monotonic counter, a PRNG without a fixed seed, an env var,\n   a process id, or a network resource other than the advisory server.\n3. **No conversational context.** Every model op is a fresh, closed prompt containing only its\n   declared inputs. Accumulating chat history would make every op depend on all preceding ops and\n   would collapse the DAG into a chain, which is the pathological case for this system.\n4. Model outputs are parsed to the op's schema and re-serialised with `jcs` before hashing.\n   A non-conforming output is retried up to 3 times with the same prompt; a 4th failure fails the run.\n5. Absolute paths, hostnames, and any timestamps are forbidden in op outputs.\n\n---\n\n## 6. Perturbation\n\n`mutate.py --repo repo/ --seed T --rate {0.02,0.10,0.30} --out repo_v1/`\nAlso emits `truth_v1.json` and `required_v1.json` (\u00a77.3). Mutation is a pure function of `(T, rate)`.\n\nSelect `round(rate \u00d7 F)` source files uniformly without replacement using `Random(T)`. Assign each\nselected file a mutation class by the fixed distribution below (drawn from the same RNG):\n\n| Share | Class | Edit | Effect on facts |\n|---|---|---|---|\n| 40% | `COSMETIC` | rewrite header comment words and shuffle blank-line positions **preserving total line count**; rename local variables inside a function body | `read_file` hash changes; `FileFacts` byte-identical \u21d2 **early cutoff fires**, zero downstream recompute |\n| 30% | `LOCAL_SEMANTIC` | add or delete a PURE function; change a numeric literal; reorder two independent statements | `FileFacts` changes \u21d2 `module_summary` + that module's 3 `flow_round`s + importers' rounds 2-3 + rollup + `log2` reduce path recompute |\n| 20% | `DEFECT_TOGGLE` | insert a SANITIZER into an existing taint chain, remove one, plant a new SOURCE\u2192SINK chain, or add/remove a SECRET literal | as above **and** `truth.json` changes: findings appear/disappear |\n| 10% | `EDGE_CHANGE` | add or remove one `import` from the module's declared dependency set (DAG-safety enforced: only edges that keep the graph acyclic and depth \u2264 6) | changes the **DAG shape**: `flow_round` deps change for the importer, so its key changes structurally, not just by content |\n\nAdditionally, at every rate: bump `round(rate \u00d7 D)` vendored versions in\n`manifests/requirements.lock` and in the corresponding `METADATA.json` (at 2%: 6 deps), and change\n`round(rate \u00d7 D / 3)` advisory files (at 2%: 2 deps) \u2014 half of them moving a range boundary so a\n`VULNDEP` finding flips.\n\nThe advisory server, the prompt templates, the model id, and `OP_VERSION` are **unchanged**\nbetween runs. (Changing any of them is a separate, explicitly-labelled experiment: it should\ninvalidate everything, and a system that still reports hits is broken.)\n\n---\n\n## 7. Run protocol\n\n```\ngen_corpus.py --seed S --out repo_v0            # + truth_v0.json\nRUN A: agent(repo_v0) with EMPTY store          -> ledger_A.json, metrics_A.json   [cold]\nmutate.py --seed T --rate R repo_v0 -> repo_v1  # + truth_v1.json, required_v1.json\nRUN B: agent(repo_v1) with store from A         -> ledger_B.json, metrics_B.json   [warm]\nRUN C: agent(repo_v1) with EMPTY store          -> ledger_C.json, metrics_C.json   [cold control]\n```\n\nRuns A, B, C use identical code, prompts, model, and seeds. C exists solely to give B a\nsame-corpus cost baseline. Report the triple for `R \u2208 {0.02, 0.10, 0.30}` and at least 3\n`(S,T)` seed pairs each.\n\n`metrics_*.json` must record, per run: `ops_total`, `ops_executed`, `ops_reused`,\n`executed_op_ids[]`, `model_input_tokens`, `model_output_tokens`, `usd_cost`, `wall_ms`,\nand per-op-type breakdowns of the same.\n\n---\n\n## 8. Grader (`grade.py`, deterministic, no LLM)\n\nInputs: `ledger_A`, `ledger_B`, `ledger_C`, `metrics_*`, `truth_v0`, `truth_v1`, `required_v1`.\n\n**G1 \u2014 cold correctness.** `F1_A` = F1 between the id-sets of `ledger_A.findings` and\n`truth_v0.findings`. A reported finding counts as a true positive only if its `id` matches **and**\nevery field of its `evidence` object matches the truth record exactly (for TAINT, that includes\nthe ordered `path` array). Gate: `F1_A \u2265 0.90`.\n\n**G2 \u2014 warm correctness (the headline correctness gate).**\n`F1_B` = same computation against `truth_v1`. Gate: `F1_B \u2265 F1_A \u2212 0.01`.\nThis is the check that reuse did not serve a stale answer. A system that reuses too aggressively\nfails here and nowhere else.\n\n**G3 \u2014 invalidation soundness (hard pass/fail).**\n`required_v1.json` contains two sets computed by the generator from `op_dag`/`op_inputs`:\n- `required_max` = transitive closure over the op DAG of every op reading a mutated artifact,\n  **ignoring** early cutoff (the upper bound of legitimate recompute).\n- `required_min` = the same closure but pruned at every `COSMETIC`-mutated file, since those\n  provably produce identical `FileFacts` (the lower bound: these ops *must* run).\nChecks:\n- `required_min \u2286 executed_op_ids(B)` \u2014 else **FAIL (unsound reuse)**.\n- `executed_op_ids(B) \u2286 required_max` \u2014 else **FAIL (phantom invalidation / non-hermetic op)**.\n- `precision_inval = |required_min| / |executed_op_ids(B)|` \u2014 reported, target \u2265 0.85.\n\n**G4 \u2014 determinism check.** `jcs(ledger_B) == jcs(ledger_C)` byte-for-byte. Reported as a\nboolean; a failure indicates model nondeterminism leaked past the canonical schema and should be\ninvestigated before the numbers are trusted. Not a gate (G2 is the gate).\n\n**Score.**\n```\nif not (G1 and G2 and G3): score = 0.0\nelse: score = reuse_yield = 1 - (usd_cost_B / usd_cost_C)\n```\nAlso report `token_yield = 1 - (tokens_B / tokens_C)` and `op_yield = ops_reused_B / ops_total_B`.\nScore is a number in `[0,1]`; higher is better; `0` means the system was wrong, not merely slow.\nGround truth is free: it is emitted by the generator, and the generator is a pure function of\nits seeds.\n\n---\n\n## 9. Expected results (reference scale, sanity targets for an implementer)\n\n| Perturbation | files changed | semantically-changed | ops executed | op reuse | notes |\n|---|---|---|---|---|---|\n| 2% | 40 | 24 | ~460 | **93%** | 16 files hit early cutoff and cost one `extract_facts` each and nothing more |\n| 10% | 200 | 120 | ~1,320 | **81%** | |\n| 30% | 600 | 360 | ~2,260 | **67%** | `flow_round` layer saturates; reduce tree ~fully dirty |\n\nIf a candidate implementation reports materially higher reuse than these at a given rate, check\nG3 first \u2014 it is more likely unsound than clever.\n\n---\n\n## 10. Variants\n\n**10.1 Depth stress.** Raise `flow_round` count `R` from 3 to 6 and module out-degree from 2 to 4.\nBlast radius per changed module grows from 7 to ~1,365 ops; reuse at 2% should fall toward 60%.\nThis is the knob that converts the best case into the worst case and is the single most useful\nablation.\n\n**10.2 Anti-pattern control.** Replace the reduce tree with one N-ary `summarize_all` op over all\n320 leaves. Every perturbation, however small, invalidates it. Measures the cost of the\naggregation shape in isolation.\n\n**10.3 Multi-tenant reuse.** Generate `repo_v0(S)` and `repo_v0(S')` with the **same** `vendor/`\nand advisory snapshot but different first-party seeds. Run tenant 1 cold, tenant 2 against tenant\n1's store. Tenant 2 should reuse all 1,220 vendor-path ops (300 `classify_license` model calls +\n920 tool/http ops) with zero first-party reuse. Expected `op_yield \u2248 18%` on a fully-cold\nfirst-party tree \u2014 pure cross-user gain.\n\n---\n\n## 11. Repository layout for the benchmark itself\n\n```\nevidence-ledger/\n  gen_corpus.py         mutate.py          advisory_server.py\n  grade.py              schemas/*.json     prompts/*.md        # hashed into the key\n  runner/\n    ops.py              # op definitions, declared reads/deps\n    keys.py             # jcs + reuse_key\n    store.py            # get/put, SQLite backend\n    sandbox.py          # enforces declared-reads-only\n  agent/pipeline.py     # the fixed 10-stage plan; emits the op graph, does not improvise\n  configs/{k1,k4}.yaml\n```\n\nThe agent's plan is **static and declarative**: `pipeline.py` enumerates the full op graph from\nthe repo listing before executing anything. Dynamic, model-chosen plans are out of scope here \u2014\nthey would make the op set differ between runs for reasons unrelated to the perturbation and\nwould make G3 unenforceable.\n\n## 12. Pitfalls that will silently invalidate results\n\n- Any op that reads a directory listing rather than a file: repo-wide invalidation on any add/delete.\n- Prose in `FileFacts`: kills early cutoff, because the model rewords its explanation on every\n  re-run and every descendant key changes.\n- Unsorted arrays or unsorted fan-in in `jcs`: spurious misses.\n- `Date`/`Server` headers or ETags folded into `fetch_advisory` output.\n- Storing the raw model response instead of the schema-validated, canonically re-serialised object.\n- Bumping a prompt template mid-experiment: legitimate, total invalidation; it will look like a\n  catastrophic reuse regression if it is not logged.\n",
+  "why_reuse_wins": "Cost is concentrated in 2,000 single-file model calls plus 300 single-package license calls, so leaf invalidation scales with the number of changed files rather than repo size \u2014 nothing in the pipeline ever reads more than one artifact at the leaf layer. Above that, three mechanisms compound. (1) Early cutoff: facts are extracted into a prose-free canonical JSON schema, so the 40% of diffs that are comments/formatting/local renames re-run exactly one `extract_facts` op each, produce a byte-identical output, and stop dead \u2014 every descendant key is unchanged and still hits. (2) Bounded blast radius: cross-module dataflow is a fixed 3-round layered propagation over an import DAG with out-degree 2, so one changed module dirties at most 7 flow ops, and aggregation is a balanced binary reduce tree so it dirties log2(320) \u2248 9 reduce nodes rather than a monolithic summarizer. (3) Cross-tenant collision: the 1,220 ops over `vendor/` and the pinned advisory snapshot depend only on third-party bytes identical across every customer of the compliance vendor, so the second tenant gets 300 license-classification model calls free. Net effect at the reference scale: 2% perturbation executes ~460 of 6,810 ops (93% reuse), and the customer runs this ~200 times a day per repo with 1-3% diffs, which is precisely the regime where the store pays for itself many times over per day.",
+  "grader_description": "`grade.py`, fully deterministic, no LLM. Inputs: `ledger_A.json` (cold run output), `ledger_B.json` (warm run on the perturbed corpus), `ledger_C.json` (cold control on the perturbed corpus), the three `metrics_*.json` files, and generator-emitted `truth_v0.json`, `truth_v1.json`, `required_v1.json`. A finding is a true positive only if its `id` (computed by the published sha256 formula) matches a truth record AND every field of its `evidence` object matches exactly \u2014 for TAINT that includes the ordered `path` array of `file:line` strings, so guessing is impossible. G1: F1(ledger_A, truth_v0) \u2265 0.90. G2: F1(ledger_B, truth_v1) \u2265 F1_A \u2212 0.01 \u2014 this is the stale-answer gate. G3 (hard pass/fail, the invalidation-correctness check): the generator emits `required_min` (ops that provably must re-run, i.e. the DAG closure over mutated artifacts, pruned at cosmetically-mutated files whose facts are provably unchanged) and `required_max` (the same closure ignoring early cutoff); the grader asserts `required_min \u2286 executed_op_ids(B) \u2286 required_max`, failing on unsound reuse in one direction and phantom invalidation / non-hermetic ops in the other, and reports `|required_min| / |executed|` as invalidation precision. G4 (diagnostic, non-gating): `jcs(ledger_B) == jcs(ledger_C)` byte-for-byte. Final score: 0.0 if any of G1-G3 fails, else `reuse_yield = 1 \u2212 usd_cost_B / usd_cost_C` in [0,1], with `token_yield` and `op_yield` reported alongside. Ground truth is free and exact because the corpus and every planted defect are emitted by a seeded pure-function generator, and the mutator recomputes truth for the perturbed corpus by construction.",
+  "operation_count": 6810,
+  "dependency_shape": "A wide-shallow DAG with a log-depth reduce tail; total depth ~16 levels, maximum width 2,000. Layer 1: 2,000 `read_file` + 620 `read_meta` + 300 `fetch_advisory`, all independent roots reading exactly one artifact each. Layer 2: 2,000 `extract_facts` model calls, fan-in 1 (strictly one file each \u2014 this is the expensive layer and it is embarrassingly parallel). Parallel branch: 300 `classify_license` (fan-in 1) and 300 `dep_match` (fan-in 3). Layer 3: 200 `module_summary`, fan-in 10. Layer 4: 600 `flow_round(m,k)` for k=1..3, a fixed-round layered propagation over an import DAG with out-degree exactly 2 and depth \u2264 6 \u2014 `flow_round(m,k)` depends on `module_summary(m)` plus `flow_round(d,k-1)` for each of m's 2 dependencies, giving a bounded per-module blast radius of 1+2+4=7. Layer 5: 20 `package_rollup`, fan-in ~13. Layer 6: a complete balanced binary `reduce` tree over 320 canonically-ordered leaves (20 rollups + 300 dep_match results) = 319 internal nodes, 9 levels \u2014 one changed leaf dirties 9 nodes, not the whole aggregation. Layer 7: ~150 `verify_finding` tool ops hanging off reduce nodes, then a single `emit_ledger`. Fan-out (one file feeding many downstream ops) is deliberately low and fan-in is deliberately narrow and layered; there is no monolithic summarizer node and no unbounded fixed-point iteration anywhere.",
+  "perturbation_semantics": "2% = 40 of the 2,000 first-party source files, chosen by a seeded RNG, plus 6 of 300 vendored package versions bumped in `requirements.lock` and `METADATA.json`, plus 2 advisory JSON files edited (one moving a range boundary so a VULNDEP finding flips). The 40 files split by a fixed distribution: 16 COSMETIC (comment text rewritten and blank lines shuffled with total line count preserved, local variables renamed) \u2014 the file's content hash changes so `read_file` and `extract_facts` must re-run, but the canonical prose-free `FileFacts` output is byte-identical, so early cutoff fires and nothing downstream is invalidated; 12 LOCAL_SEMANTIC (a PURE function added or deleted, a literal changed) \u2014 `FileFacts` changes, invalidating that file's `module_summary`, its module's 3 `flow_round` ops, rounds 2-3 for its ~2 importers, that package's `package_rollup`, and the 9-node path up the reduce tree; 8 DEFECT_TOGGLE (a sanitizer inserted into or removed from a taint chain, a new SOURCE\u2192SINK chain planted, a secret literal added or removed) \u2014 same invalidation plus `truth.json` itself changes, so findings appear and disappear and a system serving stale cached answers fails G2 visibly; 4 EDGE_CHANGE (one import added or removed from a module's dependency set, keeping the graph acyclic) \u2014 this changes the *shape* of the DAG, so the affected `flow_round` op's key changes structurally rather than only by upstream content, which is the case naive fingerprinting schemes get wrong. The prompt templates, model id, sampling params, `OP_VERSION` table, and advisory server behaviour are all held fixed, so nothing else may legitimately invalidate. Expected outcome: ~460 of 6,810 ops execute (93% reuse), with `required_min` \u2248 390 ops that provably must run and `required_max` \u2248 540 bounding what may run; anything outside that band is a grader failure, not a performance result."
+ }
+}

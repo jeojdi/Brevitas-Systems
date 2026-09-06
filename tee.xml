@@ -1,0 +1,78 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/9UgWVRP1Xy4KLmu683U1ab27iZU</id>
+  <title>arXiv Query: search_query=all:"confidential inference" AND all:LLM&amp;id_list=&amp;start=0&amp;max_results=12</title>
+  <updated>2026-08-20T23:38:08Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:%22confidential+inference%22+AND+all:LLM&amp;start=0&amp;max_results=12&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>12</opensearch:itemsPerPage>
+  <opensearch:totalResults>2</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2603.18377v2</id>
+    <title>PlanTwin: Privacy-Preserving Planning Abstractions for Cloud-Assisted LLM Agents</title>
+    <updated>2026-03-20T12:22:16Z</updated>
+    <link href="https://arxiv.org/abs/2603.18377v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2603.18377v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Cloud-hosted large language models (LLMs) have become the de facto planners in agentic systems, coordinating tools and guiding execution over local environments. In many deployments, however, the environment being planned over is private, containing source code, files, credentials, and metadata that cannot be exposed to the cloud. Existing solutions address adjacent concerns, such as execution isolation, access control, or confidential inference, but they do not control what cloud planners observe during planning: within the permitted scope, \textit{raw environment state is still exposed}.
+  We introduce PlanTwin, a privacy-preserving architecture for cloud-assisted planning without exposing raw local context. The key idea is to project the real environment into a \textit{planning-oriented digital twin}: a schema-constrained and de-identified abstract graph that preserves planning-relevant structure while removing reconstructable details. The cloud planner operates solely on this sanitized twin through a bounded capability interface, while a local gatekeeper enforces safety policies and cumulative disclosure budgets. We further formalize the privacy-utility trade-off as a capability granularity problem, define architectural privacy goals using $(k,δ)$-anonymity and $ε$-unlinkability, and mitigate compositional leakage through multi-turn disclosure control.
+  We implement PlanTwin as middleware between local agents and cloud planners and evaluate it on 60 agentic tasks across ten domains with four cloud planners. PlanTwin achieves full sensitive-item non-disclosure (SND = 1.0) while maintaining planning quality close to full-context systems: three of four planners achieve PQS $&gt; 0.79$, and the full pipeline incurs less than 2.2\% utility loss.</summary>
+    <category term="cs.CR" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.ET" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-03-19T00:32:53Z</published>
+    <arxiv:primary_category term="cs.CR"/>
+    <author>
+      <name>Guangsheng Yu</name>
+    </author>
+    <author>
+      <name>Qin Wang</name>
+    </author>
+    <author>
+      <name>Rui Lang</name>
+    </author>
+    <author>
+      <name>Shuai Su</name>
+    </author>
+    <author>
+      <name>Xu Wang</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2603.00196v1</id>
+    <title>Your Inference Request Will Become a Black Box: Confidential Inference for Cloud-based Large Language Models</title>
+    <updated>2026-02-27T06:37:07Z</updated>
+    <link href="https://arxiv.org/abs/2603.00196v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2603.00196v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The increasing reliance on cloud-hosted Large Language Models (LLMs) exposes sensitive client data, such as prompts and responses, to potential privacy breaches by service providers. Existing approaches fail to ensure privacy, maintain model performance, and preserve computational efficiency simultaneously. To address this challenge, we propose Talaria, a confidential inference framework that partitions the LLM pipeline to protect client data without compromising the cloud's model intellectual property or inference quality. Talaria executes sensitive, weight-independent operations within a client-controlled Confidential Virtual Machine (CVM) while offloading weight-dependent computations to the cloud GPUs. The interaction between these environments is secured by our Reversible Masked Outsourcing (ReMO) protocol, which uses a hybrid masking technique to reversibly obscure intermediate data before outsourcing computations. Extensive evaluations show that Talaria can defend against state-of-the-art token inference attacks, reducing token reconstruction accuracy from over 97.5% to an average of 1.34%, all while being a lossless mechanism that guarantees output identical to the original model without significantly decreasing efficiency and scalability. To the best of our knowledge, this is the first work that ensures clients' prompts and responses remain inaccessible to the cloud, while also preserving model privacy, performance, and efficiency.</summary>
+    <category term="cs.CR" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-02-27T06:37:07Z</published>
+    <arxiv:comment>19 pages, 5 figures</arxiv:comment>
+    <arxiv:primary_category term="cs.CR"/>
+    <author>
+      <name>Chung-ju Huang</name>
+    </author>
+    <author>
+      <name>Huiqiang Zhao</name>
+    </author>
+    <author>
+      <name>Yuanpeng He</name>
+    </author>
+    <author>
+      <name>Lijian Li</name>
+    </author>
+    <author>
+      <name>Wenpin Jiao</name>
+    </author>
+    <author>
+      <name>Zhi Jin</name>
+    </author>
+    <author>
+      <name>Peixuan Chen</name>
+    </author>
+    <author>
+      <name>Leye Wang</name>
+    </author>
+  </entry>
+</feed>

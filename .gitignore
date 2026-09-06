@@ -102,3 +102,4 @@ public/assets/*.gif
 .venv/
 
 ponytail/
+.playwright-mcp/

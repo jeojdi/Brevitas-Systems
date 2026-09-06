@@ -1,0 +1,16 @@
+{
+  "arm_to_label": {
+    "A": "arm_a6b1",
+    "B": "arm_42f1",
+    "C": "arm_0634"
+  },
+  "created_at": 1786967135.245157,
+  "label_to_arm": {
+    "arm_0634": "C",
+    "arm_42f1": "B",
+    "arm_a6b1": "A"
+  },
+  "note": "The analysis script must not read this file. Unblind only after all numbers in results.md are final.",
+  "salt": "e15429aaca89cbd259f1277830fbdedf99b283fe801e53888d9b108be15f74e2",
+  "unblinded_at": 1787004699.757926
+}
