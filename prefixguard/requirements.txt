@@ -1,0 +1,13 @@
+# prefixguard runtime dependencies.
+#
+# This file did not exist, so `pip install -r` + run did not work on a clean
+# machine -- for "the only thing here a stranger can run", that was the whole
+# gap. `transformers` is the only hard requirement; `tiktoken` is needed only
+# for the OpenAI path.
+#
+# NOTE: transformers pulls a tensor backend (torch or equivalent) and the first
+# run fetches the tokenizer from huggingface.co. For an air-gapped machine,
+# pre-warm the HF cache or pass a local path to --tokenizer. The tool REFUSES
+# (exit 3) rather than falling back to a byte diff if it cannot load one.
+transformers>=4.55
+tiktoken>=0.7      # optional: only for --tokenizer tiktoken:<encoding>
