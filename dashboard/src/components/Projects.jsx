@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { fetchBreakdown, fetchRepoMeta, upsertRepoMeta, deleteRepoMeta } from '../lib/api.js'
+import { resourceKey, useCachedResource } from '../lib/resource-cache.js'
 import { UNAVAILABLE, WITHHELD, spendRedacted, usdOrUnavailable } from '../lib/spend.js'
 
 const number = n => Number(n || 0).toLocaleString()
@@ -12,15 +13,8 @@ const usd = n => n === null ? 'Unpriced' : usdOrUnavailable(n)
 // Repositories are discovered from usage (fetchBreakdown); repo_meta only decorates
 // them with a friendly display name (and lets a user pre-add a repo before any usage
 // arrives). The canonical `repo` key stays the identity — renaming never moves usage.
-export default function Projects({ apiKey, refreshTick }) {
-  const [rows, setRows] = useState([])
-  const [meta, setMeta] = useState([])
-  // /v1/stats/breakdown strips *_usd keys and sets spend_redacted for roles
-  // without billing access; withheld money must not render as $0.0000.
-  const [withheld, setWithheld] = useState(false)
+export default function Projects({ apiKey, refreshTick, active = true }) {
   const [selected, setSelected] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
   // Add / rename UI.
   const [showAdd, setShowAdd] = useState(false)
   const [addRepo, setAddRepo] = useState('')
@@ -29,36 +23,39 @@ export default function Projects({ apiKey, refreshTick }) {
   const [editName, setEditName] = useState('')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
-  const controllerRef = useRef(null)
 
+  const breakdownResource = useCachedResource({
+    key: resourceKey('/v1/stats/breakdown', apiKey),
+    fetcher: signal => fetchBreakdown(apiKey, { signal }),
+    active,
+    refreshTick,
+  })
+  // Aliases are best-effort: if the repo_meta table is not migrated yet, the page
+  // still shows discovered repos, just without display names.
+  const metaResource = useCachedResource({
+    key: resourceKey('/v1/repositories/meta', apiKey),
+    fetcher: signal => fetchRepoMeta(apiKey, { signal }).catch(() => ({ repos: [] })),
+    active,
+    refreshTick,
+  })
+
+  const rows = breakdownResource.data?.rows || []
+  const meta = Array.isArray(metaResource.data?.repos) ? metaResource.data.repos : []
+  // /v1/stats/breakdown strips *_usd keys and sets spend_redacted for roles
+  // without billing access; withheld money must not render as $0.0000.
+  const withheld = spendRedacted(breakdownResource.data)
+  const error = breakdownResource.error?.message || ''
+  // A cached payload survives the unmount, so returning to this tab lists the repos
+  // immediately rather than showing the loading line again.
+  const loading = breakdownResource.pending
+  // Mutations force past the TTL: an alias the user just wrote must be reflected on
+  // the next paint, not whenever the entry happens to age out.
   const load = useCallback(async () => {
-    controllerRef.current?.abort()
-    const controller = new AbortController()
-    controllerRef.current = controller
-    setError('')
-    try {
-      const [data, metaData] = await Promise.all([
-        fetchBreakdown(apiKey, { signal: controller.signal }),
-        // Aliases are best-effort: if the repo_meta table is not migrated yet, the
-        // page still shows discovered repos, just without display names.
-        fetchRepoMeta(apiKey, { signal: controller.signal }).catch(() => ({ repos: [] })),
-      ])
-      if (controllerRef.current === controller) {
-        setRows(data.rows || [])
-        setWithheld(spendRedacted(data))
-        setMeta(Array.isArray(metaData?.repos) ? metaData.repos : [])
-      }
-    } catch (error) {
-      if (controllerRef.current === controller && error.name !== 'AbortError') setError(error.message)
-    } finally {
-      if (controllerRef.current === controller) setLoading(false)
-    }
-  }, [apiKey])
-
-  useEffect(() => {
-    load()
-    return () => controllerRef.current?.abort()
-  }, [load, refreshTick])
+    await Promise.all([
+      breakdownResource.reload().catch(() => {}),
+      metaResource.reload().catch(() => {}),
+    ])
+  }, [breakdownResource.reload, metaResource.reload])
 
   const metaMap = useMemo(() => new Map(meta.map(item => [item.repo, item])), [meta])
 

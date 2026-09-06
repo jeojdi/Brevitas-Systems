@@ -3,6 +3,7 @@ import { motion, MotionConfig } from 'motion/react'
 import { authModeForPath, cacheApiKey, clearSessionKeyCache, supabase, supabaseMisconfigured, getOrCreateApiKey, invalidateCachedApiKey, LOGIN_AUDIENCE, loginAudienceForPath } from './lib/supabase.js'
 import { activateCompany, fetchCompanyContext, normalizeCompanyContext } from './lib/company-context.js'
 import { configureApiAuthenticationRecovery } from './lib/api.js'
+import { clearResourceCache } from './lib/resource-cache.js'
 import { bootstrapWorkspace, completeOnboarding, fetchOnboardingStatus } from './lib/onboarding-api.js'
 import Auth from './components/Auth.jsx'
 import Overview from './components/Overview.jsx'
@@ -117,6 +118,16 @@ const PREVIEW_CREDIT_PACKS = [
   { priceId: 'price_preview_50', amountUsd: 50, creditMicro: 50_000_000, label: '$50 credit pack' },
   { priceId: 'price_preview_100', amountUsd: 100, creditMicro: 100_000_000, label: '$100 credit pack' },
 ]
+// The Brevitas API key and every payload it authorised share one lifetime: both are
+// identity-scoped, and a cached dollar figure must not outlive the session that was
+// entitled to see it. Clearing them together means no call site can remember one and
+// forget the other — the resource cache also bumps a generation counter, so a request
+// already in flight cannot land afterwards and seed the cache for the next account.
+const clearIdentityCaches = () => {
+  clearSessionKeyCache()
+  clearResourceCache()
+}
+
 const emptyCompanyContext = (loading = false) => ({
   companies: [], activeCompanyId: '', selectedCompanyId: '', loading, error: '',
   needsOnboarding: false, workspaceCreated: false, setupComplete: true,
@@ -410,7 +421,7 @@ export default function App() {
       setSession(session)
       if (event === 'PASSWORD_RECOVERY') setRecoveringPassword(true)
       if (!session) {
-        clearSessionKeyCache()
+        clearIdentityCaches()
         credentialUserId.current = ''
         credentialCompanyId.current = ''
         setApiKey('')
@@ -427,7 +438,7 @@ export default function App() {
     const userChanged = !nextUserId || credentialUserId.current !== nextUserId
     const companyChanged = credentialCompanyId.current !== nextCompanyId
     if (userChanged || companyChanged) {
-      clearSessionKeyCache()
+      clearIdentityCaches()
       setApiKey('')
     }
     if (userChanged) {
@@ -539,7 +550,7 @@ export default function App() {
     try {
       await activateCompany(session.access_token, companyId)
       credentialCompanyId.current = companyId
-      clearSessionKeyCache()
+      clearIdentityCaches()
       setApiKey('')
       setCompanyContext(current => ({
         ...current,
@@ -559,7 +570,7 @@ export default function App() {
   const acceptedCompanyInvitation = useCallback(result => {
     credentialCompanyId.current = ''
     setCompanyContext({ ...emptyCompanyContext(true), needsOnboarding: false })
-    clearSessionKeyCache()
+    clearIdentityCaches()
     setApiKey('')
     Promise.resolve()
       .then(() => activateCompany(session?.access_token || '', result?.company_id || ''))
@@ -645,7 +656,7 @@ export default function App() {
   const signOut = () => {
     capture('account_signed_out')
     resetAnalytics()
-    clearSessionKeyCache()
+    clearIdentityCaches()
     credentialUserId.current = ''
     credentialCompanyId.current = ''
     setApiKey('')

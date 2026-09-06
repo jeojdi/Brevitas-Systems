@@ -10,20 +10,30 @@ const app = () => readFile(new URL('../App.jsx', import.meta.url), 'utf8')
 
 test('a failed stats load can be retried without white-screening the dashboard', async () => {
   const overview = await component('Overview')
-  // loadStats clears `error` synchronously and never restores `loading`, so the
-  // retry button and the 10s refreshTick both re-render with
-  // loading=false/error=''/stats=null. Without this third guard the stat reads
+  // A cached payload outlives a later failure, so the panel can render with
+  // pending=false/error=''/stats=null: nothing ever arrived for this key and the last
+  // attempt was aborted rather than failed. Without this third guard the stat reads
   // dereference null and React unmounts the whole root.
   assert.match(overview, /if \(!stats\) return/)
   assert.match(overview, /stats unavailable/)
-  const guards = overview.indexOf('if (loading) return')
-  const statsRow = overview.indexOf('label="// ai calls"')
+  const guards = overview.indexOf('statsResource.pending) return')
+  const statsRow = overview.indexOf("label: '// ai calls'")
   const nullGuard = overview.indexOf('if (!stats) return')
-  assert.ok(guards >= 0 && nullGuard > guards, 'null guard must sit with the other early returns')
-  assert.ok(nullGuard < statsRow, 'null guard must precede the big-stat reads')
-  // Every read in the big-stats row is optional, as in Billing.jsx.
-  const row = overview.slice(statsRow - 400, overview.indexOf('paired control'))
-  assert.doesNotMatch(row, /[^?]\bstats\.[a-z_]/)
+  assert.ok(guards >= 0, 'the skeleton guard must key off the cache entry being empty')
+  assert.ok(nullGuard > guards, 'null guard must sit with the other early returns')
+  assert.ok(statsRow >= 0 && nullGuard < statsRow, 'null guard must precede the big-stat reads')
+  // Every `stats` dereference is either optional-chained or sits behind an optional
+  // read of the SAME field — the redesign's conditional cards are written as
+  // `(stats?.x || 0) > 0 && … fmt(stats.x)`, where the `&&` short-circuit is the
+  // guard and it may wrap onto the next line. A bare `stats.x` whose field is never
+  // optional-read anywhere is how this panel used to take the whole SPA down.
+  const bare = [...overview.matchAll(/[^?.]\bstats\.([a-z_]+)/g)].map(match => match[1])
+  for (const field of new Set(bare)) {
+    assert.ok(
+      overview.includes(`stats?.${field}`),
+      `stats.${field} is dereferenced without ever being optional-read`,
+    )
+  }
 })
 
 test('one throwing panel degrades to a message instead of unmounting the SPA', async () => {

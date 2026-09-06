@@ -1,5 +1,6 @@
-import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
+import { Fragment, useState, useCallback, useRef } from 'react'
 import { fetchStats, fetchActivity, fetchCacheStats } from '../lib/api.js'
+import { resourceKey, useCachedResource } from '../lib/resource-cache.js'
 import { WITHHELD, spendRedacted } from '../lib/spend.js'
 import InstallCommand from './InstallCommand.jsx'
 
@@ -74,73 +75,61 @@ function MiniStat({ value, label, valueClass = 'text-brand-navy dark:text-brand-
   )
 }
 
-export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true }) {
-  const [stats, setStats]     = useState(previewStats)
-  const [activity, setActivity] = useState(null)
-  const [cacheStats, setCacheStats] = useState(null)
-  const [loading, setLoading] = useState(!previewStats)
-  const [error, setError]     = useState('')
-  const controllerRef = useRef(null)
+// Switching tabs unmounts this panel, but the cache entries outlive it, so coming back
+// repaints the previous numbers instead of starting from shimmer. `active` is for a
+// panel that is mounted but hidden: it would hold its numbers without joining the 10s
+// refresh tick. Nothing passes it today — see useCachedResource.
+export default function Overview({ apiKey, darkMode, refreshTick, previewStats = null, showInstallCommand = true, active = true }) {
+  // A preview mount renders fixed sample data and must never reach the network, so it
+  // carries no credential and therefore no cache key.
+  const credential = previewStats ? '' : apiKey
+  // App mounts Overview before the workspace API key is minted (skeleton-first shell),
+  // and clears the key on every user/workspace switch. An empty key yields an empty
+  // cache key, which fetches nothing and reports `pending` — the skeleton waits. The
+  // same property is what keeps one workspace's numbers from lingering under another's
+  // name through a switch: the key IS part of the cache key, so the new workspace
+  // starts from no entry rather than inheriting the previous one's.
+  const statsResource = useCachedResource({
+    key: resourceKey('/v1/stats', credential),
+    fetcher: signal => fetchStats(credential, { signal }),
+    active,
+    refreshTick,
+  })
+  // Activity and provider-cache stats stay best-effort exactly as before: a failure
+  // resolves to null (an absent section) rather than taking down the page that the
+  // required /v1/stats payload can already render.
+  const activityResource = useCachedResource({
+    key: resourceKey('/v1/stats/activity', credential),
+    fetcher: signal => fetchActivity(credential, { signal }).catch(() => null),
+    active,
+    refreshTick,
+  })
+  const cacheResource = useCachedResource({
+    key: resourceKey('/v1/stats/cache', credential),
+    fetcher: signal => fetchCacheStats(credential, { signal }).catch(() => null),
+    active,
+    refreshTick,
+  })
 
-  const loadStats = useCallback(async () => {
-    if (previewStats) {
-      setStats(previewStats)
-      setLoading(false)
-      return
-    }
-    // App now mounts Overview before the workspace API key is minted (skeleton-first
-    // shell), and clears the key on every user/workspace switch. Fetching with an
-    // empty key would just 401, and letting the previous workspace's numbers linger
-    // through a switch would show one workspace's data under another's name — so a
-    // missing key drops back to the skeleton and waits. Nulling controllerRef (not
-    // just aborting) keeps the aborted fetch's finally from flipping loading off and
-    // killing the skeleton. `apiKey` is in this callback's deps, so the effect
-    // re-runs and fetches the moment the key lands.
-    if (!apiKey) {
-      controllerRef.current?.abort()
-      controllerRef.current = null
-      setStats(null)
-      setActivity(null)
-      setCacheStats(null)
-      setError('')
-      setLoading(true)
-      return
-    }
-    controllerRef.current?.abort()
-    const controller = new AbortController()
-    controllerRef.current = controller
-    setError('')
-    try {
-      const [data, act, cache] = await Promise.all([
-        fetchStats(apiKey, { signal: controller.signal }),
-        fetchActivity(apiKey, { signal: controller.signal }).catch(() => null),
-        fetchCacheStats(apiKey, { signal: controller.signal }).catch(() => null),
-      ])
-      if (controllerRef.current === controller) {
-        setStats(data)
-        setActivity(act)
-        setCacheStats(cache)
-      }
-    } catch (e) {
-      if (controllerRef.current === controller && e.name !== 'AbortError') setError(e.message)
-    } finally {
-      if (controllerRef.current === controller) setLoading(false)
-    }
-  }, [apiKey, previewStats])
-
-  useEffect(() => {
-    loadStats()
-    return () => controllerRef.current?.abort()
-  }, [loadStats, refreshTick])
+  const stats = previewStats ?? statsResource.data ?? null
+  const activity = activityResource.data ?? null
+  const cacheStats = cacheResource.data ?? null
+  const error = statsResource.error?.message || ''
+  const loadStats = useCallback(() => {
+    statsResource.reload().catch(() => {})
+    activityResource.reload().catch(() => {})
+    cacheResource.reload().catch(() => {})
+  }, [statsResource.reload, activityResource.reload, cacheResource.reload])
 
   // Same component in both branches: React keeps OverviewBody mounted across the
   // pending→loaded transition, so numbers resolve into boxes that are already drawn.
-  if (loading) return <OverviewBody pending showInstallCommand={showInstallCommand} darkMode={darkMode} loadStats={loadStats} />
+  // `pending` is false the moment a cached payload exists, so returning to this tab
+  // paints the previous numbers instead of dropping back to shimmer.
+  if (!previewStats && statsResource.pending) return <OverviewBody pending showInstallCommand={showInstallCommand} darkMode={darkMode} loadStats={loadStats} />
   if (error && !stats) return <div className="pt-8"><p className="font-mono text-xs text-red-500">{error}</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
-  // A re-run of loadStats clears `error` synchronously and never restores `loading`,
-  // so a failed first load followed by the retry button or the 10s refresh tick lands
-  // here with loading=false, error='', stats=null. Both guards above fall through and
-  // the stat reads below would dereference null, unmounting the whole SPA.
+  // A cached payload outlives a later failure, so this only renders when nothing ever
+  // arrived and the failure was not an error either — without it the stat reads below
+  // would dereference null and unmount the whole SPA.
   if (!stats) return <div className="pt-8"><p className="annotation">// stats unavailable</p><button onClick={loadStats} className="annotation mt-3 hover:text-brand-blue">retry</button></div>
 
   return (
