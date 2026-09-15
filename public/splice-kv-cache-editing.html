@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Splice: editing a live KV cache instead of re-prefilling it · Brevitas Systems</title>
+<meta name="description" content="Splice deletes, replaces and reorders spans inside a live KV cache, measured against a fresh re-ingest. Benchmarks on text, video and audio, on H100 GPUs and inside SGLang.">
+<link href="/fonts/fonts.css" rel="stylesheet">
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+<link rel="stylesheet" href="/responsive.css">
+<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.splice-fig { margin: 8px 0 40px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); padding: 20px 20px 16px; }
+.splice-fig figcaption { font-size: 13px; color: var(--stone); margin-top: 12px; line-height: 1.5; }
+.splice-fig h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; color: var(--fg); }
+.splice-fig .sub { font-size: 12.5px; color: var(--stone); margin: 0 0 14px; }
+.splice-fig svg { display: block; width: 100%; height: auto; }
+.splice-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--stone-2); margin-bottom: 10px; }
+.splice-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.splice-table-wrap { overflow-x: auto; margin: 8px 0 40px; border: 1px solid var(--line); border-radius: 12px; }
+.splice-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.splice-table caption { text-align: left; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.splice-table caption b { display: block; font-size: 15px; color: var(--fg); font-weight: 600; }
+.splice-table caption span { display: block; font-size: 12.5px; color: var(--stone); margin-top: 2px; }
+.splice-table th { text-align: left; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 500; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding: 10px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.splice-table td { padding: 10px 18px; border-bottom: 1px solid var(--line); color: var(--stone-2); }
+.splice-table tr:last-child td { border-bottom: 0; }
+.splice-table td.n, .splice-table th.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.splice-table td.hi { color: var(--fg); font-weight: 600; }
+.splice-defs { display: grid; grid-template-columns: 150px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0 40px; font-size: 14px; }
+.splice-defs dt, .splice-defs dd { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.splice-defs dt { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding-top: 14px; }
+.splice-defs dd { color: var(--stone-2); }
+.splice-defs dt:last-of-type, .splice-defs dd:last-of-type { border-bottom: 0; }
+.splice-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 8px 0 40px; }
+.splice-stat { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--ink-2); }
+.splice-stat b { display: block; font-size: 32px; font-weight: 500; letter-spacing: -.02em; color: var(--fg); }
+.splice-stat span { display: block; font-size: 13px; color: var(--stone); margin-top: 4px; line-height: 1.45; }
+.splice-list { margin: 0 0 24px; padding-left: 20px; }
+.splice-list li { margin-bottom: 10px; color: var(--stone-2); }
+.splice-list li b { color: var(--fg); font-weight: 600; }
+@media (max-width: 640px) {
+  .splice-stats { grid-template-columns: 1fr; }
+  .splice-defs { grid-template-columns: 1fr; }
+  .splice-defs dt { border-bottom: 0; padding-bottom: 0; }
+}
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="/components.jsx"></script>
+
+<script type="text/babel">
+const H2 = ({ children }) => (
+  <h2 className="serif fade-up" style={{ fontSize: 'clamp(28px, 3.8vw, 40px)', fontWeight: 400, letterSpacing: '-0.02em', marginBottom: 28 }}>{children}</h2>
+);
+const P = ({ children, last }) => (
+  <p className="t-body fade-up" style={{ marginBottom: last ? 0 : 24 }}>{children}</p>
+);
+const Block = ({ children, top = 56 }) => (
+  <section className="section" style={{ paddingTop: top, paddingBottom: 0 }}>
+    <div className="container" style={{ maxWidth: 760 }}>{children}</div>
+  </section>
+);
+
+const INK = 'var(--bronze)';
+const RIVAL_A = 'var(--stone)';
+const RIVAL_B = 'var(--stone-2)';
+const GRID = 'var(--line)';
+const TEXT = 'var(--stone)';
+const TEXT_STRONG = 'var(--fg)';
+const mono = "'JetBrains Mono', ui-monospace, monospace";
+
+// Per-edit and all-in speedup vs context length. 1x H100, Qwen2.5-7B-Instruct-1M, 10 edits, repair budget 0.15.
+const CTX = [
+  { ctx: '8k', per: 1.50, all: 0.85 },
+  { ctx: '16k', per: 1.61, all: 0.76 },
+  { ctx: '32k', per: 1.63, all: 0.66 },
+  { ctx: '64k', per: 1.61, all: 0.59 },
+  { ctx: '128k', per: 1.51, all: 0.54 },
+];
+
+function ContextChart() {
+  const W = 680, H = 280, L = 44, R = 16, T = 16, B = 36;
+  const max = 2.0;
+  const x = i => L + (i + 0.5) * ((W - L - R) / CTX.length);
+  const y = v => T + (1 - v / max) * (H - T - B);
+  const path = key => CTX.map((d, i) => `${i ? 'L' : 'M'}${x(i)},${y(d[key])}`).join(' ');
+  return (
+    <figure className="splice-fig fade-up">
+      <h3>Speed-up per edit stays flat as context grows</h3>
+      <p className="sub">1× H100 · Qwen2.5-7B-Instruct-1M · 10 edits, each removing 5% of the context · vs re-prefilling from the edit point</p>
+      <div className="splice-legend">
+        <span><i style={{ background: INK }}></i>Per edit (one-time setup excluded)</span>
+        <span><i style={{ background: RIVAL_A }}></i>All-in over 10 edits (setup included)</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Line chart: per-edit speed-up is 1.50x to 1.63x from 8k to 128k tokens; all-in speed-up over 10 edits falls from 0.85x to 0.54x.">
+        {[0, 0.5, 1, 1.5, 2].map(v => (
+          <g key={v}>
+            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} style={{ stroke: GRID }} strokeWidth={v === 1 ? 1.5 : 1} strokeDasharray={v === 1 ? '4 4' : ''} />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{v.toFixed(1)}×</text>
+          </g>
+        ))}
+        <text x={W - R} y={y(1) - 6} textAnchor="end" style={{ fill: TEXT, fontSize: 11 }}>break-even</text>
+        <path d={path('per')} fill="none" style={{ stroke: INK }} strokeWidth="2.5" />
+        <path d={path('all')} fill="none" style={{ stroke: RIVAL_A }} strokeWidth="2.5" />
+        {CTX.map((d, i) => (
+          <g key={d.ctx}>
+            <circle cx={x(i)} cy={y(d.per)} r="4" style={{ fill: INK }} />
+            <circle cx={x(i)} cy={y(d.all)} r="4" style={{ fill: RIVAL_A }} />
+            <text x={x(i)} y={y(d.per) - 10} textAnchor="middle" style={{ fill: TEXT_STRONG, fontFamily: mono, fontSize: 11 }}>{d.per.toFixed(2)}×</text>
+            <text x={x(i)} y={y(d.all) + 18} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{d.all.toFixed(2)}×</text>
+            <text x={x(i)} y={H - 12} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{d.ctx}</text>
+          </g>
+        ))}
+      </svg>
+      <figcaption>Output quality on every point: pooled p95 KL between 0.0001 and 0.0005 against a fresh re-ingest, two orders of magnitude under the 0.05 threshold.</figcaption>
+    </figure>
+  );
+}
+
+// Head to head on 12 real OpenHands agent sessions per cell, Qwen2.5-14B, 1x H100.
+const H2H = [
+  { cell: '25% of 16k', splice: 9.58, info: 5.07, blend: 4.64 },
+  { cell: '25% of 32k', splice: 12.43, info: 5.57, blend: 4.47 },
+  { cell: '33% of 32k', splice: 7.49, info: 3.15, blend: 1.58 },
+  { cell: '73% of 16k', splice: 1.41, info: 0.83, blend: 0.69 },
+];
+
+function HeadToHeadChart() {
+  const W = 680, rowH = 58, L = 110, R = 56, T = 8;
+  const H = T + H2H.length * rowH + 24;
+  const max = 13;
+  const w = v => (v / max) * (W - L - R);
+  const bars = [['splice', INK, 'Splice'], ['info', RIVAL_B, 'InfoFlow'], ['blend', RIVAL_A, 'CacheBlend']];
+  return (
+    <figure className="splice-fig fade-up">
+      <h3>Same sessions, same quality check</h3>
+      <p className="sub">1× H100 · Qwen2.5-14B · 12 real OpenHands agent sessions per row · each method at the smallest recompute fraction that passes · higher is faster</p>
+      <div className="splice-legend">
+        {bars.map(([k, c, label]) => <span key={k}><i style={{ background: c }}></i>{label}</span>)}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Grouped bar chart of speed-up over re-ingest. 25% of 16k: Splice 9.6x, InfoFlow 5.1x, CacheBlend 4.6x. 25% of 32k: 12.4x, 5.6x, 4.5x. 33% of 32k: 7.5x, 3.2x, 1.6x. 73% of 16k: 1.4x, 0.8x, 0.7x.">
+        <line x1={L + w(1)} x2={L + w(1)} y1={T} y2={H - 24} style={{ stroke: GRID }} strokeDasharray="4 4" />
+        <text x={L + w(1)} y={H - 8} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>1×</text>
+        {H2H.map((d, r) => (
+          <g key={d.cell}>
+            <text x={L - 12} y={T + r * rowH + 28} textAnchor="end" style={{ fill: TEXT_STRONG, fontSize: 12.5 }}>{d.cell}</text>
+            {bars.map(([k, c], j) => (
+              <g key={k}>
+                <rect x={L} y={T + r * rowH + 6 + j * 15} width={Math.max(w(d[k]), 2)} height="12" rx="2" style={{ fill: c }} />
+                <text x={L + w(d[k]) + 6} y={T + r * rowH + 16 + j * 15} style={{ fill: j === 0 ? TEXT_STRONG : TEXT, fontFamily: mono, fontSize: 11 }}>{d[k].toFixed(1)}×</text>
+              </g>
+            ))}
+          </g>
+        ))}
+      </svg>
+      <figcaption>Deleted share of the context on the left. Speed-up is over a full re-ingest of the edited sequence on the same GPU. InfoFlow and CacheBlend were reimplemented inside our harness rather than run from their released code. A seam-repair baseline (programmable-kv) is faster than all three at 25% on one session sample, at 14.8× and 31.1×, but did not reproduce on a second sample and did not pass at 50%.</figcaption>
+    </figure>
+  );
+}
+
+// Pooled p95 teacher-forced KL for passing cells vs the 0.05 threshold.
+const QUAL = [
+  { label: '7B-1M, 32k', kl: 0.00009 },
+  { label: '7B-1M, 8k', kl: 0.00053 },
+  { label: '14B, 8k', kl: 0.0018 },
+  { label: '72B, 8k', kl: 0.0084 },
+  { label: 'Audio delete 16%', kl: 0.025 },
+  { label: 'Video swap, 97k', kl: 0.034 },
+  { label: 'Video delete 20%', kl: 0.038 },
+  { label: '14B, 25% of 16k', kl: 0.0404 },
+  { label: 'SGLang, 25% of 16k', kl: 0.0485 },
+];
+
+function QualityChart() {
+  const W = 680, rowH = 26, L = 150, R = 24, T = 8;
+  const H = T + QUAL.length * rowH + 30;
+  const max = 0.06;
+  const x = v => L + (v / max) * (W - L - R);
+  return (
+    <figure className="splice-fig fade-up">
+      <h3>Every result in this post passed the quality check</h3>
+      <p className="sub">Pooled p95 teacher-forced KL divergence between the edited cache and a fresh re-ingest · lower is closer · pass line at 0.05</p>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Dot plot of KL divergence per benchmark, all below the 0.05 pass line, ranging from 0.00009 to 0.0485.">
+        {[0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06].map(v => (
+          <g key={v}>
+            <line x1={x(v)} x2={x(v)} y1={T} y2={H - 26} style={{ stroke: GRID }} strokeWidth={v === 0.05 ? 2 : 1} strokeDasharray={v === 0.05 ? '5 4' : ''} />
+            <text x={x(v)} y={H - 10} textAnchor="middle" style={{ fill: v === 0.05 ? TEXT_STRONG : TEXT, fontFamily: mono, fontSize: 11 }}>{v === 0.05 ? '0.05 pass' : v.toFixed(2)}</text>
+          </g>
+        ))}
+        {QUAL.map((d, i) => (
+          <g key={d.label}>
+            <text x={L - 12} y={T + i * rowH + 17} textAnchor="end" style={{ fill: TEXT_STRONG, fontSize: 12.5 }}>{d.label}</text>
+            <line x1={x(0)} x2={x(d.kl)} y1={T + i * rowH + 13} y2={T + i * rowH + 13} style={{ stroke: INK }} strokeOpacity="0.35" strokeWidth="2" />
+            <circle cx={x(d.kl)} cy={T + i * rowH + 13} r="5" style={{ fill: INK }} />
+          </g>
+        ))}
+      </svg>
+      <figcaption>A control arm that recomputes every row reads 0.00001–0.00004 on text and exactly 0.0 inside SGLang, so the check can tell a correct cache from a damaged one. Media controls sit at a kernel noise floor of about 0.002–0.007.</figcaption>
+    </figure>
+  );
+}
+
+function PostPage() {
+  useFadeUpReveal();
+  return (
+    <>
+      <Nav current="blog" />
+
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 760 }}>
+          <div className="t-mono fade-up in" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 28 }}>
+            RESEARCH · SEPTEMBER 2026
+          </div>
+          <h1 className="serif fade-up in" style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 400, letterSpacing: '-0.025em', lineHeight: 1.06, margin: '0 0 28px' }}>
+            Splice: editing a live KV cache instead of re-prefilling it.
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 640, marginBottom: 40, color: 'var(--stone-2)' }}>
+            Long-running agents trim their context constantly. Every trim throws away the model’s saved attention state from the edit point on and pays to rebuild it. Splice edits that state in place, and only serves edits that pass a check calibrated against a fresh re-ingest.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20, paddingBottom: 48, borderBottom: '1px solid var(--line)', flexWrap: 'wrap' }}>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>Sep 15, 2026</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>7 min read</span>
+            <span className="t-mono" style={{ color: 'var(--line)' }}>·</span>
+            <span className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', padding: '3px 8px', border: '1px solid var(--bronze)', borderRadius: 2, letterSpacing: '0.1em' }}>RESEARCH</span>
+          </div>
+        </div>
+      </section>
+
+      <article>
+        <Block>
+          <H2>The problem: a KV cache only grows.</H2>
+          <P>When a model reads a prompt, it stores a key and a value for every token at every layer. That KV cache is what makes the next token cheap. It is also append-only. Each key has its absolute position baked in by a rotary rotation, and every later token was computed while looking at the tokens before it.</P>
+          <P>So when an agent drops old tool output, a stale screenshot or a paragraph of a document, today’s serving engines do the safe thing: evict the cache from the edit point onward and prefill the rest again. That cost scales with everything after the edit, and it is paid again on the next edit. For vision and audio models, re-ingesting also re-runs the encoder.</P>
+        </Block>
+
+        <Block>
+          <H2>What Splice does.</H2>
+          <P>Splice supports three operations on a live cache: delete a span, replace a span with one of the same length, and reorder spans. Each edit runs in four steps.</P>
+          <ol className="splice-list fade-up">
+            <li><b>Cut.</b> Remove the span’s rows from every layer and close the gap.</li>
+            <li><b>Re-rotate.</b> Move every surviving key to its new position. Rotary rotations compose, so this is exact: the key lands where a fresh prefill would put it. For video models the same holds per axis of multi-axis M-RoPE.</li>
+            <li><b>Repair.</b> Some later rows still carry traces of what was deleted. Splice recomputes a small fraction of them, typically 2–20% of the rows after the edit, in one batched pass.</li>
+            <li><b>Check.</b> Each edit is scored by a check calibrated offline against fresh re-ingests. Edits it cannot certify fall back to a normal re-prefill.</li>
+          </ol>
+          <P last>Which rows to repair, and how the check runs cheaply at serving time, is where most of the work went. We are not publishing those details yet.</P>
+        </Block>
+
+        <Block>
+          <H2>How we measure.</H2>
+          <P>Speed-ups on inference systems are easy to inflate, so every number in this post uses these definitions.</P>
+          <dl className="splice-defs fade-up">
+            <dt>Speed-up</dt><dd>Wall-clock time of the edit divided into the time to re-prefill the same content from the edit point, on the same GPU and attention kernels. Media results also give the ratio against a full re-ingest including the encoder.</dd>
+            <dt>Per edit</dt><dd>Each edit after the first, with the one-time setup pass excluded. This is the steady-state cost.</dd>
+            <dt>All-in</dt><dd>The whole session, with the initial prefill and setup charged to every method.</dd>
+            <dt>Quality</dt><dd>Teacher-forced KL divergence between next-token distributions from the edited cache and from a fresh re-ingest of the edited text, pooled over hundreds of probe positions, 95th percentile. A result passes below 0.05.</dd>
+            <dt>Control</dt><dd>A recompute-everything arm runs alongside every experiment and must read approximately zero, so a broken measurement cannot pass.</dd>
+          </dl>
+        </Block>
+
+        <Block>
+          <H2>Results on text.</H2>
+          <P>On a single H100, per-edit speed-up is flat from 8k to 128k tokens. Both Splice’s edit and the re-prefill it replaces grow with context, so the ratio holds.</P>
+          <ContextChart />
+          <P>Larger models gain more per edit, and the repair budget is the main knob.</P>
+          <div className="splice-table-wrap fade-up">
+            <table className="splice-table">
+              <caption><b>Speed-up by model size</b><span>8k context · 10 edits · vs re-prefilling from the edit point</span></caption>
+              <thead><tr><th>Model</th><th>Hardware</th><th className="n">Per edit</th><th className="n">All-in</th><th className="n">p95 KL</th></tr></thead>
+              <tbody>
+                <tr><td>Qwen2.5-7B-Instruct-1M, 15% budget</td><td>1× H100</td><td className="n">1.50×</td><td className="n">0.85×</td><td className="n">0.0005</td></tr>
+                <tr><td>Qwen2.5-14B, 15% budget</td><td>1× H100</td><td className="n">1.98×</td><td className="n">0.93×</td><td className="n">0.0018</td></tr>
+                <tr><td>Qwen2.5-72B-Instruct, 15% budget</td><td>2× H100</td><td className="n">1.94×</td><td className="n">1.30×</td><td className="n">0.0015</td></tr>
+                <tr><td>Qwen2.5-72B-Instruct, 2% budget</td><td>2× H100</td><td className="n hi">3.13×</td><td className="n hi">1.65×</td><td className="n">0.0084</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <P>At 72B the edit is cheaper even with setup charged. Dropping the repair budget from 15% of rows to 2% raises the per-edit gain from 1.94× to 3.13× while quality stays six times under the threshold. Smaller models need more edits per session before setup pays for itself.</P>
+          <P>The bigger question is how Splice compares with other ways to reuse a cache after an edit. We reimplemented published approaches in the same harness and ran them on the same real agent sessions under the same check.</P>
+          <HeadToHeadChart />
+        </Block>
+
+        <Block>
+          <H2>Inside a serving engine.</H2>
+          <P>A standalone harness is not a server. We built Splice as a radix-cache backend for SGLang, with edits arriving over a socket and repair batched by block. Ranking cost is charged inside every edit.</P>
+          <div className="splice-stats fade-up">
+            <div className="splice-stat"><b>2.75×</b><span>faster than SGLang re-prefilling the edited sequence</span></div>
+            <div className="splice-stat"><b>25%</b><span>of a 16k context deleted, over 12 real agent trajectories</span></div>
+            <div className="splice-stat"><b>0.0485</b><span>p95 KL, under the 0.05 threshold; full-recompute control reads 0.0</span></div>
+          </div>
+          <P last>This run used Qwen2.5-14B on one H100 with a single tenant. Block-batched repair gives byte-identical results to repairing row by row, which reaches 1.66× on the same cells.</P>
+        </Block>
+
+        <Block>
+          <H2>Video, images and audio.</H2>
+          <P>The same edit works on multimodal caches. When nothing needs repairing, the edit is just a cut and a re-rotation, measured in milliseconds, while a re-ingest must run the vision or audio encoder again. That is where the large ratios come from. The second column removes the encoder from the baseline, since some engines cache encoder output.</P>
+          <QualityChart />
+          <div className="splice-table-wrap fade-up">
+            <table className="splice-table">
+              <caption><b>Multimodal edits</b><span>1× H100 · each result passed the pooled quality check</span></caption>
+              <thead><tr><th>Edit</th><th>Model</th><th className="n">vs full re-ingest</th><th className="n">vs prefill only</th></tr></thead>
+              <tbody>
+                <tr><td>Delete 20% of a 10-minute video</td><td>Qwen2.5-VL-7B</td><td className="n hi">185–219×</td><td className="n">~67×</td></tr>
+                <tr><td>Delete 40% of a video (16 films, median)</td><td>Qwen3-VL-8B</td><td className="n hi">4.6×</td><td className="n">3.2×</td></tr>
+                <tr><td>Swap two spans, 97k tokens</td><td>Qwen2.5-VL-7B</td><td className="n hi">3.55×</td><td className="n">2.12×</td></tr>
+                <tr><td>Remove 1 of 16 images</td><td>Qwen2.5-VL-7B</td><td className="n hi">63×</td><td className="n">n/a</td></tr>
+                <tr><td>Remove 1 of 8 images</td><td>Qwen2.5-VL-7B</td><td className="n hi">3.1×</td><td className="n">n/a</td></tr>
+                <tr><td>Delete 16% of a recording</td><td>Voxtral-Mini-3B</td><td className="n hi">66–76×</td><td className="n">35–43×</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <P last>Larger video deletions need a real repair pass, and that pass runs at prefill speed, so the gain there comes mostly from skipping the encoder.</P>
+        </Block>
+
+        <Block top={56}>
+          <H2>Current scope.</H2>
+          <P>These results define where Splice fits today, and they set our next experiments.</P>
+          <ul className="splice-list fade-up">
+            <li><b>Setup is the cost to beat on small models.</b> Per-edit gains hold at every context length, but at 7B and 14B a session needs many edits before the one-time setup pass is repaid. Cutting that pass is our main engineering target.</li>
+            <li><b>Shared load.</b> The SGLang numbers are single-tenant. With other traffic competing for KV memory, edits are often refused admission and fall back to re-prefill. Admission-aware scheduling is next.</li>
+            <li><b>Reimplemented baselines.</b> Rival methods ran as ports inside our harness under one quality check, not from their released code.</li>
+            <li><b>Pooled, not worst-case.</b> Results pass on pooled p95 KL. On the hardest single probe, some video and text cells need more repair to pass.</li>
+          </ul>
+          <P>The underlying bet is simple. Agents are turning the KV cache from a write-once buffer into working memory that changes every few turns. Engines that can edit that memory safely, and prove each edit is correct, will be cheaper to run than engines that rebuild it.</P>
+          <P last>If you run self-hosted open models on SGLang or vLLM with long, frequently edited contexts, we would like to hear from you.</P>
+        </Block>
+
+        <section className="section" style={{ paddingTop: 40 }}>
+          <div className="container" style={{ maxWidth: 760 }}>
+            <p className="t-mono fade-up" style={{ color: 'var(--stone)', fontSize: 11, lineHeight: 1.7 }}>
+              Measured August–September 2026 on H100 GPUs (1–2 per run) with Hugging Face Transformers, PyTorch and SGLang. Quality gate specified before measurement. Models: Qwen2.5-7B-Instruct-1M, Qwen2.5-14B, Qwen2.5-72B-Instruct, Qwen2.5-VL-7B, Qwen3-VL-8B, Voxtral-Mini-3B.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <Footer />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<PostPage />);
+</script>
+</body>
+</html>
