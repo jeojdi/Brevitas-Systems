@@ -9,12 +9,44 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Product · Brevitas Systems</title>
-<meta name="description" content="A drop-in Python SDK that optimizes inter-agent communication. Wraps your existing orchestration.">
+<meta name="description" content="Splice makes a model's KV cache editable: delete, replace and reorder context in place, repair only what the edit touches, and certify each edit against a fresh re-ingest.">
+<link rel="canonical" href="https://brevitassystems.com/product">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://brevitassystems.com/product">
+<meta property="og:site_name" content="Brevitas Systems">
+<meta property="og:title" content="Product · Brevitas Systems">
+<meta property="og:description" content="Splice makes a model's KV cache editable: delete, replace and reorder context in place, and certify each edit against a fresh re-ingest.">
+<meta property="og:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Brevitas Systems">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:url" content="https://brevitassystems.com/product">
+<meta name="twitter:title" content="Product · Brevitas Systems">
+<meta name="twitter:description" content="Splice makes a model's KV cache editable: delete, replace and reorder context in place, certified against a fresh re-ingest.">
+<meta name="twitter:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta name="twitter:image:alt" content="Brevitas Systems">
+<meta name="twitter:site" content="@brevitas_sys">
+<meta name="twitter:creator" content="@brevitas_sys">
 <link href="/fonts/fonts.css" rel="stylesheet">
-<link rel="stylesheet" href="theme.css">
-<script src="theme-init.js" defer></script>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
 <link rel="stylesheet" href="/responsive.css">
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.prod-label { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--stone); margin: 0 0 18px; }
+.prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); }
+.prod-img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+.prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; }
+.prod-feature { display: grid; grid-template-columns: 52px 1fr; gap: 18px; align-items: start; }
+.prod-ficon { width: 52px; height: 52px; border: 1px solid var(--line); border-radius: 6px; background: var(--ink-2); display: flex; align-items: center; justify-content: center; color: var(--bronze); }
+.prod-feature h3 { font-size: 17px; font-weight: 600; margin: 4px 0 8px; color: var(--fg); letter-spacing: -0.01em; }
+.prod-feature p { font-size: 14.5px; line-height: 1.55; color: var(--stone-2); margin: 0; }
+@media (max-width: 720px) {
+  .prod-grid { grid-template-columns: 1fr; gap: 32px; }
+}
+</style>
 </head>
 <body>
 <div class="noise"></div>
@@ -24,42 +56,31 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script type="text/babel" src="components.jsx"></script>
-<script type="text/babel" src="animations.jsx"></script>
+<script type="text/babel" src="/components.jsx"></script>
 
 <script type="text/babel">
-const { useState, useEffect } = React;
+const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' };
 
-function MatrixRow({ label, items, caption }) {
-  return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: '200px 1fr',
-      gap: 32,
-      padding: '28px 0',
-      borderBottom: '1px solid var(--line)',
-      alignItems: 'start',
-    }} className="matrix-row">
-      <div>
-        <div className="t-overline" style={{ color: 'var(--stone)' }}>{label}</div>
-      </div>
-      <div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 22px', marginBottom: caption ? 12 : 0 }}>
-          {items.map((it, i) => (
-            <span key={i} className="mono" style={{
-              color: 'var(--fg)',
-              fontSize: 15,
-              padding: '4px 10px',
-              border: '1px solid var(--line)',
-              borderRadius: 2,
-            }}>{it}</span>
-          ))}
-        </div>
-        {caption && <div className="t-mono" style={{ color: 'var(--stone)', marginTop: 10 }}>{caption}</div>}
-      </div>
-    </div>
-  );
-}
+const IconCut = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><line x1="7.8" y1="7.8" x2="20" y2="18"/><line x1="7.8" y1="16.2" x2="20" y2="6"/></svg>
+);
+const IconSwap = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M4 8h13"/><path d="M14 5l3 3-3 3"/><path d="M20 16H7"/><path d="M10 13l-3 3 3 3"/></svg>
+);
+const IconLayers = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></svg>
+);
+const IconCertify = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M12 3l7 2.5v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9v-5L12 3z"/><path d="M9 12l2 2 4-4"/></svg>
+);
+
+const FEATURES = [
+  { icon: <IconCut />, h: 'Delete spans', b: 'Cut old tool output, stale screenshots or retrieved docs out of a live cache and close the gap. Every surviving token keeps the exact state the model computed for it.' },
+  { icon: <IconSwap />, h: 'Replace and reorder', b: 'Swap a span for one the same length, or move spans around the sequence. Rotary positions re-rotate exactly, so the edit is bit-for-bit what a fresh prefill would produce.' },
+  { icon: <IconLayers />, h: 'Every modality', b: 'The same edit works on text, video, images and audio, across 1-D RoPE and multi-axis M-RoPE. Skipping the encoder on media is where the largest speed-ups come from.' },
+  { icon: <IconCertify />, h: 'Certified, not hoped', b: 'Each edit is scored against a fresh re-ingest. Safe edits are served; the rest fall back to a clean re-prefill. Correctness is never traded for speed.' },
+];
 
 function ProductPage() {
   useFadeUpReveal();
@@ -68,145 +89,80 @@ function ProductPage() {
       <Nav current="product" />
 
       {/* Hero */}
-      <SectionShell>
-        <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-          Your AI agents are expensive. We make them <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>a lot cheaper.</em>
-        </h1>
-        <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-          Two lines wrap your existing pipeline. Your agents, prompts, and providers stay exactly as they are. Brevitas sits <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>between</em> them and quietly cuts your bill, typically 40–60%.
-        </p>
-      </SectionShell>
-
-      {/* Composition matrix */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)', position: 'relative', overflow: 'hidden' }}>
-        <video preload="metadata" poster="/assets/ascii-magic-3-poster.jpg" autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.55, zIndex: 0, pointerEvents: 'none' }}>
-          <source src="/assets/ascii-magic-3.mp4" type="video/mp4" />
-        </video>
-        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
-          <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 48, maxWidth: 900 }}>
-            Your stack, unchanged.
-          </h2>
-          <div style={{ borderTop: '1px solid var(--line)' }}>
-            <MatrixRow
-              label="ORCHESTRATORS"
-              items={['LangGraph', 'CrewAI', 'AutoGen', 'OpenAI Swarm', 'Custom']}
-              caption="We don't require a specific orchestrator. Pass in callables; get callables back."
-            />
-            <MatrixRow
-              label="PROVIDERS"
-              items={['OpenAI', 'Anthropic', 'Google', 'DeepSeek', 'Groq', 'Together', 'any /chat/completions']}
-              caption="We don't require a specific provider. Three providers running simultaneously in one pipeline is the common case we validate against."
-            />
-            <MatrixRow
-              label="RUNTIMES"
-              items={['Python 3.10+', 'any standard Python environment']}
-              caption="No sidecar. No daemon. No separate infrastructure."
-            />
-          </div>
+      <section className="section" style={{ paddingBottom: 0 }}>
+        <div className="container" style={{ maxWidth: 820 }}>
+          <h1 className="t-display fade-up in" style={{ margin: '8px 0 24px' }}>
+            Your agent's memory shouldn't be <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>disposable.</em>
+          </h1>
+          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, marginBottom: 0, color: 'var(--stone-2)' }}>
+            Splice turns a model's KV cache from a write-once buffer into working memory you can edit. Delete a span, replace it, reorder it, exactly and provably, without rebuilding the context from scratch.
+          </p>
         </div>
       </section>
 
-      {/* What it does, in five moves */}
+      {/* Problem */}
+      <section className="section">
+        <div className="container" style={{ maxWidth: 820 }}>
+          <p className="prod-label fade-up">Problem</p>
+          <h2 className="prod-head fade-up">Every edit to an agent's context throws its memory away.</h2>
+          <p className="t-body fade-up" style={{ marginBottom: 20 }}>
+            When a model reads a prompt, it stores a key and a value for every token at every layer. That KV cache is what makes each next token cheap. It is also append-only: every key has its absolute position baked in by a rotary rotation, and every later token was computed while attending to the ones before it.
+          </p>
+          <p className="t-body fade-up" style={{ marginBottom: 20 }}>
+            So when an agent trims old tool output, a stale screenshot, or a paragraph that no longer matters, today's serving engines do the safe thing: evict everything from the edit point and prefill it again. The cost scales with everything after the edit, and it is paid again on the very next edit. For vision and audio models, re-ingesting also re-runs the encoder.
+          </p>
+          <p className="t-body fade-up" style={{ marginBottom: 0 }}>
+            Long-running agents edit their context constantly, which means they spend most of their compute rebuilding memory they already had.
+          </p>
+        </div>
+      </section>
+
+      {/* Problem image */}
+      <section className="section" style={{ paddingTop: 0 }}>
+        <div className="container" style={{ maxWidth: 980 }}>
+          <img className="prod-img fade-up" src="/assets/ascii-magic-3-poster.jpg" alt="Abstract visualization of a model's working memory" loading="lazy" width="1280" height="716" />
+        </div>
+      </section>
+
+      {/* Solution */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 56, maxWidth: 900 }}>
-            Five ways we cut your bill. Routed per call so you only pay for what earns its keep.
-          </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {[
-              {
-                n: '01',
-                h: 'Compress. The biggest single lever.',
-                b: 'Every inter-agent message is compressed before the next model bills for it. Connective filler drops; the meaning-bearing tokens stay, checked against a semantic-similarity floor so nothing load-bearing is lost. On context-heavy hops this alone can recover roughly 40% of inter-agent token spend.',
-                code: `msg = compress(agent1.output, task_class="code")`,
-              },
-              {
-                n: '02',
-                h: 'Cache. Stop paying full price for context the model already saw.',
-                b: 'Repeated context (system prompts, prior turns, shared tools) is served from the provider\'s prompt cache at a fraction of the input rate. Brevitas places the cache breakpoints and keeps the prefix byte-stable across hops so it actually hits.',
-                code: `body = mark_cacheable(stable_prefix)`,
-              },
-              {
-                n: '03',
-                h: 'Reuse. Skip the call when the answer already exists.',
-                b: 'Identical requests (and, optionally, semantically equivalent ones) return a stored response instead of re-running the model. Retries, parallel agents, and repeated sub-tasks cost nothing the second time.',
-                code: `hit = cache.lookup(request)`,
-              },
-              {
-                n: '04',
-                h: 'Prune. Cut what the next agent won\'t use.',
-                b: 'A relevance pass drops context the next agent, given its role and task class, is statistically unlikely to use. Lossy by design, gated so the load-bearing facts stay. You stop paying for tokens that were never going to matter.',
-                code: `ctx = prune(ctx, role="reviewer")`,
-              },
-              {
-                n: '05',
-                h: 'Route. Apply only what earns its keep.',
-                b: 'A cost-aware router prices each strategy per call and picks the cheapest, correcting itself from the provider\'s real usage as it goes. Not every call benefits from every technique, so you only spend compute where it moves the number.',
-                code: `router.decide(call) -> "cache_only"`,
-              },
-            ].map((x, i) => (
-              <div key={i} className="product-move fade-up" style={{
-                display: 'grid',
-                gridTemplateColumns: '80px 1fr 1.1fr',
-                gap: 40,
-                padding: '40px 0',
-                borderTop: '1px solid var(--line)',
-                alignItems: 'start',
-              }}>
-                <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 14 }}>{x.n}</div>
+        <div className="container" style={{ maxWidth: 820 }}>
+          <p className="prod-label fade-up">Our solution</p>
+          <h2 className="prod-head fade-up">Splice edits the cache in place, and proves it is correct.</h2>
+          <p className="t-body fade-up" style={{ marginBottom: 20 }}>
+            Splice is KV-cache surgery. Instead of rebuilding context from scratch, it cuts a span out of a live cache, re-rotates the surviving keys into their new positions so the math is exact, and repairs only the small fraction of the computation that actually depended on the change. Then it certifies the edit against a fresh re-ingest before serving it.
+          </p>
+          <p className="t-body fade-up" style={{ marginBottom: 40 }}>
+            Most systems throw a model's computed memory away and redo it. Splice edits it directly, exactly, and proves the edit didn't corrupt anything.
+          </p>
+
+          <p className="prod-label fade-up" style={{ marginBottom: 24 }}>What Splice does</p>
+          <div className="prod-grid fade-up">
+            {FEATURES.map((f) => (
+              <div key={f.h} className="prod-feature">
+                <div className="prod-ficon">{f.icon}</div>
                 <div>
-                  <h3 className="serif" style={{ fontSize: 32, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 16px 0' }}>{x.h}</h3>
-                  <p className="t-body" style={{ margin: 0, maxWidth: 520 }}>{x.b}</p>
-                </div>
-                <div>
-                  <div style={{
-                    fontFamily: 'JetBrains Mono, ui-monospace, monospace',
-                    fontSize: 13,
-                    color: 'var(--signal)',
-                    background: 'var(--ink-2)',
-                    border: '1px solid var(--line)',
-                    borderRadius: 2,
-                    padding: '14px 18px',
-                    lineHeight: 1.6,
-                  }}>
-                    <span style={{ color: 'var(--stone)' }}># </span>
-                    {x.code}
-                  </div>
+                  <h3>{f.h}</h3>
+                  <p>{f.b}</p>
                 </div>
               </div>
             ))}
           </div>
-          <style>{`
-            @media (max-width: 900px) {
-              .section .grid-12 { grid-template-columns: 1fr; }
-            }
-          `}</style>
         </div>
       </section>
 
-      {/* What it doesn't do */}
+      {/* Proof strip */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
-          <h2 className="t-h2" style={{ margin: '0 0 32px' }}>
-            <em style={{ fontStyle: 'italic' }}>What Brevitas is not.</em>
-          </h2>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {[
-              ['Not an orchestrator.', 'Use yours.'],
-              ['Not a prompt compressor for single calls.', 'See The Token Company or LLMLingua for that.'],
-              ['Not a model router.', 'See Martian or OpenRouter.'],
-              ['Not an observability tool.', 'See Helicone, Langfuse, Portkey.'],
-              ['Not opinionated about your agents\' prompts.', 'They\'re yours.'],
-            ].map(([h, b], i) => (
-              <li key={i} style={{ display: 'flex', gap: 20, paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
-                <span className="t-mono" style={{ color: 'var(--stone)', flexShrink: 0, width: 24 }}>−</span>
-                <div>
-                  <div className="serif" style={{ fontSize: 22, fontWeight: 400, color: 'var(--fg)', marginBottom: 4 }}>{h}</div>
-                  <div className="t-body" style={{ color: 'var(--stone-2)', fontSize: 15 }}>{b}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
+          <p className="prod-label fade-up">Measured</p>
+          <h2 className="prod-head fade-up" style={{ marginBottom: 20 }}>Up to 12.4× faster edits, every one certified.</h2>
+          <p className="t-body fade-up" style={{ marginBottom: 28 }}>
+            On real agent sessions, Splice is 9 to 12× faster than re-prefilling the edited context, and 60 to 220× faster on media where it skips the encoder. Every result clears a correctness gate: pooled p95 teacher-forced KL under 0.05 against a fresh re-ingest.
+          </p>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
+            <Button variant="ghost" href="/blog/splice-kv-cache-editing" className="hero-btn" arrow={false}>Read the write-up</Button>
+          </div>
         </div>
       </section>
 
@@ -214,11 +170,11 @@ function ProductPage() {
       <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 820 }}>
-            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Get your pipeline benchmarked.</h2>
+            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 20 }}>Long, frequently edited contexts?</h2>
             <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
-              Tell us what you're running. We'll show you exactly where the money is going, and how much we'd put back in your pocket.
+              If you run self-hosted open models on SGLang or vLLM with contexts that change every few turns, we'll benchmark Splice on your workload and share the certificate numbers.
             </p>
-            <WaitlistInput variant="inline" source="product-final" />
+            <Button variant="primary" href={CALENDLY} target="_blank" className="hero-btn hero-cta">Book a call</Button>
           </div>
         </div>
       </section>

@@ -48,14 +48,14 @@
 .splice-table caption { text-align: left; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
 .splice-table caption b { display: block; font-size: 15px; color: var(--fg); font-weight: 600; }
 .splice-table caption span { display: block; font-size: 12.5px; color: var(--stone); margin-top: 2px; }
-.splice-table th { text-align: left; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 500; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding: 10px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.splice-table th { text-align: left; font-family: 'Inter Tight', sans-serif; font-weight: 500; font-size: 12.5px; letter-spacing: 0; color: var(--stone); padding: 12px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .splice-table td { padding: 10px 18px; border-bottom: 1px solid var(--line); color: var(--stone-2); }
 .splice-table tr:last-child td { border-bottom: 0; }
 .splice-table td.n, .splice-table th.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .splice-table td.hi { color: var(--fg); font-weight: 600; }
 .splice-defs { display: grid; grid-template-columns: 150px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; }
 .splice-defs dt, .splice-defs dd { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--line); }
-.splice-defs dt { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding-top: 14px; }
+.splice-defs dt { font-family: 'Inter Tight', sans-serif; font-size: 14px; font-weight: 500; letter-spacing: 0; color: var(--stone-2); padding-top: 13px; }
 .splice-defs dd { color: var(--stone-2); }
 .splice-defs dt:last-of-type, .splice-defs dd:last-of-type { border-bottom: 0; }
 .splice-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -94,10 +94,10 @@ const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
 
 // Headline speed-ups (Brevitas Splice technical brief, Sept 2026).
 const HEADLINES = [
-  { label: 'AGENT COMPACTION', val: '12.4', unit: '×', sub: '25% of a 32k session deleted · Qwen2.5-14B' },
-  { label: 'STEADY PER-EDIT · TEXT', val: '1.6', unit: '×', sub: 'flat from 8k to 128k tokens · Qwen2.5-7B' },
-  { label: 'MEDIA RE-INGEST AVOIDED', val: '220', unit: '×', sub: 'peak · delete ≤20% of a video vs re-ingest' },
-  { label: 'CORRECTNESS GATE', val: '<0.05', unit: ' KL', sub: 'pooled p95 vs a fresh re-ingest' },
+  { label: 'Agent compaction', val: '12.4', unit: '×', sub: '25% of a 32k session deleted · Qwen2.5-14B' },
+  { label: 'Steady per-edit, text', val: '1.6', unit: '×', sub: 'flat from 8k to 128k tokens · Qwen2.5-7B' },
+  { label: 'Media re-ingest avoided', val: '220', unit: '×', sub: 'peak · delete ≤20% of a video vs re-ingest' },
+  { label: 'Correctness gate', val: '<0.05', unit: ' KL', sub: 'pooled p95 vs a fresh re-ingest' },
 ];
 
 // Per-edit and all-in speedup vs context length. 1x H100, Qwen2.5-7B-Instruct-1M, 10 edits, repair budget 0.15.
@@ -241,14 +241,14 @@ function Headlines() {
           display: 'flex', flexDirection: 'column',
           background: i === 0 ? 'var(--ink-2)' : 'transparent',
         }}>
-          <div className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, marginBottom: 18 }}>{h.label}</div>
+          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone-2)', fontSize: 13.5, letterSpacing: '0.005em', marginBottom: 18 }}>{h.label}</div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 10 }}>
-            <span className="serif" style={{ fontSize: 'clamp(44px, 5vw, 64px)', fontWeight: 300, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.03em', lineHeight: 1 }}>
+            <span style={{ fontFamily: "'Inter Tight', sans-serif", fontSize: 'clamp(44px, 5vw, 64px)', fontWeight: 400, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.02em', lineHeight: 1 }}>
               {h.val}
             </span>
-            <span className="serif" style={{ fontSize: 24, color: 'var(--stone-2)' }}>{h.unit}</span>
+            <span style={{ fontFamily: "'Inter Tight', sans-serif", fontSize: 22, fontWeight: 400, color: 'var(--stone-2)' }}>{h.unit}</span>
           </div>
-          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>{h.sub}</div>
+          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone)', fontSize: 13, lineHeight: 1.5 }}>{h.sub}</div>
         </div>
       ))}
     </div>
@@ -269,7 +269,7 @@ function BenchmarksPage() {
               Editing a live KV cache, measured against a full re-ingest.
             </h1>
             <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 760, marginBottom: 48 }}>
-              Splice deletes, replaces and reorders spans inside a cached sequence and repairs only the computation the edit touches. Every number here is wall-clock against re-prefilling the same content on the same GPU — and every row passed a correctness gate calibrated on a fresh re-ingest: pooled p95 teacher-forced <span className="mono">KL &lt; 0.05</span>.
+              Splice deletes, replaces and reorders spans inside a cached sequence and repairs only the computation the edit touches. Every number here is wall-clock against re-prefilling the same content on the same GPU, and every row passed a correctness gate calibrated on a fresh re-ingest: pooled p95 teacher-forced <span className="mono">KL &lt; 0.05</span>.
             </p>
           </div>
         </div>
@@ -279,8 +279,8 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 40 }}>
         <div className="container">
           <Headlines />
-          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 16 }}>
-            1–2× H100 · QWEN2.5 / QWEN3-VL / VOXTRAL · AUG–SEP 2026
+          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone)', fontSize: 13, marginTop: 16 }}>
+            1–2× H100 · Qwen2.5 / Qwen3-VL / Voxtral · Aug–Sep 2026
           </div>
         </div>
       </section>
@@ -289,7 +289,6 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>HOW WE MEASURE</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Definitions, before the numbers.</h2>
             <p className="t-body">
               Speed-ups on inference systems are easy to inflate, so every result on this page uses these definitions.
@@ -311,7 +310,6 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>TEXT</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Per-edit speed-up holds as context grows.</h2>
             <p className="t-body">
               On a single H100, per-edit speed-up is flat from 8k to 128k tokens. Both Splice's edit and the re-prefill it replaces grow with context, so the ratio holds. All-in figures charge the one-time setup pass to every edit, which is the cost to beat on smaller models.
@@ -339,10 +337,9 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>HEAD TO HEAD</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Against other ways to reuse a cache after an edit.</h2>
             <p className="t-body">
-              On twelve real OpenHands agent sessions per cell, rival methods reimplemented in our harness and run under the same quality gate — each at its smallest passing recompute fraction. Splice leads on every deletion size we tested.
+              On twelve real OpenHands agent sessions per cell, rival methods reimplemented in our harness and run under the same quality gate, each at its smallest passing recompute fraction. Splice leads on every deletion size we tested.
             </p>
           </div>
           <div style={{ maxWidth: 900 }}>
@@ -355,7 +352,6 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>INSIDE A SERVING ENGINE</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Splice as an SGLang radix-cache backend.</h2>
             <p className="t-body">
               A standalone harness is not a server. We built Splice into SGLang, with edits arriving over a socket and repair batched by block. Ranking cost is charged inside every edit. Block-batched repair is byte-identical to repairing row by row.
@@ -375,10 +371,9 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>VIDEO · IMAGE · AUDIO</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Skipping the encoder is where the large ratios come from.</h2>
             <p className="t-body">
-              The same edit works on multimodal caches. When nothing needs repairing, the edit is just a cut and a re-rotation — measured in milliseconds — while a re-ingest must run the vision or audio encoder again. The second column removes the encoder from the baseline, since some engines cache encoder output.
+              The same edit works on multimodal caches. When nothing needs repairing, the edit is just a cut and a re-rotation, measured in milliseconds, while a re-ingest must run the vision or audio encoder again. The second column removes the encoder from the baseline, since some engines cache encoder output.
             </p>
           </div>
           <div style={{ maxWidth: 900 }}>
@@ -404,7 +399,6 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>CORRECTNESS</Overline>
             <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Every row on this page cleared the gate.</h2>
             <p className="t-body">
               An edit is only served if it certifies against a fresh re-ingest. Pooled p95 teacher-forced KL under 0.05 passes; anything above falls back to a normal re-prefill.
@@ -419,7 +413,6 @@ function BenchmarksPage() {
       {/* Caveats / scope */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
-          <Overline>CURRENT SCOPE</Overline>
           <h2 className="t-h2" style={{ margin: '24px 0 28px' }}>
             <em style={{ fontStyle: 'italic' }}>Where these numbers hold, and where they don't.</em>
           </h2>
@@ -450,7 +443,6 @@ function BenchmarksPage() {
       <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 720 }}>
-            <Overline dot>RUN IT ON YOUR STACK</Overline>
             <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 16 }}>Long, frequently edited contexts?</h2>
             <p className="t-body-lg" style={{ marginBottom: 32 }}>
               If you run self-hosted open models on SGLang or vLLM with contexts that change every few turns, we'll benchmark Splice on your workload and share the certificate numbers.
