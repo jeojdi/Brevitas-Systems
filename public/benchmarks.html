@@ -10,12 +10,64 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
 <title>Benchmarks · Brevitas Systems</title>
-<meta name="description" content="Measured results from the Brevitas coding harness. 60 HumanEval+ tasks, three-agent pipeline.">
+<meta name="description" content="Splice benchmarks: editing a live KV cache instead of re-prefilling it. Text, video, image and audio results on H100 GPUs and inside SGLang, every row certified against a fresh re-ingest.">
+<link rel="canonical" href="https://brevitassystems.com/benchmarks">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://brevitassystems.com/benchmarks">
+<meta property="og:site_name" content="Brevitas Systems">
+<meta property="og:title" content="Splice benchmarks · Brevitas Systems">
+<meta property="og:description" content="Editing a live KV cache instead of re-prefilling it. Text, video, image and audio results on H100 GPUs and inside SGLang, every row certified against a fresh re-ingest.">
+<meta property="og:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Brevitas Systems">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:url" content="https://brevitassystems.com/benchmarks">
+<meta name="twitter:title" content="Splice benchmarks · Brevitas Systems">
+<meta name="twitter:description" content="Editing a live KV cache instead of re-prefilling it. Text, video, image and audio results, every row certified against a fresh re-ingest.">
+<meta name="twitter:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta name="twitter:image:alt" content="Brevitas Systems">
+<meta name="twitter:site" content="@brevitas_sys">
+<meta name="twitter:creator" content="@brevitas_sys">
 <link href="/fonts/fonts.css" rel="stylesheet">
-<link rel="stylesheet" href="theme.css">
-<script src="theme-init.js" defer></script>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
 <link rel="stylesheet" href="/responsive.css">
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.splice-fig { margin: 8px 0 0; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); padding: 20px 20px 16px; }
+.splice-fig figcaption { font-size: 13px; color: var(--stone); margin-top: 12px; line-height: 1.5; }
+.splice-fig h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; color: var(--fg); }
+.splice-fig .sub { font-size: 12.5px; color: var(--stone); margin: 0 0 14px; }
+.splice-fig svg { display: block; width: 100%; height: auto; }
+.splice-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--stone-2); margin-bottom: 10px; }
+.splice-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.splice-table-wrap { overflow-x: auto; margin: 24px 0 0; border: 1px solid var(--line); border-radius: 12px; }
+.splice-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.splice-table caption { text-align: left; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.splice-table caption b { display: block; font-size: 15px; color: var(--fg); font-weight: 600; }
+.splice-table caption span { display: block; font-size: 12.5px; color: var(--stone); margin-top: 2px; }
+.splice-table th { text-align: left; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 500; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding: 10px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.splice-table td { padding: 10px 18px; border-bottom: 1px solid var(--line); color: var(--stone-2); }
+.splice-table tr:last-child td { border-bottom: 0; }
+.splice-table td.n, .splice-table th.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.splice-table td.hi { color: var(--fg); font-weight: 600; }
+.splice-defs { display: grid; grid-template-columns: 150px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; }
+.splice-defs dt, .splice-defs dd { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.splice-defs dt { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--stone); padding-top: 14px; }
+.splice-defs dd { color: var(--stone-2); }
+.splice-defs dt:last-of-type, .splice-defs dd:last-of-type { border-bottom: 0; }
+.splice-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.splice-stat { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--ink-2); }
+.splice-stat b { display: block; font-size: 32px; font-weight: 500; letter-spacing: -.02em; color: var(--fg); }
+.splice-stat span { display: block; font-size: 13px; color: var(--stone); margin-top: 4px; line-height: 1.45; }
+@media (max-width: 640px) {
+  .splice-stats { grid-template-columns: 1fr; }
+  .splice-defs { grid-template-columns: 1fr; }
+  .splice-defs dt { border-bottom: 0; padding-bottom: 0; }
+}
+</style>
 </head>
 <body>
 <div class="noise"></div>
@@ -25,206 +77,178 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="/components.jsx"></script>
 
 <script type="text/babel">
 const { useState, useEffect } = React;
 
-// Main result from README
+const INK = 'var(--bronze)';
+const RIVAL_A = 'var(--stone)';
+const RIVAL_B = 'var(--stone-2)';
+const GRID = 'var(--line)';
+const TEXT = 'var(--stone)';
+const TEXT_STRONG = 'var(--fg)';
+const mono = "'JetBrains Mono', ui-monospace, monospace";
+
+const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+
+// Headline speed-ups (Brevitas Splice technical brief, Sept 2026).
 const HEADLINES = [
-  { label: 'TOKENS SAVED', val: '59.4', unit: '%', sub: '6,140 → 2,490 / task' },
-  { label: 'COST REDUCTION', val: '47.0', unit: '%', sub: '$0.001616 → $0.000857' },
-  { label: 'QUALITY PARITY', val: '99.2', unit: '%', sub: 'n=60 · HumanEval+' },
-  { label: 'LATENCY DELTA', val: '+2.1', unit: '%', sub: 'p50 added overhead' },
+  { label: 'AGENT COMPACTION', val: '12.4', unit: '×', sub: '25% of a 32k session deleted · Qwen2.5-14B' },
+  { label: 'STEADY PER-EDIT · TEXT', val: '1.6', unit: '×', sub: 'flat from 8k to 128k tokens · Qwen2.5-7B' },
+  { label: 'MEDIA RE-INGEST AVOIDED', val: '220', unit: '×', sub: 'peak · delete ≤20% of a video vs re-ingest' },
+  { label: 'CORRECTNESS GATE', val: '<0.05', unit: ' KL', sub: 'pooled p95 vs a fresh re-ingest' },
 ];
 
-const TECHNIQUE_CONTRIBUTION = [
-  { name: 'Message compression', pct: 41, color: 'var(--bronze)' },
-  { name: 'Shared-memory references', pct: 22, color: '#B58B4A' },
-  { name: 'Delta mode', pct: 11, color: '#8A6A35' },
-  { name: 'Smart pruning', pct: 8, color: '#67502A' },
-  { name: 'Compact protocol', pct: 4, color: '#4A3B22' },
-  { name: 'Task-aware routing savings', pct: 14, color: 'var(--signal)' },
+// Per-edit and all-in speedup vs context length. 1x H100, Qwen2.5-7B-Instruct-1M, 10 edits, repair budget 0.15.
+const CTX = [
+  { ctx: '8k', per: 1.50, all: 0.85 },
+  { ctx: '16k', per: 1.61, all: 0.76 },
+  { ctx: '32k', per: 1.63, all: 0.66 },
+  { ctx: '64k', per: 1.61, all: 0.59 },
+  { ctx: '128k', per: 1.51, all: 0.54 },
 ];
 
-function ContributionChart() {
-  const total = TECHNIQUE_CONTRIBUTION.reduce((s, x) => s + x.pct, 0);
+function ContextChart() {
+  const W = 680, H = 280, L = 44, R = 16, T = 16, B = 36;
+  const max = 2.0;
+  const x = i => L + (i + 0.5) * ((W - L - R) / CTX.length);
+  const y = v => T + (1 - v / max) * (H - T - B);
+  const path = key => CTX.map((d, i) => `${i ? 'L' : 'M'}${x(i)},${y(d[key])}`).join(' ');
   return (
-    <div className="benchmark-contribution" style={{ width: '100%' }}>
-      {/* Stacked horizontal bar */}
-      <div style={{ display: 'flex', width: '100%', height: 48, border: '1px solid var(--line)', background: 'var(--ink-2)', marginBottom: 32, borderRadius: 2, overflow: 'hidden' }}>
-        {TECHNIQUE_CONTRIBUTION.map(t => (
-          <div key={t.name} title={`${t.name}: ${t.pct}%`} style={{
-            width: `${(t.pct / total) * 100}%`,
-            background: t.color,
-            borderRight: '1px solid var(--bg)',
-            position: 'relative',
-          }}>
-            <div style={{
-              position: 'absolute',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 11,
-              color: 'var(--bg)',
-              fontWeight: 500,
-              pointerEvents: 'none',
-            }}>{t.pct}%</div>
-          </div>
-        ))}
+    <figure className="splice-fig fade-up">
+      <h3>Speed-up per edit stays flat as context grows</h3>
+      <p className="sub">1× H100 · Qwen2.5-7B-Instruct-1M · 10 edits, each removing 5% of the context · vs re-prefilling from the edit point</p>
+      <div className="splice-legend">
+        <span><i style={{ background: INK }}></i>Per edit (one-time setup excluded)</span>
+        <span><i style={{ background: RIVAL_A }}></i>All-in over 10 edits (setup included)</span>
       </div>
-      {/* Legend */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
-        {TECHNIQUE_CONTRIBUTION.map(t => (
-          <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
-            <span style={{ width: 10, height: 10, background: t.color, flexShrink: 0 }}></span>
-            <span className="t-body" style={{ fontSize: 14, color: 'var(--bone-dim)' }}>{t.name}</span>
-            <span className="t-mono" style={{ fontSize: 12, color: 'var(--stone)', marginLeft: 'auto' }}>{t.pct}%</span>
-          </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Line chart: per-edit speed-up is 1.50x to 1.63x from 8k to 128k tokens; all-in speed-up over 10 edits falls from 0.85x to 0.54x.">
+        {[0, 0.5, 1, 1.5, 2].map(v => (
+          <g key={v}>
+            <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} style={{ stroke: GRID }} strokeWidth={v === 1 ? 1.5 : 1} strokeDasharray={v === 1 ? '4 4' : ''} />
+            <text x={L - 8} y={y(v) + 4} textAnchor="end" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{v.toFixed(1)}×</text>
+          </g>
         ))}
-      </div>
-    </div>
+        <text x={W - R} y={y(1) - 6} textAnchor="end" style={{ fill: TEXT, fontSize: 11 }}>break-even</text>
+        <path d={path('per')} fill="none" style={{ stroke: INK }} strokeWidth="2.5" />
+        <path d={path('all')} fill="none" style={{ stroke: RIVAL_A }} strokeWidth="2.5" />
+        {CTX.map((d, i) => (
+          <g key={d.ctx}>
+            <circle cx={x(i)} cy={y(d.per)} r="4" style={{ fill: INK }} />
+            <circle cx={x(i)} cy={y(d.all)} r="4" style={{ fill: RIVAL_A }} />
+            <text x={x(i)} y={y(d.per) - 10} textAnchor="middle" style={{ fill: TEXT_STRONG, fontFamily: mono, fontSize: 11 }}>{d.per.toFixed(2)}×</text>
+            <text x={x(i)} y={y(d.all) + 18} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{d.all.toFixed(2)}×</text>
+            <text x={x(i)} y={H - 12} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>{d.ctx}</text>
+          </g>
+        ))}
+      </svg>
+      <figcaption>Output quality on every point: pooled p95 KL between 0.0001 and 0.0005 against a fresh re-ingest, two orders of magnitude under the 0.05 threshold.</figcaption>
+    </figure>
   );
 }
 
-// Per-task savings distribution (synthetic-but-plausible; README states 56-64% CI95)
-const TASK_DISTRIBUTION = Array.from({ length: 60 }).map((_, i) => {
-  // Plausible distribution centered near 59.4, spread 50-68
-  const rand = (seed) => { const x = Math.sin(seed * 9999) * 10000; return x - Math.floor(x); };
-  const base = 59.4 + (rand(i) - 0.5) * 18;
-  return Math.round(Math.max(48, Math.min(70, base)) * 10) / 10;
-});
-
-function HistogramChart() {
-  // Bucket into 2-pt bins from 48–70
-  const bins = [];
-  for (let i = 48; i < 70; i += 2) {
-    const count = TASK_DISTRIBUTION.filter(v => v >= i && v < i + 2).length;
-    bins.push({ range: `${i}–${i+2}`, count, mid: i + 1 });
-  }
-  const maxCount = Math.max(...bins.map(b => b.count));
-  return (
-    <div className="benchmark-histogram" style={{ padding: '32px 0' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 220, borderBottom: '1px solid var(--stone-2)' }}>
-        {bins.map(b => (
-          <div key={b.range} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-            <div className="t-mono" style={{ fontSize: 10, color: 'var(--stone)' }}>{b.count || ''}</div>
-            <div style={{
-              width: '100%',
-              height: `${(b.count / maxCount) * 180}px`,
-              background: b.mid > 58 && b.mid < 62 ? 'var(--bronze)' : 'var(--stone-2)',
-              opacity: b.mid > 58 && b.mid < 62 ? 1 : 0.45,
-              minHeight: b.count ? 4 : 0,
-            }}/>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: 'flex', gap: 4, marginTop: 8 }}>
-        {bins.map(b => (
-          <div key={b.range} className="t-mono" style={{ flex: 1, textAlign: 'center', fontSize: 10, color: 'var(--stone)' }}>{b.mid}</div>
-        ))}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
-        <div className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>% TOKENS SAVED</div>
-        <div className="t-mono" style={{ fontSize: 11, color: 'var(--bronze)' }}>MEAN 59.4% · CI95 [56, 64]</div>
-      </div>
-    </div>
-  );
-}
-
-function CostTable() {
-  const rows = [
-    ['Pipeline shape', 'Architect → Builder → Reviewer'],
-    ['Task source', 'HumanEval+ (n=60)'],
-    ['Providers', 'DeepSeek · Groq (Llama 3.3 70B) · OpenAI GPT-4o'],
-    ['Orchestrator', 'LangGraph 0.2.x'],
-    ['Baseline avg tokens / task', '6,140'],
-    ['Optimized avg tokens / task', '2,490'],
-    ['Baseline avg cost / task', '$0.001616'],
-    ['Optimized avg cost / task', '$0.000857'],
-    ['Quality metric', 'Pass@1 on HumanEval+ verifier'],
-    ['Quality — baseline', '71.7% (43/60)'],
-    ['Quality — optimized', '71.1% (42.67/60 avg over 3 seeds)'],
-    ['Runs per task', '3 seeds · temperature=0.2'],
-  ];
-  return (
-    <table className="benchmark-table" style={{
-      width: '100%',
-      borderCollapse: 'collapse',
-      fontSize: 14,
-    }}>
-      <tbody>
-        {rows.map(([k, v]) => (
-          <tr key={k}>
-            <td className="t-mono" style={{
-              padding: '14px 20px 14px 0',
-              color: 'var(--stone-2)',
-              fontSize: 11,
-              verticalAlign: 'top',
-              borderBottom: '1px solid var(--line)',
-              width: '35%',
-            }}>{k.toUpperCase()}</td>
-            <td style={{
-              padding: '14px 0',
-              color: 'var(--fg)',
-              borderBottom: '1px solid var(--line)',
-              fontFamily: 'Inter Tight, sans-serif',
-            }}>{v}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-// Per-call breakdown
-const PER_CALL = [
-  { step: '01', agent: 'Architect', base: 2100, opt: 920, technique: 'compress + protocol' },
-  { step: '02', agent: 'Builder', base: 2450, opt: 870, technique: 'reference + compress' },
-  { step: '03', agent: 'Reviewer', base: 1590, opt: 700, technique: 'delta + prune' },
+// Head to head on 12 real OpenHands agent sessions per cell, Qwen2.5-14B, 1x H100.
+const H2H = [
+  { cell: '25% of 16k', splice: 9.58, info: 5.07, blend: 4.64 },
+  { cell: '25% of 32k', splice: 12.43, info: 5.57, blend: 4.47 },
+  { cell: '33% of 32k', splice: 7.49, info: 3.15, blend: 1.58 },
+  { cell: '73% of 16k', splice: 1.41, info: 0.83, blend: 0.69 },
 ];
 
-function PerCallBreakdown() {
-  const maxBase = Math.max(...PER_CALL.map(p => p.base));
+function HeadToHeadChart() {
+  const W = 680, rowH = 58, L = 110, R = 56, T = 8;
+  const H = T + H2H.length * rowH + 24;
+  const max = 13;
+  const w = v => (v / max) * (W - L - R);
+  const bars = [['splice', INK, 'Splice'], ['info', RIVAL_B, 'InfoFlow'], ['blend', RIVAL_A, 'CacheBlend']];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {PER_CALL.map(p => (
-        <div key={p.step} style={{ display: 'grid', gridTemplateColumns: '60px 180px 1fr 120px', gap: 20, alignItems: 'center', padding: '16px 0', borderBottom: '1px solid var(--line)' }} className="percall-row">
-          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 12 }}>{p.step}</div>
-          <div>
-            <div className="serif" style={{ fontSize: 20 }}>{p.agent}</div>
-            <div className="t-mono" style={{ fontSize: 10, color: 'var(--bronze)', marginTop: 4 }}>{p.technique.toUpperCase()}</div>
+    <figure className="splice-fig fade-up">
+      <h3>Same sessions, same quality check</h3>
+      <p className="sub">1× H100 · Qwen2.5-14B · 12 real OpenHands agent sessions per row · each method at the smallest recompute fraction that passes · higher is faster</p>
+      <div className="splice-legend">
+        {bars.map(([k, c, label]) => <span key={k}><i style={{ background: c }}></i>{label}</span>)}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Grouped bar chart of speed-up over re-ingest. 25% of 16k: Splice 9.6x, InfoFlow 5.1x, CacheBlend 4.6x. 25% of 32k: 12.4x, 5.6x, 4.5x. 33% of 32k: 7.5x, 3.2x, 1.6x. 73% of 16k: 1.4x, 0.8x, 0.7x.">
+        <line x1={L + w(1)} x2={L + w(1)} y1={T} y2={H - 24} style={{ stroke: GRID }} strokeDasharray="4 4" />
+        <text x={L + w(1)} y={H - 8} textAnchor="middle" style={{ fill: TEXT, fontFamily: mono, fontSize: 11 }}>1×</text>
+        {H2H.map((d, r) => (
+          <g key={d.cell}>
+            <text x={L - 12} y={T + r * rowH + 28} textAnchor="end" style={{ fill: TEXT_STRONG, fontSize: 12.5 }}>{d.cell}</text>
+            {bars.map(([k, c], j) => (
+              <g key={k}>
+                <rect x={L} y={T + r * rowH + 6 + j * 15} width={Math.max(w(d[k]), 2)} height="12" rx="2" style={{ fill: c }} />
+                <text x={L + w(d[k]) + 6} y={T + r * rowH + 16 + j * 15} style={{ fill: j === 0 ? TEXT_STRONG : TEXT, fontFamily: mono, fontSize: 11 }}>{d[k].toFixed(1)}×</text>
+              </g>
+            ))}
+          </g>
+        ))}
+      </svg>
+      <figcaption>Deleted share of the context on the left. Speed-up is over a full re-ingest of the edited sequence on the same GPU. InfoFlow and CacheBlend were reimplemented inside our harness rather than run from their released code. A seam-repair baseline (programmable-kv) is faster than all three at 25% on one session sample, at 14.8× and 31.1×, but did not reproduce on a second sample and did not pass at 50%.</figcaption>
+    </figure>
+  );
+}
+
+// Pooled p95 teacher-forced KL for passing cells vs the 0.05 threshold.
+const QUAL = [
+  { label: '7B-1M, 32k', kl: 0.00009 },
+  { label: '7B-1M, 8k', kl: 0.00053 },
+  { label: '14B, 8k', kl: 0.0018 },
+  { label: '72B, 8k', kl: 0.0084 },
+  { label: 'Audio delete 16%', kl: 0.025 },
+  { label: 'Video swap, 97k', kl: 0.034 },
+  { label: 'Video delete 20%', kl: 0.038 },
+  { label: '14B, 25% of 16k', kl: 0.0404 },
+  { label: 'SGLang, 25% of 16k', kl: 0.0485 },
+];
+
+function QualityChart() {
+  const W = 680, rowH = 26, L = 150, R = 24, T = 8;
+  const H = T + QUAL.length * rowH + 30;
+  const max = 0.06;
+  const x = v => L + (v / max) * (W - L - R);
+  return (
+    <figure className="splice-fig fade-up">
+      <h3>Every result on this page passed the quality check</h3>
+      <p className="sub">Pooled p95 teacher-forced KL divergence between the edited cache and a fresh re-ingest · lower is closer · pass line at 0.05</p>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Dot plot of KL divergence per benchmark, all below the 0.05 pass line, ranging from 0.00009 to 0.0485.">
+        {[0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06].map(v => (
+          <g key={v}>
+            <line x1={x(v)} x2={x(v)} y1={T} y2={H - 26} style={{ stroke: GRID }} strokeWidth={v === 0.05 ? 2 : 1} strokeDasharray={v === 0.05 ? '5 4' : ''} />
+            <text x={x(v)} y={H - 10} textAnchor="middle" style={{ fill: v === 0.05 ? TEXT_STRONG : TEXT, fontFamily: mono, fontSize: 11 }}>{v === 0.05 ? '0.05 pass' : v.toFixed(2)}</text>
+          </g>
+        ))}
+        {QUAL.map((d, i) => (
+          <g key={d.label}>
+            <text x={L - 12} y={T + i * rowH + 17} textAnchor="end" style={{ fill: TEXT_STRONG, fontSize: 12.5 }}>{d.label}</text>
+            <line x1={x(0)} x2={x(d.kl)} y1={T + i * rowH + 13} y2={T + i * rowH + 13} style={{ stroke: INK }} strokeOpacity="0.35" strokeWidth="2" />
+            <circle cx={x(d.kl)} cy={T + i * rowH + 13} r="5" style={{ fill: INK }} />
+          </g>
+        ))}
+      </svg>
+      <figcaption>A control arm that recomputes every row reads 0.00001–0.00004 on text and exactly 0.0 inside SGLang, so the check can tell a correct cache from a damaged one. Media controls sit at a kernel noise floor of about 0.002–0.007.</figcaption>
+    </figure>
+  );
+}
+
+function Headlines() {
+  return (
+    <div className="benchmark-headlines" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 0, border: '1px solid var(--line)' }}>
+      {HEADLINES.map((h, i) => (
+        <div key={h.label} style={{
+          padding: '40px 32px',
+          borderRight: i < HEADLINES.length - 1 ? '1px solid var(--line)' : 'none',
+          display: 'flex', flexDirection: 'column',
+          background: i === 0 ? 'var(--ink-2)' : 'transparent',
+        }}>
+          <div className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, marginBottom: 18 }}>{h.label}</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 10 }}>
+            <span className="serif" style={{ fontSize: 'clamp(44px, 5vw, 64px)', fontWeight: 300, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.03em', lineHeight: 1 }}>
+              {h.val}
+            </span>
+            <span className="serif" style={{ fontSize: 24, color: 'var(--stone-2)' }}>{h.unit}</span>
           </div>
-          <div style={{ position: 'relative', height: 32 }}>
-            <div style={{
-              position: 'absolute', left: 0, top: 0, height: 32,
-              width: `${(p.base / maxBase) * 100}%`,
-              background: 'var(--ink-3)',
-              border: '1px solid var(--stone-2)',
-              borderRadius: 2,
-              display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-              paddingRight: 12,
-              fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 11,
-              color: 'var(--stone-2)',
-            }}>{p.base}</div>
-            <div style={{
-              position: 'absolute', left: 0, top: 4, height: 24,
-              width: `${(p.opt / maxBase) * 100}%`,
-              background: 'var(--bronze)',
-              borderRadius: 2,
-              display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-              paddingRight: 10,
-              fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 11,
-              color: 'var(--bg)',
-              fontWeight: 500,
-            }}>{p.opt}</div>
-          </div>
-          <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 14, textAlign: 'right' }}>
-            −{Math.round((1 - p.opt/p.base) * 100)}%
-          </div>
+          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>{h.sub}</div>
         </div>
       ))}
     </div>
@@ -237,18 +261,15 @@ function BenchmarksPage() {
     <>
       <Nav current="benchmarks" />
 
-      <section className="section" style={{ position: 'relative', overflow: 'hidden' }}>
-        <video preload="metadata" poster="/assets/ascii-magic-5-poster.jpg" autoPlay muted loop playsInline style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.55, zIndex: 0, pointerEvents: 'none' }}>
-          <source src="/assets/ascii-magic-5.mp4" type="video/mp4" />
-        </video>
-        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
-          <Overline dot>MEASURED RESULTS</Overline>
-          <div style={{ marginTop: 32 }}>
+      {/* Hero */}
+      <section className="section">
+        <div className="container">
+          <div>
             <h1 className="t-display fade-up in" style={{ margin: '32px 0 24px', maxWidth: 1100 }}>
-              60 tasks. Three agents. Full provenance.
+              Editing a live KV cache, measured against a full re-ingest.
             </h1>
-            <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 720, marginBottom: 48 }}>
-              Every number on this page comes from a single harness: a three-agent pipeline solving sixty <span className="mono">HumanEval+</span> tasks, three seeds each. Same task, same providers, same model versions. The only variable is the Brevitas layer.
+            <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 760, marginBottom: 48 }}>
+              Splice deletes, replaces and reorders spans inside a cached sequence and repairs only the computation the edit touches. Every number here is wall-clock against re-prefilling the same content on the same GPU — and every row passed a correctness gate calibrated on a fresh re-ingest: pooled p95 teacher-forced <span className="mono">KL &lt; 0.05</span>.
             </p>
           </div>
         </div>
@@ -257,103 +278,158 @@ function BenchmarksPage() {
       {/* Headline stats */}
       <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 40 }}>
         <div className="container">
-          <div className="benchmark-headlines" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 0, border: '1px solid var(--line)' }}>
-            {HEADLINES.map((h, i) => (
-              <div key={h.label} style={{
-                padding: '40px 32px',
-                borderRight: i < HEADLINES.length - 1 ? '1px solid var(--line)' : 'none',
-                display: 'flex', flexDirection: 'column',
-                background: i === 0 ? 'var(--ink-2)' : 'transparent',
-              }}>
-                <div className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, marginBottom: 18 }}>{h.label}</div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 10 }}>
-                  <span className="serif" style={{ fontSize: 'clamp(48px, 5vw, 68px)', fontWeight: 300, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.03em', lineHeight: 1 }}>
-                    {h.val}
-                  </span>
-                  <span className="serif" style={{ fontSize: 24, color: 'var(--stone-2)' }}>{h.unit}</span>
-                </div>
-                <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>{h.sub}</div>
-              </div>
-            ))}
+          <Headlines />
+          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 16 }}>
+            1–2× H100 · QWEN2.5 / QWEN3-VL / VOXTRAL · AUG–SEP 2026
           </div>
         </div>
       </section>
 
-      {/* Distribution */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div style={{ maxWidth: 760, marginBottom: 48 }}>
-            <Overline>DISTRIBUTION</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Savings held across the entire task set.</h2>
-            <p className="t-body">
-              Per-task savings, grouped into 2-percentage-point bins. The mean sits at 59.4%; the 95% confidence interval covers 56% to 64%. No task saved less than 50%. Tail is tighter than a normal distribution.
-            </p>
-          </div>
-          <HistogramChart />
-        </div>
-      </section>
-
-      {/* Technique contribution */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div style={{ maxWidth: 760, marginBottom: 48 }}>
-            <Overline>TECHNIQUE CONTRIBUTION</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Where the savings came from.</h2>
-            <p className="t-body">
-              Attribution is per-call, traced by the report object. Compression is the largest line item; reference-based shared memory is second; the routing layer's ability to skip unneeded techniques accounts for its own savings in avoided overhead.
-            </p>
-          </div>
-          <ContributionChart />
-        </div>
-      </section>
-
-      {/* Per-call breakdown */}
+      {/* How we measure */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 760, marginBottom: 40 }}>
-            <Overline>PER-CALL BREAKDOWN</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>One task, three hops, input tokens per call.</h2>
+            <Overline>HOW WE MEASURE</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Definitions, before the numbers.</h2>
             <p className="t-body">
-              Bronze bars show optimized; outlined bars show baseline. The Reviewer hop benefits most, because by then the shared state is large and most of it doesn't need re-sending.
-            </p>
-          </div>
-          <PerCallBreakdown />
-          <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 20, textAlign: 'right' }}>
-            TOKENS IN · TASK #34 · SEED=0
-          </div>
-        </div>
-      </section>
-
-      {/* Setup table */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div style={{ maxWidth: 780, marginBottom: 40 }}>
-            <Overline>SETUP</Overline>
-            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Full experimental setup.</h2>
-            <p className="t-body">
-              Everything you'd want if you were reviewing the numbers critically.
+              Speed-ups on inference systems are easy to inflate, so every result on this page uses these definitions.
             </p>
           </div>
           <div style={{ maxWidth: 900 }}>
-            <CostTable />
+            <dl className="splice-defs fade-up">
+              <dt>Speed-up</dt><dd>Wall-clock time of the edit divided into the time to re-prefill the same content from the edit point, on the same GPU and attention kernels. Media results also give the ratio against a full re-ingest including the encoder.</dd>
+              <dt>Per edit</dt><dd>Each edit after the first, with the one-time setup pass excluded. This is the steady-state cost.</dd>
+              <dt>All-in</dt><dd>The whole session, with the initial prefill and setup charged to every method.</dd>
+              <dt>Quality</dt><dd>Teacher-forced KL divergence between next-token distributions from the edited cache and from a fresh re-ingest of the edited input, pooled over hundreds of probe positions, 95th percentile. A result passes below 0.05.</dd>
+              <dt>Control</dt><dd>A recompute-everything arm runs alongside every experiment and must read approximately zero, so a broken measurement cannot pass.</dd>
+            </dl>
           </div>
         </div>
       </section>
 
-      {/* Honest caveats */}
+      {/* Text results */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 760, marginBottom: 40 }}>
+            <Overline>TEXT</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Per-edit speed-up holds as context grows.</h2>
+            <p className="t-body">
+              On a single H100, per-edit speed-up is flat from 8k to 128k tokens. Both Splice's edit and the re-prefill it replaces grow with context, so the ratio holds. All-in figures charge the one-time setup pass to every edit, which is the cost to beat on smaller models.
+            </p>
+          </div>
+          <div style={{ maxWidth: 900 }}>
+            <ContextChart />
+            <div className="splice-table-wrap fade-up">
+              <table className="splice-table">
+                <caption><b>Speed-up by model size</b><span>8k context · 10 edits · vs re-prefilling from the edit point</span></caption>
+                <thead><tr><th>Model</th><th>Hardware</th><th className="n">Per edit</th><th className="n">All-in</th><th className="n">p95 KL</th></tr></thead>
+                <tbody>
+                  <tr><td>Qwen2.5-7B-Instruct-1M, 15% budget</td><td>1× H100</td><td className="n">1.50×</td><td className="n">0.85×</td><td className="n">0.0005</td></tr>
+                  <tr><td>Qwen2.5-14B, 15% budget</td><td>1× H100</td><td className="n">1.98×</td><td className="n">0.93×</td><td className="n">0.0018</td></tr>
+                  <tr><td>Qwen2.5-72B-Instruct, 15% budget</td><td>2× H100</td><td className="n">1.94×</td><td className="n">1.30×</td><td className="n">0.0015</td></tr>
+                  <tr><td>Qwen2.5-72B-Instruct, 2% budget</td><td>2× H100</td><td className="n hi">3.13×</td><td className="n hi">1.65×</td><td className="n">0.0084</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Head to head */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 760, marginBottom: 40 }}>
+            <Overline>HEAD TO HEAD</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Against other ways to reuse a cache after an edit.</h2>
+            <p className="t-body">
+              On twelve real OpenHands agent sessions per cell, rival methods reimplemented in our harness and run under the same quality gate — each at its smallest passing recompute fraction. Splice leads on every deletion size we tested.
+            </p>
+          </div>
+          <div style={{ maxWidth: 900 }}>
+            <HeadToHeadChart />
+          </div>
+        </div>
+      </section>
+
+      {/* Inside SGLang */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 760, marginBottom: 40 }}>
+            <Overline>INSIDE A SERVING ENGINE</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Splice as an SGLang radix-cache backend.</h2>
+            <p className="t-body">
+              A standalone harness is not a server. We built Splice into SGLang, with edits arriving over a socket and repair batched by block. Ranking cost is charged inside every edit. Block-batched repair is byte-identical to repairing row by row.
+            </p>
+          </div>
+          <div style={{ maxWidth: 900 }}>
+            <div className="splice-stats fade-up">
+              <div className="splice-stat"><b>2.75×</b><span>faster than SGLang re-prefilling the edited sequence</span></div>
+              <div className="splice-stat"><b>25%</b><span>of a 16k context deleted, over 12 real agent trajectories</span></div>
+              <div className="splice-stat"><b>0.0485</b><span>p95 KL, under the 0.05 threshold; full-recompute control reads 0.0</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Multimodal */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 760, marginBottom: 40 }}>
+            <Overline>VIDEO · IMAGE · AUDIO</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Skipping the encoder is where the large ratios come from.</h2>
+            <p className="t-body">
+              The same edit works on multimodal caches. When nothing needs repairing, the edit is just a cut and a re-rotation — measured in milliseconds — while a re-ingest must run the vision or audio encoder again. The second column removes the encoder from the baseline, since some engines cache encoder output.
+            </p>
+          </div>
+          <div style={{ maxWidth: 900 }}>
+            <div className="splice-table-wrap fade-up">
+              <table className="splice-table">
+                <caption><b>Multimodal edits</b><span>1× H100 · each result passed the pooled quality check</span></caption>
+                <thead><tr><th>Edit</th><th>Model</th><th className="n">vs full re-ingest</th><th className="n">vs prefill only</th></tr></thead>
+                <tbody>
+                  <tr><td>Delete 20% of a 10-minute video</td><td>Qwen2.5-VL-7B</td><td className="n hi">185–219×</td><td className="n">~67×</td></tr>
+                  <tr><td>Delete 40% of a video (16 films, median)</td><td>Qwen3-VL-8B</td><td className="n hi">4.6×</td><td className="n">3.2×</td></tr>
+                  <tr><td>Swap two spans, 97k tokens</td><td>Qwen2.5-VL-7B</td><td className="n hi">3.55×</td><td className="n">2.12×</td></tr>
+                  <tr><td>Remove 1 of 16 images</td><td>Qwen2.5-VL-7B</td><td className="n hi">63×</td><td className="n">n/a</td></tr>
+                  <tr><td>Remove 1 of 8 images</td><td>Qwen2.5-VL-7B</td><td className="n hi">3.1×</td><td className="n">n/a</td></tr>
+                  <tr><td>Delete 16% of a recording</td><td>Voxtral-Mini-3B</td><td className="n hi">66–76×</td><td className="n">35–43×</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Correctness */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 760, marginBottom: 40 }}>
+            <Overline>CORRECTNESS</Overline>
+            <h2 className="t-h2" style={{ margin: '24px 0 20px' }}>Every row on this page cleared the gate.</h2>
+            <p className="t-body">
+              An edit is only served if it certifies against a fresh re-ingest. Pooled p95 teacher-forced KL under 0.05 passes; anything above falls back to a normal re-prefill.
+            </p>
+          </div>
+          <div style={{ maxWidth: 900 }}>
+            <QualityChart />
+          </div>
+        </div>
+      </section>
+
+      {/* Caveats / scope */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
         <div className="container" style={{ maxWidth: 820 }}>
-          <Overline>CAVEATS</Overline>
+          <Overline>CURRENT SCOPE</Overline>
           <h2 className="t-h2" style={{ margin: '24px 0 28px' }}>
-            <em style={{ fontStyle: 'italic' }}>What this doesn't say.</em>
+            <em style={{ fontStyle: 'italic' }}>Where these numbers hold, and where they don't.</em>
           </h2>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 18 }}>
             {[
-              ['This is one pipeline shape.', 'Savings vary by topology. Shorter pipelines save less; branching pipelines with shared state save more.'],
-              ['HumanEval+ is a specific distribution.', 'Our pending 500-task harness covers classification, retrieval, and creative tasks. Expect variance.'],
-              ['Quality parity is a mean.', 'Individual tasks can swing ±2 pass@1 in either direction. We publish per-task deltas for design partners.'],
-              ['We chose the task router\'s defaults.', 'You can override. Aggressive settings push tokens 8–12 points lower at a ~1 point quality cost.'],
-              ['Latency overhead is real.', 'The layer adds 60–120ms per call depending on config. On long pipelines this is offset by shorter payloads.'],
+              ['Setup is the cost to beat on small models.', 'Per-edit gains hold at every context length, but at 7B and 14B a session needs 183–302 edits before the one-time setup pass is repaid. Cutting that pass is the main engineering target.'],
+              ['The SGLang numbers are single-tenant.', 'Under co-tenant traffic the edit path failed KV admission on 74 / 78 / 82% of attempts at 4 / 8 / 16 streams. Admission-aware scheduling is next.'],
+              ['The runtime threshold is conservative.', 'On held-out 14B edits it certified 34% of safe edits at 0.949 coverage; the rest fall back to re-prefill.'],
+              ['Baselines were reimplemented.', 'InfoFlow, CacheBlend and the seam-repair rivals ran as ports inside our harness under one quality check, not from their released code.'],
+              ['Results pass on pooled p95, not worst-case.', 'On the hardest single probe, some video and text cells need more repair to pass. Each model also needs its own exactness test, since M-RoPE layouts differ.'],
             ].map(([h, b], i) => (
               <li key={i} style={{ display: 'flex', gap: 16, paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
                 <span className="t-mono" style={{ color: 'var(--bronze)', flexShrink: 0, width: 24 }}>0{i+1}</span>
@@ -364,6 +440,9 @@ function BenchmarksPage() {
               </li>
             ))}
           </ul>
+          <p className="t-mono fade-up" style={{ color: 'var(--stone)', fontSize: 11, lineHeight: 1.7, marginTop: 36 }}>
+            Measured August–September 2026 on H100 GPUs (1–2 per run) with Hugging Face Transformers, PyTorch and SGLang. Quality gate specified before measurement. Models: Qwen2.5-7B-Instruct-1M, Qwen2.5-14B, Qwen2.5-72B-Instruct, Qwen2.5-VL-7B, Qwen3-VL-8B, Voxtral-Mini-3B. Offline calibration is not charged in any ratio.
+          </p>
         </div>
       </section>
 
@@ -371,12 +450,12 @@ function BenchmarksPage() {
       <section className="section section--tight" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
         <div className="container">
           <div style={{ maxWidth: 720 }}>
-            <Overline dot>RUN IT YOURSELF</Overline>
-            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 16 }}>Want the harness?</h2>
+            <Overline dot>RUN IT ON YOUR STACK</Overline>
+            <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 16 }}>Long, frequently edited contexts?</h2>
             <p className="t-body-lg" style={{ marginBottom: 32 }}>
-              Design partners get the harness code, the task set, and a custom report on their own pipeline.
+              If you run self-hosted open models on SGLang or vLLM with contexts that change every few turns, we'll benchmark Splice on your workload and share the certificate numbers.
             </p>
-            <WaitlistInput source="benchmarks-final" />
+            <Button variant="primary" href={CALENDLY} target="_blank" className="hero-btn hero-cta">Book a call</Button>
           </div>
         </div>
       </section>
