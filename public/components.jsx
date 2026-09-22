@@ -331,7 +331,7 @@ function Overline({ children, dot = false, className = '' }) {
   );
 }
 
-function Button({ variant = 'primary', href, onClick, children, arrow = true, className = '' }) {
+function Button({ variant = 'primary', href, onClick, children, arrow = true, className = '', target, rel }) {
   const cls = `btn btn-${variant} ${className}`;
   const content = (
     <>
@@ -339,7 +339,9 @@ function Button({ variant = 'primary', href, onClick, children, arrow = true, cl
       {arrow && <span className="arrow" aria-hidden="true">→</span>}
     </>
   );
-  if (href) return <a href={href} className={cls} onClick={onClick}>{content}</a>;
+  // Auto-secure external links opened in a new tab.
+  const relValue = rel ?? (target === '_blank' ? 'noopener noreferrer' : undefined);
+  if (href) return <a href={href} className={cls} onClick={onClick} target={target} rel={relValue}>{content}</a>;
   return <button className={cls} onClick={onClick} type="button">{content}</button>;
 }
 
@@ -924,7 +926,7 @@ function Nav({ current }) {
             ))}
           </div>
           <ThemeToggle />
-          <Button variant="primary" href="/signup" className="nav-cta">Sign up</Button>
+          <Button variant="primary" href="https://calendly.com/anish-brevitassystems/30min" target="_blank" className="nav-cta">Book a call</Button>
           <button
             type="button"
             className="nav-hamburger"
@@ -942,7 +944,7 @@ function Nav({ current }) {
           <button ref={sheetCloseRef} type="button" className="nav-sheet-close" onClick={() => setSheet(false)} aria-label="Close menu">×</button>
           <div className="nav-sheet-links">
             {links.map(l => <a key={l.k} href={l.href}>{l.label}</a>)}
-            <a href="/signup" style={{ color: 'var(--bronze)' }}>Sign up →</a>
+            <a href="https://calendly.com/anish-brevitassystems/30min" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--bronze)' }}>Book a call →</a>
           </div>
         </div>
       )}
