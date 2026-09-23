@@ -36,9 +36,11 @@
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
 <style>
 .prod-label { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--stone); margin: 0 0 18px; }
-.prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); }
-.prod-img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
-.prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; }
+.prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); max-width: 940px; }
+.prod-img { display: block; width: 100%; max-width: 1080px; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+.prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; max-width: 960px; }
+/* Keep body copy at a readable measure while sections span the full width, left-anchored. */
+.section .t-body { max-width: 720px; }
 .prod-feature { display: grid; grid-template-columns: 52px 1fr; gap: 18px; align-items: start; }
 .prod-ficon { width: 52px; height: 52px; border: 1px solid var(--line); border-radius: 6px; background: var(--ink-2); display: flex; align-items: center; justify-content: center; color: var(--bronze); }
 .prod-feature h3 { font-size: 17px; font-weight: 600; margin: 4px 0 8px; color: var(--fg); letter-spacing: -0.01em; }
@@ -90,8 +92,8 @@ function ProductPage() {
 
       {/* Hero */}
       <section className="section" style={{ paddingBottom: 0 }}>
-        <div className="container" style={{ maxWidth: 820 }}>
-          <h1 className="t-display fade-up in" style={{ margin: '8px 0 24px' }}>
+        <div className="container">
+          <h1 className="t-display fade-up in" style={{ margin: '8px 0 24px', maxWidth: 1000 }}>
             Your agent's memory shouldn't be <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>disposable.</em>
           </h1>
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, marginBottom: 0, color: 'var(--stone-2)' }}>
@@ -102,7 +104,7 @@ function ProductPage() {
 
       {/* Problem */}
       <section className="section">
-        <div className="container" style={{ maxWidth: 820 }}>
+        <div className="container">
           <p className="prod-label fade-up">Problem</p>
           <h2 className="prod-head fade-up">Every edit to an agent's context throws its memory away.</h2>
           <p className="t-body fade-up" style={{ marginBottom: 20 }}>
@@ -119,14 +121,14 @@ function ProductPage() {
 
       {/* Problem image */}
       <section className="section" style={{ paddingTop: 0 }}>
-        <div className="container" style={{ maxWidth: 980 }}>
+        <div className="container">
           <img className="prod-img fade-up" src="/assets/ascii-magic-3-poster.jpg" alt="Abstract visualization of a model's working memory" loading="lazy" width="1280" height="716" />
         </div>
       </section>
 
       {/* Solution */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container" style={{ maxWidth: 820 }}>
+        <div className="container">
           <p className="prod-label fade-up">Our solution</p>
           <h2 className="prod-head fade-up">Splice edits the cache in place, and proves it is correct.</h2>
           <p className="t-body fade-up" style={{ marginBottom: 20 }}>
@@ -153,7 +155,7 @@ function ProductPage() {
 
       {/* Proof strip */}
       <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container" style={{ maxWidth: 820 }}>
+        <div className="container">
           <p className="prod-label fade-up">Measured</p>
           <h2 className="prod-head fade-up" style={{ marginBottom: 20 }}>Up to 12.4× faster edits, every one certified.</h2>
           <p className="t-body fade-up" style={{ marginBottom: 28 }}>

@@ -1,7 +1,7 @@
 {
-  "name": "Brevitas Systems - AI Agent Orchestration Platform",
+  "name": "Brevitas Systems - Editable KV-cache memory for AI models",
   "short_name": "Brevitas",
-  "description": "Token efficiency and usage tracking for LLM applications.",
+  "description": "Splice makes a model's KV cache editable: delete, replace and reorder context in place, certified correct against a fresh re-ingest.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -40,7 +40,7 @@
     {
       "name": "Dashboard",
       "short_name": "Dashboard",
-      "description": "View your agent orchestration dashboard",
+      "description": "View your Brevitas dashboard",
       "url": "/dashboard",
       "icons": [{"src": "/brevitas-app-192.png", "sizes": "192x192"}]
     },

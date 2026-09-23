@@ -607,21 +607,31 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .nav-link {
   font-size: 12px;
   color: var(--stone);
-  transition: color var(--dur-xs), border-color var(--dur-xs), background var(--dur-xs);
+  transition: color var(--dur-sm) var(--ease-out-standard);
   position: relative;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  padding: 7px 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
+  padding: 7px 2px;
+}
+/* AfterQuery-style animated underline: grows from the left on hover,
+   stays put under the current page. */
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  background: var(--bronze);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-sm) var(--ease-out-standard);
 }
 .nav-link:hover, .nav-link.active {
-  color: var(--bone);
-  border-color: rgba(46, 46, 238, 0.35);
-  background: rgba(46, 46, 238, 0.1);
+  color: var(--fg);
 }
-.nav-link.active::after {
-  display: none;
+.nav-link:hover::after, .nav-link.active::after {
+  transform: scaleX(1);
 }
 
 @media (max-width: 820px) {
