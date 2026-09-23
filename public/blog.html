@@ -8,13 +8,56 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Notes · Brevitas Systems</title>
-<meta name="description" content="Engineering notes from the Brevitas team on KV caches, inference and agent systems.">
+<title>Research & Blog · Brevitas Systems</title>
+<meta name="description" content="Engineering notes and research from the Brevitas team on KV caches, inference and agent systems.">
 <link href="/fonts/fonts.css" rel="stylesheet">
-<link rel="stylesheet" href="theme.css">
-<script src="theme-init.js" defer></script>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
 <link rel="stylesheet" href="/responsive.css">
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.rb-hero { text-align: center; padding: 0 0 8px; }
+.rb-title { font-family: 'Newsreader', Georgia, serif; font-weight: 400; font-size: clamp(40px, 6vw, 72px); letter-spacing: -0.025em; line-height: 1.02; margin: 0 auto 28px; max-width: 900px; color: var(--fg); }
+.rb-sub { font-family: 'Inter Tight', sans-serif; font-size: 18px; line-height: 1.55; color: var(--stone-2); max-width: 720px; margin: 0 auto; }
+
+.rb-featured { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 56px 0 12px; }
+.rb-fcard { position: relative; background: var(--ink-2); border: 1px solid var(--line); border-radius: 14px; padding: 28px 32px; display: flex; flex-direction: column; justify-content: flex-start; text-decoration: none; transition: border-color 160ms var(--ease-out-standard), transform 160ms var(--ease-out-standard); }
+.rb-fcard:hover { transform: translateY(-3px); border-color: var(--bronze); }
+.rb-fcard h3 { font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 24px; letter-spacing: -0.015em; color: var(--fg); margin: 0 0 8px; }
+.rb-fcard .row { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.rb-fcard p { font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.45; color: var(--stone-2); margin: 0; max-width: 62%; }
+.rb-fcard .cta { font-family: 'Inter Tight', sans-serif; font-size: 14px; font-weight: 500; color: var(--bronze); white-space: nowrap; }
+
+.rb-sec-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin: 0 0 36px; }
+.rb-sec-head h2 { font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 26px; letter-spacing: -0.01em; color: var(--fg); margin: 0 0 10px; }
+.rb-sec-head p { font-family: 'Inter Tight', sans-serif; font-size: 15px; line-height: 1.55; color: var(--stone-2); margin: 0; max-width: 620px; }
+
+.rb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+.rb-card { text-decoration: none; color: inherit; display: flex; flex-direction: column; }
+.rb-card .thumb { aspect-ratio: 1 / 1; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); margin-bottom: 18px; transition: transform 160ms var(--ease-out-standard); }
+.rb-card:hover .thumb { transform: translateY(-3px); }
+.rb-card h3 { font-family: 'Newsreader', Georgia, serif; font-weight: 400; font-size: 23px; letter-spacing: -0.015em; line-height: 1.15; color: var(--fg); margin: 0 0 12px; }
+.rb-card p { font-family: 'Inter Tight', sans-serif; font-size: 14.5px; line-height: 1.5; color: var(--stone-2); margin: 0 0 16px; }
+.rb-card .meta { font-family: 'Inter Tight', sans-serif; font-size: 13px; color: var(--stone); margin-top: auto; }
+
+.rb-rows { border-top: 1px solid var(--line); }
+.rb-row { display: grid; grid-template-columns: 96px 1fr auto; grid-template-areas: "thumb title read"; gap: 28px; align-items: center; padding: 26px 0; border-bottom: 1px solid var(--line); text-decoration: none; color: inherit; transition: opacity 140ms; }
+.rb-row:hover { opacity: 0.72; }
+.rb-row .thumb { width: 96px; height: 96px; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); }
+.rb-card .thumb img, .rb-row .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rb-row h3 { font-family: 'Newsreader', Georgia, serif; font-weight: 400; font-size: 24px; letter-spacing: -0.015em; line-height: 1.15; color: var(--fg); margin: 0 0 8px; }
+.rb-row .meta { font-family: 'Inter Tight', sans-serif; font-size: 13px; color: var(--stone); }
+.rb-row .read { font-family: 'Inter Tight', sans-serif; font-size: 14px; font-weight: 500; color: var(--fg); white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .rb-featured { grid-template-columns: 1fr; }
+  .rb-grid { grid-template-columns: 1fr; gap: 36px; }
+  .rb-sec-head { flex-direction: column; }
+  .rb-row { grid-template-columns: 72px 1fr; grid-template-areas: "thumb title" "thumb read"; }
+  .rb-row .thumb { width: 72px; height: 72px; }
+  .rb-row .read { display: none; }
+}
+</style>
 </head>
 <body>
 <div class="noise"></div>
@@ -24,385 +67,125 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="/components.jsx"></script>
 
 <script type="text/babel">
-const { useState } = React;
+const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
 
 const POSTS = [
-  {
-    slug: 'splice-kv-cache-editing',
-    url: '/blog/splice-kv-cache-editing',
-    title: 'Splice: editing a live KV cache instead of re-prefilling it.',
-    dek: 'Delete, replace and reorder spans inside a cached sequence, checked against a fresh re-ingest on every edit. Benchmarks on text, video and audio.',
-    date: 'Sep 15, 2026',
-    read: '7 min',
-    tag: 'Research',
-  },
-  {
-    slug: 'fable-5',
-    url: '/blog/fable-5',
-    title: 'Fable 5 is built for agents. The token bill will show it.',
-    dek: 'Anthropic\'s Mythos-class model is finally public. The pricing changes the math on every multi-agent pipeline.',
-    date: 'Jun 10, 2026',
-    read: '8 min',
-    tag: 'Engineering',
-  },
-  {
-    slug: '60-percent-waste',
-    url: '/blog/60-percent-waste',
-    title: 'The 60% waste nobody talks about.',
-    dek: 'Why multi-agent pipelines burn most of their tokens on redundant context — and what that costs at scale.',
-    date: 'Apr 18, 2026',
-    read: '9 min',
-    tag: 'Research',
-  },
-  {
-    slug: 'why-caches-dont-help',
-    url: '/blog/why-caches-dont-help',
-    title: 'Why prompt caches don\'t help multi-agent pipelines (much).',
-    dek: 'Native prompt caching is great for single-call latency. It doesn\'t touch the biggest problem.',
-    date: 'Apr 09, 2026',
-    read: '6 min',
-    tag: 'Engineering',
-  },
-  {
-    slug: 'compression-without-losing-quality',
-    url: '/blog/compression-without-losing-quality',
-    title: 'Compressing agent messages without losing quality.',
-    dek: 'A look at the relevance model, what it preserves, and how we measure parity against a 60-run baseline.',
-    date: 'Mar 28, 2026',
-    read: '11 min',
-    tag: 'Method',
-  },
-  {
-    slug: 'git-for-agent-context',
-    url: '/blog/git-for-agent-context',
-    title: 'Git solved this in 2005. Why haven\'t agents?',
-    dek: 'Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop.',
-    date: 'Mar 14, 2026',
-    read: '5 min',
-    tag: 'Essay',
-  },
-  {
-    slug: 'harness',
-    url: '/blog/harness',
-    title: 'How we built the coding harness.',
-    dek: 'Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here\'s what we learned.',
-    date: 'Mar 02, 2026',
-    read: '8 min',
-    tag: 'Benchmarks',
-  },
-  {
-    slug: 'design-partner-program',
-    url: '/blog/design-partner-program',
-    title: 'Design partners wanted.',
-    dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for.',
-    date: 'Feb 22, 2026',
-    read: '3 min',
-    tag: 'Program',
-  },
+  { slug: 'splice-certificate', url: '/blog/splice-certificate', title: 'Certifying a KV-cache edit: a teacher-forced KL gate against a fresh re-ingest.', dek: 'An edited cache is only worth serving if it matches a clean recompute. The gate, its zero-reading control, and the calibrated runtime threshold that decides what ships.', date: 'Sep 22, 2026', read: '10 min', tag: 'Research' },
+  { slug: 'splice-repair', url: '/blog/splice-repair', title: 'Dependency-ranked repair: recomputing only the rows a cache edit breaks.', dek: 'Residue after a mid-sequence delete is sparse. Rank the downstream rows by their dependency on the deleted span, recompute a scattered two to twenty percent, and skip the rest.', date: 'Sep 20, 2026', read: '11 min', tag: 'Research' },
+  { slug: 'splice-rerotation', url: '/blog/splice-rerotation', title: 'Exact position surgery: re-rotating a rotary KV cache after a mid-sequence edit.', dek: 'The correction after a delete is a single rotation per surviving key, and it is exact because rotations compose. The identity, its multi-axis M-RoPE form, and a zero-KL control.', date: 'Sep 18, 2026', read: '9 min', tag: 'Research' },
+  { slug: 'splice-kv-cache-editing', url: '/blog/splice-kv-cache-editing', title: 'Splice: editing a live KV cache instead of re-prefilling it.', dek: 'Delete, replace and reorder spans inside a cached sequence, checked against a fresh re-ingest on every edit. Benchmarks on text, video and audio.', date: 'Sep 15, 2026', read: '7 min', tag: 'Research' },
+  { slug: 'fable-5', url: '/blog/fable-5', title: 'Fable 5 is built for agents. The token bill will show it.', dek: 'Anthropic\'s Mythos-class model is finally public. The pricing changes the math on every multi-agent pipeline.', date: 'Jun 10, 2026', read: '8 min', tag: 'Engineering' },
+  { slug: '60-percent-waste', url: '/blog/60-percent-waste', title: 'The 60% waste nobody talks about.', dek: 'Why multi-agent pipelines burn most of their tokens on redundant context, and what that costs at scale.', date: 'Apr 18, 2026', read: '9 min', tag: 'Research' },
+  { slug: 'why-caches-dont-help', url: '/blog/why-caches-dont-help', title: 'Why prompt caches don\'t help multi-agent pipelines (much).', dek: 'Native prompt caching is great for single-call latency. It doesn\'t touch the biggest problem.', date: 'Apr 09, 2026', read: '6 min', tag: 'Engineering' },
+  { slug: 'compression-without-losing-quality', url: '/blog/compression-without-losing-quality', title: 'Compressing agent messages without losing quality.', dek: 'A look at the relevance model, what it preserves, and how we measure parity against a 60-run baseline.', date: 'Mar 28, 2026', read: '11 min', tag: 'Method' },
+  { slug: 'git-for-agent-context', url: '/blog/git-for-agent-context', title: 'Git solved this in 2005. Why haven\'t agents?', dek: 'Version control stopped sending full file copies two decades ago. Agent pipelines still send the entire conversation at every hop.', date: 'Mar 14, 2026', read: '5 min', tag: 'Essay' },
+  { slug: 'harness', url: '/blog/harness', title: 'How we built the coding harness.', dek: 'Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here\'s what we learned.', date: 'Mar 02, 2026', read: '8 min', tag: 'Benchmarks' },
+  { slug: 'design-partner-program', url: '/blog/design-partner-program', title: 'Design partners wanted.', dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for.', date: 'Feb 22, 2026', read: '3 min', tag: 'Program' },
 ];
 
-const TAG_STYLES = {
-  Engineering: { bg: 'rgba(46, 46, 238,0.14)', stroke: 'rgba(46, 46, 238,0.5)' },
-  Research:    { bg: 'rgba(141,216,198,0.14)', stroke: 'rgba(141,216,198,0.5)' },
-  Method:      { bg: 'rgba(196,206,229,0.10)', stroke: 'rgba(196,206,229,0.35)' },
-  Essay:       { bg: 'rgba(201,128,120,0.14)', stroke: 'rgba(201,128,120,0.5)' },
-  Benchmarks:  { bg: 'rgba(46, 46, 238,0.10)', stroke: 'rgba(46, 46, 238,0.4)' },
-  Program:     { bg: 'rgba(141,216,198,0.10)', stroke: 'rgba(141,216,198,0.4)' },
-};
+// Thumbnail image per post (repo brand assets). Assigned round-robin so the grid
+// cards each get a distinct one; swap these paths to set a specific image per post.
+const POSTERS = ['/assets/ascii-magic-3-poster.jpg', '/assets/ascii-magic-4-poster.jpg', '/assets/ascii-magic-5-poster.jpg'];
+POSTS.forEach((p, i) => { if (!p.img) p.img = POSTERS[i % POSTERS.length]; });
 
-/* Simple per-category SVG illustrations */
-function CardIllustration({ tag }) {
-  const s = TAG_STYLES[tag] || TAG_STYLES.Engineering;
-  const c = s.stroke;
-  if (tag === 'Engineering') return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      <circle cx="20" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
-      <circle cx="60" cy="20" r="8" stroke={c} strokeWidth="1.5"/>
-      <circle cx="60" cy="60" r="8" stroke={c} strokeWidth="1.5"/>
-      <circle cx="100" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
-      <line x1="28" y1="36" x2="52" y2="24" stroke={c} strokeWidth="1.5"/>
-      <line x1="28" y1="44" x2="52" y2="56" stroke={c} strokeWidth="1.5"/>
-      <line x1="68" y1="24" x2="92" y2="36" stroke={c} strokeWidth="1.5"/>
-      <line x1="68" y1="56" x2="92" y2="44" stroke={c} strokeWidth="1.5"/>
-    </svg>
-  );
-  if (tag === 'Research') return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      {[0,1,2,3,4].map(i => (
-        <rect key={i} x={16 + i*20} y={70 - [30,50,20,45,35][i]} width="12" height={[30,50,20,45,35][i]} stroke={c} strokeWidth="1.5" rx="2"/>
-      ))}
-      <line x1="10" y1="70" x2="110" y2="70" stroke={c} strokeWidth="1"/>
-    </svg>
-  );
-  if (tag === 'Method') return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      <circle cx="60" cy="40" r="22" stroke={c} strokeWidth="1.5"/>
-      <circle cx="60" cy="40" r="8" stroke={c} strokeWidth="1.5"/>
-      {[0,1,2,3,4,5,6,7].map(i => {
-        const a = (i / 8) * Math.PI * 2;
-        const x1 = 60 + 22 * Math.cos(a); const y1 = 40 + 22 * Math.sin(a);
-        const x2 = 60 + 28 * Math.cos(a); const y2 = 40 + 28 * Math.sin(a);
-        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth="2.5" strokeLinecap="round"/>;
-      })}
-    </svg>
-  );
-  if (tag === 'Essay') return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      <path d="M20 18 Q20 10 30 10 L34 10 Q44 10 44 18 Q44 26 34 30 L20 38 L20 18Z" stroke={c} strokeWidth="1.5"/>
-      <path d="M54 18 Q54 10 64 10 L68 10 Q78 10 78 18 Q78 26 68 30 L54 38 L54 18Z" stroke={c} strokeWidth="1.5"/>
-      <line x1="20" y1="55" x2="100" y2="55" stroke={c} strokeWidth="1" strokeDasharray="4 3"/>
-      <line x1="20" y1="65" x2="80" y2="65" stroke={c} strokeWidth="1" strokeDasharray="4 3"/>
-    </svg>
-  );
-  if (tag === 'Benchmarks') return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      <polyline points="10,60 30,35 50,45 70,20 90,30 110,15" stroke={c} strokeWidth="1.5" fill="none" strokeLinejoin="round"/>
-      <circle cx="30" cy="35" r="3" fill={c}/>
-      <circle cx="70" cy="20" r="3" fill={c}/>
-      <circle cx="110" cy="15" r="3" fill={c}/>
-      <line x1="10" y1="65" x2="110" y2="65" stroke={c} strokeWidth="1"/>
-    </svg>
-  );
-  /* Program */
-  return (
-    <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 120, height: 80 }}>
-      <circle cx="40" cy="30" r="12" stroke={c} strokeWidth="1.5"/>
-      <circle cx="80" cy="30" r="12" stroke={c} strokeWidth="1.5"/>
-      <path d="M20 65 Q20 50 40 50 Q60 50 60 65" stroke={c} strokeWidth="1.5"/>
-      <path d="M60 65 Q60 50 80 50 Q100 50 100 65" stroke={c} strokeWidth="1.5"/>
-    </svg>
-  );
-}
-
-function PostCard({ post, list }) {
-  const ts = TAG_STYLES[post.tag] || TAG_STYLES.Engineering;
-  if (list) {
-    return (
-      <a href={post.url} style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 24, padding: '24px 0', borderBottom: '1px solid var(--line)', color: 'inherit', textDecoration: 'none', transition: 'opacity 120ms' }}
-        onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
-        onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 2 }}>
-          <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)' }}>{post.date}</span>
-          <span className="t-mono" style={{ fontSize: 10, color: ts.stroke.replace('0.5','0.9'), letterSpacing: '0.08em' }}>{post.tag.toUpperCase()}</span>
-          <span className="t-mono" style={{ fontSize: 10, color: 'var(--stone)' }}>{post.read} read</span>
-        </div>
-        <div>
-          <h3 className="serif" style={{ fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', lineHeight: 1.2, margin: '0 0 10px', color: 'var(--bone)' }}>{post.title}</h3>
-          <p style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5, margin: 0 }}>{post.dek}</p>
-        </div>
-      </a>
-    );
-  }
-  return (
-    <a href={post.url} style={{ display: 'flex', flexDirection: 'column', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 16, overflow: 'hidden', color: 'inherit', textDecoration: 'none', transition: 'border-color 150ms, transform 150ms' }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = ts.stroke; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.transform = ''; }}>
-      {/* Illustration header */}
-      <div style={{ background: ts.bg, height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, borderBottom: '1px solid var(--line)' }}>
-        <CardIllustration tag={post.tag} />
-      </div>
-      {/* Card body */}
-      <div style={{ padding: '22px 24px 24px', display: 'flex', flexDirection: 'column', gap: 0, flex: 1 }}>
-        <span className="t-mono" style={{ fontSize: 11, color: 'var(--stone)', marginBottom: 12 }}>{post.date}</span>
-        <h3 className="serif" style={{ fontSize: 20, fontWeight: 400, letterSpacing: '-0.015em', lineHeight: 1.25, margin: '0 0 auto', color: 'var(--bone)', paddingBottom: 20 }}>{post.title}</h3>
-        <span className="t-mono" style={{ fontSize: 10, color: ts.stroke.replace('0.5','0.9'), letterSpacing: '0.1em' }}>{post.tag.toUpperCase()}</span>
-      </div>
-    </a>
-  );
-}
-
-function FilterAccordion({ title, children, defaultOpen }) {
-  const [open, setOpen] = useState(!!defaultOpen);
-  return (
-    <div style={{ borderBottom: '1px solid var(--line)' }}>
-      <button onClick={() => setOpen(o => !o)} style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--stone-2)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14 }}>
-        {title}
-        <span style={{ fontSize: 12, color: 'var(--stone)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }}>∨</span>
-      </button>
-      {open && <div style={{ paddingBottom: 14 }}>{children}</div>}
-    </div>
-  );
-}
-
-const TAGS = ['All', 'Engineering', 'Research', 'Method', 'Essay', 'Benchmarks', 'Program'];
-const SORTS = [{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }];
+const FEATURED = [
+  { title: 'Splice benchmarks', desc: 'Editing a live KV cache, measured against a full re-ingest.', href: '/benchmarks', cta: 'View benchmarks' },
+  { title: 'How Splice works', desc: 'KV-cache surgery: delete, replace and reorder context in place, certified correct.', href: '/product', cta: 'See the product' },
+];
 
 function BlogPage() {
-  const [search, setSearch] = useState('');
-  const [activeTag, setActiveTag] = useState('All');
-  const [sort, setSort] = useState('newest');
-  const [view, setView] = useState('grid');
-  const [visibleCount, setVisibleCount] = useState(6);
-
-  const filtered = POSTS
-    .filter(p => activeTag === 'All' || p.tag === activeTag)
-    .filter(p => !search || p.title.toLowerCase().includes(search.toLowerCase()) || p.dek.toLowerCase().includes(search.toLowerCase()));
-  const sorted = sort === 'newest' ? filtered : [...filtered].reverse();
-  const visible = sorted.slice(0, visibleCount);
-
+  useFadeUpReveal();
+  const grid = POSTS.slice(0, 3);
+  const rows = POSTS.slice(3);
   return (
     <>
       <Nav current="blog" />
 
       {/* Hero */}
-      <section className="blog-hero" style={{ padding: '96px 0 56px', borderBottom: '1px solid var(--line)' }}>
+      <section className="section" style={{ paddingBottom: 0 }}>
         <div className="container">
-          <h1 className="serif" style={{ fontSize: 'clamp(48px, 7vw, 80px)', fontWeight: 300, letterSpacing: '-0.03em', lineHeight: 1, margin: '0 0 20px' }}>Notes.</h1>
-          <p style={{ fontSize: 16, color: 'var(--stone-2)', maxWidth: 520, lineHeight: 1.6, margin: 0 }}>
-            Technical writing on multi-agent inference economics, compression methods, and what we're building. Written by engineers, for engineers.
-          </p>
-        </div>
-      </section>
+          <div className="rb-hero fade-up in">
+            <h1 className="rb-title">Correctness makes all the difference.</h1>
+            <p className="rb-sub">
+              We're driven by the conviction that agents are turning the KV cache from a write-once buffer into working memory that changes every few turns. We build the systems that edit that memory in place, and prove every edit is correct before it is served.
+            </p>
+          </div>
 
-      {/* Main content */}
-      <section className="blog-content" style={{ padding: '60px 0 120px' }}>
-        <div className="container">
-          <div className="blog-layout">
-
-            {/* Left sidebar */}
-            <aside className="blog-sidebar">
-              <div style={{ fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 14, color: 'var(--bone)', marginBottom: 4, paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
-                Filter and sort
-              </div>
-              <FilterAccordion title="Sort by" defaultOpen>
-                {SORTS.map(s => (
-                  <button key={s.value} onClick={() => setSort(s.value)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 0', background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, color: sort === s.value ? 'var(--bone)' : 'var(--stone)', fontWeight: sort === s.value ? 500 : 400 }}>
-                    {s.label}
-                  </button>
-                ))}
-              </FilterAccordion>
-              <FilterAccordion title="Category" defaultOpen>
-                {TAGS.map(t => (
-                  <button key={t} onClick={() => { setActiveTag(t); setVisibleCount(6); }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 0', background: 'none', border: 'none', cursor: 'pointer', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, color: activeTag === t ? 'var(--bone)' : 'var(--stone)', fontWeight: activeTag === t ? 500 : 400 }}>
-                    {t}
-                  </button>
-                ))}
-              </FilterAccordion>
-            </aside>
-
-            {/* Main */}
-            <div>
-              {/* Search + view toggle */}
-              <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 36 }}>
-                <div style={{ flex: 1, position: 'relative' }}>
-                  <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--stone)', fontSize: 14 }}>⌕</span>
-                  <input
-                    type="text"
-                    placeholder="Search posts"
-                    value={search}
-                    onChange={e => { setSearch(e.target.value); setVisibleCount(6); }}
-                    style={{ width: '100%', padding: '12px 16px 12px 40px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, outline: 'none' }}
-                    onFocus={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
-                    onBlur={e => e.target.style.borderColor = ''}
-                  />
+          {/* Featured cards */}
+          <div className="rb-featured fade-up">
+            {FEATURED.map(f => (
+              <a key={f.title} href={f.href} className="rb-fcard">
+                <h3>{f.title}</h3>
+                <div className="row">
+                  <p>{f.desc}</p>
+                  <span className="cta">{f.cta}</span>
                 </div>
-                <div style={{ display: 'flex', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
-                  {[['grid','⊞ Grid'],['list','☰ List']].map(([v, label]) => (
-                    <button key={v} onClick={() => setView(v)} style={{ padding: '10px 16px', background: view === v ? 'var(--ink-3)' : 'none', border: 'none', borderRight: v === 'grid' ? '1px solid var(--line)' : 'none', cursor: 'pointer', color: view === v ? 'var(--bone)' : 'var(--stone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 13, fontWeight: view === v ? 500 : 400 }}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {visible.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--stone)' }}>No posts match your search.</div>
-              ) : view === 'grid' ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }} className="blog-grid">
-                  {visible.map(p => <PostCard key={p.slug} post={p} />)}
-                </div>
-              ) : (
-                <div>
-                  <div style={{ borderTop: '1px solid var(--line)' }}>
-                    {visible.map(p => <PostCard key={p.slug} post={p} list />)}
-                  </div>
-                </div>
-              )}
-
-              {visibleCount < sorted.length && (
-                <div style={{ textAlign: 'center', marginTop: 48 }}>
-                  <button onClick={() => setVisibleCount(v => v + 6)} style={{ padding: '13px 32px', background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 24, color: 'var(--bone)', fontFamily: "'Inter Tight', sans-serif", fontSize: 14, fontWeight: 500, cursor: 'pointer', transition: 'border-color 120ms' }}
-                    onMouseEnter={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
-                    onMouseLeave={e => e.target.style.borderColor = ''}>
-                    View more
-                  </button>
-                </div>
-              )}
-            </div>
+              </a>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* Bottom CTA */}
-      <section className="blog-cta" style={{ padding: '80px 0 100px', borderTop: '1px solid var(--line)' }}>
+      {/* Research grid */}
+      <section className="section">
         <div className="container">
-          <div className="blog-cta-grid">
-            {/* Left: editorial CTA */}
-            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-              <h2 className="serif" style={{ fontSize: 'clamp(32px, 4vw, 48px)', fontWeight: 300, letterSpacing: '-0.025em', lineHeight: 1.12, margin: '0 0 28px', color: 'var(--bone)' }}>
-                Find out what your pipeline is actually costing you.
-              </h2>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <a href="/pricing" style={{ display: 'inline-block', padding: '12px 24px', background: 'var(--bone)', color: 'var(--ink)', borderRadius: 8, fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 14, textDecoration: 'none', transition: 'opacity 120ms' }}
-                  onMouseEnter={e => e.target.style.opacity = '0.88'}
-                  onMouseLeave={e => e.target.style.opacity = '1'}>
-                  See pricing
-                </a>
-                <a href="https://calendly.com/anish-brevitassystems/30min" target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block', padding: '12px 24px', background: 'var(--ink-2)', color: 'var(--bone)', border: '1px solid var(--line)', borderRadius: 8, fontFamily: "'Inter Tight', sans-serif", fontWeight: 500, fontSize: 14, textDecoration: 'none', transition: 'border-color 120ms' }}
-                  onMouseEnter={e => e.target.style.borderColor = 'rgba(46, 46, 238,0.4)'}
-                  onMouseLeave={e => e.target.style.borderColor = ''}>
-                  Book a call
-                </a>
-              </div>
+          <div className="rb-sec-head">
+            <div>
+              <h2>Research</h2>
+              <p>Our writing starts with a question: where does a model's memory actually break when you edit it, and how do you prove a repair is correct? These are the deep dives.</p>
             </div>
+          </div>
+          <div className="rb-grid fade-up">
+            {grid.map(p => (
+              <a key={p.slug} href={p.url} className="rb-card">
+                <div className="thumb"><img src={p.img} alt="" loading="lazy" /></div>
+                <h3>{p.title}</h3>
+                <p>{p.dek}</p>
+                <div className="meta">{p.tag === 'Research' ? 'Research paper' : 'Blog'}&nbsp;&nbsp;·&nbsp;&nbsp;{p.date}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
 
-            {/* Right: newsletter card */}
-            <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 20, padding: '36px 40px' }}>
-              <div style={{ fontSize: 28, marginBottom: 16 }}>✉</div>
-              <h3 style={{ fontFamily: "'Newsreader', serif", fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 10px', color: 'var(--bone)' }}>
-                Get the newsletter
-              </h3>
-              <p style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5, margin: '0 0 24px' }}>
-                Benchmark updates, engineering deep-dives, what we shipped. One email a month. No tracking.
-              </p>
-              <WaitlistInput source="blog-newsletter" />
-            </div>
+      {/* All writing, as rows */}
+      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
+        <div className="container">
+          <div className="rb-sec-head">
+            <div><h2>More writing</h2></div>
+          </div>
+          <div className="rb-rows fade-up">
+            {rows.map(p => (
+              <a key={p.slug} href={p.url} className="rb-row">
+                <div className="thumb" style={{ gridArea: 'thumb' }}><img src={p.img} alt="" loading="lazy" /></div>
+                <div style={{ gridArea: 'title' }}>
+                  <h3>{p.title}</h3>
+                  <div className="meta">{p.date}&nbsp;&nbsp;·&nbsp;&nbsp;{p.read} read</div>
+                </div>
+                <span className="read" style={{ gridArea: 'read' }}>Read blog</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+        <div className="container">
+          <div style={{ maxWidth: 820 }}>
+            <h2 className="t-h2" style={{ marginTop: 0, marginBottom: 16 }}>Want the numbers on your own workload?</h2>
+            <p className="t-body-lg" style={{ marginBottom: 32, maxWidth: 680 }}>
+              We'll benchmark Splice on your models and contexts, and share the certificate numbers.
+            </p>
+            <Button variant="primary" href={CALENDLY} target="_blank" className="hero-btn hero-cta">Book a call</Button>
           </div>
         </div>
       </section>
 
       <Footer />
-
-      <style>{`
-        .blog-layout {
-          display: grid;
-          grid-template-columns: 200px 1fr;
-          gap: 56px;
-          align-items: start;
-        }
-        .blog-sidebar {
-          position: sticky;
-          top: 80px;
-        }
-        .blog-cta-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 60px;
-          align-items: center;
-        }
-        @media (max-width: 900px) {
-          .blog-layout { grid-template-columns: 1fr; }
-          .blog-sidebar { position: static; }
-          .blog-grid { grid-template-columns: repeat(2, 1fr) !important; }
-          .blog-cta-grid { grid-template-columns: 1fr; gap: 40px; }
-        }
-        @media (max-width: 600px) {
-          .blog-grid { grid-template-columns: 1fr !important; }
-        }
-      `}</style>
     </>
   );
 }

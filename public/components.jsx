@@ -908,9 +908,8 @@ function Nav({ current }) {
   const links = [
     { href: '/product', label: 'Product', k: 'product' },
     { href: '/benchmarks', label: 'Benchmarks', k: 'benchmarks' },
-    { href: '/pricing', label: 'Pricing', k: 'pricing' },
     // Docs hidden from nav for now
-    { href: '/blog', label: 'Blog', k: 'blog' },
+    { href: '/blog', label: 'Research & Blog', k: 'blog' },
   ];
   return (
     <>
@@ -953,7 +952,7 @@ function Nav({ current }) {
 }
 
 const FOOTER_COLS = [
-  { title: 'Product', links: [['Product', '/product'], ['Benchmarks', '/benchmarks'], ['Pricing', '/pricing']] },
+  { title: 'Product', links: [['Product', '/product'], ['Benchmarks', '/benchmarks']] },
   { title: 'Company', links: [['Blog', '/blog'], ['Contact', 'mailto:james@brevitassystems.com']] },
   { title: 'Resources', links: [['Docs', '/docs'], ['Changelog', 'mailto:james@brevitassystems.com']] },
   { title: 'Legal', links: [['Privacy', '/privacy'], ['Terms', '/terms']] },

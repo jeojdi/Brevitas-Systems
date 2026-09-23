@@ -35,15 +35,14 @@
 <link rel="stylesheet" href="/responsive.css">
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
 <style>
-.prod-label { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--stone); margin: 0 0 18px; }
+.prod-label { font-family: 'Inter Tight', sans-serif; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); margin: 0 0 14px; }
 .prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); max-width: 940px; }
 .prod-img { display: block; width: 100%; max-width: 1080px; height: auto; border: 1px solid var(--line); border-radius: 4px; }
 .prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; max-width: 960px; }
 /* Keep body copy at a readable measure while sections span the full width, left-anchored. */
 .section .t-body { max-width: 720px; }
-.prod-feature { display: grid; grid-template-columns: 52px 1fr; gap: 18px; align-items: start; }
-.prod-ficon { width: 52px; height: 52px; border: 1px solid var(--line); border-radius: 6px; background: var(--ink-2); display: flex; align-items: center; justify-content: center; color: var(--bronze); }
-.prod-feature h3 { font-size: 17px; font-weight: 600; margin: 4px 0 8px; color: var(--fg); letter-spacing: -0.01em; }
+.prod-feature { display: block; padding-top: 20px; border-top: 1px solid var(--line); }
+.prod-feature h3 { font-size: 18px; font-weight: 600; margin: 0 0 8px; color: var(--fg); letter-spacing: -0.01em; }
 .prod-feature p { font-size: 14.5px; line-height: 1.55; color: var(--stone-2); margin: 0; }
 @media (max-width: 720px) {
   .prod-grid { grid-template-columns: 1fr; gap: 32px; }
@@ -62,26 +61,12 @@
 
 <script type="text/babel">
 const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
-const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' };
-
-const IconCut = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><line x1="7.8" y1="7.8" x2="20" y2="18"/><line x1="7.8" y1="16.2" x2="20" y2="6"/></svg>
-);
-const IconSwap = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M4 8h13"/><path d="M14 5l3 3-3 3"/><path d="M20 16H7"/><path d="M10 13l-3 3 3 3"/></svg>
-);
-const IconLayers = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></svg>
-);
-const IconCertify = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" style={stroke}><path d="M12 3l7 2.5v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9v-5L12 3z"/><path d="M9 12l2 2 4-4"/></svg>
-);
 
 const FEATURES = [
-  { icon: <IconCut />, h: 'Delete spans', b: 'Cut old tool output, stale screenshots or retrieved docs out of a live cache and close the gap. Every surviving token keeps the exact state the model computed for it.' },
-  { icon: <IconSwap />, h: 'Replace and reorder', b: 'Swap a span for one the same length, or move spans around the sequence. Rotary positions re-rotate exactly, so the edit is bit-for-bit what a fresh prefill would produce.' },
-  { icon: <IconLayers />, h: 'Every modality', b: 'The same edit works on text, video, images and audio, across 1-D RoPE and multi-axis M-RoPE. Skipping the encoder on media is where the largest speed-ups come from.' },
-  { icon: <IconCertify />, h: 'Certified, not hoped', b: 'Each edit is scored against a fresh re-ingest. Safe edits are served; the rest fall back to a clean re-prefill. Correctness is never traded for speed.' },
+  { h: 'Delete spans', b: 'Cut old tool output, stale screenshots or retrieved docs out of a live cache and close the gap. Every surviving token keeps the exact state the model computed for it.' },
+  { h: 'Replace and reorder', b: 'Swap a span for one the same length, or move spans around the sequence. Rotary positions re-rotate exactly, so the edit is bit-for-bit what a fresh prefill would produce.' },
+  { h: 'Every modality', b: 'The same edit works on text, video, images and audio, across 1-D RoPE and multi-axis M-RoPE. Skipping the encoder on media is where the largest speed-ups come from.' },
+  { h: 'Certified, not hoped', b: 'Each edit is scored against a fresh re-ingest. Safe edits are served; the rest fall back to a clean re-prefill. Correctness is never traded for speed.' },
 ];
 
 function ProductPage() {
@@ -122,7 +107,7 @@ function ProductPage() {
       {/* Problem image */}
       <section className="section" style={{ paddingTop: 0 }}>
         <div className="container">
-          <img className="prod-img fade-up" src="/assets/ascii-magic-3-poster.jpg" alt="Abstract visualization of a model's working memory" loading="lazy" width="1280" height="716" />
+          <img className="prod-img fade-up" src="/assets/product-problem.jpg" alt="Brevitas Systems" loading="lazy" width="1358" height="768" />
         </div>
       </section>
 
@@ -142,11 +127,8 @@ function ProductPage() {
           <div className="prod-grid fade-up">
             {FEATURES.map((f) => (
               <div key={f.h} className="prod-feature">
-                <div className="prod-ficon">{f.icon}</div>
-                <div>
-                  <h3>{f.h}</h3>
-                  <p>{f.b}</p>
-                </div>
+                <h3>{f.h}</h3>
+                <p>{f.b}</p>
               </div>
             ))}
           </div>

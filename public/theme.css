@@ -605,12 +605,11 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   margin-right: auto;     /* push the theme toggle + Sign up button to the right edge */
 }
 .nav-link {
-  font-size: 12px;
+  font-size: 15px;
   color: var(--stone);
   transition: color var(--dur-sm) var(--ease-out-standard);
   position: relative;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  letter-spacing: 0;
   padding: 7px 2px;
 }
 /* AfterQuery-style animated underline: grows from the left on hover,
