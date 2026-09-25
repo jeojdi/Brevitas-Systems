@@ -10,6 +10,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Welcome · Brevitas Systems</title>
 <link href="/fonts/fonts.css" rel="stylesheet">
+<script>/* pre-paint theme to prevent flash on navigation */(function(){try{var t=localStorage.getItem("theme");document.documentElement.setAttribute("data-theme",t==="light"?"light":"dark");var r=localStorage.getItem("reduceMotion"),p=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;if(r==="1"||(!r&&p)){document.documentElement.setAttribute("data-reduce-motion","true");}}catch(e){}})();</script>
 <link rel="stylesheet" href="/theme.css">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -201,71 +202,7 @@ body {
 
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script type="text/babel">
-const { useState, useEffect } = React;
-
-function WelcomePage() {
-  const params = new URLSearchParams(window.location.search);
-  const email  = params.get('email') || '';
-  const name   = email ? email.split('@')[0].replace(/[._\-+]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()).split(' ')[0] : '';
-
-  return (
-    <div className="wrap">
-      <a href="/" className="logo">
-        <span className="logo-name">Brevitas</span>
-        <span className="logo-tag">Systems</span>
-      </a>
-
-      <div className="card">
-        <div className="beta-pill">EARLY ACCESS · BETA</div>
-
-        <h1 className="heading">
-          {name ? `Hello, ${name}.` : 'Welcome aboard.'}
-        </h1>
-
-        <p className="body">
-          Thanks for signing up. Check your email to confirm your address, then sign in and you're good to go.
-        </p>
-
-        <p className="body" style={{ marginBottom: 0 }}>
-          Brevitas is in private beta right now — a small group of teams running real agent pipelines in production. You're getting in early, which means you'll see things that are still rough. We want to hear about them.
-        </p>
-
-        <hr className="divider" />
-
-        <div className="detail-row">
-          <span className="detail-label">STATUS</span>
-          <span className="detail-value">Private beta — active development</span>
-        </div>
-        <div className="detail-row">
-          <span className="detail-label">CONTACT</span>
-          <span className="detail-value"><a href="mailto:info@brevitassystems.com">info@brevitassystems.com</a></span>
-        </div>
-        <div className="detail-row">
-          <span className="detail-label">BUGS</span>
-          <span className="detail-value">Email us directly — we read everything</span>
-        </div>
-        {email && (
-          <div className="detail-row">
-            <span className="detail-label">SIGNED UP</span>
-            <span className="detail-value">{email}</span>
-          </div>
-        )}
-
-        <div className="cta-row">
-          <a href="/login" className="btn-primary">Sign in →</a>
-          <a href="/" className="btn-ghost">Back to homepage</a>
-        </div>
-      </div>
-
-      <a href="/" className="back-link">← brevitassystems.com</a>
-    </div>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('app')).render(<WelcomePage />);
-</script>
+<script src="/pagejs/welcome.js" defer></script>
 </body>
 </html>

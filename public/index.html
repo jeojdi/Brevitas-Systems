@@ -3,81 +3,46 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-<!-- Primary Meta Tags -->
 <title>Brevitas Systems — Editable KV-cache memory for AI models</title>
 <meta name="title" content="Brevitas Systems — Editable KV-cache memory for AI models">
-<meta name="description" content="Brevitas builds Splice: KV-cache surgery that lets you delete, replace and reorder a model's working memory in place, certified correct against a fresh re-ingest, instead of rebuilding context from scratch.">
+<meta name="description" content="Splice makes a model's KV cache editable: delete, replace and reorder a model's working memory in place, certified correct against a fresh re-ingest, instead of rebuilding context from scratch.">
 <meta name="keywords" content="KV cache, KV cache editing, editable model memory, LLM inference, AI agents, agent memory, long-context inference, SGLang, vLLM, RoPE, self-hosted LLMs, AI infrastructure">
 <meta name="author" content="Brevitas Systems">
 <meta name="robots" content="index, follow">
-<meta name="language" content="English">
-<meta name="revisit-after" content="7 days">
 <link rel="canonical" href="https://brevitassystems.com/">
 
-<!-- Open Graph / Facebook -->
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://brevitassystems.com/">
 <meta property="og:site_name" content="Brevitas Systems">
 <meta property="og:title" content="Brevitas Systems — Editable KV-cache memory for AI models">
 <meta property="og:description" content="Splice makes a model's KV cache editable: delete, replace and reorder context in place, certified correct against a fresh re-ingest.">
 <meta property="og:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Brevitas Systems">
 <meta property="og:locale" content="en_US">
-
-<!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://brevitassystems.com/">
 <meta name="twitter:title" content="Brevitas Systems — Editable KV-cache memory for AI models">
 <meta name="twitter:description" content="Splice makes a model's KV cache editable: delete, replace and reorder context in place, certified correct against a fresh re-ingest.">
 <meta name="twitter:image" content="https://brevitassystems.com/assets/blog-card.jpg">
 <meta name="twitter:image:alt" content="Brevitas Systems">
-<meta name="twitter:creator" content="@brevitas_sys">
 <meta name="twitter:site" content="@brevitas_sys">
+<meta name="twitter:creator" content="@brevitas_sys">
 
-<!-- Additional SEO Meta Tags -->
-<meta name="application-name" content="Brevitas Systems">
-<meta name="apple-mobile-web-app-title" content="Brevitas Systems">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="format-detection" content="telephone=no">
-<meta name="theme-color" content="#0a0d0a">
-
-<!-- Favicon and Icons -->
 <link rel="icon" href="/brevitas-mark.ico" sizes="any">
 <link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
-
-<!-- Preconnect to external domains -->
-<link rel="dns-prefetch" href="https://unpkg.com">
-
-<!-- Fonts - optimized loading -->
 <link href="/fonts/fonts.css" rel="stylesheet">
+<script>/* pre-paint theme to prevent flash on navigation */(function(){try{var t=localStorage.getItem("theme");document.documentElement.setAttribute("data-theme",t==="light"?"light":"dark");var r=localStorage.getItem("reduceMotion"),p=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;if(r==="1"||(!r&&p)){document.documentElement.setAttribute("data-reduce-motion","true");}}catch(e){}})();</script>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+<link rel="stylesheet" href="/responsive.css">
+<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
 
-<!-- Main stylesheet -->
-<link rel="stylesheet" href="theme.css">
-<script src="theme-init.js" defer></script>
-<!-- Preload only the active theme's hero image so LCP doesn't wait for the
-     babel-compiled page script. Reads localStorage directly because
-     theme-init.js is deferred and hasn't stamped data-theme yet. -->
-<script>
-(function () {
-  try {
-    var light = localStorage.getItem('theme') === 'light';
-    var link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'image';
-    link.type = 'image/avif';
-    link.href = light ? '/assets/light-mode-hero.avif' : '/assets/brevitas.avif';
-    document.head.appendChild(link);
-  } catch (e) {}
-})();
-</script>
-
-<!-- Structured Data / JSON-LD -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -86,58 +51,43 @@
   "description": "Brevitas builds Splice: KV-cache surgery that makes a model's working memory editable in place, certified correct.",
   "url": "https://brevitassystems.com",
   "logo": "https://brevitassystems.com/logo.png",
-  "sameAs": [
-    "https://x.com/Brevitas_sys",
-    "https://github.com/Brevitas-ai",
-    "https://www.linkedin.com/company/brevitas-ai/"
-  ],
-  "contactPoint": {
-    "@type": "ContactPoint",
-    "contactType": "Sales",
-    "email": "contact@brevitassystems.com"
-  }
+  "sameAs": ["https://x.com/Brevitas_sys", "https://github.com/Brevitas-ai", "https://www.linkedin.com/company/brevitas-ai/"]
 }
 </script>
-
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "Brevitas SDK",
-  "applicationCategory": "DeveloperApplication",
-  "operatingSystem": "Python 3.8+",
-  "offers": {
-    "@type": "Offer",
-    "price": "Contact for pricing",
-    "priceCurrency": "USD"
-  },
-  "description": "Drop-in Python SDK for optimizing multi-agent AI pipelines. Compatible with LangGraph, CrewAI, AutoGen.",
-  "softwareRequirements": "Python 3.8 or higher",
-  "softwareVersion": "1.0",
-  "author": {
-    "@type": "Organization",
-    "name": "Brevitas Systems"
-  }
-}
-</script>
-
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "WebSite",
   "url": "https://brevitassystems.com",
   "name": "Brevitas Systems",
-  "description": "AI Agent Orchestration Platform",
-  "potentialAction": {
-    "@type": "SearchAction",
-    "target": "https://brevitassystems.com/search?q={search_term_string}",
-    "query-input": "required name=search_term_string"
-  }
+  "description": "Editable KV-cache memory for AI models"
 }
 </script>
 
-<link rel="stylesheet" href="/responsive.css">
-<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.prod-label { font-family: 'Inter Tight', sans-serif; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); margin: 0 0 14px; }
+.prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); max-width: 940px; }
+.prod-img { display: block; width: 100%; max-width: 1080px; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+.prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; max-width: 960px; }
+.section .t-body { max-width: 720px; }
+.prod-feature { display: block; padding-top: 20px; border-top: 1px solid var(--line); }
+.prod-feature h3 { font-size: 18px; font-weight: 600; margin: 0 0 8px; color: var(--fg); letter-spacing: -0.01em; }
+.prod-feature p { font-size: 14.5px; line-height: 1.55; color: var(--stone-2); margin: 0; }
+.home-hero-img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+.trust-strip .lbl { text-align: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--stone); margin: 0 0 28px; }
+.rb-sec-head h2 { font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 26px; letter-spacing: -0.01em; color: var(--fg); margin: 0 0 10px; }
+.rb-sec-head p { font-family: 'Inter Tight', sans-serif; font-size: 15px; line-height: 1.55; color: var(--stone-2); margin: 0 0 36px; max-width: 620px; }
+.rb-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
+.rb-card { text-decoration: none; color: inherit; display: flex; flex-direction: column; }
+.rb-card .thumb { aspect-ratio: 1 / 1; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 18px; transition: transform 160ms var(--ease-out-standard); }
+.rb-card:hover .thumb { transform: translateY(-3px); }
+.rb-card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rb-card h3 { font-family: 'Newsreader', Georgia, serif; font-weight: 400; font-size: 23px; letter-spacing: -0.015em; line-height: 1.15; color: var(--fg); margin: 0 0 12px; }
+.rb-card p { font-family: 'Inter Tight', sans-serif; font-size: 14.5px; line-height: 1.5; color: var(--stone-2); margin: 0 0 16px; }
+.rb-card .meta { font-family: 'Inter Tight', sans-serif; font-size: 13px; color: var(--stone); margin-top: auto; }
+@media (max-width: 860px) { .rb-grid { grid-template-columns: 1fr; gap: 36px; } }
+@media (max-width: 720px) { .prod-grid { grid-template-columns: 1fr; gap: 32px; } }
+</style>
 </head>
 <body>
 <a href="#main" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to content</a>
@@ -146,827 +96,9 @@
 
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
-<script src="pipeline-data.js"></script>
-<script type="text/babel" src="components.jsx"></script>
-<script type="text/babel" src="animations.jsx"></script>
-<script type="text/babel" src="pipeline-explorer.jsx"></script>
-<script type="text/babel" src="six-techniques-hub.jsx"></script>
+<script src="/components.js" defer></script>
 
-<script type="text/babel">
-const { useState, useEffect, useRef } = React;
-
-function ParticlesBackground() {
-  const particles = Array.from({ length: 15 }, (_, i) => ({
-    id: i,
-    left: Math.random() * 100 + '%',
-    delay: Math.random() * 20 + 's',
-    duration: 15 + Math.random() * 10 + 's',
-  }));
-
-  return (
-    <div className="particles">
-      {particles.map(p => (
-        <div
-          key={p.id}
-          className="particle"
-          style={{
-            left: p.left,
-            animationDelay: p.delay,
-            animationDuration: p.duration,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-// Define Field component outside to prevent re-creation on every render
-function FormField({ label, hint, required, children }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <span className="t-mono" style={{ color: 'var(--stone-2)', fontSize: 11, display: 'flex', alignItems: 'center', gap: 8 }}>
-        {label.toUpperCase()} {required && <span style={{ color: 'var(--bronze)' }}>*</span>}
-      </span>
-      {children}
-      {hint && <span className="t-body" style={{ fontSize: 13, color: 'var(--stone)' }}>{hint}</span>}
-    </label>
-  );
-}
-
-function GlassmorphicWaitlistForm({ source = 'landing-final' }) {
-  const [form, setForm] = useState({
-    email: '', name: '', company: '', role: '',
-    pipeline_shape: '', monthly_spend: '', orchestrator: '',
-    notes: '', design_partner: false,
-  });
-  const [state, setState] = useState('idle'); // idle | submitting | success | rate-limited
-  const [errorMsg, setErrorMsg] = useState('');
-  const [retryAfter, setRetryAfter] = useState(0);
-  const [lastSubmitTime, setLastSubmitTime] = useState(0);
-  const submitTimeoutRef = useRef(null);
-
-  const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
-
-  // Client-side throttling: prevent submissions within 2 seconds
-  const CLIENT_THROTTLE_MS = 2000;
-
-  // Countdown timer for rate limit retry
-  useEffect(() => {
-    if (retryAfter > 0) {
-      const timer = setTimeout(() => {
-        setRetryAfter(prev => {
-          if (prev <= 1) {
-            setState('idle');
-            setErrorMsg('');
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [retryAfter]);
-
-  const submit = async (e) => {
-    e.preventDefault();
-
-    // Client-side throttling
-    const now = Date.now();
-    if (now - lastSubmitTime < CLIENT_THROTTLE_MS) {
-      setErrorMsg('Please wait a moment before submitting again.');
-      setTimeout(() => setErrorMsg(''), 3000);
-      return;
-    }
-
-    // Clear any existing timeout
-    if (submitTimeoutRef.current) {
-      clearTimeout(submitTimeoutRef.current);
-    }
-
-    setLastSubmitTime(now);
-    setState('submitting');
-    setErrorMsg('');
-
-    try {
-      // Submit to Supabase API
-      const response = await fetch('/api/waitlist', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email: form.email,
-          name: form.name,
-          company: form.company,
-          role: form.role,
-          use_case: form.pipeline_shape, // Map pipeline_shape to use_case
-          source: source
-        }),
-      });
-
-      const data = await response.json();
-
-      // Handle rate limiting
-      if (response.status === 429) {
-        setState('rate-limited');
-        const retrySeconds = data.retryAfter || 60;
-        setRetryAfter(retrySeconds);
-        setErrorMsg(data.message || `Too many requests. Please wait ${retrySeconds} seconds.`);
-
-        // Log rate limit event
-        console.warn('[Rate Limit] Form submission blocked:', {
-          retryAfter: retrySeconds,
-          message: data.message
-        });
-        return;
-      }
-
-      if (response.ok) {
-        setState('success');
-        // Also save to localStorage as backup
-        try {
-          const existing = JSON.parse(localStorage.getItem('brevitas_waitlist') || '[]');
-          existing.push({ ...form, t: Date.now(), source, submitted_to_db: true });
-          localStorage.setItem('brevitas_waitlist', JSON.stringify(existing));
-        } catch(e) {}
-      } else {
-        // Handle other errors
-        setState('idle');
-        setErrorMsg(data.error || 'Failed to join waitlist. Please try again.');
-
-        // Auto-clear error after 5 seconds
-        submitTimeoutRef.current = setTimeout(() => {
-          setErrorMsg('');
-        }, 5000);
-      }
-    } catch (error) {
-      console.error('Error submitting form:', error);
-      setState('idle');
-      setErrorMsg('Network error. Please check your connection and try again.');
-
-      // Auto-clear error after 5 seconds
-      submitTimeoutRef.current = setTimeout(() => {
-        setErrorMsg('');
-      }, 5000);
-    }
-  };
-
-  if (state === 'success') {
-    return (
-      <div className="success-container" style={{
-        maxWidth: 640,
-        padding: '56px 48px',
-        background: 'var(--success-gradient)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        border: '1px solid rgba(168, 201, 139, 0.3)',
-        borderRadius: '16px',
-        boxShadow: '0 24px 48px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(168, 201, 139, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
-        animation: 'successFadeIn 600ms cubic-bezier(0.16, 1, 0.3, 1)'
-      }}>
-        <div className="t-mono" style={{ color: 'var(--signal)', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 20 }}>✓</span>
-          <span>REQUEST RECEIVED</span>
-        </div>
-        <h2 className="serif" style={{ fontSize: 36, fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 20px 0' }}>
-          <em style={{ fontStyle: 'italic' }}>Thank you.</em>
-        </h2>
-        <p className="t-body" style={{ marginBottom: 20 }}>
-          You're on the list. We'll reach out in waves, prioritizing teams whose pipeline shape matches what we're benchmarking.
-        </p>
-        <p className="t-body" style={{ marginBottom: 28, color: 'var(--stone-2)' }}>
-          If you checked the design-partner box, expect a note within two weeks with a short technical intake call to understand your pipeline.
-        </p>
-        <div style={{ display: 'flex', gap: 16 }}>
-          <a href="/product" className="btn btn-ghost underline">Explore the product →</a>
-          <a href="/benchmarks" className="btn btn-ghost underline" style={{ marginLeft: 8 }}>See benchmarks →</a>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="form-container" style={{
-      maxWidth: 640,
-      position: 'relative',
-      padding: '48px',
-      background: 'var(--glass-bg)',
-      backdropFilter: 'blur(12px)',
-      WebkitBackdropFilter: 'blur(12px)',
-      border: '1px solid var(--glass-border)',
-      borderRadius: '16px',
-      boxShadow: 'var(--glass-shadow), 0 12px 24px rgba(46, 46, 238, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
-      overflow: 'hidden'
-    }}>
-      <ParticlesBackground />
-      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 24, position: 'relative', zIndex: 1 }}>
-      <FormField label="Email" required>
-        <input
-          type="email"
-          required
-          placeholder="you@company.com"
-          value={form.email}
-          onChange={e => update('email', e.target.value)}
-          style={{
-            background: 'var(--input-bg)',
-            border: '1px solid var(--input-border)',
-            borderRadius: '8px',
-            padding: '16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: 'var(--fg)',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = 'var(--input-focus-border)';
-            e.target.style.background = 'var(--input-focus-bg)';
-            e.target.style.boxShadow = '0 0 0 3px rgba(46, 46, 238, 0.15), 0 4px 12px rgba(46, 46, 238, 0.1), inset 0 1px 0 rgba(46, 46, 238, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'var(--input-border)';
-            e.target.style.background = 'var(--input-bg)';
-            e.target.style.boxShadow = 'none';
-          }}
-        />
-      </FormField>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <FormField label="Your name">
-          <input
-            type="text"
-            placeholder="Ada Lovelace"
-            value={form.name}
-            onChange={e => update('name', e.target.value)}
-            style={{
-              background: 'var(--input-bg)',
-              border: '1px solid var(--input-border)',
-              borderRadius: '8px',
-              padding: '16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: 'var(--fg)',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = 'var(--input-focus-border)';
-              e.target.style.background = 'var(--input-focus-bg)';
-              e.target.style.boxShadow = '0 0 0 3px rgba(46, 46, 238, 0.15), 0 4px 12px rgba(46, 46, 238, 0.1), inset 0 1px 0 rgba(46, 46, 238, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'var(--input-border)';
-              e.target.style.background = 'var(--input-bg)';
-              e.target.style.boxShadow = 'none';
-            }}
-          />
-        </FormField>
-        <FormField label="Company">
-          <input
-            type="text"
-            placeholder="Acme"
-            value={form.company}
-            onChange={e => update('company', e.target.value)}
-            style={{
-              background: 'var(--input-bg)',
-              border: '1px solid var(--input-border)',
-              borderRadius: '8px',
-              padding: '16px 18px',
-              fontFamily: "'Inter Tight', sans-serif",
-              fontSize: '15px',
-              color: 'var(--fg)',
-              width: '100%',
-              boxSizing: 'border-box',
-              outline: 'none',
-              transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)'
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = 'var(--input-focus-border)';
-              e.target.style.background = 'var(--input-focus-bg)';
-              e.target.style.boxShadow = '0 0 0 3px rgba(46, 46, 238, 0.15), 0 4px 12px rgba(46, 46, 238, 0.1), inset 0 1px 0 rgba(46, 46, 238, 0.1)';
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = 'var(--input-border)';
-              e.target.style.background = 'var(--input-bg)';
-              e.target.style.boxShadow = 'none';
-            }}
-          />
-        </FormField>
-      </div>
-
-      <FormField label="Role" hint="Helps us prioritize design-partner slots.">
-        <select
-          value={form.role}
-          onChange={e => update('role', e.target.value)}
-          style={{
-            background: 'var(--input-bg)',
-            border: '1px solid var(--input-border)',
-            borderRadius: '8px',
-            padding: '16px 48px 16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: 'var(--fg)',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            appearance: 'none',
-            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%232e2eee' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
-            backgroundRepeat: 'no-repeat',
-            backgroundPosition: 'right 18px center',
-            cursor: 'pointer'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = 'var(--input-focus-border)';
-            e.target.style.background = 'var(--input-focus-bg)';
-            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%232e2eee' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-            e.target.style.backgroundRepeat = 'no-repeat';
-            e.target.style.backgroundPosition = 'right 18px center';
-            e.target.style.boxShadow = '0 0 0 3px rgba(46, 46, 238, 0.15), 0 4px 12px rgba(46, 46, 238, 0.1), inset 0 1px 0 rgba(46, 46, 238, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'var(--input-border)';
-            e.target.style.background = 'var(--input-bg)';
-            e.target.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5L7 8.5L10.5 5' stroke='%232e2eee' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-            e.target.style.backgroundRepeat = 'no-repeat';
-            e.target.style.backgroundPosition = 'right 18px center';
-            e.target.style.boxShadow = 'none';
-          }}
-        >
-          <option value="">Select one</option>
-          <option>Engineer — building agents</option>
-          <option>Engineer — platform / infra</option>
-          <option>ML / AI Lead</option>
-          <option>Founder / CTO</option>
-          <option>Researcher</option>
-          <option>Other</option>
-        </select>
-      </FormField>
-
-      <FormField label="Pipeline shape" hint="Rough outline is fine. e.g. '3 agents in series: planner → coder → reviewer'.">
-        <textarea
-          placeholder="How many agents? Linear, branching, loops? What's the shared state look like?"
-          value={form.pipeline_shape}
-          onChange={e => update('pipeline_shape', e.target.value)}
-          rows={4}
-          style={{
-            background: 'var(--input-bg)',
-            border: '1px solid var(--input-border)',
-            borderRadius: '8px',
-            padding: '16px 18px',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontSize: '15px',
-            color: 'var(--fg)',
-            width: '100%',
-            boxSizing: 'border-box',
-            outline: 'none',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            resize: 'vertical',
-            minHeight: '100px'
-          }}
-          onFocus={(e) => {
-            e.target.style.borderColor = 'var(--input-focus-border)';
-            e.target.style.background = 'var(--input-focus-bg)';
-            e.target.style.boxShadow = '0 0 0 3px rgba(46, 46, 238, 0.15), 0 4px 12px rgba(46, 46, 238, 0.1), inset 0 1px 0 rgba(46, 46, 238, 0.1)';
-          }}
-          onBlur={(e) => {
-            e.target.style.borderColor = 'var(--input-border)';
-            e.target.style.background = 'var(--input-bg)';
-            e.target.style.boxShadow = 'none';
-          }}
-        />
-      </FormField>
-
-      {/* Error message display */}
-      {errorMsg && (
-        <div style={{
-          padding: '12px 16px',
-          background: 'rgba(185, 28, 28, 0.1)',
-          border: '1px solid rgba(185, 28, 28, 0.3)',
-          borderRadius: '8px',
-          color: '#fca5a5',
-          fontSize: '14px',
-          marginBottom: '16px'
-        }}>
-          {errorMsg}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 14, marginTop: 4 }}>
-        <button
-          type="submit"
-          disabled={state === 'submitting' || state === 'rate-limited'}
-          style={{
-            width: '100%',
-            padding: '17px 32px',
-            background: '#2e2eee',
-            border: '1px solid rgba(46, 46, 238, 0.46)',
-            borderRadius: '8px',
-            color: '#07101f',
-            fontFamily: "'Inter Tight', sans-serif",
-            fontWeight: 600,
-            fontSize: '15px',
-            letterSpacing: '0.02em',
-            cursor: state === 'submitting' ? 'not-allowed' : 'pointer',
-            transition: 'all 300ms cubic-bezier(0.16, 1, 0.3, 1)',
-            boxShadow: '0 4px 14px rgba(46, 46, 238, 0.2)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            opacity: state === 'submitting' ? 0.7 : 1
-          }}
-          onMouseEnter={(e) => {
-            if (state !== 'submitting') {
-              e.target.style.background = '#4a44ff';
-              e.target.style.transform = 'translateY(-2px)';
-              e.target.style.boxShadow = '0 8px 20px rgba(46, 46, 238, 0.28)';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (state !== 'submitting') {
-              e.target.style.background = '#2e2eee';
-              e.target.style.transform = 'translateY(0)';
-              e.target.style.boxShadow = '0 4px 14px rgba(46, 46, 238, 0.2)';
-            }
-          }}
-        >
-          {state === 'submitting' ? (
-            <>
-              <span className="spinner"></span>
-              <span>Sending...</span>
-            </>
-          ) : state === 'rate-limited' && retryAfter > 0 ? (
-            <>
-              <span style={{ color: '#0a0d0a' }}>Wait {retryAfter}s</span>
-            </>
-          ) : (
-            <>Join now <span style={{ marginLeft: 4 }}>→</span></>
-          )}
-        </button>
-        <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 12, textAlign: 'center' }}>
-          No spam. We respond to every submission.
-        </span>
-      </div>
-    </form>
-    </div>
-  );
-}
-
-// initMatrixCanvas is defined in components.jsx (loaded before this script)
-
-// Renders ONE hero backdrop for the active theme instead of fetching both
-// multi-hundred-KB variants on every load. Tracks data-theme so the toggle
-// still swaps the artwork.
-function HeroBackdrop() {
-  const readTheme = () => (document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
-  const [theme, setTheme] = useState(readTheme);
-  useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(readTheme()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => observer.disconnect();
-  }, []);
-  const dark = theme !== 'light';
-  return (
-    <picture>
-      <source type="image/avif" srcSet={dark ? '/assets/brevitas.avif' : '/assets/light-mode-hero.avif'} />
-      <img
-        src={dark ? '/assets/brevitas.jpg' : '/assets/light-mode-hero.jpg'}
-        width={dark ? 1024 : 1264}
-        height={dark ? 683 : 843}
-        alt=""
-        aria-hidden="true"
-        fetchpriority="high"
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', zIndex: 0 }}
-      />
-    </picture>
-  );
-}
-
-function LandingPage() {
-  useFadeUpReveal();
-
-  useEffect(() => initMatrixCanvas('hero-matrix', { cursor: true }), []);
-
-  return (
-    <>
-      <Nav />
-
-      <main id="main">
-
-      {/* S1 — Hero */}
-      <section className="section home-hero" style={{ paddingTop: 'clamp(72px, 10vh, 140px)', paddingBottom: 'clamp(72px, 10vh, 140px)', position: 'relative', overflow: 'hidden' }}>
-        {/* Layer 0: background photo — swaps by theme */}
-        <HeroBackdrop />
-        {/* Layer 1: dual-layer ASCII animation canvas */}
-        <canvas id="hero-matrix" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1, opacity: 0.92, pointerEvents: 'none' }} />
-        {/* Layer 2: gradient scrim — transparent at top, dark at bottom so stats are legible */}
-        <div aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.60) 100%)' }} />
-        {/* Layer 3: content — text-shadow lifts every element off the image */}
-        <div className="container" style={{ position: 'relative', zIndex: 3, textShadow: '0 1px 10px rgba(0,0,0,0.7)', '--fg': '#ffffff', '--bone-dim': 'rgba(255,255,255,0.75)', '--stone-2': 'rgba(255,255,255,0.65)', '--stone': 'rgba(255,255,255,0.55)', '--line': 'rgba(255,255,255,0.18)', '--bronze': '#2e2eee' }}>
-          <h1 className="t-display-xl fade-up in" style={{ marginTop: 32, marginBottom: 28, maxWidth: 880, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center', color: '#fff', letterSpacing: '-0.035em' }}>
-            we make your agents spend <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>less</em> money.
-          </h1>
-          <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, margin: '0 auto 40px', textAlign: 'center', letterSpacing: '0.012em' }}>
-            most of what flows between agents is restated context. Brevitas removes it before the next model sees it. no changes to your agents, prompts, or provider.
-          </p>
-          <div className="fade-up delay-2 in" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24, alignItems: 'center', justifyContent: 'center' }}>
-            <Button variant="primary" href="https://calendly.com/anish-brevitassystems/30min" target="_blank" className="hero-btn hero-cta">Book a call</Button>
-            <Button variant="ghost" href="/benchmarks" className="hero-btn">See the benchmarks</Button>
-          </div>
-          <div className="hero-stats fade-up delay-3 in" style={{
-            display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap',
-            paddingTop: 32, borderTop: '1px solid var(--line)', justifyContent: 'center'
-          }}>
-            <StatCard variant="inline" value="–59.4%" label="tokens saved" />
-            <StatCard variant="inline" value="–46.9%" label="cost saved" />
-            <StatCard variant="inline" value="99.6%" label="context retained" />
-            <StatCard variant="inline" value="99%" label="quality parity" />
-          </div>
-          <div className="hero-benchmark-note t-mono" style={{ color: 'var(--stone)', marginTop: 20, fontSize: 12, textAlign: 'center' }}>
-            first-run benchmark · agentbench task · real api calls
-          </div>
-          <div className="hero-install fade-up delay-4 in" style={{ display: 'flex', justifyContent: 'center', marginTop: 'clamp(36px, 6vh, 64px)' }}>
-            <InstallCommand />
-          </div>
-        </div>
-      </section>
-
-      {/* Support / Logos bar */}
-      <section style={{ borderTop: '1px solid var(--line)', padding: 'clamp(32px, 5vh, 56px) 0' }}>
-        <div className="container">
-          <div style={{ textAlign: 'center' }}>
-            <p className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 28 }}>
-              trusted by teams from
-            </p>
-            <div className="trusted-logos">
-              {[
-                { brand: 'yc',        src: '/assets/ycombinator-logo.png', alt: 'Y Combinator', w: 480, h: 137 },
-                { brand: 'deepmind',  src: '/assets/deepmind-logo.svg',    alt: 'Google DeepMind', w: 512, h: 119 },
-                {
-                  brand: 'nvidia',
-                  src: '/assets/nvidia-logo.svg',
-                  darkSrc: '/assets/trusted-nvidia-dark-brevitas.svg',
-                  alt: 'NVIDIA',
-                  w: 164,
-                  h: 30,
-                },
-                { brand: 'phia', src: '/assets/phia-logo.png', alt: 'Phia', w: 400, h: 218 },
-                {
-                  brand: 'anthropic',
-                  src: '/assets/trusted-anthropic-coral-brevitas.svg',
-                  alt: 'Anthropic',
-                  w: 1024,
-                  h: 115,
-                },
-              ].map(({ brand, src, darkSrc, alt, w, h }) => (
-                <div
-                  key={alt}
-                  className={`trusted-logo-item trusted-logo-item--${brand}`}
-                  role="img"
-                  aria-label={alt}
-                >
-                  {darkSrc && (
-                    <img
-                      src={darkSrc}
-                      alt=""
-                      aria-hidden="true"
-                      width={w}
-                      height={h}
-                      className="trusted-logo trusted-logo--dark"
-                    />
-                  )}
-                  <img
-                    src={src}
-                    alt=""
-                    aria-hidden="true"
-                    width={w}
-                    height={h}
-                    className={`trusted-logo${darkSrc ? ' trusted-logo--light' : ''}`}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* S3 — Interactive Pipeline Explorer (moved up, right after the trusted-by logos) */}
-      <section className="section pipeline-explorer-section" style={{ padding: 'clamp(64px, 8vh, 112px) 0' }}>
-        <div className="container">
-          <div className="fade-up" style={{ marginBottom: 34 }}>
-            <h2 className="t-h1" style={{ margin: 0, maxWidth: 1040, fontSize: 'clamp(48px, 5.8vw, 76px)', lineHeight: 1.02 }}>
-              Pick a task. See exactly <em style={{ fontStyle: 'italic', color: 'var(--signal)' }}>what you're being billed for.</em>
-            </h2>
-          </div>
-          <PipelineExplorer />
-        </div>
-      </section>
-
-
-      {/* S4 — Compression explainer */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div className="fade-up" style={{ marginBottom: 56 }}>
-            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              You're paying for the same tokens on every single agent hop.
-            </h2>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr)', gap: 'clamp(32px, 5vw, 72px)', alignItems: 'start' }} className="compression-grid">
-            <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              <p className="t-body-lg">
-                Every agent output is bloated with restated context, things the next agent already knows. You're billed for all of it, every time, on every hop.
-              </p>
-              <p className="t-body">
-                Brevitas strips it before the next model sees it. The important tokens survive. The billing filler goes. Your agents don't notice. Your invoice does.
-              </p>
-              <p className="t-body">
-                This alone recovers 40–60% for most teams. There are five more places we find money.
-              </p>
-              <div style={{ marginTop: 12 }}>
-                <a href="/product" className="btn btn-ghost underline">Explore the product →</a>
-              </div>
-            </div>
-            <div><CompressionSequence /></div>
-          </div>
-        </div>
-        <style>{`
-          @media (max-width: 900px) {
-            .compression-grid { grid-template-columns: 1fr !important; }
-          }
-
-          /* Particles Animation for Glassmorphic Form */
-          .particles {
-            position: absolute;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            pointer-events: none;
-          }
-
-          .particle {
-            position: absolute;
-            width: 4px;
-            height: 4px;
-            background: linear-gradient(135deg, #2e2eee 0%, #2320c0 100%);
-            border-radius: 50%;
-            opacity: 0;
-            animation: particleFloat var(--dur) ease-in-out infinite;
-            animation-delay: var(--delay);
-            box-shadow: 0 0 6px rgba(46, 46, 238, 0.5);
-          }
-
-          @keyframes particleFloat {
-            0%, 100% {
-              opacity: 0;
-              transform: translate(0, 100px);
-            }
-            10% {
-              opacity: 0.4;
-            }
-            50% {
-              opacity: 0.6;
-              transform: translate(var(--x-drift), -200px);
-            }
-            90% {
-              opacity: 0.4;
-            }
-          }
-
-          /* Spinner for loading state */
-          .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid rgba(10, 13, 10, 0.3);
-            border-top-color: #0a0d0a;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-          }
-
-          @keyframes spin {
-            to { transform: rotate(360deg); }
-          }
-        `}</style>
-      </section>
-
-      {/* S5 — Six techniques */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)' }}>
-        <div className="container">
-          <div className="fade-up" style={{ marginBottom: 40 }}>
-            <h2 className="t-h2" style={{ marginTop: 20, maxWidth: 900 }}>
-              Six lossless levers for lower model costs. The router applies only what earns its keep.
-            </h2>
-          </div>
-          <div className="fade-up delay-1">
-            <SixTechniquesHub />
-          </div>
-          <div style={{ marginTop: 48 }}>
-            <Button variant="secondary" href="/product">Explore the product</Button>
-          </div>
-        </div>
-      </section>
-
-      {/* S7 — Benchmarks trust row */}
-      <section className="section" style={{ borderTop: '1px solid var(--line)', background: 'var(--ink-2)', position: 'relative', overflow: 'hidden' }}>
-        {/* Background glow */}
-        <div aria-hidden="true" style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: 'radial-gradient(ellipse 55% 70% at 100% 50%, rgba(46, 46, 238,0.07), transparent 70%)',
-        }} />
-        <div className="container" style={{ position: 'relative', zIndex: 1 }}>
-          <div className="benchmarks-split">
-            {/* Left: editorial heading */}
-            <div className="fade-up">
-              <h2 className="t-h2" style={{ marginTop: 20, marginBottom: 20 }}>
-                Real pipelines.<br />
-                <em style={{ fontStyle: 'italic', color: 'var(--bronze)' }}>Measured savings.</em>
-              </h2>
-              <p className="t-body" style={{ marginBottom: 40, maxWidth: 400 }}>
-                AgentBench, MARBLE, and BattleAgentBench. Published, peer-reviewed benchmarks. Not cherry-picked tasks. Not internal evals. The kind your CFO can point to.
-              </p>
-              <a href="/benchmarks" className="btn btn-secondary">See full results →</a>
-            </div>
-
-            {/* Right: benchmark data rows */}
-            <div className="fade-up delay-1" style={{ display: 'flex', flexDirection: 'column' }}>
-              {[
-                { letter: 'A', name: 'AgentBench', venue: 'ICLR 2024', metric: '–59.4%', label: 'tokens saved', pct: 59.4 },
-                { letter: 'M', name: 'MARBLE',     venue: 'ACL 2025',  metric: '–46.9%', label: 'cost reduction', pct: 46.9 },
-                { letter: 'B', name: 'BattleAgentBench', venue: '2024', metric: '99.6%', label: 'context retained', pct: 99.6 },
-              ].map(({ letter, name, venue, metric, label, pct }, i) => (
-                <div key={i} style={{
-                  display: 'grid', gridTemplateColumns: '1fr auto',
-                  gap: 20, alignItems: 'center',
-                  padding: '28px 0',
-                  borderBottom: '1px solid var(--line)',
-                  borderTop: i === 0 ? '1px solid var(--line)' : undefined,
-                }}>
-                  {/* Name + venue + bar */}
-                  <div>
-                    <div style={{ fontWeight: 500, fontSize: 15, color: 'var(--fg)', marginBottom: 3 }}>{name}</div>
-                    <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, letterSpacing: '0.1em' }}>{venue}</div>
-                    <div style={{ marginTop: 12, height: 2, background: 'var(--line)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{
-                        height: '100%', width: pct + '%',
-                        background: 'linear-gradient(90deg, var(--bronze-deep), var(--bronze))',
-                        borderRadius: 2,
-                      }} />
-                    </div>
-                  </div>
-                  
-                  {/* Metric */}
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <div className="serif tabular" style={{
-                      fontSize: 'clamp(22px, 3vw, 32px)', fontWeight: 300,
-                      color: 'var(--bronze)', letterSpacing: '-0.02em', lineHeight: 1,
-                    }}>{metric}</div>
-                    <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 10, marginTop: 5, letterSpacing: '0.08em' }}>{label}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* S9 — Final CTA */}
-      <section className="section" style={{ background: 'var(--ink-2)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
-        <div className="container">
-          <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
-            <h2 className="t-h1" style={{ marginTop: 0, marginBottom: 22 }}>Find out how much you're overpaying.</h2>
-            <p className="t-body-lg" style={{ margin: '0 auto 40px', maxWidth: 560, color: 'var(--bone-dim)' }}>
-              We work with a small group of teams. Book a call and we'll show you exactly what we'd cut and how much it'd save.
-            </p>
-            <Button variant="primary" href="https://calendly.com/anish-brevitassystems/30min" target="_blank" className="hero-btn hero-cta">Book a call</Button>
-            <div style={{ marginTop: 48, paddingTop: 32, borderTop: '1px solid var(--line)', maxWidth: 620, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center' }}>
-              <div style={{ marginBottom: 14 }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 30, fontWeight: 500, color: 'var(--fg)', letterSpacing: '-0.01em' }}>brevitas</span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: 'var(--stone-2)', marginLeft: 14 }}>/ˈbre.wi.taːs/</span>
-                <span style={{ fontStyle: 'italic', fontSize: 16, color: 'var(--stone-2)', marginLeft: 14 }}>noun · Latin</span>
-              </div>
-              <p style={{ margin: 0, fontSize: 21, lineHeight: 1.6, color: 'var(--bone-dim)' }}>
-                shortness, concision. A rhetorical virtue: <span style={{ fontStyle: 'italic', color: 'var(--fg)' }}>saying more with less.</span>
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      </main>
-
-      <Footer />
-    </>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('app')).render(<LandingPage />);
-</script>
+<script src="/pagejs/index.js" defer></script>
 </body>
 </html>

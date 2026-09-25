@@ -402,11 +402,28 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .btn-ghost {
   background: transparent;
   color: var(--stone-2);
-  /* inherits padding: 12px 22px from .btn — gives the pill proper breathing room */
+  position: relative;
+  overflow: hidden;
+  z-index: 0;
+  /* inherits padding 12px 22px from .btn, giving the pill proper breathing room */
 }
-.btn-ghost:hover { color: var(--fg); }
+/* Fill animation: the bronze sweeps in from the left on hover, text flips to white. */
+.btn-ghost::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--bronze);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-md) var(--ease-out-standard);
+  z-index: -1;
+}
+.btn-ghost:hover::before { transform: scaleX(1); }
+.btn-ghost:hover { color: #ffffff; border-color: var(--bronze); }
 /* Text-link variants (underline class) strip horizontal padding so they read as links */
-.btn-ghost.underline { padding: 8px 16px; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.btn-ghost.underline { padding: 8px 16px; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; overflow: visible; }
+.btn-ghost.underline::before { content: none; }
+.btn-ghost.underline:hover { color: var(--fg); }
 .btn-ghost.underline:hover { color: var(--fg); transform: translateX(2px); text-decoration-color: var(--bronze); }
 
 /* Inputs */

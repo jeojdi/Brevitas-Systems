@@ -1,0 +1,516 @@
+
+const BASE_URL = 'https://brevitassystems.com';
+
+const TOC = [
+  { group: 'GETTING STARTED', items: [
+    { id: 'overview',          label: 'How it works' },
+    { id: 'verifying-savings', label: 'Verifying savings' },
+    { id: 'requirements',      label: 'Requirements' },
+  ]},
+  { group: 'INSTALL', items: [
+    { id: 'install', label: 'Install' },
+    { id: 'setup',   label: 'First-time setup' },
+  ]},
+  { group: 'MANAGE', items: [
+    { id: 'verify',    label: 'Verify it works' },
+    { id: 'service',   label: 'Background service' },
+    { id: 'update',    label: 'Updating' },
+    { id: 'uninstall', label: 'Uninstalling' },
+  ]},
+  { group: 'REFERENCE', items: [
+    { id: 'commands',        label: 'Command reference' },
+    { id: 'troubleshooting', label: 'Troubleshooting' },
+  ]},
+];
+
+function DocsPage() {
+  const [active, setActive] = useState('overview');
+
+  useEffect(() => {
+    const obs = new IntersectionObserver((entries) => {
+      const visible = entries.filter(e => e.isIntersecting).sort((a,b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      if (visible[0]) setActive(visible[0].target.id);
+    }, { rootMargin: '-20% 0px -60% 0px' });
+    document.querySelectorAll('[data-doc-section]').forEach(el => obs.observe(el));
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <>
+      <Nav current="docs" />
+
+      <div className="docs-page" style={{ paddingTop: 80 }}>
+        <div className="container docs-shell">
+          {/* Sidebar */}
+          <aside className="docs-side">
+            <div className="docs-side-inner">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28 }}>
+                <span className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>INSTALL GUIDE</span>
+                <span className="t-mono" style={{ color: 'var(--stone)', fontSize: 11 }}>bvx</span>
+              </div>
+              {TOC.map(group => (
+                <div key={group.group} style={{ marginBottom: 28 }}>
+                  <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 10, marginBottom: 10 }}>{group.group}</div>
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {group.items.map(item => (
+                      <li key={item.id}>
+                        <a
+                          href={`#${item.id}`}
+                          className={`docs-toc-link ${active === item.id ? 'active' : ''}`}
+                        >
+                          {item.label}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+
+              <div style={{ marginTop: 40, padding: 16, border: '1px solid var(--line)', background: 'var(--ink-2)', borderRadius: 2 }}>
+                <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 8 }}>DASHBOARD</div>
+                <div className="t-body" style={{ fontSize: 13, margin: 0 }}>
+                  Manage keys, run live requests, and view token savings in the dashboard.
+                </div>
+                <a href="/dashboard" className="btn-inline" style={{ marginTop: 12, display: 'inline-block', fontSize: 13, color: 'var(--bronze)' }}>Open dashboard →</a>
+              </div>
+            </div>
+          </aside>
+
+          {/* Main */}
+          <main className="docs-main">
+
+            <Section id="overview" kicker="GETTING STARTED · 01" title={<>How it works.</>}>
+              <p className="t-body-lg">
+                Brevitas is middleware that sits between your AI coding assistants and the LLM
+                provider, trimming tokens on every request. The <span className="mono bronze">bvx</span> CLI
+                installs it, points each supported tool at a local proxy, and supervises the background service.
+              </p>
+              <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 2, padding: '20px 24px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--stone-2)', lineHeight: 1.7 }}>
+                <div style={{ color: 'var(--stone)', marginBottom: 8 }}>{'// request path'}</div>
+                <pre style={{ margin: 0, whiteSpace: 'pre', overflowX: 'auto' }}>{`AI Tool  ─▶  Brevitas Local Proxy  ─▶  brevitas-systems  ─▶  LLM Provider  ─▶  Response
+             (127.0.0.1:8080)          (optimization,
+                                         local socket)`}</pre>
+              </div>
+              <p className="t-body">There are three moving parts:</p>
+              <table className="docs-table">
+                <thead><tr><th>Piece</th><th>What it is</th><th>Who manages it</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono bronze">bvx</span></td><td>The installer/manager CLI (written in Go). Detects your AI tools, stores one API key, points each tool at the local proxy, and runs the background service.</td><td>You — <span className="mono">brew</span> / <span className="mono">install.ps1</span></td></tr>
+                  <tr><td><span className="mono">Proxy service</span></td><td>A local HTTP proxy on <span className="mono">127.0.0.1:8080</span> that every configured tool routes through. Runs in the background (<span className="mono">bvx serve</span>).</td><td><span className="mono">bvx</span> — installs + supervises it</td></tr>
+                  <tr><td><span className="mono">brevitas-systems</span></td><td>The Python package holding the optimization logic. <span className="mono">bvx</span> talks to it over a local socket. Not bundled — installed and pinned via <span className="mono">pip</span>.</td><td><span className="mono">bvx install</span> / <span className="mono">update</span></td></tr>
+                </tbody>
+              </table>
+              <p className="t-body">
+                <span className="mono bronze">bvx</span> never bundles the optimizer and never edits a tool
+                config you haven't approved. Every config change is backed up before it's rewritten.
+              </p>
+            </Section>
+
+            <Section id="verifying-savings" kicker="GETTING STARTED · 02" title={<>Verifying savings.</>}>
+              <p className="t-body-lg">
+                Brevitas calculates savings from what the provider <strong style={{ color: 'var(--fg)' }}>actually
+                billed</strong>, not what the caller requested — the provider's own response and pricing data are the
+                source of truth.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Model.</strong> The model name is taken from the provider's <em>response</em>, not the request, so pricing uses the actual model and version that ran.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Cost.</strong> Each model has separate rates for fresh input, cached input, cache writes, and output. Cost = tokens × the appropriate rate for each bucket.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Savings.</strong> Brevitas doesn't need to reduce token count. If it causes tokens to be served from a cheaper cache bucket, the difference between the all-fresh baseline and the actual provider cost is the saving.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>No double-counting.</strong> If the provider's cache would have hit without Brevitas, that discount is excluded. Brevitas is only credited for savings it actually caused.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>No fake savings.</strong> If Brevitas changes nothing, baseline = actual cost → <span className="mono">$0</span> savings → <span className="mono">$0</span> fee.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Safety.</strong> If the real model can't be identified or the cache hit can't be attributed to Brevitas, the row is recorded <span className="mono">unpriced / $0</span> rather than guessed.</li>
+              </ul>
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 8 }}>{'// worked example — 100k-token Opus prompt, 90k served from cache'}</div>
+              <table className="docs-table">
+                <thead><tr><th>Leg</th><th>Tokens</th><th>Rate (per 1M)</th><th>Cost</th></tr></thead>
+                <tbody>
+                  <tr><td>Baseline <span className="mono">(all fresh)</span></td><td>100k input</td><td><span className="mono">$5.00</span></td><td><span className="mono">$0.500</span></td></tr>
+                  <tr><td>Actual <span className="mono">(90k cache-read + 10k fresh)</span></td><td>90k @ cached · 10k @ fresh</td><td><span className="mono">$0.50 / $5.00</span></td><td><span className="mono">$0.095</span></td></tr>
+                  <tr><td><strong style={{ color: 'var(--fg)' }}>Verified savings</strong></td><td>—</td><td>—</td><td><span className="mono bronze">$0.405</span></td></tr>
+                  <tr><td>Brevitas fee <span className="mono">(20%)</span></td><td>—</td><td>—</td><td><span className="mono">~$0.081</span></td></tr>
+                </tbody>
+              </table>
+
+              <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderLeft: '2px solid var(--bronze)', borderRadius: 2, padding: '16px 20px', marginTop: 4 }}>
+                <p className="t-body" style={{ margin: 0 }}>
+                  <strong style={{ color: 'var(--fg)' }}>In one sentence.</strong> Brevitas charges a percentage of
+                  verified, attributable savings between the provider's full-price baseline and its actual billed
+                  cost — using the provider's own response and pricing data as the source of truth.
+                </p>
+              </div>
+            </Section>
+
+            <Section id="requirements" kicker="GETTING STARTED · 03" title={<>Requirements.</>}>
+              <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>macOS, Linux, or Windows</strong> (x86-64 or ARM64).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Python 3.13+</strong> — required by <span className="mono">brevitas-systems</span>. Homebrew installs it as a dependency automatically; on Windows install it yourself (e.g. from <a href="https://www.python.org/downloads/" className="btn-inline" style={{ color: 'var(--bronze)' }}>python.org</a> or <span className="mono">winget install Python.Python.3.13</span>).</li>
+                <li className="t-body">An account at <a href="https://brevitassystems.com" className="btn-inline" style={{ color: 'var(--bronze)' }}>brevitassystems.com</a> — you authorize it during setup and the device key is stored in your OS credential store (Keychain / Credential Manager / Secret Service).</li>
+              </ul>
+              <p className="t-body">
+                You do <strong style={{ color: 'var(--fg)' }}>not</strong> need a Go toolchain or a C compiler —
+                every install path below ships a prebuilt binary.
+              </p>
+            </Section>
+
+            <Section id="install" kicker="INSTALL · 01" title={<>Install.</>}>
+              <p className="t-body-lg">
+                Two ways in. The <strong style={{ color: 'var(--fg)' }}>hosted gateway</strong> is one command and is the
+                path whose savings are verified and billable. The <span className="mono bronze">bvx</span> installer wires
+                your local AI tools and codebases through Brevitas with no code changes — analytics, never billed.
+              </p>
+
+              {/* Hosted gateway — the recommended, billable path */}
+              <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11 }}>{'// RECOMMENDED · METERED · BILLABLE — hosted gateway'}</div>
+              <p className="t-body">
+                Install the CLI, then approve once in the browser. <span className="mono bronze">brevitas connect</span> opens
+                the dashboard for approval, then hands back an organization service key scoped to your workspace — nothing
+                to install on your servers and no background service. The only change in your app is the client base URL.
+              </p>
+              <CodeBlock lang="sh" code={`pip install brevitas-systems     # installs the brevitas CLI
+brevitas connect                 # approve in the browser, receive a scoped org key`} />
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: 'var(--ink-2)' }}>
+                <img src="/assets/docs/connect-dashboard.png" alt="The Connect tab of the Brevitas dashboard showing the one-command quick start: pip install brevitas-systems, then brevitas connect." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// brevitas connect opens this dashboard for approval, then hands back a scoped key'}</figcaption>
+              </figure>
+              <p className="t-body">Then point your client at the gateway — two headers, no other code changes:</p>
+              <CodeBlock lang="python" code={`import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://api.brevitassystems.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+    default_headers={
+        "X-Brevitas-Key": os.environ["BREVITAS_API_KEY"],
+        "X-Brevitas-Customer-ID": "acme",   # required on every hosted request
+    },
+)`} />
+
+              {/* Local tooling — bvx */}
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 20 }}>{'// LOCAL TOOLING — bvx · macOS / Linux (Homebrew)'}</div>
+              <CodeBlock lang="sh" code={`brew tap Brevitas-ai/brevitas
+brew install bvx`} />
+              <p className="t-body">Or as a single command:</p>
+              <CodeBlock lang="sh" code={`brew install Brevitas-ai/brevitas/bvx`} />
+              <p className="t-body">To build the latest <span className="mono">main</span> from source instead of a release binary:</p>
+              <CodeBlock lang="sh" code={`brew install --HEAD Brevitas-ai/brevitas/bvx`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 12 }}>{'// Windows (PowerShell)'}</div>
+              <CodeBlock lang="powershell" code={`irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+              <p className="t-body">No GitHub account or API token is required; the installer resolves the latest release without GitHub's rate-limited REST API.</p>
+              <p className="t-body">
+                This downloads the prebuilt <span className="mono">bvx.exe</span> for your architecture,
+                <strong style={{ color: 'var(--fg)' }}> verifies its SHA-256</strong> against the release
+                <span className="mono"> checksums.txt</span>, installs it to <span className="mono">%LOCALAPPDATA%\Programs\bvx</span>,
+                and adds that folder to your user PATH. Open a <strong style={{ color: 'var(--fg)' }}>new</strong> terminal
+                afterward so the updated PATH takes effect.
+              </p>
+              <p className="t-body">To pin a specific version, set <span className="mono">$env:BVX_VERSION</span> before running:</p>
+              <CodeBlock lang="powershell" code={`$env:BVX_VERSION = "0.1.22"
+irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 12 }}>{'// verify the binary is installed'}</div>
+              <CodeBlock lang="sh" code={`bvx version`} />
+              <p className="t-body">
+                This only confirms the CLI is on your PATH — it does <strong style={{ color: 'var(--fg)' }}>not</strong> configure
+                anything yet. That's the next step.
+              </p>
+            </Section>
+
+            <Section id="setup" kicker="INSTALL · 02" title={<>First-time setup.</>}>
+              <p className="t-body">Run the interactive installer once:</p>
+              <CodeBlock lang="sh" code={`bvx install`} />
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: '#0a0a0a' }}>
+                <img src="/assets/docs/bvx-home.png" alt="The bvx terminal UI home screen: an Actions menu with Connect repository, Configure AI tools, System status, and more." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// bvx opens an interactive menu — arrow keys to navigate, Enter to launch'}</figcaption>
+              </figure>
+              <p className="t-body">This is the same as <span className="mono">bvx install ai</span>. Here's exactly what it does:</p>
+              <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Scans</strong> your system for supported AI tools (Claude Code, Codex CLI, Continue, Aider, …).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Opens the Brevitas dashboard</strong> for one-click account authorization.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Stores</strong> the dedicated device key in your OS credential store.</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Rewrites</strong> each supported tool's documented config to route through <span className="mono">http://127.0.0.1:8080</span> (backing up the original first).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Installs and starts</strong> the background services (proxy + <span className="mono">brevitas-systems</span> optimizer).</li>
+                <li className="t-body"><strong style={{ color: 'var(--fg)' }}>Runs diagnostics</strong> and prints a summary.</li>
+              </ol>
+              <div className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, marginTop: 8 }}>{'// example output'}</div>
+              <CodeBlock lang="text" code={`Scanning system...
+
+  ✓ Claude Code
+  ✓ Codex CLI
+  ✓ Continue
+  ✓ Aider
+  ⚠ Cursor (manual step required)
+  ⚠ GitHub Copilot — Unsupported
+
+Detected 4 configurable tool(s), 1 manual, 1 unsupported.
+
+Opening https://brevitassystems.com/dashboard#bvx=...
+Waiting for approval... approved
+
+Installing...
+
+  ✓ API key stored in macOS Keychain
+  ✓ Claude Code configured`} />
+              <p className="t-body">
+                <strong style={{ color: 'var(--fg)' }}>Wiring up a codebase instead.</strong> To route every LLM
+                call in a project through Brevitas (instead of configuring interactive tools):
+              </p>
+              <CodeBlock lang="sh" code={`bvx install <repo>                 # scan + open the AI-call map
+bvx install <repo> --apply         # write a .env.agentmap you can source
+bvx install <repo> --apply --auto  # also rewrite hardcoded provider URLs`} />
+              <p className="t-body">
+                Choosing <strong style={{ color: 'var(--fg)' }}>Connect repository</strong> (or running <span className="mono">bvx install</span> with
+                no path) opens a picker so you can browse to the backend project folder to connect:
+              </p>
+              <figure style={{ margin: '4px 0 0', border: '1px solid var(--line)', borderRadius: 2, overflow: 'hidden', background: '#0a0a0a' }}>
+                <img src="/assets/docs/bvx-repo-picker.png" alt="The bvx repository picker: a file browser listing Documents, Downloads, Desktop, and GitHub folders with a preview pane." style={{ display: 'block', width: '100%', height: 'auto' }} />
+                <figcaption className="t-mono" style={{ color: 'var(--stone)', fontSize: 11, padding: '8px 12px', borderTop: '1px solid var(--line)' }}>{'// bvx repository picker — pick the project folder, Enter to open, then scan + connect'}</figcaption>
+              </figure>
+            </Section>
+
+            <Section id="verify" kicker="MANAGE · 01" title={<>Verify it works.</>}>
+              <CodeBlock lang="sh" code={`bvx status     # proxy, service, and provider status
+bvx doctor     # full diagnostics across the installation`} />
+              <p className="t-body">If something looks off, re-apply config and restart the service:</p>
+              <CodeBlock lang="sh" code={`bvx repair`} />
+            </Section>
+
+            <Section id="service" kicker="MANAGE · 02" title={<>Background service.</>}>
+              <p className="t-body">Control the background proxy service directly:</p>
+              <CodeBlock lang="sh" code={`bvx start      # start the proxy service
+bvx stop       # stop it
+bvx restart    # restart it
+bvx logs       # print the proxy logs
+bvx logs -f    # follow the logs live`} />
+            </Section>
+
+            <Section id="update" kicker="MANAGE · 03" title={<>Updating.</>}>
+              <p className="t-body">Upgrade the <span className="mono">bvx</span> CLI itself with your package manager:</p>
+              <CodeBlock lang="sh" code={`# macOS / Linux
+brew upgrade bvx
+
+# Windows — just re-run the installer; it fetches the latest release
+irm https://raw.githubusercontent.com/Brevitas-ai/brevitas/main/install.ps1 | iex`} />
+              <p className="t-body">Upgrade the optimization engine (<span className="mono">brevitas-systems</span>):</p>
+              <CodeBlock lang="sh" code={`bvx update`} />
+            </Section>
+
+            <Section id="uninstall" kicker="MANAGE · 04" title={<>Uninstalling.</>}>
+              <p className="t-body">This restores every tool config from its backup and removes the background service:</p>
+              <CodeBlock lang="sh" code={`bvx uninstall`} />
+              <p className="t-body">Then remove the CLI itself:</p>
+              <CodeBlock lang="sh" code={`# macOS / Linux
+brew uninstall bvx
+
+# Windows
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Programs\\bvx"
+# and remove that folder from your user PATH (System Settings → Environment Variables)`} />
+            </Section>
+
+            <Section id="commands" kicker="REFERENCE · 01" title={<>Command reference.</>}>
+              <table className="docs-table">
+                <thead><tr><th>Command</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">bvx install</span></td><td>Configure AI coding tools (<span className="mono">install ai</span>) or a codebase (<span className="mono">install &lt;repo&gt;</span>)</td></tr>
+                  <tr><td><span className="mono">bvx uninstall</span></td><td>Restore all tool configs and remove the background service</td></tr>
+                  <tr><td><span className="mono">bvx status</span></td><td>Show proxy, service, and provider status</td></tr>
+                  <tr><td><span className="mono">bvx stats</span></td><td>Show cumulative token-savings metrics from the proxy</td></tr>
+                  <tr><td><span className="mono">bvx providers</span></td><td>List supported providers and their detection/config state</td></tr>
+                  <tr><td><span className="mono">bvx doctor</span></td><td>Run diagnostics across the whole installation</td></tr>
+                  <tr><td><span className="mono">bvx repair</span></td><td>Re-apply configuration and restart the service</td></tr>
+                  <tr><td><span className="mono">bvx start</span> / <span className="mono">stop</span> / <span className="mono">restart</span></td><td>Control the background proxy service</td></tr>
+                  <tr><td><span className="mono">bvx logs</span></td><td>Print (or follow, with <span className="mono">-f</span>) the proxy logs</td></tr>
+                  <tr><td><span className="mono">bvx config</span></td><td>Print or edit Brevitas configuration</td></tr>
+                  <tr><td><span className="mono">bvx login</span> / <span className="mono">logout</span></td><td>Connect through the dashboard / remove the stored key</td></tr>
+                  <tr><td><span className="mono">bvx update</span></td><td>Check for and upgrade the <span className="mono">brevitas-systems</span> package</td></tr>
+                  <tr><td><span className="mono">bvx version</span></td><td>Print version information</td></tr>
+                </tbody>
+              </table>
+              <p className="t-body">Run <span className="mono">bvx help</span> to see the full list at any time.</p>
+            </Section>
+
+            <Section id="troubleshooting" kicker="REFERENCE · 02" title={<>Troubleshooting.</>}>
+              <table className="docs-table">
+                <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
+                <tbody>
+                  <tr><td><span className="mono">bvx: command not found</span> (Windows)</td><td>Open a new terminal; PATH updates only apply to shells started after install.</td></tr>
+                  <tr><td>GitHub API rate limit (Windows)</td><td>Download and run the current install command again. The current installer does not use GitHub's rate-limited REST API and does not require a GitHub token.</td></tr>
+                  <tr><td>A tool still hits the provider directly</td><td>Run <span className="mono">bvx status</span> to confirm it was configured, then <span className="mono">bvx repair</span> to re-apply.</td></tr>
+                  <tr><td>Optimizer won't start</td><td>Make sure Python 3.13+ is installed and on your PATH, then run <span className="mono">bvx update</span> followed by <span className="mono">bvx doctor</span>.</td></tr>
+                  <tr><td>Anything else</td><td><span className="mono">bvx doctor</span> inspects the whole installation and points at the specific problem.</td></tr>
+                </tbody>
+              </table>
+              <p className="t-body">
+                For how the proxy and optimizer communicate under the hood, see <span className="mono">PROTOCOL.md</span> in the repository.
+              </p>
+            </Section>
+
+            <div style={{ borderTop: '1px solid var(--line)', marginTop: 80, paddingTop: 40, paddingBottom: 80 }}>
+              <div className="t-mono" style={{ color: 'var(--stone)', marginBottom: 16, fontSize: 11 }}>WHAT'S NEXT</div>
+              <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                <a href="/benchmarks" className="btn btn-ghost underline">See the benchmarks →</a>
+                <a href="/product" className="btn btn-ghost underline">Explore the product →</a>
+                <a href="/login" className="btn btn-primary">Open dashboard</a>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+
+      <Footer />
+
+      <style>{`
+        .docs-shell {
+          display: grid;
+          grid-template-columns: 260px 1fr;
+          gap: 80px;
+          max-width: 1280px;
+          padding-top: 32px;
+        }
+        .docs-side {
+          position: relative;
+        }
+        .docs-side-inner {
+          position: sticky;
+          top: 96px;
+          padding-right: 16px;
+        }
+        .docs-toc-link {
+          display: block;
+          padding: 6px 10px;
+          color: var(--stone-2);
+          font-size: 14px;
+          border-left: 1px solid transparent;
+          text-decoration: none;
+          transition: color 180ms, border-color 180ms;
+        }
+        .docs-toc-link:hover { color: var(--fg); }
+        .docs-toc-link.active {
+          color: var(--fg);
+          border-left-color: var(--bronze);
+        }
+        .docs-main { max-width: 780px; padding-bottom: 80px; }
+        .docs-table {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 20px 0;
+          font-size: 14px;
+        }
+        .docs-table th, .docs-table td {
+          text-align: left;
+          padding: 12px 14px;
+          border-bottom: 1px solid var(--line);
+          vertical-align: top;
+        }
+        .docs-table th {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          color: var(--stone);
+          font-weight: 400;
+          border-bottom-color: var(--stone-2);
+        }
+        .docs-table td { color: var(--bone-dim); }
+        .endpoint-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 14px;
+          background: var(--ink-2);
+          border: 1px solid var(--line);
+          border-radius: 2px;
+          margin-bottom: 16px;
+        }
+        .method-badge {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 2px 6px;
+          border-radius: 2px;
+        }
+        .method-POST { background: #3b4fd8; color: #fff; }
+        .method-GET  { background: #1a8a6f; color: #fff; }
+        .method-PUT  { background: #b45309; color: #fff; }
+        .code-block-wrap {
+          border-radius: 2px;
+          overflow: hidden;
+          margin: 12px 0;
+        }
+        .code-block-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: #0c0c0c;
+          border-bottom: 1px solid #222;
+          padding: 8px 16px;
+        }
+        .code-block-lang {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          color: #555;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+        .code-block-copy {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          color: #555;
+          background: none;
+          border: none;
+          cursor: pointer;
+          transition: color 150ms;
+        }
+        .code-block-copy:hover { color: #aaa; }
+        .code-block-pre {
+          background: #0c0c0c;
+          padding: 20px;
+          margin: 0;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 12px;
+          color: #ccc;
+          overflow-x: auto;
+          line-height: 1.7;
+          white-space: pre;
+        }
+        @media (max-width: 900px) {
+          .docs-shell { grid-template-columns: 1fr; gap: 32px; }
+          .docs-side-inner { position: static; }
+        }
+      `}</style>
+    </>
+  );
+}
+
+function Section({ id, kicker, title, children }) {
+  return (
+    <section id={id} data-doc-section style={{ marginBottom: 80, scrollMarginTop: 100 }}>
+      <div className="t-mono" style={{ color: 'var(--bronze)', fontSize: 11, marginBottom: 14 }}>{kicker}</div>
+      <h2 className="serif" style={{ fontSize: 'clamp(32px, 4vw, 44px)', fontWeight: 400, letterSpacing: '-0.015em', margin: '0 0 24px 0', lineHeight: 1.1 }}>
+        {title}
+      </h2>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function CodeBlock({ lang, code }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="code-block-wrap">
+      <div className="code-block-header">
+        <span className="code-block-lang">{lang}</span>
+        <button className="code-block-copy" onClick={copy}>{copied ? 'copied!' : 'copy'}</button>
+      </div>
+      <pre className="code-block-pre">{code}</pre>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<DocsPage />);
