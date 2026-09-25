@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="/brevitas-mark.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/brevitas-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/brevitas-mark-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/brevitas-mark-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/brevitas-touch-icon.png">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>bvx CLI · Brevitas Systems</title>
+<meta name="description" content="bvx is a CLI that routes your AI coding tools through a local proxy and leans on provider caching, so the context your agents resend is billed from a cheaper cache bucket. Install in one line.">
+<link rel="canonical" href="https://brevitassystems.com/bvx">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://brevitassystems.com/bvx">
+<meta property="og:site_name" content="Brevitas Systems">
+<meta property="og:title" content="bvx CLI · Brevitas Systems">
+<meta property="og:description" content="Cut your coding agent's token bill with one command. bvx routes your tools through a local proxy that makes provider caching actually hit.">
+<meta property="og:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Brevitas Systems">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:url" content="https://brevitassystems.com/bvx">
+<meta name="twitter:title" content="bvx CLI · Brevitas Systems">
+<meta name="twitter:description" content="Cut your coding agent's token bill with one command. bvx makes provider caching actually hit.">
+<meta name="twitter:image" content="https://brevitassystems.com/assets/blog-card.jpg">
+<meta name="twitter:image:alt" content="Brevitas Systems">
+<meta name="twitter:site" content="@brevitas_sys">
+<meta name="twitter:creator" content="@brevitas_sys">
+<link href="/fonts/fonts.css" rel="stylesheet">
+<script>/* pre-paint theme to prevent flash on navigation */(function(){try{var t=localStorage.getItem("theme");document.documentElement.setAttribute("data-theme",t==="light"?"light":"dark");var r=localStorage.getItem("reduceMotion"),p=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;if(r==="1"||(!r&&p)){document.documentElement.setAttribute("data-reduce-motion","true");}}catch(e){}})();</script>
+<link rel="stylesheet" href="/theme.css">
+<script src="/theme-init.js" defer></script>
+<link rel="stylesheet" href="/responsive.css">
+<script src="/analytics.js" defer data-brevitas-analytics="true"></script>
+<style>
+.prod-label { font-family: 'Inter Tight', sans-serif; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); margin: 0 0 14px; }
+.prod-head { font-size: clamp(30px, 4.2vw, 46px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 28px; color: var(--fg); max-width: 940px; }
+.prod-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px 48px; margin-top: 12px; max-width: 960px; }
+.section .t-body { max-width: 720px; }
+.prod-feature { display: block; padding-top: 20px; border-top: 1px solid var(--line); }
+.prod-feature h3 { font-size: 18px; font-weight: 600; margin: 0 0 8px; color: var(--fg); letter-spacing: -0.01em; }
+.prod-feature p { font-size: 14.5px; line-height: 1.55; color: var(--stone-2); margin: 0; }
+.bvx-flow { display: block; white-space: pre-wrap; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; line-height: 1.9; color: var(--signal); background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; padding: 18px 22px; overflow-x: auto; max-width: 760px; }
+@media (max-width: 720px) { .prod-grid { grid-template-columns: 1fr; gap: 32px; } }
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+
+<script src="/components.js" defer></script>
+<script src="/pagejs/bvx.js" defer></script>
+</body>
+</html>

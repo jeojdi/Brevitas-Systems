@@ -426,6 +426,32 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .btn-ghost.underline:hover { color: var(--fg); }
 .btn-ghost.underline:hover { color: var(--fg); transform: translateX(2px); text-decoration-color: var(--bronze); }
 
+/* Nav dropdown (Products) */
+.nav-dropdown { position: relative; display: inline-flex; align-items: center; }
+.nav-link--drop { background: none; border: 0; font-family: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.nav-caret { display: inline-block; opacity: 0.75; transition: transform var(--dur-sm) var(--ease-out-standard); }
+.nav-dropdown:hover .nav-caret, .nav-dropdown:focus-within .nav-caret { transform: rotate(180deg); }
+.nav-menu {
+  position: absolute; top: 100%; left: -8px; min-width: 184px;
+  padding: 8px; margin-top: 10px;
+  background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px;
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  opacity: 0; visibility: hidden; transform: translateY(-6px);
+  transition: opacity var(--dur-sm) var(--ease-out-standard), transform var(--dur-sm) var(--ease-out-standard), visibility var(--dur-sm);
+  z-index: 60;
+}
+/* invisible hover bridge so the menu doesn't close in the gap */
+.nav-menu::before { content: ""; position: absolute; top: -12px; left: 0; right: 0; height: 12px; }
+.nav-dropdown:hover .nav-menu, .nav-dropdown:focus-within .nav-menu { opacity: 1; visibility: visible; transform: translateY(0); }
+.nav-menu a {
+  display: block; padding: 9px 12px; border-radius: 7px;
+  font-family: 'Inter Tight', system-ui, sans-serif; font-size: 14px; color: var(--stone-2);
+  text-decoration: none; white-space: nowrap;
+  transition: background var(--dur-xs), color var(--dur-xs);
+}
+.nav-menu a:hover { background: rgba(46, 46, 238, 0.12); color: var(--fg); }
+
 /* Inputs */
 .input {
   background: transparent;

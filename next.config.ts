@@ -161,6 +161,7 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         { source: '/', destination: '/index.html' },
         { source: '/product', destination: '/product.html' },
+        { source: '/bvx', destination: '/bvx.html' },
         { source: '/for-enterprises', destination: '/for-enterprises.html' },
         { source: '/demo', destination: '/demo.html' },
         { source: '/benchmarks', destination: '/benchmarks.html' },
@@ -231,6 +232,7 @@ const nextConfig: NextConfig = {
       },
       { source: '/index.html', destination: '/', permanent: true },
       { source: '/product.html', destination: '/product', permanent: true },
+      { source: '/bvx.html', destination: '/bvx', permanent: true },
       { source: '/for-enterprises.html', destination: '/for-enterprises', permanent: true },
       { source: '/pricing', destination: '/', permanent: true },
       { source: '/pricing.html', destination: '/', permanent: true },

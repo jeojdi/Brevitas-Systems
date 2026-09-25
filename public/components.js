@@ -573,13 +573,11 @@ function InstallCommand({ commands, command }) {
         setCopied(false);
       },
       style: {
-        background: i === active ? "#ffffff" : "rgba(0,0,0,0.5)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        border: i === active ? "1px solid #ffffff" : "1px solid rgba(255,255,255,0.4)",
+        background: i === active ? "var(--bronze)" : "var(--ink-2)",
+        border: i === active ? "1px solid var(--bronze)" : "1px solid var(--line)",
         borderRadius: 10,
         padding: "10px 22px",
-        color: i === active ? "#0a0d0a" : "#ffffff",
+        color: i === active ? "#ffffff" : "var(--stone-2)",
         fontWeight: 600,
         letterSpacing: "0.01em",
         cursor: "pointer",
@@ -599,22 +597,18 @@ function InstallCommand({ commands, command }) {
         alignItems: "center",
         gap: 18,
         maxWidth: "100%",
-        // Fixed dark translucent fill so white hero text stays legible over the
-        // photo in both light and dark mode (don't use theme --ink-2 here).
-        background: "rgba(0,0,0,0.5)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        border: "1px solid rgba(255,255,255,0.22)",
+        background: "var(--ink-2)",
+        border: "1px solid var(--line)",
         borderRadius: 10,
         padding: "16px 22px",
-        color: "#fff",
+        color: "var(--stone)",
         fontSize: 17,
         cursor: "pointer",
         textAlign: "left"
       }
     },
     /* @__PURE__ */ React.createElement("span", { "aria-hidden": "true", style: { color: "var(--bronze)", userSelect: "none" } }, current.prompt || "$"),
-    /* @__PURE__ */ React.createElement("span", { style: { overflowX: "auto", whiteSpace: "nowrap" } }, current.command),
+    /* @__PURE__ */ React.createElement("span", { style: { overflowX: "auto", whiteSpace: "nowrap", color: "var(--fg)" } }, current.command),
     /* @__PURE__ */ React.createElement(
       "span",
       {
@@ -870,13 +864,16 @@ function Nav({ current }) {
     };
   }, [sheet]);
   const links = [
-    { href: "/product", label: "Product", k: "product" },
+    { label: "Products", k: "product", children: [
+      { href: "/bvx", label: "bvx CLI" },
+      { href: "/product", label: "Splice" }
+    ] },
     { href: "/benchmarks", label: "Benchmarks", k: "benchmarks" },
     { href: "/for-enterprises", label: "For Enterprises", k: "enterprise" },
     // Docs hidden from nav for now
     { href: "/blog", label: "Research & Blog", k: "blog" }
   ];
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("nav", { className: `nav ${scrolled ? "scrolled" : ""}`, "aria-label": "Primary" }, /* @__PURE__ */ React.createElement("div", { className: "nav-inner" }, /* @__PURE__ */ React.createElement("a", { href: "/", style: { display: "inline-flex", alignItems: "center", color: "var(--fg)" }, "aria-label": "Brevitas Systems \u2014 home" }, /* @__PURE__ */ React.createElement("img", { src: "/assets/b-logo-dark-tight.png", alt: "Brevitas Systems", width: 678, height: 117, className: "nav-logo logo-for-dark", style: { height: 29, width: "auto" } }), /* @__PURE__ */ React.createElement("img", { src: "/assets/b-logo-tight.png", alt: "", "aria-hidden": "true", width: 330, height: 56, className: "nav-logo logo-for-light", style: { height: 29, width: "auto" } })), /* @__PURE__ */ React.createElement("div", { className: "nav-links desktop" }, links.map((l) => /* @__PURE__ */ React.createElement("a", { key: l.k, href: l.href, className: `nav-link ${current === l.k ? "active" : ""}` }, l.label))), /* @__PURE__ */ React.createElement(ThemeToggle, null), /* @__PURE__ */ React.createElement(Button, { variant: "primary", href: "https://calendly.com/anish-brevitassystems/30min", target: "_blank", className: "nav-cta" }, "Book a call"), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("nav", { className: `nav ${scrolled ? "scrolled" : ""}`, "aria-label": "Primary" }, /* @__PURE__ */ React.createElement("div", { className: "nav-inner" }, /* @__PURE__ */ React.createElement("a", { href: "/", style: { display: "inline-flex", alignItems: "center", color: "var(--fg)" }, "aria-label": "Brevitas Systems \u2014 home" }, /* @__PURE__ */ React.createElement("img", { src: "/assets/b-logo-dark-tight.png", alt: "Brevitas Systems", width: 678, height: 117, className: "nav-logo logo-for-dark", style: { height: 29, width: "auto" } }), /* @__PURE__ */ React.createElement("img", { src: "/assets/b-logo-tight.png", alt: "", "aria-hidden": "true", width: 330, height: 56, className: "nav-logo logo-for-light", style: { height: 29, width: "auto" } })), /* @__PURE__ */ React.createElement("div", { className: "nav-links desktop" }, links.map((l) => l.children ? /* @__PURE__ */ React.createElement("div", { key: l.k, className: "nav-dropdown" }, /* @__PURE__ */ React.createElement("button", { type: "button", className: `nav-link nav-link--drop ${current === l.k ? "active" : ""}`, "aria-haspopup": "true" }, l.label, /* @__PURE__ */ React.createElement("svg", { className: "nav-caret", width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { d: "M6 9l6 6 6-6", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }))), /* @__PURE__ */ React.createElement("div", { className: "nav-menu" }, l.children.map((c) => /* @__PURE__ */ React.createElement("a", { key: c.href, href: c.href }, c.label)))) : /* @__PURE__ */ React.createElement("a", { key: l.k, href: l.href, className: `nav-link ${current === l.k ? "active" : ""}` }, l.label))), /* @__PURE__ */ React.createElement(ThemeToggle, null), /* @__PURE__ */ React.createElement(Button, { variant: "primary", href: "https://calendly.com/anish-brevitassystems/30min", target: "_blank", className: "nav-cta" }, "Book a call"), /* @__PURE__ */ React.createElement(
     "button",
     {
       type: "button",
@@ -889,10 +886,10 @@ function Nav({ current }) {
     /* @__PURE__ */ React.createElement("span", null),
     /* @__PURE__ */ React.createElement("span", null),
     /* @__PURE__ */ React.createElement("span", null)
-  ))), sheet && /* @__PURE__ */ React.createElement("div", { id: "mobile-navigation", className: "nav-sheet open", role: "dialog", "aria-modal": "true", "aria-label": "Mobile navigation" }, /* @__PURE__ */ React.createElement("button", { ref: sheetCloseRef, type: "button", className: "nav-sheet-close", onClick: () => setSheet(false), "aria-label": "Close menu" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "nav-sheet-links" }, links.map((l) => /* @__PURE__ */ React.createElement("a", { key: l.k, href: l.href }, l.label)), /* @__PURE__ */ React.createElement("a", { href: "https://calendly.com/anish-brevitassystems/30min", target: "_blank", rel: "noopener noreferrer", style: { color: "var(--bronze)" } }, "Book a call \u2192"))));
+  ))), sheet && /* @__PURE__ */ React.createElement("div", { id: "mobile-navigation", className: "nav-sheet open", role: "dialog", "aria-modal": "true", "aria-label": "Mobile navigation" }, /* @__PURE__ */ React.createElement("button", { ref: sheetCloseRef, type: "button", className: "nav-sheet-close", onClick: () => setSheet(false), "aria-label": "Close menu" }, "\xD7"), /* @__PURE__ */ React.createElement("div", { className: "nav-sheet-links" }, links.flatMap((l) => l.children ? l.children.map((c) => /* @__PURE__ */ React.createElement("a", { key: c.href, href: c.href }, c.label)) : [/* @__PURE__ */ React.createElement("a", { key: l.k, href: l.href }, l.label)]), /* @__PURE__ */ React.createElement("a", { href: "https://calendly.com/anish-brevitassystems/30min", target: "_blank", rel: "noopener noreferrer", style: { color: "var(--bronze)" } }, "Book a call \u2192"))));
 }
 const FOOTER_COLS = [
-  { title: "Product", links: [["Product", "/product"], ["Benchmarks", "/benchmarks"], ["For Enterprises", "/for-enterprises"]] },
+  { title: "Products", links: [["Splice", "/product"], ["bvx CLI", "/bvx"], ["Benchmarks", "/benchmarks"], ["For Enterprises", "/for-enterprises"]] },
   { title: "Company", links: [["Blog", "/blog"], ["Contact", "mailto:james@brevitassystems.com"]] },
   { title: "Resources", links: [["Docs", "/docs"], ["Changelog", "mailto:james@brevitassystems.com"]] },
   { title: "Legal", links: [["Privacy", "/privacy"], ["Terms", "/terms"]] }
@@ -939,5 +936,6 @@ Object.assign(window, {
   WaitlistInput,
   ThemeToggle,
   Nav,
-  Footer
+  Footer,
+  InstallCommand
 });
