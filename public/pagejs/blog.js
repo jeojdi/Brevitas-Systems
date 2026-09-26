@@ -13,9 +13,8 @@ const POSTS = [
   { slug: "harness", url: "/blog/harness", title: "How we built the coding harness.", dek: "Three-agent architect/builder/reviewer loop on 60 HumanEval+ tasks. Here's what we learned.", date: "Mar 02, 2026", read: "8 min", tag: "Benchmarks" },
   { slug: "design-partner-program", url: "/blog/design-partner-program", title: "Design partners wanted.", dek: "We're taking on five more design partners this quarter. Here's what you get, and what we ask for.", date: "Feb 22, 2026", read: "3 min", tag: "Program" }
 ];
-const POSTERS = ["/assets/ascii-magic-3-poster.jpg", "/assets/ascii-magic-4-poster.jpg", "/assets/ascii-magic-5-poster.jpg"];
-POSTS.forEach((p, i) => {
-  if (!p.img) p.img = POSTERS[i % POSTERS.length];
+POSTS.forEach((p) => {
+  if (!p.img) p.img = "/assets/blog/" + p.slug + ".jpg";
 });
 const FEATURED = [
   { title: "Splice benchmarks", desc: "Editing a live KV cache, measured against a full re-ingest.", href: "/benchmarks", cta: "View benchmarks" },

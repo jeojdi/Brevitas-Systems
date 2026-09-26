@@ -39,7 +39,7 @@ const STAGES = [
       ['Admission-aware.', 'Scheduling that keeps the edit path safe under shared KV pressure.'],
       ['Coverage that grows.', 'As the runtime proxy improves, more safe edits move onto the fast path.'],
     ],
-    card: { kind: 'Research paper', h: 'Dependency-ranked repair', b: 'Which rows an edit actually breaks, and why recomputing a scattered few percent is enough.', href: '/blog/splice-repair', read: 'Read the paper', img: '/assets/product-problem.jpg' },
+    card: { kind: 'Research paper', h: 'Dependency-ranked repair', b: 'Which rows an edit actually breaks, and why recomputing a scattered few percent is enough.', href: '/blog/splice-repair', read: 'Read the paper', img: '/assets/enterprise-operate.jpg' },
   },
 ];
 

@@ -14,10 +14,9 @@ const POSTS = [
   { slug: 'design-partner-program', url: '/blog/design-partner-program', title: 'Design partners wanted.', dek: 'We\'re taking on five more design partners this quarter. Here\'s what you get, and what we ask for.', date: 'Feb 22, 2026', read: '3 min', tag: 'Program' },
 ];
 
-// Thumbnail image per post (repo brand assets). Assigned round-robin so the grid
-// cards each get a distinct one; swap these paths to set a specific image per post.
-const POSTERS = ['/assets/ascii-magic-3-poster.jpg', '/assets/ascii-magic-4-poster.jpg', '/assets/ascii-magic-5-poster.jpg'];
-POSTS.forEach((p, i) => { if (!p.img) p.img = POSTERS[i % POSTERS.length]; });
+// One distinct thumbnail per post, keyed by slug (see /assets/blog/<slug>.jpg).
+// Each is a unique cropped region of a brand poster, so no two posts share an image.
+POSTS.forEach((p) => { if (!p.img) p.img = '/assets/blog/' + p.slug + '.jpg'; });
 
 const FEATURED = [
   { title: 'Splice benchmarks', desc: 'Editing a live KV cache, measured against a full re-ingest.', href: '/benchmarks', cta: 'View benchmarks' },
