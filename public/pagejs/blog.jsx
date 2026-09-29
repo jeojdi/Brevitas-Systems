@@ -1,4 +1,4 @@
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 const POSTS = [
   { slug: 'splice-certificate', url: '/blog/splice-certificate', title: 'Certifying a KV-cache edit: a teacher-forced KL gate against a fresh re-ingest.', dek: 'An edited cache is only worth serving if it matches a clean recompute. The gate, its zero-reading control, and the calibrated runtime threshold that decides what ships.', date: 'Sep 22, 2026', read: '10 min', tag: 'Research' },

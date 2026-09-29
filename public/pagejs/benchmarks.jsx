@@ -7,7 +7,7 @@ const TEXT = 'var(--stone)';
 const TEXT_STRONG = 'var(--fg)';
 const mono = "'JetBrains Mono', ui-monospace, monospace";
 
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 // Headline speed-ups (Brevitas Splice technical brief, Sept 2026).
 const HEADLINES = [

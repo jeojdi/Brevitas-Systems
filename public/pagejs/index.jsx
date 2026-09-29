@@ -1,4 +1,4 @@
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 const LOGOS = [
   { brand: 'yc', src: '/assets/ycombinator-logo.png', alt: 'Y Combinator', w: 480, h: 137 },
@@ -23,6 +23,39 @@ const FEATURES = [
 
 function LandingPage() {
   useFadeUpReveal();
+  React.useEffect(() => {
+    // Cal.com inline embed (bottom CTA). Bootstrap the loader, then mount into the div.
+    (function (C, A, L) { let p = function (a, ar) { a.q.push(ar); }; let d = C.document; C.Cal = C.Cal || function () { let cal = C.Cal; let ar = arguments; if (!cal.loaded) { cal.ns = {}; cal.q = cal.q || []; d.head.appendChild(d.createElement("script")).src = A; cal.loaded = true; } if (ar[0] === L) { const api = function () { p(api, arguments); }; const namespace = ar[1]; api.q = api.q || []; if (typeof namespace === "string") { cal.ns[namespace] = cal.ns[namespace] || api; p(cal.ns[namespace], ar); p(cal, ["initNamespace", namespace]); } else p(cal, ar); return; } p(cal, ar); }; })(window, "https://app.cal.com/embed/embed.js", "init");
+    const Cal = window.Cal;
+    const calTheme = () => document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    Cal("init", "30min", { origin: "https://app.cal.com" });
+    Cal.config = Cal.config || {};
+    Cal.config.forwardQueryParams = true;
+    Cal.ns["30min"]("inline", {
+      elementOrSelector: "#my-cal-inline-30min",
+      config: { layout: "month_view", useSlotsViewOnSmallScreen: "true", theme: calTheme() },
+      calLink: "brevitas/30min",
+    });
+    Cal.ns["30min"]("ui", { hideEventTypeDetails: false, layout: "month_view", hideBranding: true, theme: calTheme() });
+    // Keep the embed in sync with the site's light/dark toggle. Re-calling ("ui",{theme})
+    // does not re-theme an already-rendered embed, so we reload the iframe's theme param.
+    const applyTheme = () => {
+      const t = calTheme();
+      Cal.ns["30min"]("ui", { theme: t });
+      const iframe = document.querySelector("#my-cal-inline-30min iframe");
+      if (!iframe) return;
+      try {
+        const u = new URL(iframe.src);
+        if (u.searchParams.get("theme") !== t) {
+          u.searchParams.set("theme", t);
+          iframe.src = u.toString();
+        }
+      } catch (e) {}
+    };
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => themeObserver.disconnect();
+  }, []);
   return (
     <>
       <Nav />
@@ -150,8 +183,8 @@ function LandingPage() {
               <p className="t-body-lg" style={{ marginBottom: 40, maxWidth: 680 }}>
                 If you run self-hosted open models on SGLang or vLLM with contexts that change every few turns, we'll benchmark Splice on your workload and share the certificate numbers.
               </p>
-              <Button variant="primary" href={CALENDLY} target="_blank" className="hero-btn hero-cta">Book a call</Button>
             </div>
+            <div id="my-cal-inline-30min" className="fade-up" style={{ width: '100%', maxWidth: 1040, marginLeft: 0, marginRight: 'auto', minHeight: 640, overflow: 'auto' }} />
           </div>
         </section>
 

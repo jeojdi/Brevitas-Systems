@@ -1,5 +1,5 @@
 (function(){
-const CALENDLY = "https://calendly.com/anish-brevitassystems/30min";
+const CALENDLY = "https://cal.com/brevitas/15min";
 const FEATURES = [
   { h: "Delete spans", b: "Cut old tool output, stale screenshots or retrieved docs out of a live cache and close the gap. Every surviving token keeps the exact state the model computed for it." },
   { h: "Replace and reorder", b: "Swap a span for one the same length, or move spans around the sequence. Rotary positions re-rotate exactly, so the edit is bit-for-bit what a fresh prefill would produce." },

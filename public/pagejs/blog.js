@@ -1,5 +1,5 @@
 (function(){
-const CALENDLY = "https://calendly.com/anish-brevitassystems/30min";
+const CALENDLY = "https://cal.com/brevitas/15min";
 const POSTS = [
   { slug: "splice-certificate", url: "/blog/splice-certificate", title: "Certifying a KV-cache edit: a teacher-forced KL gate against a fresh re-ingest.", dek: "An edited cache is only worth serving if it matches a clean recompute. The gate, its zero-reading control, and the calibrated runtime threshold that decides what ships.", date: "Sep 22, 2026", read: "10 min", tag: "Research" },
   { slug: "splice-repair", url: "/blog/splice-repair", title: "Dependency-ranked repair: recomputing only the rows a cache edit breaks.", dek: "Residue after a mid-sequence delete is sparse. Rank the downstream rows by their dependency on the deleted span, recompute a scattered two to twenty percent, and skip the rest.", date: "Sep 20, 2026", read: "11 min", tag: "Research" },

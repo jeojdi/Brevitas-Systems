@@ -1,4 +1,4 @@
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 const STAGES = [
   {

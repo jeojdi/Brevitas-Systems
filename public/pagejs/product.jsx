@@ -1,4 +1,4 @@
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 const FEATURES = [
   { h: 'Delete spans', b: 'Cut old tool output, stale screenshots or retrieved docs out of a live cache and close the gap. Every surviving token keeps the exact state the model computed for it.' },

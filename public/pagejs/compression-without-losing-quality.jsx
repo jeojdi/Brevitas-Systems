@@ -106,7 +106,7 @@ function PostPage() {
         <section className="section" style={{ paddingTop: 56 }}>
           <div className="container" style={{ maxWidth: 760 }}>
             <p className="t-body-lg fade-up" style={{ marginBottom: 0 }}>
-              We'll publish the full methodology and training details when we open-source the relevance model. In the meantime, the benchmark harness is available to design partners — if you want to run it on your own pipeline, <a href="https://calendly.com/anish-brevitassystems/30min" target="_blank" rel="noopener noreferrer" className="link">book a call</a>.
+              We'll publish the full methodology and training details when we open-source the relevance model. In the meantime, the benchmark harness is available to design partners — if you want to run it on your own pipeline, <a href="https://cal.com/brevitas/15min" target="_blank" rel="noopener noreferrer" className="link">book a call</a>.
             </p>
           </div>
         </section>

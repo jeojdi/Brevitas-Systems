@@ -1,4 +1,4 @@
-const CALENDLY = 'https://calendly.com/anish-brevitassystems/30min';
+const CALENDLY = 'https://cal.com/brevitas/15min';
 
 const FEATURES = [
   { h: 'Detects your tools', b: 'Finds your installed AI coding assistants and points each one at the local proxy. Every config change is backed up first, and nothing you have not approved is touched.' },

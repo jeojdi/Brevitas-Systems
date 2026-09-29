@@ -6,7 +6,7 @@ const GRID = "var(--line)";
 const TEXT = "var(--stone)";
 const TEXT_STRONG = "var(--fg)";
 const mono = "'JetBrains Mono', ui-monospace, monospace";
-const CALENDLY = "https://calendly.com/anish-brevitassystems/30min";
+const CALENDLY = "https://cal.com/brevitas/15min";
 const HEADLINES = [
   { label: "Agent compaction", val: "12.4", unit: "\xD7", sub: "25% of a 32k session deleted \xB7 Qwen2.5-14B" },
   { label: "Steady per-edit, text", val: "1.6", unit: "\xD7", sub: "flat from 8k to 128k tokens \xB7 Qwen2.5-7B" },
