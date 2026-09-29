@@ -158,14 +158,14 @@ function Headlines() {
           display: 'flex', flexDirection: 'column',
           background: i === 0 ? 'var(--ink-2)' : 'transparent',
         }}>
-          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone-2)', fontSize: 13.5, letterSpacing: '0.005em', marginBottom: 18 }}>{h.label}</div>
+          <div style={{ fontFamily: "'Inter', sans-serif", color: 'var(--stone-2)', fontSize: 13.5, letterSpacing: '0.005em', marginBottom: 18 }}>{h.label}</div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 10 }}>
-            <span style={{ fontFamily: "'Inter Tight', sans-serif", fontSize: 'clamp(44px, 5vw, 64px)', fontWeight: 400, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+            <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 'clamp(44px, 5vw, 64px)', fontWeight: 400, color: i === 0 ? 'var(--bronze)' : 'var(--fg)', letterSpacing: '-0.02em', lineHeight: 1 }}>
               {h.val}
             </span>
-            <span style={{ fontFamily: "'Inter Tight', sans-serif", fontSize: 22, fontWeight: 400, color: 'var(--stone-2)' }}>{h.unit}</span>
+            <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 22, fontWeight: 400, color: 'var(--stone-2)' }}>{h.unit}</span>
           </div>
-          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone)', fontSize: 13, lineHeight: 1.5 }}>{h.sub}</div>
+          <div style={{ fontFamily: "'Inter', sans-serif", color: 'var(--stone)', fontSize: 13, lineHeight: 1.5 }}>{h.sub}</div>
         </div>
       ))}
     </div>
@@ -196,7 +196,7 @@ function BenchmarksPage() {
       <section className="section" style={{ borderTop: '1px solid var(--line)', paddingTop: 40 }}>
         <div className="container">
           <Headlines />
-          <div style={{ fontFamily: "'Inter Tight', sans-serif", color: 'var(--stone)', fontSize: 13, marginTop: 16 }}>
+          <div style={{ fontFamily: "'Inter', sans-serif", color: 'var(--stone)', fontSize: 13, marginTop: 16 }}>
             1–2× H100 · Qwen2.5 / Qwen3-VL / Voxtral · Aug–Sep 2026
           </div>
         </div>

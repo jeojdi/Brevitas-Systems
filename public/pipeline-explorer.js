@@ -4,7 +4,7 @@ function TypingBlock({ tokens, reveal, phase }) {
   const shown = tokens.slice(0, reveal);
   const typing = phase === "typing" && reveal < tokens.length;
   return /* @__PURE__ */ React.createElement("div", { className: "bv-transcript", style: {
-    fontFamily: "Newsreader, serif",
+    fontFamily: "Inter, serif",
     fontSize: 15.5,
     lineHeight: 1.68,
     color: "var(--bone)",
@@ -28,7 +28,7 @@ function InputRoute({ plan, phase }) {
     background: active ? "rgba(141, 224, 207, 0.055)" : "var(--component-bg-dark)",
     borderRadius: 5,
     transition: "border-color 220ms, background 220ms"
-  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, letterSpacing: "0.12em", color: "var(--signal)" } }, active ? "ROUTER CHECKING" : plan.label), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, color: "var(--stone-2)", whiteSpace: "nowrap" } }, isRead ? `${plan.cached.toLocaleString()} cached \xB7 ${plan.fresh.toLocaleString()} fresh` : `${plan.total.toLocaleString()} sent in full`)), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Newsreader, serif", fontSize: 13, lineHeight: 1.35, color: "var(--stone-2)" } }, plan.detail));
+  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, letterSpacing: "0.12em", color: "var(--signal)" } }, active ? "ROUTER CHECKING" : plan.label), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, color: "var(--stone-2)", whiteSpace: "nowrap" } }, isRead ? `${plan.cached.toLocaleString()} cached \xB7 ${plan.fresh.toLocaleString()} fresh` : `${plan.total.toLocaleString()} sent in full`)), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, serif", fontSize: 13, lineHeight: 1.35, color: "var(--stone-2)" } }, plan.detail));
 }
 function HopCard({ role, subtitle, tokens, reveal, phase, plan, outputCost }) {
   const active = phase === "routing" || phase === "typing";
@@ -45,7 +45,7 @@ function HopCard({ role, subtitle, tokens, reveal, phase, plan, outputCost }) {
     display: "flex",
     flexDirection: "column",
     gap: 12
-  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 220px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter Tight, system-ui, sans-serif", fontSize: 14.5, fontWeight: 500, color: "var(--bronze)", letterSpacing: "0.035em", marginBottom: 5 } }, role), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter Tight, system-ui, sans-serif", fontSize: 23, fontWeight: 500, lineHeight: 1.15, color: "var(--bone)", letterSpacing: "-0.02em", whiteSpace: "nowrap" } }, subtitle)), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--stone-2)", flex: "0 0 auto", whiteSpace: "nowrap", paddingTop: 2 } }, "in ", plan.total.toLocaleString(), " \xB7 out ", outputCost)), /* @__PURE__ */ React.createElement(InputRoute, { plan, phase }), /* @__PURE__ */ React.createElement(TypingBlock, { tokens, reveal, phase }));
+  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("div", { style: { minWidth: 0, flex: "1 1 220px" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, system-ui, sans-serif", fontSize: 14.5, fontWeight: 500, color: "var(--bronze)", letterSpacing: "0.035em", marginBottom: 5 } }, role), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, system-ui, sans-serif", fontSize: 23, fontWeight: 500, lineHeight: 1.15, color: "var(--bone)", letterSpacing: "-0.02em", whiteSpace: "nowrap" } }, subtitle)), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "var(--stone-2)", flex: "0 0 auto", whiteSpace: "nowrap", paddingTop: 2 } }, "in ", plan.total.toLocaleString(), " \xB7 out ", outputCost)), /* @__PURE__ */ React.createElement(InputRoute, { plan, phase }), /* @__PURE__ */ React.createElement(TypingBlock, { tokens, reveal, phase }));
 }
 function MobilePipelineSlides({ task, phases, reveals, slideIndex, setSlideIndex, onPrimary, onReplay }) {
   var _a;
@@ -145,7 +145,7 @@ function CostReadout({ task, progress }) {
       background: o > b ? "var(--bronze)" : "var(--signal)",
       transition: "width 900ms cubic-bezier(.4,0,.2,1)"
     } }));
-  }))), /* @__PURE__ */ React.createElement(Cell, { label: "Context sent", value: baselineCum.toLocaleString(), color: "var(--bone)" }), /* @__PURE__ */ React.createElement(Cell, { label: "Read from cache", value: cachedCum.toLocaleString(), color: "var(--signal)" }), /* @__PURE__ */ React.createElement(Cell, { label: "Relative input cost", value: progress ? `${withPct}%` : "\u2014", color: saving ? "var(--bone)" : "var(--bronze)" }), /* @__PURE__ */ React.createElement("div", { className: "bv-cost-percent", style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Newsreader, serif", fontSize: 40, lineHeight: 1, color: saving ? "var(--signal)" : "var(--bronze)", letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" } }, progress ? Math.abs(pct) : 0, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, color: "var(--stone-2)" } }, "%")), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--stone-2)" } }, saving ? "lower input cost" : "cache warm-up")));
+  }))), /* @__PURE__ */ React.createElement(Cell, { label: "Context sent", value: baselineCum.toLocaleString(), color: "var(--bone)" }), /* @__PURE__ */ React.createElement(Cell, { label: "Read from cache", value: cachedCum.toLocaleString(), color: "var(--signal)" }), /* @__PURE__ */ React.createElement(Cell, { label: "Relative input cost", value: progress ? `${withPct}%` : "\u2014", color: saving ? "var(--bone)" : "var(--bronze)" }), /* @__PURE__ */ React.createElement("div", { className: "bv-cost-percent", style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, serif", fontSize: 40, lineHeight: 1, color: saving ? "var(--signal)" : "var(--bronze)", letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" } }, progress ? Math.abs(pct) : 0, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 22, color: "var(--stone-2)" } }, "%")), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--stone-2)" } }, saving ? "lower input cost" : "cache warm-up")));
 }
 function PipelineFieldBg() {
   return /* @__PURE__ */ React.createElement("div", { className: "bv-field-wrap", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("div", { className: "bv-field-grid" }), /* @__PURE__ */ React.createElement("div", { className: "bv-field-glow" }), /* @__PURE__ */ React.createElement("svg", { style: { position: "absolute", inset: 0, width: "100%", height: "100%" } }, /* @__PURE__ */ React.createElement("defs", null, /* @__PURE__ */ React.createElement("linearGradient", { id: "bvRail", x1: "0", x2: "1" }, /* @__PURE__ */ React.createElement("stop", { offset: "0", stopColor: "rgba(166,159,147,0)" }), /* @__PURE__ */ React.createElement("stop", { offset: "0.15", stopColor: "rgba(166,159,147,0.22)" }), /* @__PURE__ */ React.createElement("stop", { offset: "0.85", stopColor: "rgba(166,159,147,0.22)" }), /* @__PURE__ */ React.createElement("stop", { offset: "1", stopColor: "rgba(166,159,147,0)" }))), /* @__PURE__ */ React.createElement(
@@ -413,7 +413,7 @@ function PipelineExplorer() {
             justify-content: space-between;
             gap: 12px;
             color: var(--bronze);
-            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, sans-serif;
             font-size: 13px;
             font-weight: 500;
             letter-spacing: 0.035em;
@@ -427,7 +427,7 @@ function PipelineExplorer() {
           .bv-mobile-slide-heading h3 {
             margin: 0 0 5px;
             color: var(--bone);
-            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, sans-serif;
             font-size: clamp(27px, 8vw, 36px);
             font-weight: 500;
             line-height: 1.02;
@@ -597,7 +597,7 @@ function PipelineExplorer() {
     display: "flex",
     alignItems: "center",
     gap: 16
-  } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Newsreader, serif", fontSize: 19, lineHeight: 1.4, color: "var(--bone)", flex: 1, letterSpacing: "-0.005em" } }, task.user), /* @__PURE__ */ React.createElement("div", { className: "bv-prompt-actions", style: { display: "flex", gap: 8, flex: "0 0 auto", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "bv-keyboard-hint", "aria-label": "Use the left and right arrow keys to step through the animation" }, /* @__PURE__ */ React.createElement("kbd", null, "\u2190"), /* @__PURE__ */ React.createElement("kbd", null, "\u2192"), /* @__PURE__ */ React.createElement("span", null, "step")), /* @__PURE__ */ React.createElement("button", { onClick: replay, className: "bv-ctl-btn", style: btnStyle, "aria-label": "Replay the animation" }, "\u21BB Replay"), /* @__PURE__ */ React.createElement("button", { onClick: skipToEnd, className: "bv-ctl-btn", style: btnStyle, "aria-label": "Skip the animation and show the final result" }, "Skip to result \u2192"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, className: "bv-pipe-grid" }, /* @__PURE__ */ React.createElement("div", { ref: stripRef, className: "bv-strip", style: {
+  } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, serif", fontSize: 19, lineHeight: 1.4, color: "var(--bone)", flex: 1, letterSpacing: "-0.005em" } }, task.user), /* @__PURE__ */ React.createElement("div", { className: "bv-prompt-actions", style: { display: "flex", gap: 8, flex: "0 0 auto", alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { className: "bv-keyboard-hint", "aria-label": "Use the left and right arrow keys to step through the animation" }, /* @__PURE__ */ React.createElement("kbd", null, "\u2190"), /* @__PURE__ */ React.createElement("kbd", null, "\u2192"), /* @__PURE__ */ React.createElement("span", null, "step")), /* @__PURE__ */ React.createElement("button", { onClick: replay, className: "bv-ctl-btn", style: btnStyle, "aria-label": "Replay the animation" }, "\u21BB Replay"), /* @__PURE__ */ React.createElement("button", { onClick: skipToEnd, className: "bv-ctl-btn", style: btnStyle, "aria-label": "Skip the animation and show the final result" }, "Skip to result \u2192"))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, className: "bv-pipe-grid" }, /* @__PURE__ */ React.createElement("div", { ref: stripRef, className: "bv-strip", style: {
     display: "flex",
     gap: 0,
     minWidth: 0,

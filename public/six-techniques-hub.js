@@ -132,7 +132,7 @@ function HubNodeCard({ tech, pos, isActive, isDim, onEnter, onLeave, onClick }) 
       marginLeft: "auto"
     } }, tech.tag)),
     /* @__PURE__ */ React.createElement("div", { style: {
-      fontFamily: "Newsreader, serif",
+      fontFamily: "Inter, serif",
       fontSize: 17,
       letterSpacing: "-0.01em",
       lineHeight: 1.2,
@@ -169,7 +169,7 @@ function HubCenter({ isHovered }) {
     zIndex: 4,
     pointerEvents: "none"
   } }, /* @__PURE__ */ React.createElement("div", { style: {
-    fontFamily: "Newsreader, serif",
+    fontFamily: "Inter, serif",
     fontSize: 22,
     letterSpacing: "-0.015em",
     lineHeight: 1.15,
@@ -361,7 +361,7 @@ function SixTechniquesHub() {
           }
         },
         /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 10, letterSpacing: "0.14em", color: "var(--bronze)", marginBottom: 6 } }, t.n, " \xB7 ", t.tag),
-        /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Newsreader, serif", fontSize: 18, letterSpacing: "-0.01em", marginBottom: 6 } }, t.short),
+        /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "Inter, serif", fontSize: 18, letterSpacing: "-0.01em", marginBottom: 6 } }, t.short),
         /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: "var(--stone-2)", lineHeight: 1.45 } }, t.title)
       );
     })
@@ -389,14 +389,14 @@ function SixTechniquesHub() {
     textTransform: "uppercase",
     marginTop: 4
   } }, active.tag)), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: {
-    fontFamily: "Newsreader, serif",
+    fontFamily: "Inter, serif",
     fontSize: 24,
     letterSpacing: "-0.015em",
     color: "var(--bone)",
     marginBottom: 10,
     lineHeight: 1.2
   } }, active.title), /* @__PURE__ */ React.createElement("p", { style: {
-    fontFamily: "Newsreader, serif",
+    fontFamily: "Inter, serif",
     fontSize: 15,
     lineHeight: 1.65,
     color: "var(--stone-2)",

@@ -52,7 +52,7 @@ function PostPage() {
               ].map((item, i) => (
                 <div key={i} style={{ padding: '20px 24px', borderBottom: '1px solid var(--line)' }}>
                   <div className="t-mono" style={{ fontSize: 11, color: 'var(--bronze)', marginBottom: 6, letterSpacing: '0.08em' }}>0{i + 1}</div>
-                  <div style={{ fontFamily: "'Inter Tight', sans-serif", fontWeight: 600, fontSize: 15, color: 'var(--bone)', marginBottom: 6 }}>{item.title}</div>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 15, color: 'var(--bone)', marginBottom: 6 }}>{item.title}</div>
                   <div style={{ fontSize: 14, color: 'var(--stone-2)', lineHeight: 1.5 }}>{item.desc}</div>
                 </div>
               ))}

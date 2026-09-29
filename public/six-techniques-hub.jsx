@@ -152,7 +152,7 @@ function HubNodeCard({ tech, pos, isActive, isDim, onEnter, onLeave, onClick }) 
         }}>{tech.tag}</span>
       </div>
       <div style={{
-        fontFamily: 'Newsreader, serif',
+        fontFamily: 'Inter, serif',
         fontSize: 17,
         letterSpacing: '-0.01em',
         lineHeight: 1.2,
@@ -193,7 +193,7 @@ function HubCenter({ isHovered }) {
       pointerEvents: 'none',
     }}>
       <div style={{
-        fontFamily: 'Newsreader, serif',
+        fontFamily: 'Inter, serif',
         fontSize: 22,
         letterSpacing: '-0.015em',
         lineHeight: 1.15,
@@ -433,7 +433,7 @@ function SixTechniquesHub() {
                 }}
               >
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.14em', color: 'var(--bronze)', marginBottom: 6 }}>{t.n} · {t.tag}</div>
-                <div style={{ fontFamily: 'Newsreader, serif', fontSize: 18, letterSpacing: '-0.01em', marginBottom: 6 }}>{t.short}</div>
+                <div style={{ fontFamily: 'Inter, serif', fontSize: 18, letterSpacing: '-0.01em', marginBottom: 6 }}>{t.short}</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: 'var(--stone-2)', lineHeight: 1.45 }}>{t.title}</div>
               </button>
             );
@@ -472,7 +472,7 @@ function SixTechniquesHub() {
         </div>
         <div>
           <div style={{
-            fontFamily: 'Newsreader, serif',
+            fontFamily: 'Inter, serif',
             fontSize: 24,
             letterSpacing: '-0.015em',
             color: 'var(--bone)',
@@ -480,7 +480,7 @@ function SixTechniquesHub() {
             lineHeight: 1.2,
           }}>{active.title}</div>
           <p style={{
-            fontFamily: 'Newsreader, serif',
+            fontFamily: 'Inter, serif',
             fontSize: 15,
             lineHeight: 1.65,
             color: 'var(--stone-2)',

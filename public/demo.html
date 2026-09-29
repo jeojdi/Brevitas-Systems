@@ -12,7 +12,7 @@
 <meta name="description" content="Type any prompt and watch Brevitas decide whether it can reuse a past answer — and how much it saves — in real time.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,300;1,6..72,400&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script>/* pre-paint theme to prevent flash on navigation */(function(){try{var t=localStorage.getItem("theme");document.documentElement.setAttribute("data-theme",t==="light"?"light":"dark");var r=localStorage.getItem("reduceMotion"),p=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;if(r==="1"||(!r&&p)){document.documentElement.setAttribute("data-reduce-motion","true");}}catch(e){}})();</script>
 <link rel="stylesheet" href="theme.css">
 <script src="theme-init.js" defer></script>
@@ -54,7 +54,7 @@
   .node.paid.active, .node.paid.done { border-color: var(--oxblood); }
   .node.skipped { opacity: 0.28; filter: grayscale(0.6); border-style: dashed; }
   .node .pn-k { font-family:'JetBrains Mono',monospace; font-size: 9px; letter-spacing: 0.14em; color: var(--stone); text-transform: uppercase; }
-  .node .pn-t { font-family:'Newsreader',serif; font-size: 17px; font-weight: 400; color: var(--fg); margin-top: 8px; line-height: 1.15; letter-spacing: -0.01em; }
+  .node .pn-t { font-family:'Inter',serif; font-size: 17px; font-weight: 400; color: var(--fg); margin-top: 8px; line-height: 1.15; letter-spacing: -0.01em; }
   .node .pn-s { font-family:'JetBrains Mono',monospace; font-size: 10.5px; color: var(--stone); margin-top: 7px; min-height: 14px; }
   .node.active .pn-s, .node.done .pn-s { color: var(--stone-2); }
   .node .pn-skiptag { position:absolute; top:8px; right:10px; font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:0.08em; color:var(--stone); }
@@ -104,14 +104,14 @@
   .narrator.free { border-left-color: var(--signal); }
   .narrator.paid { border-left-color: var(--oxblood); }
   .narrator .n-ico { font-family:'JetBrains Mono',monospace; font-size: 12px; color: var(--stone-2); margin-top: 3px; flex: 0 0 auto; }
-  .narrator .n-txt { font-family:'Newsreader',serif; font-size: clamp(17px, 1.7vw, 20px); font-weight: 300; line-height: 1.45; color: var(--bone-dim); letter-spacing: -0.01em; }
+  .narrator .n-txt { font-family:'Inter',serif; font-size: clamp(17px, 1.7vw, 20px); font-weight: 300; line-height: 1.45; color: var(--bone-dim); letter-spacing: -0.01em; }
   .narrator .n-txt strong { color: var(--fg); font-weight: 500; }
   .narrator .n-txt .free { color: var(--signal); }
 
   /* Stat tiles */
   .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; position: relative; z-index: 4; }
   .stat-tile { border: 1px solid var(--line); border-radius: 13px; padding: 18px 20px; background: rgba(13,17,28,0.5); }
-  .stat-tile .v { font-family:'Newsreader',serif; font-weight: 300; font-size: clamp(28px,3vw,42px); line-height: 1; letter-spacing:-0.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .stat-tile .v { font-family:'Inter',serif; font-weight: 300; font-size: clamp(28px,3vw,42px); line-height: 1; letter-spacing:-0.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
   .stat-tile .l { font-family:'JetBrains Mono',monospace; font-size: 11px; color: var(--stone-2); margin-top: 10px; letter-spacing: 0.04em; }
 
   /* Ledger */
@@ -123,14 +123,14 @@
   .badge.miss { color: var(--stone-2); border-color: var(--stone); }
   .chip { font-family:'JetBrains Mono',monospace; font-size: 12px; color: var(--stone-2); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; background: rgba(6,7,11,0.35); cursor: pointer; transition: all var(--dur-sm) var(--ease-out-standard); }
   .chip:hover { color: var(--fg); border-color: var(--bronze); }
-  .demo-input { width: 100%; background: rgba(6,7,11,0.55); border: 1px solid rgba(111,132,214,0.35); border-radius: 11px; padding: 15px 16px; color: var(--fg); font-family:'Inter Tight',sans-serif; font-size: 15px; resize: vertical; min-height: 58px; transition: border-color var(--dur-sm), box-shadow var(--dur-sm), background var(--dur-sm); }
+  .demo-input { width: 100%; background: rgba(6,7,11,0.55); border: 1px solid rgba(111,132,214,0.35); border-radius: 11px; padding: 15px 16px; color: var(--fg); font-family:'Inter',sans-serif; font-size: 15px; resize: vertical; min-height: 58px; transition: border-color var(--dur-sm), box-shadow var(--dur-sm), background var(--dur-sm); }
   .demo-input:focus { outline: none; border-color: #2e2eee; background: rgba(46, 46, 238,0.06); box-shadow: 0 0 0 3px rgba(46, 46, 238,0.15); }
 
   /* Plain "how it works" strip */
   .how-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
   .how-step { display: flex; gap: 14px; align-items: flex-start; }
-  .how-num { font-family:'Newsreader',serif; font-size: 34px; font-weight: 300; line-height: 1; color: var(--bronze); flex: 0 0 auto; }
-  .how-step h4 { font-family:'Newsreader',serif; font-size: 20px; font-weight: 400; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .how-num { font-family:'Inter',serif; font-size: 34px; font-weight: 300; line-height: 1; color: var(--bronze); flex: 0 0 auto; }
+  .how-step h4 { font-family:'Inter',serif; font-size: 20px; font-weight: 400; margin: 0 0 6px; letter-spacing: -0.01em; }
   .how-step p { margin: 0; color: var(--bone-dim); font-size: 15px; line-height: 1.5; }
 
   @media (max-width: 820px) { .how-strip { grid-template-columns: 1fr; gap: 24px; } }

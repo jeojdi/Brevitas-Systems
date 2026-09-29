@@ -36,43 +36,43 @@
 <link rel="stylesheet" href="/responsive.css">
 <script src="/analytics.js" defer data-brevitas-analytics="true"></script>
 <style>
-.ent-eyebrow { font-family: 'Inter Tight', sans-serif; font-size: 14px; color: var(--stone); margin: 0 0 20px; }
-.ent-h1 { font-family: 'Inter Tight', sans-serif; font-weight: 450; font-size: clamp(36px, 5.2vw, 62px); letter-spacing: -0.035em; line-height: 1.04; margin: 0 0 24px; max-width: 16ch; color: var(--fg); }
-.ent-sub { font-family: 'Inter Tight', sans-serif; font-size: clamp(16px, 1.4vw, 19px); line-height: 1.58; color: var(--stone-2); max-width: 680px; margin: 0 0 36px; }
+.ent-eyebrow { font-family: 'Inter', sans-serif; font-size: 14px; color: var(--stone); margin: 0 0 20px; }
+.ent-h1 { font-family: 'Inter', sans-serif; font-weight: 450; font-size: clamp(36px, 5.2vw, 62px); letter-spacing: -0.035em; line-height: 1.04; margin: 0 0 24px; max-width: 16ch; color: var(--fg); }
+.ent-sub { font-family: 'Inter', sans-serif; font-size: clamp(16px, 1.4vw, 19px); line-height: 1.58; color: var(--stone-2); max-width: 680px; margin: 0 0 36px; }
 
-.ent-overview h2 { font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: clamp(22px, 2.6vw, 30px); letter-spacing: -0.01em; color: var(--fg); margin: 0 0 28px; max-width: 22ch; }
+.ent-overview h2 { font-family: 'Inter', sans-serif; font-weight: 600; font-size: clamp(22px, 2.6vw, 30px); letter-spacing: -0.01em; color: var(--fg); margin: 0 0 28px; max-width: 22ch; }
 .ent-jumps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .ent-jump { display: block; text-decoration: none; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 20px 22px; transition: border-color 160ms var(--ease-out-standard); }
 .ent-jump:hover { border-color: var(--bronze); }
 .ent-jump .n { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--bronze); margin-bottom: 12px; }
-.ent-jump b { display: block; font-family: 'Inter Tight', sans-serif; font-size: 16px; font-weight: 600; color: var(--fg); margin-bottom: 6px; }
-.ent-jump span { font-family: 'Inter Tight', sans-serif; font-size: 13.5px; color: var(--stone); line-height: 1.45; }
+.ent-jump b { display: block; font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 600; color: var(--fg); margin-bottom: 6px; }
+.ent-jump span { font-family: 'Inter', sans-serif; font-size: 13.5px; color: var(--stone); line-height: 1.45; }
 
 .ent-sec { display: grid; grid-template-columns: 1.25fr 1fr; gap: clamp(32px, 5vw, 72px); align-items: start; }
 .ent-sec--rev { grid-template-columns: 1fr 1.25fr; }
 .ent-sec--rev > div { order: 2; }
 .ent-sec--rev > a { order: 1; }
-.ent-num { font-family: 'Inter Tight', sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.005em; color: var(--bronze); margin-bottom: 18px; }
-.ent-sec h2 { font-family: 'Inter Tight', sans-serif; font-weight: 400; font-size: clamp(26px, 3.4vw, 40px); letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 16px; color: var(--fg); }
-.ent-sec > div > p.lead { font-family: 'Inter Tight', sans-serif; font-size: 16px; line-height: 1.6; color: var(--stone-2); margin: 0 0 24px; max-width: 560px; }
+.ent-num { font-family: 'Inter', sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -0.005em; color: var(--bronze); margin-bottom: 18px; }
+.ent-sec h2 { font-family: 'Inter', sans-serif; font-weight: 400; font-size: clamp(26px, 3.4vw, 40px); letter-spacing: -0.02em; line-height: 1.08; margin: 0 0 16px; color: var(--fg); }
+.ent-sec > div > p.lead { font-family: 'Inter', sans-serif; font-size: 16px; line-height: 1.6; color: var(--stone-2); margin: 0 0 24px; max-width: 560px; }
 .ent-props { list-style: none; padding: 0; margin: 0; }
-.ent-props li { position: relative; padding: 14px 0 14px 22px; border-top: 1px solid var(--line); font-family: 'Inter Tight', sans-serif; font-size: 15px; line-height: 1.5; color: var(--stone-2); }
+.ent-props li { position: relative; padding: 14px 0 14px 22px; border-top: 1px solid var(--line); font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.5; color: var(--stone-2); }
 .ent-props li::before { content: ""; position: absolute; left: 0; top: 21px; width: 6px; height: 6px; border-radius: 50%; background: var(--bronze); }
 .ent-props li b { color: var(--fg); font-weight: 600; }
 .ent-card { display: flex; flex-direction: column; text-decoration: none; color: inherit; background: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; padding: 24px 26px; transition: border-color 160ms var(--ease-out-standard), transform 160ms var(--ease-out-standard); position: sticky; top: 96px; }
 .ent-card:hover { border-color: var(--bronze); transform: translateY(-3px); }
 .ent-card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 4px; margin: 0 0 18px; display: block; }
-.ent-card .kind { font-family: 'Inter Tight', sans-serif; font-size: 12px; color: var(--stone); margin: 0 0 12px; }
-.ent-card h3 { font-family: 'Inter Tight', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.01em; line-height: 1.2; margin: 0 0 10px; color: var(--fg); }
+.ent-card .kind { font-family: 'Inter', sans-serif; font-size: 12px; color: var(--stone); margin: 0 0 12px; }
+.ent-card h3 { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.01em; line-height: 1.2; margin: 0 0 10px; color: var(--fg); }
 /* Page is all-sans: override the global serif CTA/requirements headings here only. */
-.t-h1, .t-h2 { font-family: 'Inter Tight', sans-serif; font-weight: 450; letter-spacing: -0.03em; }
-.ent-card p { font-family: 'Inter Tight', sans-serif; font-size: 14px; line-height: 1.5; color: var(--stone-2); margin: 0 0 16px; }
-.ent-card .read { font-family: 'Inter Tight', sans-serif; font-size: 13.5px; font-weight: 500; color: var(--bronze); margin-top: auto; }
+.t-h1, .t-h2 { font-family: 'Inter', sans-serif; font-weight: 450; letter-spacing: -0.03em; }
+.ent-card p { font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.5; color: var(--stone-2); margin: 0 0 16px; }
+.ent-card .read { font-family: 'Inter', sans-serif; font-size: 13.5px; font-weight: 500; color: var(--bronze); margin-top: auto; }
 
 .ent-reqs { display: grid; grid-template-columns: 180px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 8px; font-size: 14.5px; }
 .ent-reqs dt, .ent-reqs dd { margin: 0; padding: 14px 20px; border-bottom: 1px solid var(--line); }
-.ent-reqs dt { font-family: 'Inter Tight', sans-serif; font-weight: 600; color: var(--fg); }
-.ent-reqs dd { font-family: 'Inter Tight', sans-serif; color: var(--stone-2); }
+.ent-reqs dt { font-family: 'Inter', sans-serif; font-weight: 600; color: var(--fg); }
+.ent-reqs dd { font-family: 'Inter', sans-serif; color: var(--stone-2); }
 .ent-reqs dt:last-of-type, .ent-reqs dd:last-of-type { border-bottom: 0; }
 
 @media (max-width: 860px) {

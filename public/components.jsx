@@ -420,7 +420,7 @@ function BenchmarkBadge({ letter, name, venue }) {
         width: 44, height: 44,
         border: '1.5px solid var(--stone-2)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: 'Newsreader, serif', fontWeight: 400, fontSize: 22,
+        fontFamily: 'Inter, serif', fontWeight: 400, fontSize: 22,
         color: 'var(--fg)',
       }}>
         {letter}

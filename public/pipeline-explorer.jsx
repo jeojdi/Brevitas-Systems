@@ -14,7 +14,7 @@ function TypingBlock({ tokens, reveal, phase }) {
   const typing = phase === 'typing' && reveal < tokens.length;
   return (
     <div className="bv-transcript" style={{
-      fontFamily: 'Newsreader, serif',
+      fontFamily: 'Inter, serif',
       fontSize: 15.5,
       lineHeight: 1.68,
       color: 'var(--bone)',
@@ -68,7 +68,7 @@ function InputRoute({ plan, phase }) {
           {isRead ? `${plan.cached.toLocaleString()} cached · ${plan.fresh.toLocaleString()} fresh` : `${plan.total.toLocaleString()} sent in full`}
         </span>
       </div>
-      <div style={{ fontFamily: 'Newsreader, serif', fontSize: 13, lineHeight: 1.35, color: 'var(--stone-2)' }}>
+      <div style={{ fontFamily: 'Inter, serif', fontSize: 13, lineHeight: 1.35, color: 'var(--stone-2)' }}>
         {plan.detail}
       </div>
     </div>
@@ -98,10 +98,10 @@ function HopCard({ role, subtitle, tokens, reveal, phase, plan, outputCost }) {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0, flex: '1 1 220px' }}>
-          <div style={{ fontFamily: 'Inter Tight, system-ui, sans-serif', fontSize: 14.5, fontWeight: 500, color: 'var(--bronze)', letterSpacing: '0.035em', marginBottom: 5 }}>
+          <div style={{ fontFamily: 'Inter, system-ui, sans-serif', fontSize: 14.5, fontWeight: 500, color: 'var(--bronze)', letterSpacing: '0.035em', marginBottom: 5 }}>
             {role}
           </div>
-          <div style={{ fontFamily: 'Inter Tight, system-ui, sans-serif', fontSize: 23, fontWeight: 500, lineHeight: 1.15, color: 'var(--bone)', letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
+          <div style={{ fontFamily: 'Inter, system-ui, sans-serif', fontSize: 23, fontWeight: 500, lineHeight: 1.15, color: 'var(--bone)', letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
             {subtitle}
           </div>
         </div>
@@ -293,7 +293,7 @@ function CostReadout({ task, progress }) {
       <Cell label="Relative input cost" value={progress ? `${withPct}%` : '—'} color={saving ? 'var(--bone)' : 'var(--bronze)'} />
 
       <div className="bv-cost-percent" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 40, lineHeight: 1, color: saving ? 'var(--signal)' : 'var(--bronze)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ fontFamily: 'Inter, serif', fontSize: 40, lineHeight: 1, color: saving ? 'var(--signal)' : 'var(--bronze)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
           {progress ? Math.abs(pct) : 0}<span style={{ fontSize: 22, color: 'var(--stone-2)' }}>%</span>
         </div>
         <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--stone-2)' }}>
@@ -608,7 +608,7 @@ function PipelineExplorer() {
             justify-content: space-between;
             gap: 12px;
             color: var(--bronze);
-            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, sans-serif;
             font-size: 13px;
             font-weight: 500;
             letter-spacing: 0.035em;
@@ -622,7 +622,7 @@ function PipelineExplorer() {
           .bv-mobile-slide-heading h3 {
             margin: 0 0 5px;
             color: var(--bone);
-            font-family: 'Inter Tight', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, sans-serif;
             font-size: clamp(27px, 8vw, 36px);
             font-weight: 500;
             line-height: 1.02;
@@ -787,7 +787,7 @@ function PipelineExplorer() {
         padding: '16px 18px', borderRadius: 7, marginBottom: 14,
         display: 'flex', alignItems: 'center', gap: 16,
       }}>
-        <div style={{ fontFamily: 'Newsreader, serif', fontSize: 19, lineHeight: 1.4, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
+        <div style={{ fontFamily: 'Inter, serif', fontSize: 19, lineHeight: 1.4, color: 'var(--bone)', flex: 1, letterSpacing: '-0.005em' }}>
           {task.user}
         </div>
         <div className="bv-prompt-actions" style={{ display: 'flex', gap: 8, flex: '0 0 auto', alignItems: 'center' }}>

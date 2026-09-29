@@ -37,7 +37,7 @@ function ProductPage() {
       {/* Hero */}
       <section className="section" style={{ paddingBottom: 0 }}>
         <div className="container">
-          <h1 className="fade-up in" style={{ margin: '8px 0 24px', maxWidth: 900, fontFamily: "'Inter Tight', sans-serif", fontWeight: 450, fontSize: 'clamp(40px, 5.4vw, 68px)', letterSpacing: '-0.035em', lineHeight: 1.04, color: 'var(--fg)' }}>
+          <h1 className="fade-up in" style={{ margin: '8px 0 24px', maxWidth: 900, fontFamily: "'Inter', sans-serif", fontWeight: 450, fontSize: 'clamp(40px, 5.4vw, 68px)', letterSpacing: '-0.035em', lineHeight: 1.04, color: 'var(--fg)' }}>
             Splice: edit a model's memory in place.
           </h1>
           <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 700, marginBottom: 0, color: 'var(--stone-2)' }}>

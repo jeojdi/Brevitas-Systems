@@ -461,7 +461,7 @@ function BenchmarkBadge({ letter, name, venue }) {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontFamily: "Newsreader, serif",
+    fontFamily: "Inter, serif",
     fontWeight: 400,
     fontSize: 22,
     color: "var(--fg)"

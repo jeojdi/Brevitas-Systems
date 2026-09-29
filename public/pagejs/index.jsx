@@ -64,7 +64,7 @@ function LandingPage() {
         {/* Hero */}
         <section className="section" style={{ paddingBottom: 0 }}>
           <div className="container">
-            <h1 className="fade-up in" style={{ margin: '8px 0 24px', maxWidth: 900, fontFamily: "'Inter Tight', sans-serif", fontWeight: 450, fontSize: 'clamp(40px, 5.4vw, 68px)', letterSpacing: '-0.035em', lineHeight: 1.04, color: 'var(--fg)' }}>
+            <h1 className="fade-up in" style={{ margin: '8px 0 24px', maxWidth: 900, fontFamily: "'Inter', sans-serif", fontWeight: 450, fontSize: 'clamp(40px, 5.4vw, 68px)', letterSpacing: '-0.035em', lineHeight: 1.04, color: 'var(--fg)' }}>
               Your agent's memory shouldn't be disposable.
             </h1>
             <p className="t-body-lg fade-up delay-1 in" style={{ maxWidth: 680, marginBottom: 36, color: 'var(--stone-2)' }}>

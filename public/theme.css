@@ -131,7 +131,7 @@ html, body {
   padding: 0;
   background: var(--ink);
   color: var(--fg);
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-feature-settings: "ss01", "cv11";
   font-size: 16.5px;
   line-height: 1.66;
@@ -152,7 +152,7 @@ a { color: inherit; text-decoration: none; }
 
 /* Typography scale */
 .t-display-xl {
-  font-family: 'Newsreader', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 300;
   font-size: clamp(56px, 9vw, 120px);
   line-height: 0.98;
@@ -161,7 +161,7 @@ a { color: inherit; text-decoration: none; }
   text-wrap: balance;
 }
 .t-display {
-  font-family: 'Newsreader', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 300;
   font-size: clamp(52px, 7vw, 88px);
   line-height: 1.02;
@@ -170,7 +170,7 @@ a { color: inherit; text-decoration: none; }
   text-wrap: balance;
 }
 .t-h1 {
-  font-family: 'Newsreader', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 400;
   font-size: clamp(40px, 5.5vw, 64px);
   line-height: 1.05;
@@ -179,7 +179,7 @@ a { color: inherit; text-decoration: none; }
   text-wrap: balance;
 }
 .t-h2 {
-  font-family: 'Newsreader', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 400;
   font-size: clamp(32px, 3.8vw, 44px);
   line-height: 1.12;
@@ -188,21 +188,21 @@ a { color: inherit; text-decoration: none; }
   text-wrap: balance;
 }
 .t-h3 {
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 500;
   font-size: clamp(24px, 2.4vw, 32px);
   line-height: 1.18;
   letter-spacing: -0.01em;
 }
 .t-body-lg {
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 400;
   font-size: clamp(18px, 1.6vw, 22px);
   line-height: 1.55;
   color: var(--bone-dim);
 }
 .t-body {
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 400;
   font-size: 17px;
   line-height: 1.62;
@@ -233,7 +233,7 @@ a { color: inherit; text-decoration: none; }
   color: var(--stone-2);
 }
 
-.serif { font-family: 'Newsreader', Georgia, serif; font-variation-settings: "opsz" 30; }
+.serif { font-family: 'Inter', system-ui, sans-serif; font-variation-settings: "opsz" 30; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
 .tabular { font-variant-numeric: tabular-nums; }
@@ -327,7 +327,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   align-items: center;
   gap: 10px;
   padding: 12px 22px;
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 500;
   font-size: 15px;
   letter-spacing: 0.02em;
@@ -446,7 +446,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 .nav-dropdown:hover .nav-menu, .nav-dropdown:focus-within .nav-menu { opacity: 1; visibility: visible; transform: translateY(0); }
 .nav-menu a {
   display: block; padding: 9px 12px; border-radius: 7px;
-  font-family: 'Inter Tight', system-ui, sans-serif; font-size: 14px; color: var(--stone-2);
+  font-family: 'Inter', system-ui, sans-serif; font-size: 14px; color: var(--stone-2);
   text-decoration: none; white-space: nowrap;
   transition: background var(--dur-xs), color var(--dur-xs);
 }
@@ -458,7 +458,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   border: 1px solid var(--line);
   color: var(--fg);
   padding: 12px 16px;
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-size: 15px;
   border-radius: 2px;
   width: 100%;
@@ -712,7 +712,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   margin-top: 32px;
 }
 .nav-sheet-links a {
-  font-family: 'Newsreader', Georgia, serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-weight: 300;
   font-size: 44px;
   line-height: 1.1;
@@ -745,8 +745,8 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
   z-index: 0;
   pointer-events: none;
   white-space: nowrap;
-  /* Match the logo wordmark: upright bold Inter Tight, not the serif italic. */
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  /* Match the logo wordmark: upright bold Inter, not the serif italic. */
+  font-family: 'Inter', system-ui, sans-serif;
   font-style: normal;
   font-weight: 700;
   font-size: clamp(150px, 26vw, 440px);
@@ -790,7 +790,7 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, input:focus-visible, 
 }
 /* .footer scope beats the leftover uppercase-mono `.footer h4` rule (same specificity, later in file) */
 .footer .footer-col h4 {
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-size: 14px; font-weight: 600; letter-spacing: 0;
   text-transform: none; color: var(--fg);
   margin: 0 0 18px 0;
